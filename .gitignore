@@ -1,0 +1,33 @@
+# === AI 工作流临时产物（全局名单，勿删） ===
+
+# 根目录散落的工作流产物
+/.cw/
+/.cw-*.json
+/.cw-*.md
+/wave-*.json
+/wave-*.md
+/clarify.json
+/clarify-*.json
+/design-review.json
+/plan.json
+/plan.md
+/exec-review.json
+/retrospect.json
+/closeout.json
+/test.json
+
+# Skill / session 临时产物
+/**/.impeccable/
+/.superpowers/
+/.zcode/plans/
+/.v3-audit/
+
+# 备份 / 临时后缀兜底
+*.bak
+*.tmp
+*.swp
+*.orig
+*~
+
+# === 系统文件 ===
+.DS_Store
