@@ -150,15 +150,24 @@ class ModelRouter {
    * @returns {Promise<{env?: {HOME: string, ZSUB_NESTED: string}, createParams?: {model: string}}>}
    */
   async prepareRunEnv(modelRef, runnerKind) {
-    if (runnerKind === 'appserver') {
-      // 模型走 session/create 参数；HOME 池是 spawn 专属机制，此处整体不触发
-      return { createParams: { model: modelRef } };
-    }
     if (!modelRef || typeof modelRef !== 'string') {
       throw new Error(
         `ModelRouter.prepareRunEnv: modelRef 必填（收到 ${JSON.stringify(modelRef)}）。` +
-        `恢复指引：先经 resolve() 得到模型全名再准备运行环境。`
+        '恢复指引：先经 resolve() 得到模型全名再准备运行环境。'
       );
+    }
+    if (runnerKind === 'appserver') {
+      // 模型走 session/create 参数，无 per-model HOME 池（D5「单一隔离 HOME」）；
+      // 但 app-server 进程的 provider 凭据同样读 $HOME/.zcode/cli/config.json，
+      // 该 HOME 也必须 bootstrap——e2e 实测（2026-08-23）：不 bootstrap 则真实
+      // 模型调用全部失败（空配置无凭据）。复用 ensureHomePool 的互斥 + mtime 链。
+      const short = modelShort(modelRef);
+      const home = config.appserverHomeDir();
+      await ensureHomePool(home, `${PROVIDER_ID}/${short}`);
+      // session/create 的 model 是 strict 对象（e2e 实测 2026-08-23，zcode.cjs
+      // schema C1t/hc）：{providerId, modelId, variant?}——字符串会被 -32602
+      // ZodError 拒收（expected object, received string）。
+      return { createParams: { model: { providerId: PROVIDER_ID, modelId: short } } };
     }
     const short = modelShort(modelRef);
     const home = config.homePoolDir(short);

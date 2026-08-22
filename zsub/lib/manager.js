@@ -249,13 +249,15 @@ class SubagentManager {
     if (typeof text !== 'string' || text.trim() === '') {
       throw new Error('message 需要 text（非空字符串，续聊消息内容）。');
     }
-    // CAS 同步占位：running 期间后续 message 走 busy 分支，天然单轮在飞
+    // CAS 同步占位：running 期间后续 message 走 busy 分支，天然单轮在飞。
+    // rounds 计数统一在 _completeRun 收尾时 +1（完成计数语义：首轮 done → 1，
+    // 续聊轮 done → 2）；此处只返回「即将开始的轮号」，不预置写盘——预置会让
+    // 失败轮虚增计数，且与 _completeRun 的 +1 双计。
     this.records.transition(id, 'idle', 'running');
-    const rounds = (rec.rounds || 0) + 1;
-    this.records.update(id, { rounds });
+    const round = (rec.rounds || 0) + 1;
     const p = this._runResumeRound(id, text);
     p.catch(() => {}); // 错误已落 record（error 终态），后台路径不产生 unhandledRejection
-    return { subagentId: id, status: 'running', round: rounds, notify: this._mode };
+    return { subagentId: id, status: 'running', round, notify: this._mode };
   }
 
   // ------------------------------------------------------- cancel / close
@@ -449,6 +451,11 @@ class SubagentManager {
       error: result ? result.error : undefined,
       sessionId: (result && result.sessionId) || before.sessionId,
       tokens: (result && result.usage) || before.tokens,
+      // rounds 完成计数：成功收尾的轮 +1（首轮 0→1，续聊轮 1→2）；失败/取消轮
+      // 不计（「成功完成的轮数」语义，与 E3 验收「两轮后 rounds=2」对齐）。
+      // 放在 transition patch 里与终态原子落盘，避免「先 update 后 transition」
+      // 两事件在崩溃恢复重放时出现中间态。
+      rounds: status === 'closed' ? (before.rounds || 0) + 1 : (before.rounds || 0),
       // exec 重写持久化：spawn 语义是 done 后回填 exec.sessionId，而 running
       // 转移事件序列化于 done 之前——不重写的话重启后 resume 句柄丢失
       exec: before.exec,

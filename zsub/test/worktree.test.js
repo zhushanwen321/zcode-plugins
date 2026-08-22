@@ -253,3 +253,27 @@ test('sweepStaleOutputs：报告孤儿结果文件但绝不删除（用户资产
   process.env.ZSUB_ROOT = saved;
   assert.deepEqual(empty, { stale: [] });
 });
+
+// ------------------------------------------------------- worktree-adapter 桥接
+
+test('adapter 桥接：prepare 透传 mainRepo，cleanup 可凭 meta 独立完成清理', async () => {
+  const { createWorktreeAdapter } = require('../lib/worktree-adapter');
+  const { repo, id } = await setup();
+  const adapter = createWorktreeAdapter();
+  // e2e 实测发现的桥接 bug 回归：prepare 曾丢失 mainRepo，导致 manager.close 的
+  // cleanup 报「worktree 清理缺少元数据」——bridge 必须端到端闭环。
+  const wt = await adapter.prepare({ slug: 'bridge', subagentId: id, cwd: repo });
+  assert.ok(fs.statSync(wt.dir).isDirectory());
+  assert.equal(wt.branch, `zsub/${id}`);
+  // macOS 上 git 返回 realpath 化路径（/var → /private/var），对比也用 realpath
+  assert.equal(wt.mainRepo, fs.realpathSync(repo), 'mainRepo 必须随句柄透传（cleanup 的执行仓库）');
+  fs.writeFileSync(path.join(wt.dir, 'new.txt'), 'x\n');
+  const patchFile = await adapter.collectPatch({ dir: wt.dir, subagentId: id });
+  assert.ok(patchFile && fs.existsSync(patchFile));
+  assert.ok(fs.readFileSync(patchFile, 'utf8').includes('new.txt'));
+  await adapter.cleanup({ dir: wt.dir, subagentId: id, meta: wt }); // resolve 不抛即清理成功（物理面下方断言）
+  const wts = (await git(repo, ['worktree', 'list', '--porcelain'])).split('\n')
+    .filter((l) => l.startsWith('worktree '));
+  assert.equal(wts.length, 1);
+  assert.equal((await git(repo, ['branch', '--list', `zsub/${id}`])).trim(), '');
+});

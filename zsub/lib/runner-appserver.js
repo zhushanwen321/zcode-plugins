@@ -10,37 +10,42 @@
  *
  * ## 平台协议事实（前期实测全通，唯一权威；anchor 到行为，不 anchor 到推测）
  * - 启动 `node <ZCODE_CLI> app-server --cwd <dir>`，env HOME=<隔离> + ZSUB_NESTED=1；
- *   stdio NDJSON（每行一个 JSON）。
+ *   stdio NDJSON（每行一个 JSON）。进程启动即要求 $HOME/.zcode/cli/config.json 存在
+ *   模型配置（缺失时 create -32603 "Model config is missing"）——由 model-router
+ *   prepareRunEnv('appserver') bootstrap。
  * - 四种帧：client 请求 {id,method,params} / 响应 {id,result|error}（error 形如
  *   {code,message,data}）/ 服务端推送 {method,params}（无 id）/ 服务端反向请求
  *   {id,method,params}——必须回 {id,result}，不答 15s 超时（实测错误码 -32022）。
- * - 协议自报 protocol:{name:"ZCode Protocol",version:1}（推送或首帧，忽略即可）。
+ * - 协议自报 protocol:{name:"ZCode Protocol",version:1}（首帧/推送，忽略即可）。
  * - session/create {workspace:{workspacePath,workspaceKey}, mode:"yolo", model?} →
  *   必答反向请求 session/requestRuntimePreferences（实测 schema 见
  *   RUNTIME_PREFERENCES；workspaceKey 用 workspacePath 的稳定 hash 即可）。
+ *   **model 是 strict 对象 {providerId, modelId, variant?}**（e2e 实测 2026-08-23，
+ *   zcode.cjs schema C1t/hc；字符串被 -32602 ZodError 拒收）。
  * - session/subscribe {sessionId, deliveryKind:"desktop-continuous"}（deliveryKind
  *   必填）；session/send {sessionId, content}（字段是 content 不是 text）→
  *   {accepted:true}；session/stop / session/close {sessionId}；
  *   session/list {workspace, limit}（跨进程可查）。
- * - 实时流：推送 v4/telemetry/event {kind:"stream.chunk", channel:"text",
- *   chunkLength, firstChunk, assistantMessageId}；状态推送 state.updated。
+ * - 会话状态枚举（zcode.cjs VDe）：idle|running|waiting|paused|completed|error。
+ * - **一轮生命周期（e2e 实测 2026-08-23，真实帧抓包）**：
+ *   send 后收 state.updated {patch:{status:"running"}, reason:"prompt_started"}——
+ *   status 在 **patch.status**；轮结束**不发** status:idle 的 state.updated（终态
+ *   帧的 patch 只有 mode/model 等键），一轮结束的权威信号是 v4/telemetry/event
+ *   {kind:"turn.terminal", status:"success"|...}。
+ * - 文本流：stream.chunk 只有 chunkLength 无文本；实时增量在 session/event 的
+ *   payload.delta；最终全文在 session/event 的 payload.response（turn 收尾帧，
+ *   携带 usage；同内容的 content+stopReason:"stop" 形态也出现）。
  * - 错误码：-32602 ZodError（error.data 带完整 zod 诊断）、-32004 Session not
- *   active、-32022 反向请求超时。
+ *   active、-32022 反向请求超时、-32603 内部错误（含 Model config missing）。
  *
- * ## 未实测假设清单（W3 真机探针逐条验证；每条标注「失败时的单点修改位置」，
- *    版本漂移只需改对应单点，不动本文件其余部分）
- * A1 state.updated 终态字段形态：按 params.state.status ?? params.status 宽松匹配
- *    idle/settled/waiting/completed 类值判「一轮结束」。
- *    → 只改 interpretEvent()
+ * ## 剩余未实测假设（W3 后续真机探针；失败时的单点修改位置不变）
  * A2 推送帧的会话归属：按 params.sessionId ?? params.session.id 提取；取不到且
- *    仅一个活跃会话时按唯一会话归因。
+ *    仅一个活跃会话时按唯一会话归因。（e2e 抓包中全部帧都带 params.sessionId，
+ *    多会话并发归因仍未实证）
  *    → 只改 extractPushSessionId() 与 _lookupSession()/_lookupTurn()
- * A3 stream.chunk 是否携带文本：按 params.chunk ?? params.text ?? params.content
- *    试取；只有 chunkLength 时无法拼全文，result 注明可 resume。
- *    → 只改 _handlePush 的 chunk 试取与 _aggregatedText() 聚合逻辑
  * A4 session/read 兜底可用性与返回形态（本进程 active 会话可用，非 -32004）：
- *    降级链 read → messages → chunk 聚合；messages 的 assistant content 按
- *    字符串 / {text} / 块数组三形态兼容提取。
+ *    e2e 中 read 的返回形态未单独抓包验证（response 帧兜底先命中）；降级链
+ *    read → messages → response 帧 → chunk 聚合的顺序保留。
  *    → 只改 extractAssistantText() 与 _fetchFinalResponse() 的降级链
  * A5 send 对 running 会话的行为（排队 or 拒绝）未实测：设计 optimistic（send 后
  *    等一轮完成）；但本 runner 内同会话已有进行中的一轮时保守报 busy。
@@ -104,11 +109,13 @@ function controlTimeout(turnTimeoutMs) {
 }
 
 // ---------------------------------------------------------------------------
-// interpretEvent —— 版本漂移的防洪堤（假设 A1 的单点）
+// interpretEvent —— 版本漂移的防洪堤（A1 实测已收敛：patch.status + turn.terminal）
 // ---------------------------------------------------------------------------
 
-/** 终态提示词：一轮完成 = 会话回到空闲/落定态（含 waiting——等用户输入即本轮已结束）。 */
-const DONE_STATE_HINTS = ['idle', 'settled', 'waiting', 'completed', 'complete', 'done', 'finished'];
+/** 终态提示词：一轮完成 = 会话回到空闲/落定态（含 waiting——等用户输入即本轮已结束）。
+ * error 也是一轮终态（zcode.cjs 实测 VDe 枚举：idle|running|waiting|paused|completed|error，
+ * 会话 error 时不发其他终态——不归类会导致 turn 挂到 timeout）。paused 不算完成（暂停可恢复）。 */
+const DONE_STATE_HINTS = ['idle', 'settled', 'waiting', 'completed', 'complete', 'done', 'finished', 'error'];
 /** 活跃态提示词：仅用于区分「还在跑」，不参与完成判定。 */
 const RUNNING_STATE_HINTS = ['running', 'active', 'busy', 'streaming', 'working', 'thinking', 'generating'];
 
@@ -133,19 +140,30 @@ function extractCreatedSessionId(created) {
 function interpretEvent(evt) {
   if (!evt || typeof evt.method !== 'string') return 'unknown';
   if (evt.method === 'state.updated') {
-    const state = evt.params && evt.params.state;
-    const status = (state && typeof state === 'object' ? state.status : state)
-      ?? (evt.params ? evt.params.status : undefined);
+    const p = evt.params || {};
+    // 实测（2026-08-23，真实帧抓包）：status 位于 patch.status
+    // （prompt_started 时 {"patch":{"status":"running"}}）；轮结束后不发
+    // status:idle 的 state.updated（终态帧 patch 只有 mode/model 等键）——
+    // 一轮结束的权威信号是 turn.terminal（见下）。patch 之外按 state/status
+    // 宽松试取，兼容历史/未来形态漂移。
+    const status = (p.patch && typeof p.patch.status === 'string' ? p.patch.status : undefined)
+      ?? (p.state && typeof p.state === 'object' && typeof p.state.status === 'string' ? p.state.status : undefined)
+      ?? (typeof p.state === 'string' ? p.state : undefined)
+      ?? (typeof p.status === 'string' ? p.status : undefined);
     if (typeof status !== 'string') return 'unknown';
     const v = status.trim().toLowerCase();
     if (DONE_STATE_HINTS.some((h) => v === h || v.startsWith(h))) return 'done';
     if (RUNNING_STATE_HINTS.some((h) => v === h || v.startsWith(h))) return 'running';
     return 'unknown';
   }
-  // 首个文本 chunk = 一轮确已开始产出（不是终态，但可作活跃信号）
-  if (evt.method === 'v4/telemetry/event'
-    && evt.params && evt.params.kind === 'stream.chunk' && evt.params.firstChunk) {
-    return 'running';
+  if (evt.method === 'v4/telemetry/event' && evt.params) {
+    // 一轮终态权威信号（实测）：kind:"turn.terminal"，status success/error 均算
+    // 一轮结束（错误语义由结果层处理，不归类会让 turn 挂到 timeout）
+    if (evt.params.kind === 'turn.terminal') return 'done';
+    // 首个文本 chunk = 一轮确已开始产出（不是终态，但可作活跃信号）
+    if (evt.params.kind === 'stream.chunk' && evt.params.firstChunk) {
+      return 'running';
+    }
   }
   return 'unknown';
 }
@@ -443,7 +461,9 @@ class AppServerRunner {
    * @param {string} [opts.cwd]      app-server 进程 --cwd 默认值（首个 start 可覆盖）
    */
   constructor(opts = {}) {
-    this._homeDir = opts.homeDir || path.join(config.zsubRoot(), 'home-appserver');
+    // 与 model-router.prepareRunEnv('appserver') 的 bootstrap 目标必须同一目录
+    // （单一事实源：config.appserverHomeDir），否则凭据写 A 进程读 B。
+    this._homeDir = opts.homeDir || config.appserverHomeDir();
     this._cwd = opts.cwd || process.cwd();
     this._conn = null;
     // sessionId -> {workspace, chunks:[{assistantMessageId,text}], lastUsage, closed}
@@ -528,7 +548,23 @@ class AppServerRunner {
     const sid = extractPushSessionId(params); // A2 单点
     const session = this._lookupSession(sid);
     if (session) {
-      // A3 单点：stream.chunk 文本试取（未实测是否携带文本）
+      // A3/A4 实测（2026-08-23，真实帧抓包）：stream.chunk 只有 chunkLength 无文本；
+      // 实时文本在 session/event 的 payload.delta，最终全文在 payload.response
+      // （turn 收尾帧，携带 usage）。两者都收，response 为终态读取的第一优先来源。
+      if (method === 'session/event' && params && params.payload && typeof params.payload === 'object') {
+        const pl = params.payload;
+        if (typeof pl.response === 'string' && pl.response !== '') {
+          session.finalResponse = pl.response;
+          if (pl.usage && typeof pl.usage === 'object') session.lastUsage = pl.usage;
+        } else if (pl.stopReason === 'stop' && typeof pl.content === 'string' && pl.content !== '') {
+          // turn 收尾的 content 形态（实测与 response 同值，携带 usage）
+          session.finalResponse = pl.content;
+          if (pl.usage && typeof pl.usage === 'object') session.lastUsage = pl.usage;
+        } else if (typeof pl.delta === 'string' && pl.delta !== '') {
+          session.chunks.push({ assistantMessageId: pl.assistantMessageId, text: pl.delta });
+        }
+      }
+      // A3 实测：stream.chunk 无文本，此分支仅为形态漂移兜底（主路径在上方 session/event）
       if (method === 'v4/telemetry/event' && params && params.kind === 'stream.chunk') {
         const text = typeof params.chunk === 'string' ? params.chunk
           : typeof params.text === 'string' ? params.text
@@ -636,8 +672,9 @@ class AppServerRunner {
   }
 
   /**
-   * 终态后的最终文本兜底链（A4 单点）：session/read → session/messages →
-   * stream.chunk 聚合 → 全部失败则注明可 resume。
+   * 终态后的最终文本兜底链（A4 部分；read/messages 真实形态待抓包）：session/read → session/messages →
+   * session/event 的 payload.response（实测捕获的 turn 收尾帧）→ stream.chunk/
+   * payload.delta 聚合 → 全部失败则注明可 resume。
    */
   async _fetchFinalResponse(sessionId, conn) {
     for (const method of ['session/read', 'session/messages']) {
@@ -653,6 +690,10 @@ class AppServerRunner {
       } catch (err) {
         stderrLog(`${method} 兜底失败: ${err && err.message}`);
       }
+    }
+    const session = this._sessions.get(sessionId);
+    if (session && typeof session.finalResponse === 'string' && session.finalResponse.trim()) {
+      return { response: session.finalResponse, usage: session.lastUsage };
     }
     const agg = this._aggregatedText(sessionId);
     if (agg && agg.trim()) return { response: agg };

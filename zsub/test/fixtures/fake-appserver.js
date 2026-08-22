@@ -17,7 +17,9 @@
  *                     all-error         read/messages 均报错 → 逼 chunk 聚合（带文本）
  *                     all-error-nochunk 同上且 chunk 不带文本 → 逼「全文获取失败」
  *   FAKE_STATE_SHAPE  flat（默认，params.status）| nested（params.state.status）
- *                     —— 验证 interpretEvent 的宽松匹配（A1）
+ *                     | real（实测形态：patch.status + turn.terminal 终态 +
+ *                       session/event payload.response 全文，2026-08-23 e2e 抓包）
+ *                     —— 验证 interpretEvent 的宽松匹配（A1）与文本兜底链（A3/A4）
  *
  * 反向请求语义：session/create 先发 requestRuntimePreferences 并等 runner 应答，
  * 校验内容后回显（prefsValid / 州文件 prefs-answer），模拟「必答反向请求」。
@@ -69,6 +71,25 @@ if (process.env.FAKE_MODE === 'permission-probe') {
 }
 
 function terminalPush(sessionId) {
+  const s = liveSessions.get(sessionId) || { lastContent: '' };
+  if (process.env.FAKE_STATE_SHAPE === 'real') {
+    // 实测形态（e2e 真实抓包 2026-08-23）：轮结束不发 status:idle 的
+    // state.updated；权威终态是 turn.terminal + session/event(payload.response
+    // 携带最终全文与 usage）
+    out({
+      method: 'v4/telemetry/event',
+      params: { kind: 'turn.terminal', status: 'success', resultType: 'success', toolCallCount: 0, sessionId },
+    });
+    out({
+      method: 'session/event',
+      params: {
+        sessionId,
+        deliveryKind: 'desktop-continuous',
+        payload: { response: `FAKE_TURN:${s.lastContent}`, tokenCount: 13, usage: { inputTokens: 11, outputTokens: 2 } },
+      },
+    });
+    return;
+  }
   const status = 'idle';
   const params = process.env.FAKE_STATE_SHAPE === 'nested'
     ? { sessionId, state: { status } }
@@ -100,7 +121,13 @@ function simulateTurn(sessionId) {
         },
       });
     });
-    out({ method: 'state.updated', params: { sessionId, status: 'running' } });
+    // running 帧：real 形态在 patch.status（实测 prompt_started 帧）
+    out({
+      method: 'state.updated',
+      params: process.env.FAKE_STATE_SHAPE === 'real'
+        ? { sessionId, patch: { status: 'running' }, reason: 'prompt_started' }
+        : { sessionId, status: 'running' },
+    });
     terminalPush(sessionId);
   }, 25);
 }

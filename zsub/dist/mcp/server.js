@@ -257,6 +257,13 @@ async function main() {
     if (runnerKind === 'appserver') {
       const AppServerRunner = require('../../lib/runner-appserver');
       try {
+        // app-server 进程启动即要求隔离 HOME 存在模型/provider 配置（e2e 实测
+        // 2026-08-23：无配置时 session/create 直接 -32603 "Model config is
+        // missing"），probe 必须发生在 prepareRunEnv 的 bootstrap 之后，否则
+        // 真实部署中 appserver 永远误降级 spawn。
+        const ModelRouter = require('../../lib/model-router');
+        const router = new ModelRouter();
+        await router.prepareRunEnv(router.resolve(), 'appserver');
         const probe = await new AppServerRunner().probe();
         if (probe.ok) {
           log(`appserver probe OK（protocol ${probe.protocolVersion || '?'}），runner=appserver`);

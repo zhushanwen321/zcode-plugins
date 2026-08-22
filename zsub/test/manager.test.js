@@ -336,14 +336,15 @@ test('message：idle 续聊流转（idle→running→idle），resume 拿到回�
     return r && r.status === 'idle' ? r : null;
   });
   assert.equal(idle1.closedReason, 'round-complete'); // 不进 closed 硬终态（CAS 状态机接线）
+  assert.equal(idle1.rounds, 1); // 完成计数：首轮成功收尾 0→1
   assert.equal(idle1.exec.sessionId, 'sess-chat-1');
 
   const r = await manager.message(h.subagentId, '追问：详细说说');
   assert.equal(r.status, 'running');
-  assert.equal(r.round, 1);
+  assert.equal(r.round, 2); // 即将开始的轮号 = 已完成 + 1
   const idle2 = await waitFor(() => {
     const rec = records.get(h.subagentId);
-    return rec && rec.status === 'idle' && rec.rounds === 1 ? rec : null;
+    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
   });
   assert.equal(runner.resumeCalls.length, 1);
   assert.equal(runner.resumeCalls[0].exec.sessionId, 'sess-chat-1'); // 首轮回填的句柄

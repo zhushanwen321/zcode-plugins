@@ -232,11 +232,20 @@ test('model-router.prepareRunEnv(spawn)：建 HOME 池 + mtime 条件重写', as
   assert.equal(cfg2.provider['builtin:bigmodel-coding-plan'].options.apiKey, 'new-key');
 });
 
-test('model-router.prepareRunEnv(appserver)：只给 createParams，不触发 HOME 池', async () => {
+test('model-router.prepareRunEnv(appserver)：createParams(object model) + 单一隔离 HOME bootstrap', async () => {
   writeV2Config();
   const out = await new ModelRouter().prepareRunEnv('builtin:bigmodel-coding-plan/GLM-5.3', 'appserver');
-  assert.deepEqual(out, { createParams: { model: 'builtin:bigmodel-coding-plan/GLM-5.3' } });
-  assert.equal(out.env, undefined);
+  // model 必须是 strict 对象 {providerId, modelId}（e2e 实测 zcode.cjs schema，
+  // 字符串被 -32602 拒收）
+  assert.deepEqual(out, { createParams: { model: { providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.3' } } });
+  assert.equal(out.env, undefined); // app-server 进程 HOME 由 runner 自己注入，不走 runEnv.env
+  // 单一隔离 HOME（非 per-model 池）：凭据已 bootstrap，app-server 才能调真实模型
+  const homeCfg = path.join(config.appserverHomeDir(), '.zcode', 'cli', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(homeCfg, 'utf8'));
+  assert.equal(cfg.model.main, 'builtin:bigmodel-coding-plan/GLM-5.3');
+  assert.equal(cfg.provider['builtin:bigmodel-coding-plan'].options.apiKey, 'test-key');
+  // modelRef 必填校验对 appserver 分支同样生效
+  await assert.rejects(() => new ModelRouter().prepareRunEnv(null, 'appserver'), /必填/);
 });
 
 // ----------------------------------------------------------------- slots

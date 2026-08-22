@@ -112,6 +112,24 @@ test('createFrameDispatcher：响应匹配 / 推送 / 反向请求三路分发 +
 });
 
 test('interpretEvent：终态宽松匹配是版本漂移防洪堤（假设 A1）', () => {
+  // 实测主形态：status 在 patch.status（e2e 抓包 2026-08-23）
+  assert.equal(interpretEvent({
+    method: 'state.updated',
+    params: { patch: { status: 'running' }, reason: 'prompt_started', sessionId: 's1' },
+  }), 'running');
+  assert.equal(interpretEvent({
+    method: 'state.updated',
+    params: { patch: { status: 'idle' }, sessionId: 's1' },
+  }), 'done');
+  // 实测：轮结束的权威信号是 turn.terminal（state.updated 不再发 status:idle）
+  assert.equal(interpretEvent({
+    method: 'v4/telemetry/event',
+    params: { kind: 'turn.terminal', status: 'success', sessionId: 's1' },
+  }), 'done');
+  assert.equal(interpretEvent({
+    method: 'v4/telemetry/event',
+    params: { kind: 'turn.terminal', status: 'error', sessionId: 's1' },
+  }), 'done'); // error 也是一轮终态（VDe 枚举），不归类会挂到 timeout
   const doneStates = ['idle', 'settled', 'waiting', 'completed', 'IDLE', 'idle-waiting'];
   for (const s of doneStates) {
     assert.equal(interpretEvent({ method: 'state.updated', params: { status: s } }), 'done', s);
@@ -127,13 +145,17 @@ test('interpretEvent：终态宽松匹配是版本漂移防洪堤（假设 A1）
     method: 'v4/telemetry/event',
     params: { kind: 'stream.chunk', channel: 'text', firstChunk: true, chunkLength: 3 },
   }), 'running');
-  // unknown：非首 chunk / 未知方法 / 缺 status
+  // unknown：非首 chunk / 未知方法 / 缺 status / patch 无 status（轮后 mode/model 帧）
   assert.equal(interpretEvent({
     method: 'v4/telemetry/event',
     params: { kind: 'stream.chunk', firstChunk: false },
   }), 'unknown');
   assert.equal(interpretEvent({ method: 'whatever.else', params: {} }), 'unknown');
   assert.equal(interpretEvent({ method: 'state.updated', params: {} }), 'unknown');
+  assert.equal(interpretEvent({
+    method: 'state.updated',
+    params: { patch: { mode: { current: 'yolo' } }, sessionId: 's1' },
+  }), 'unknown');
   assert.equal(interpretEvent(null), 'unknown');
 });
 
@@ -182,7 +204,7 @@ test('probe：fake 报错分支 → {ok:false, reason}（降级决策归上层�
 test('start：create(合入 model)→subscribe→send→终态推送→read 回最终文本', async () => {
   const { runner, stateFile } = newRunner();
   const handle = runner.start(baseTaskCtx('这是第一轮任务提示词', {
-    runEnv: { createParams: { model: 'builtin:bigmodel-coding-plan/GLM-5.3' } },
+    runEnv: { createParams: { model: { providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.3' } } }, // e2e 实测：model 是 strict 对象
   }));
   assert.equal(handle.exec.kind, 'apc');
   const result = await handle.done;
@@ -196,7 +218,7 @@ test('start：create(合入 model)→subscribe→send→终态推送→read 回�
   const evs = readState(stateFile);
   const create = evs.find((e) => e.ev === 'create');
   assert.equal(create.params.mode, 'yolo');
-  assert.equal(create.params.model, 'builtin:bigmodel-coding-plan/GLM-5.3'); // runEnv.createParams 已合入
+  assert.deepEqual(create.params.model, { providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.3' }); // runEnv.createParams 已合入
   assert.equal(create.params.workspace.workspacePath, TMP);
   assert.ok(create.params.workspace.workspaceKey, 'workspaceKey 为稳定 hash');
   const sub = evs.find((e) => e.ev === 'subscribe');
@@ -248,6 +270,25 @@ test('终态宽松匹配：params.state.status 嵌套形态同样收敛（假设
     await runner.shutdown();
   } finally {
     delete process.env.FAKE_STATE_SHAPE;
+  }
+});
+
+test('实测协议形态：patch.status + turn.terminal 终态 + payload.response 全文兜底', async () => {
+  // e2e 真实抓包回归（2026-08-23）：轮结束不发 status:idle 的 state.updated，
+  // 权威终态是 turn.terminal；read/messages 全废时最终全文来自 session/event
+  process.env.FAKE_STATE_SHAPE = 'real';
+  process.env.FAKE_READ = 'all-error'; // 逼开 read/messages 降级，验证 response 帧路径
+  try {
+    const { runner } = newRunner();
+    const handle = runner.start(baseTaskCtx('实测形态'));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    assert.equal(result.response, 'FAKE_TURN:实测形态'); // 来自 session/event payload.response
+    assert.equal(result.usage.inputTokens, 11);          // usage 同帧携带
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_STATE_SHAPE;
+    delete process.env.FAKE_READ;
   }
 });
 

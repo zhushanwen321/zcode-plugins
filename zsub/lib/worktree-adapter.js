@@ -43,7 +43,10 @@ function createWorktreeAdapter() {
   return {
     async prepare({ slug, subagentId, cwd }) {
       const mainRepo = await resolveGitRoot(cwd);
-      return worktree.prepare({ mainRepo, slug, subagentId });
+      // mainRepo 必须随句柄透传：cleanup 的三步 git 操作（remove/prune/branch -D）
+      // 都要在主仓库执行，丢失它 cleanup 直接报「缺少元数据」（e2e 实测发现）。
+      const { dir, branch } = await worktree.prepare({ mainRepo, slug, subagentId });
+      return { dir, branch, mainRepo };
     },
 
     async collectPatch({ dir, subagentId }) {

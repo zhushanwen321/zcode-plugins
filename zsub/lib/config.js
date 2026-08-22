@@ -30,6 +30,8 @@ function zsubRoot() {
 function outputsDir() { return path.join(zsubRoot(), 'outputs'); }
 function recordsPath() { return path.join(zsubRoot(), 'records.jsonl'); }
 function homePoolDir(modelShort) { return path.join(zsubRoot(), `home-${modelShort}`); }
+/** appserver runner 的单一隔离 HOME（D5：apc 无 per-model 池，模型走 create 参数）。 */
+function appserverHomeDir() { return path.join(zsubRoot(), 'home-appserver'); }
 
 /** mailbox 根：与引擎 drain 侧同一解析规则（Z8）。 */
 function mailboxRoot() {
@@ -58,6 +60,7 @@ module.exports = {
   outputsDir,
   recordsPath,
   homePoolDir,
+  appserverHomeDir,
   mailboxRoot,
   mailboxEnabled,
   DEFAULTS,
