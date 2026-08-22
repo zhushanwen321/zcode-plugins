@@ -118,6 +118,18 @@ const RUNNING_STATE_HINTS = ['running', 'active', 'busy', 'streaming', 'working'
  * 只改这里，调用方语义不变。
  * @param {{method?: string, params?: object}} evt 推送帧
  */
+/**
+ * 从 session/create 应答提取 sessionId。
+ * 真实实测（2026-08-23，zcode 3.8.1）：id 在 result.session.sessionId；
+ * projection.sessionId 恒为 "unknown"（勿用）。宽松链兜底历史/未来形态漂移。
+ */
+function extractCreatedSessionId(created) {
+  if (!created || typeof created !== 'object') return undefined;
+  return created.sessionId
+    ?? (created.session && (created.session.sessionId ?? created.session.id))
+    ?? undefined;
+}
+
 function interpretEvent(evt) {
   if (!evt || typeof evt.method !== 'string') return 'unknown';
   if (evt.method === 'state.updated') {
@@ -472,7 +484,7 @@ class AppServerRunner {
         workspace: { workspacePath: tmpDir, workspaceKey: stableWorkspaceKey(tmpDir) },
         mode: 'yolo',
       }, { timeoutMs: PROBE_BUDGET_MS });
-      const sid = created ? (created.sessionId ?? (created.session ? created.session.id : undefined)) : undefined;
+      const sid = extractCreatedSessionId(created);
       if (typeof sid !== 'string' || !sid) {
         throw new Error(`session/create 未返回 sessionId: ${JSON.stringify(created).slice(0, 300)}`);
       }
@@ -679,7 +691,7 @@ class AppServerRunner {
       try {
         if (ctl.cancelled) throw new Error('cancelled');
         const created = await conn.request('session/create', createParams, { timeoutMs: ctlTimeout });
-        const sessionId = created ? (created.sessionId ?? (created.session ? created.session.id : undefined)) : undefined;
+        const sessionId = extractCreatedSessionId(created);
         if (typeof sessionId !== 'string' || !sessionId) {
           throw new Error(`session/create 未返回 sessionId: ${JSON.stringify(created).slice(0, 300)}`);
         }

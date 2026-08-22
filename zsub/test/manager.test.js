@@ -252,13 +252,22 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
   const c = ctx();
   const wtCalls = { prepared: [], patched: [], cleaned: [] };
   const fakeWorktree = {
-    async prepare(slug) { wtCalls.prepared.push(slug); return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}` }; },
-    async collectPatch(dir) { wtCalls.patched.push(dir); return 'diff --git a/f b/f\n--- a/f\n+++ b/f\n'; },
-    async cleanup(dir) { wtCalls.cleaned.push(dir); },
+    async prepare({ slug, subagentId, cwd }) {
+      wtCalls.prepared.push({ slug, subagentId, cwd });
+      return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
+    },
+    async collectPatch({ dir, subagentId }) {
+      wtCalls.patched.push({ dir, subagentId });
+      const { writePatch } = require('../lib/output-store');
+      return writePatch(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n');
+    },
+    async cleanup({ dir, subagentId, meta }) { wtCalls.cleaned.push({ dir, subagentId, meta }); },
   };
   const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
   const h = await manager.start({ task: '重构 auth 模块的任务书', slug: 'wt-demo', worktree: true }, c);
-  assert.deepEqual(wtCalls.prepared, ['wt-demo']);
+  assert.deepEqual(wtCalls.prepared.map((p) => p.slug), ['wt-demo']);
+  assert.equal(wtCalls.prepared[0].subagentId, h.subagentId); // worktree 命名用 record id
+  assert.equal(wtCalls.prepared[0].cwd, c.cwd);
   await waitFor(() => runner.startCalls.length === 1);
   assert.equal(runner.startCalls[0].cwd, path.join(TMP, 'wt', 'wt-demo')); // cwd 已切 worktree
 
@@ -269,7 +278,7 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
   });
   assert.ok(rec.patchFile && rec.patchFile.endsWith('.patch'));
   assert.ok(fs.readFileSync(rec.patchFile, 'utf8').startsWith('diff --git'));
-  assert.deepEqual(wtCalls.patched, [rec.worktree]);
+  assert.deepEqual(wtCalls.patched.map((p) => p.dir), [rec.worktree]);
   const env1 = readEnvelopes(c.targetSessionId).at(-1);
   assert.ok(env1.content.includes(rec.patchFile)); // patch 路径
   assert.ok(env1.content.includes('git apply'));   // apply 指引行
@@ -401,7 +410,7 @@ test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', as
   const { manager, records } = buildManager(); // 不注入 worktree → noOp 占位
   await assert.rejects(
     () => manager.start({ task: '隔离任务书', slug: 'wt-missing', worktree: true }, ctx()),
-    (e) => /worktree 模块未就绪/.test(e.message) && e.message.includes('恢复指引'),
+    (e) => /worktree 能力未注入/.test(e.message) && e.message.includes('恢复指引'),
   );
   assert.equal(records.list().length, 0); // 校验先于 create，失败不留悬挂 record
 });
@@ -443,9 +452,9 @@ test('close：运行中任务先取消再终态化；worktree 清理被调用', 
   const c = ctx();
   const wtCleaned = [];
   const fakeWorktree = {
-    async prepare(slug) { return { dir: path.join(TMP, 'wt2', slug), branch: `zsub/${slug}` }; },
-    async collectPatch() { return 'diff --git'; },
-    async cleanup(dir) { wtCleaned.push(dir); },
+    async prepare({ slug }) { return { dir: path.join(TMP, 'wt2', slug), branch: `zsub/${slug}`, mainRepo: TMP }; },
+    async collectPatch() { return null; },
+    async cleanup({ dir, meta }) { wtCleaned.push({ dir, meta }); },
   };
   const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
   const h = await manager.start({ task: '待关闭任务书', slug: 'close-demo', worktree: true }, c);
@@ -453,6 +462,6 @@ test('close：运行中任务先取消再终态化；worktree 清理被调用', 
   const out = await manager.close(h.subagentId);
   assert.equal(out.status, 'cancelled'); // 运行中 close = 取消链（杀进程）
   assert.equal(out.worktreeCleaned, true);
-  assert.deepEqual(wtCleaned, [records.get(h.subagentId).worktree]);
+  assert.deepEqual(wtCleaned.map((x) => x.dir), [records.get(h.subagentId).worktree]);
   assert.equal(records.get(h.subagentId).status, 'cancelled');
 });

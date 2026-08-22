@@ -117,30 +117,11 @@ const okContent = (value) => ({
 const errContent = (text) => ({ content: [{ type: 'text', text }], isError: true });
 
 /**
- * 组装 manager 运行时（main 与测试共用；测试可整体注入 fake 端口）。
- * 这是 server 侧唯一允许 import 具体端口实现的地方（对齐 ports.createRuntime 定位）。
+ * 组装 manager 运行时（main 与测试共用）。实现收口在 lib/assemble.js
+ * （MCP 与 CLI 入口共用同一组装点），本导出保留向后兼容签名。
  */
 function createManager(opts = {}) {
-  const { createRuntime } = require('../../lib/ports');
-  const { RecordStore } = require('../../lib/record-store');
-  const outputs = require('../../lib/output-store');
-  const { createSlots } = require('../../lib/slots');
-  const { SubagentManager } = require('../../lib/manager');
-  const resolver = require('../../lib/agent-md-resolver');
-
-  const rt = createRuntime({ runnerKind: opts.runnerKind, notifyMode: opts.notifyMode });
-  const notifier = opts.notifier || rt.createNotifier();
-  const manager = new SubagentManager({
-    runner: opts.runner || rt.createRunner(),
-    modelRouter: opts.modelRouter || rt.createModelRouter(),
-    notifier,
-    resolver: opts.resolver || resolver, // 模块对象自带 resolve(nameOrPath, cwd)，天然满足端口契约
-    records: opts.records || new RecordStore(),
-    outputs: opts.outputs || outputs,
-    slots: opts.slots || createSlots({ limit: config.DEFAULTS.maxConcurrent }),
-    worktree: opts.worktree,
-  });
-  return { manager, notifier };
+  return require('../../lib/assemble').assembleManager(opts);
 }
 
 /**
@@ -271,7 +252,24 @@ async function main() {
   if (config.NESTED) {
     log('ZSUB_NESTED=1：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
-    const assembled = createManager();
+    // runner 决策位：ZSUB_RUNNER=appserver 时先探针（D3 门控），失败降级 spawn
+    let runnerKind = process.env.ZSUB_RUNNER === 'appserver' ? 'appserver' : 'spawn';
+    if (runnerKind === 'appserver') {
+      const AppServerRunner = require('../../lib/runner-appserver');
+      try {
+        const probe = await new AppServerRunner().probe();
+        if (probe.ok) {
+          log(`appserver probe OK（protocol ${probe.protocolVersion || '?'}），runner=appserver`);
+        } else {
+          log(`appserver probe FAILED（${probe.reason}），降级 runner=spawn`);
+          runnerKind = 'spawn';
+        }
+      } catch (e) {
+        log(`appserver probe crashed（${e && e.message || e}），降级 runner=spawn`);
+        runnerKind = 'spawn';
+      }
+    }
+    const assembled = createManager({ runnerKind });
     manager = assembled.manager;
     const notifier = assembled.notifier;
     // mailbox 档启动清扫己方 .tmp 残留（Z8 规范 4；PollingNotifier 无此方法）
@@ -286,6 +284,29 @@ async function main() {
     } catch (e) {
       // 恢复失败不拒绝启动：record 是持久化事件流，下次启动仍可重建
       log(`recover 失败（继续启动，record 功能可能受限）: ${e && e.message || e}`);
+    }
+
+    // 孤儿清扫（报告模式，不自动删——结果文件是用户资产；worktree 孤儿同理由用户 close）
+    try {
+      const reaper = require('../../lib/reaper');
+      const known = manager.list().map((r) => r.subagentId);
+      const staleOut = reaper.sweepStaleOutputs({ knownSubagentIds: known });
+      if (staleOut.orphans.length > 0) {
+        log(`孤儿结果文件 ${staleOut.orphans.length} 个（只报告不删）：${staleOut.orphans.join(', ')}`);
+      }
+      const projectDir = process.env.ZCODE_PROJECT_DIR;
+      if (projectDir) {
+        const { resolveGitRoot } = require('../../lib/worktree-adapter');
+        try {
+          const mainRepo = await resolveGitRoot(projectDir);
+          const wt = reaper.reapWorktrees({ mainRepo, knownSubagentIds: known, remove: false });
+          if (wt.orphans.length > 0) {
+            log(`孤儿 worktree ${wt.orphans.length} 个（只报告）：${wt.orphans.map((o) => o.dir).join(', ')}`);
+          }
+        } catch (e) { /* projectDir 非 git 仓库：无 worktree 可扫，正常静默 */ }
+      }
+    } catch (e) {
+      log(`reaper 启动清扫失败（不影响服务）: ${e && e.message || e}`);
     }
   }
 

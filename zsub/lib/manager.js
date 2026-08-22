@@ -42,18 +42,21 @@ const { TERMINAL_STATUSES } = require('./record-store');
 /** 通知文案里 response 的截断长度：mailbox 消息进上下文，500 字符够判断去向。 */
 const SUMMARY_HEAD_CHARS = 500;
 
-/** worktree 端口占位实现（缘由见头注「worktree 为何是注入式 noOp」）。 */
+/**
+ * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
+ * worktree-adapter 真实现；占位仅保留给「显式不想要 worktree 能力」的组装场景）。
+ */
 const noOpWorktree = {
   noOp: true,
   async prepare() {
     throw new Error(
-      'worktree 模块未就绪（W2-S5 并行开发中，W3 接线）。'
-      + '恢复指引：start 时不要传 worktree:true；worktree 子系统交付后该参数自动可用。'
+      'worktree 能力未注入（组装时未提供 worktree 端口实现）。'
+      + '恢复指引：start 时不要传 worktree:true；或检查入口组装是否遗漏 worktree-adapter。'
     );
   },
   async collectPatch() {
     throw new Error(
-      'worktree 模块未就绪，无法收集 patch。'
+      'worktree 能力未注入，无法收集 patch。'
       + '恢复指引：prepare 已拒绝 worktree 任务，不应到达此路径；若手动构造了 record 请先 close。'
     );
   },
@@ -140,16 +143,18 @@ class SubagentManager {
       skillRefs: profile ? profile.skills : undefined,
     });
 
-    // worktree 隔离（可选）：成功后任务 cwd 换到隔离目录
+    // worktree 隔离（可选）：成功后任务 cwd 换到隔离目录。
+    // subagentId 先于 prepare 生成——worktree 目录/分支名需要它（wt-<id>/zsub/<id>）
+    const subagentId = `sa-${crypto.randomUUID().slice(0, 8)}`;
     let runCwd = ctx.cwd;
     let worktreeDir = null;
+    let worktreeMeta = null;
     if (params.worktree === true) {
-      const wt = await this.worktree.prepare(slug);
+      const wt = await this.worktree.prepare({ slug, subagentId, cwd: ctx.cwd });
       worktreeDir = wt.dir;
+      worktreeMeta = { dir: wt.dir, branch: wt.branch, mainRepo: wt.mainRepo };
       runCwd = wt.dir;
     }
-
-    const subagentId = `sa-${crypto.randomUUID().slice(0, 8)}`;
     const conversation = params.conversation === true;
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
@@ -165,6 +170,8 @@ class SubagentManager {
       conversation,
       timeoutMs,
       worktree: worktreeDir, // 隔离目录路径，close 时 cleanup 依据
+      worktreeMeta,          // {dir, branch, mainRepo}：cleanup 参数（适配层消费）
+      cwd: ctx.cwd,          // 任务发起目录（诊断 + worktree 兜底定位主仓）
       rounds: 0,
     });
 
@@ -296,7 +303,11 @@ class SubagentManager {
     let worktreeCleaned = null;
     if (rec.worktree) {
       try {
-        await this.worktree.cleanup(rec.worktree);
+        await this.worktree.cleanup({
+          dir: rec.worktree,
+          subagentId: id,
+          meta: rec.worktreeMeta,
+        });
         worktreeCleaned = true;
         this.records.update(id, { worktreeCleaned: true });
       } catch (e) {
@@ -416,15 +427,14 @@ class SubagentManager {
       response !== '' ? response : `【未完成 ${status}】${(result && result.error) || '无输出'}`
     );
 
-    // worktree patch 收集：失败不阻断终态（任务结果已到手），错误显式进 record
+    // worktree patch 收集：失败不阻断终态（任务结果已到手），错误显式进 record。
+    // collectPatch 由适配层直接落盘 outputs/<id>.patch 并返回路径（产出方唯一）
     const before = this.records.get(id);
     let patchFile = before.patchFile === undefined ? null : before.patchFile;
     if (before.worktree) {
       try {
-        const diff = await this.worktree.collectPatch(before.worktree);
-        if (typeof diff === 'string' && diff.trim() !== '') {
-          patchFile = this.outputs.writePatch(id, diff);
-        }
+        const p = await this.worktree.collectPatch({ dir: before.worktree, subagentId: id });
+        if (typeof p === 'string') patchFile = p;
       } catch (e) {
         this.records.update(id, { patchError: String(e && e.message || e) });
       }
