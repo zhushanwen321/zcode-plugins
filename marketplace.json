@@ -1,0 +1,27 @@
+{
+  "name": "zcode-plugin-workspace",
+  "version": 1,
+  "description": "Personal zcode desktop plugin marketplace: one plugin per top-level directory, shared libs in shared/, unified docs in docs/. Authoritative on the main branch; on feature branches a referenced plugin directory may not exist yet.",
+  "owner": {
+    "name": "zhushanwen",
+    "url": "https://github.com/zhushanwen"
+  },
+  "plugins": [
+    {
+      "name": "zsub",
+      "source": "./zsub",
+      "version": "0.1.0",
+      "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and run_workflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
+      "description_i18n": {
+        "en": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and run_workflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
+        "zh-CN": "zcode 的 subagent 编排与确定性多阶段 workflow：MCP 双工具 zsub（无头子会话生命周期管理）与 run_workflow（五种内置编排 + 自定义脚本扩展）。"
+      },
+      "author": {
+        "name": "zhushanwen",
+        "url": "https://github.com/zhushanwen"
+      },
+      "category": "orchestration",
+      "keywords": ["subagent", "workflow", "orchestration", "mcp", "headless"]
+    }
+  ]
+}
