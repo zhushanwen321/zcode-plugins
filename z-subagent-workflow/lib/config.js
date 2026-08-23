@@ -29,7 +29,14 @@ function zsubRoot() {
 
 function outputsDir() { return path.join(zsubRoot(), 'outputs'); }
 function recordsPath() { return path.join(zsubRoot(), 'records.jsonl'); }
-function homePoolDir(modelShort) { return path.join(zsubRoot(), `home-${modelShort}`); }
+/** provider id 含 ':'，目录名安全化（builtin:bigmodel-coding-plan → builtin_bigmodel-coding-plan）。 */
+function providerDirName(p) { return String(p).replace(/[^A-Za-z0-9._-]/g, '_'); }
+
+/** spawn per-model HOME 池。目录名含 provider 维度：跨 provider 同名模型不共池（凭据/配置互不污染）。 */
+function homePoolDir(modelShort, provider) {
+  const p = provider || 'builtin:bigmodel-coding-plan'; // 缺省 = 默认 provider（向后兼容旧调用）
+  return path.join(zsubRoot(), `home-${providerDirName(p)}-${modelShort}`);
+}
 /** appserver runner 的单一隔离 HOME（D5：apc 无 per-model 池，模型走 create 参数）。 */
 function appserverHomeDir() { return path.join(zsubRoot(), 'home-appserver'); }
 

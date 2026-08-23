@@ -55,7 +55,7 @@ const mkEmptyUserHome = () => fs.mkdirSync(path.join(USER_HOME, '.agents', 'agen
 
 /** 组装 manager：user 级 agent 根注入临时 HOME（四根发现的 3/4 根指向空目录）。 */
 async function buildManager(opts = {}) {
-  return assembleManager({ resolver: new AgentMdResolver({ homeDir: USER_HOME }), ...opts });
+  return assembleManager({ resolver: new AgentMdResolver({ homeDir: USER_HOME }), ...opts }); // async：调用方需 await
 }
 
 /** 轮询等待：fn 返回真值即返回该值。 */
@@ -142,7 +142,7 @@ function writeE6ServerScript() {
 const { assembleManager } = require(${JSON.stringify(path.join(REPO, 'lib', 'assemble'))});
 const { AgentMdResolver } = require(${JSON.stringify(path.join(REPO, 'lib', 'agent-md-resolver'))});
 (async () => {
-  const { manager } = assembleManager({
+  const { manager } = await assembleManager({
     resolver: new AgentMdResolver({ homeDir: ${JSON.stringify(USER_HOME)} }),
   });
   const h = await manager.start(

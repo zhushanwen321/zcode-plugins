@@ -10,10 +10,11 @@
  *   prepareRunEnv('appserver')：只给 session/create 的 model 参数，HOME 池
  *   逻辑整体不触发（apc 是单一长驻进程，模型 per-session 设置）。
  *
- * 为什么 spawn 侧只支持 builtin:bigmodel-coding-plan 一个 provider：隔离 HOME
- * 的 cli/config.json 只写这一个 provider 的凭据（D5），其他 provider（如
- * 自定义 API key 条目）不在隔离配置里，写了也跑不起来——直接在 resolve
- * 阶段报错比运行时挂掉可诊断。
+ * 为什么 spawn 侧只复制带 apiKey 的 provider 凭据（2026-08-23 从「唯一
+ * provider」泛化为多 provider）：隔离 HOME 的 cli/config.json 复制 v2 config
+ * 里实际配置了凭据的条目——没配凭据的 provider 写了也跑不起来，resolve
+ * 阶段即报错比运行时挂掉可诊断。spawn 池按 provider+model 隔离目录，跨
+ * provider 同名模型不共池。
  *
  * 实测事实（2026-08）：本机 v2 config 顶层无 model 字段，「当前主模型」
  * 读取 model.main，读不到则回退 GLM-5.3。
@@ -25,6 +26,8 @@ const config = require('./config');
 const driver = require('./driver');
 
 const PROVIDER_ID = driver.PROVIDER_ID;
+/** 短名解析的默认 provider（全名 provider/model 不受此限，精确匹配任意已配置 provider）。 */
+const DEFAULT_PROVIDER_ID = PROVIDER_ID;
 const FALLBACK_DEFAULT_MODEL = `${PROVIDER_ID}/GLM-5.3`;
 
 /** 每次调用都重读源文件：apiKey/模型清单会随桌面端操作变化，不能缓存。 */
@@ -36,8 +39,16 @@ function readV2Config() {
   }
 }
 
-function availableModels(v2) {
-  return Object.keys(v2?.provider?.[PROVIDER_ID]?.models || {});
+/** 指定 provider 下的可用模型（缺省 = 默认 provider，向后兼容旧调用）。 */
+function availableModels(v2, provider) {
+  return Object.keys(v2?.provider?.[provider || DEFAULT_PROVIDER_ID]?.models || {});
+}
+
+/** v2 config 中所有带非空模型清单的 provider id（「未知 provider」错误的可用清单数据源）。 */
+function providersUsable(v2) {
+  return Object.entries(v2?.provider || {})
+    .filter(([, e]) => e && Object.keys(e.models || {}).length > 0)
+    .map(([id]) => id);
 }
 
 function modelShort(ref) {
@@ -65,10 +76,10 @@ function trimToNull(v) {
  */
 const poolMutex = new Map(); // home -> Promise（链尾，吞掉前序失败保证后续排队者仍执行）
 
-function ensureHomePool(home, modelRef) {
+function ensureHomePool(home, modelRef, bootstrapOpts) {
   const prev = poolMutex.get(home) || Promise.resolve();
   const next = prev.then(() => {
-    if (homeNeedsBootstrap(home)) driver.bootstrapIsolatedHome(home, modelRef);
+    if (homeNeedsBootstrap(home)) driver.bootstrapIsolatedHome(home, modelRef, bootstrapOpts);
   });
   poolMutex.set(home, next.catch(() => {}));
   return next;
@@ -99,72 +110,78 @@ function homeNeedsBootstrap(home) {
 }
 
 class ModelRouter {
-  /**
-   * 解析并校验模型引用。
-   * @param {string} [requested]     start 入参的 model
-   * @param {string} [agentDefault]  agent .md frontmatter 的 model
-   * @returns {string} 规范化全名 `${PROVIDER_ID}/${短名}`
-   * @throws 未知模型/不支持的 provider/清单不可读（显式指定时）——均为可操作错误
-   */
+/**
+ * 解析并校验模型引用。
+ *
+ * 支持两种形态（精确匹配，无模糊猜测）：
+ * - 全名 `provider/model`：在 v2 config 的对应 provider 下精确校验该模型；
+ * - 短名 `model`：按默认 provider（DEFAULT_PROVIDER_ID）校验。
+ *
+ * @param {string} [requested]     start 入参的 model
+ * @param {string} [agentDefault]  agent .md frontmatter 的 model
+ * @returns {string} 规范化全名 `${provider}/${短名}`（provider 保留解析结果）
+ * @throws 未知 provider/未知模型/清单不可读（显式指定时）——均为可操作错误
+ */
   resolve(requested, agentDefault) {
     const wanted = trimToNull(requested) || trimToNull(agentDefault);
     const v2 = readV2Config();
-    const models = availableModels(v2);
+    const providersWithModels = providersUsable(v2);
     const target = wanted || defaultModelRef(v2);
 
-    if (!models.length) {
+    if (!providersWithModels.length) {
       if (wanted) {
         throw new Error(
-          `无法从 ${config.V2_CONFIG_PATH} 读取 ${PROVIDER_ID} 的模型清单，不能校验 model="${wanted}"。` +
-          `恢复指引：确认 ZCode 桌面端已登录并配置该 provider（v2 config 内存在含 models 的条目）后重试。`
+          `无法从 ${config.V2_CONFIG_PATH} 读取任何带模型清单的 provider，不能校验 model="${wanted}"。` +
+          `恢复指引：确认 ZCode 桌面端已登录并配置 provider（v2 config 内存在含 models 的条目）后重试。`
         );
       }
       // 无显式指定且无清单可校验：放行默认值，bootstrap 阶段会给完整可操作错误
       return target;
     }
 
-    if (target.includes('/')) {
-      const providerPart = target.slice(0, target.lastIndexOf('/'));
-      if (providerPart !== PROVIDER_ID) {
-        throw new Error(
-          `不支持的模型引用 "${target}"：spawn 隔离 HOME 只配置 ${PROVIDER_ID} 一个 provider。` +
-          `可用模型: ${models.join(', ')}。` +
-          `恢复指引：改用上述模型的短名或 ${PROVIDER_ID}/<模型名> 全名后重试。`
-        );
-      }
-    }
+    const provider = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
     const short = modelShort(target);
-    if (!models.includes(short)) {
+    const pModels = availableModels(v2, provider);
+    if (!pModels.length) {
+      const known = providersWithModels.join(', ');
       throw new Error(
-        `未知模型 "${target}"。${PROVIDER_ID} 下可用: ${models.join(', ')}。` +
-        `恢复指引：改用上述模型（短名或全名），或先在 ZCode 桌面端为该 provider 启用目标模型后重试。`
+        `未知 provider "${provider}"（v2 config 中有模型清单的 provider: ${known}）。` +
+        `恢复指引：改用上述 provider 之一（全名 provider/model），或短名（默认按 ${DEFAULT_PROVIDER_ID} 解析）后重试。`
       );
     }
-    return `${PROVIDER_ID}/${short}`;
+    if (!pModels.includes(short)) {
+      throw new Error(
+        `未知模型 "${short}"（provider ${provider} 下可用: ${pModels.join(', ')}）。` +
+        `恢复指引：改用该 provider 下的模型（短名或 ${provider}/<模型名> 全名），或先在 ZCode 桌面端启用目标模型后重试。`
+      );
+    }
+    return `${provider}/${short}`;
   }
 
   /**
-   * 列出当前可用模型（zsub models action 数据源）。
+   * 列出可用模型（zsub models action 数据源）。
    * 为什么返回结构化条目而非裸名字数组：路由决策要的不只是「有哪些」，
    * 还有档位信息（上下文窗口/推理档位/默认标记）——裸名字会让调用方
    * 再查一次 v2 config。字段全部可选透出：config 里没有的维度不造默认值
    * （如本机实测条目无 label），避免误导路由。
+   * @param {string} [provider] 目标 provider，缺省 = 默认 provider
    * @returns {Array<{name: string, label?: string, contextWindow?: number,
    *   reasoning?: {variants: string[], defaultVariant?: string}, default?: true}>}
    * @throws 清单不可读（可操作错误，含恢复指引）
    */
-  listModels() {
+  listModels(provider = DEFAULT_PROVIDER_ID) {
     const v2 = readV2Config();
-    const models = availableModels(v2);
+    const models = availableModels(v2, provider);
     if (!models.length) {
+      const known = providersUsable(v2);
       throw new Error(
-        `无法从 ${config.V2_CONFIG_PATH} 读取 ${PROVIDER_ID} 的模型清单。` +
-        `恢复指引：确认 ZCode 桌面端已登录并配置该 provider（v2 config 内存在含 models 的条目）后重试。`
+        `provider "${provider}" 无可用模型清单${known.length ? `（v2 config 中有清单的 provider: ${known.join(', ')}）` : ''}。` +
+        `恢复指引：改用上述 provider 之一，或先在 ZCode 桌面端为该 provider 配置模型后重试。`
       );
     }
     const defShort = modelShort(defaultModelRef(v2));
     return models.map((name) => {
-      const def = v2.provider[PROVIDER_ID].models[name] || {};
+      const def = v2.provider[provider].models[name] || {};
       const entry = { name };
       const label = trimToNull(def.label);
       if (label) entry.label = label;
@@ -195,22 +212,27 @@ class ModelRouter {
         '恢复指引：先经 resolve() 得到模型全名再准备运行环境。'
       );
     }
+    // modelRef 已是 resolve() 的规范化产物（provider/model 全名）；防御性兜底：
+    // 裸短名按默认 provider 解析，与 resolve() 的短名语义一致
+    const provider = modelRef.includes('/') ? modelRef.slice(0, modelRef.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
+    const short = modelShort(modelRef);
     if (runnerKind === 'appserver') {
       // 模型走 session/create 参数，无 per-model HOME 池（D5「单一隔离 HOME」）；
       // 但 app-server 进程的 provider 凭据同样读 $HOME/.zcode/cli/config.json，
       // 该 HOME 也必须 bootstrap——e2e 实测（2026-08-23）：不 bootstrap 则真实
       // 模型调用全部失败（空配置无凭据）。复用 ensureHomePool 的互斥 + mtime 链。
-      const short = modelShort(modelRef);
+      // 长驻进程启动时一次性读全部凭据：bootstrap 写「所有带 apiKey 的 provider」，
+      // 之后任意 provider 的 session/create 都可用（spawn 池无此需求——每池单
+      // provider 单模型，只写目标 provider）。
       const home = config.appserverHomeDir();
-      await ensureHomePool(home, `${PROVIDER_ID}/${short}`);
+      await ensureHomePool(home, `${provider}/${short}`, { allProviders: true });
       // session/create 的 model 是 strict 对象（e2e 实测 2026-08-23，zcode.cjs
       // schema C1t/hc）：{providerId, modelId, variant?}——字符串会被 -32602
       // ZodError 拒收（expected object, received string）。
-      return { createParams: { model: { providerId: PROVIDER_ID, modelId: short } } };
+      return { createParams: { model: { providerId: provider, modelId: short } } };
     }
-    const short = modelShort(modelRef);
-    const home = config.homePoolDir(short);
-    await ensureHomePool(home, modelRef);
+    const home = config.homePoolDir(short, provider);
+    await ensureHomePool(home, `${provider}/${short}`);
     return { env: { HOME: home, ZSW_NESTED: '1' } };
   }
 }

@@ -104,7 +104,7 @@ function buildToolDefinition() {
         },
         slug: { type: 'string', description: 'start 必填。任务短名（通知文案与 worktree 分支名）' },
         agent: { type: 'string', description: 'start 可选。agent .md 的名字或路径（四根发现）' },
-        model: { type: 'string', description: 'start 可选。模型（短名或 provider 全名）' },
+        model: { type: 'string', description: 'start 可选。provider/model 全名（精确匹配任意已配置 provider）或短名（按默认 provider 解析）' },
         schema: { description: 'start 可选。输出契约（字符串或 JSON Schema 对象），以 MANDATORY 段拼入 prompt' },
         worktree: { type: 'boolean', description: 'start 可选。true 时改动落独立 worktree，完成后回传 patch 与 git apply 指引' },
         conversation: { type: 'boolean', description: 'start 可选。true 时首轮完成后进入 idle，可用 message 续聊' },
@@ -171,7 +171,7 @@ function buildRunWorkflowToolDefinition() {
         workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
         model: {
           type: 'string',
-          description: `Model override (${PROVIDER_ID} short or full name; invalid names fail with the list of models actually enabled for the provider). Defaults to the provider's configured main model.`,
+          description: `Model override, exact match: "<provider>/<model>" full name resolves against any configured provider; bare short name resolves against the default provider (${PROVIDER_ID}). Invalid names fail with the list of what is actually configured.`,
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },

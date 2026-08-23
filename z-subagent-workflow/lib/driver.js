@@ -138,35 +138,59 @@ function parseStdoutJson(stdout) {
  * - bootstrap 不在 runHeadless 的运行路径上：apiKey 刷新由 prepareRunEnv 的
  *   mtime 比对触发，resume 轮不重建 HOME。
  *
- * @param {string} home    隔离 HOME 目录（如 homePoolDir('GLM-5.3')）
+ * provider 写入范围（两种模式）：
+ * - 默认：只写 modelRef 的 provider（spawn 池每池单 provider 单模型，凭据
+ *   落盘面最小）；
+ * - opts.allProviders：写 v2 config 中所有带 apiKey 的 provider 条目
+ *   （appserver 共享 HOME——长驻进程启动时一次性读全部凭据，之后任意
+ *   provider 的 session/create 都可用）。
+ *
+ * @param {string} home    隔离 HOME 目录（如 homePoolDir('GLM-5.3', provider)）
  * @param {string} modelRef 已校验的模型全名（provider/model）
- * @throws 源 v2 config 缺 provider 配置时给出可操作错误
+ * @param {{allProviders?: boolean}} [opts]
+ * @throws 源 v2 config 缺目标 provider 配置时给出可操作错误
  */
-function bootstrapIsolatedHome(home, modelRef) {
+function bootstrapIsolatedHome(home, modelRef, opts = {}) {
   if (!home || typeof home !== 'string') {
     throw new Error('driver.bootstrapIsolatedHome: home 必填（隔离 HOME 目录）。');
   }
   if (!modelRef || typeof modelRef !== 'string') {
     throw new Error(`driver.bootstrapIsolatedHome: modelRef 必填（收到 ${JSON.stringify(modelRef)}）。恢复指引：先经 ModelRouter.resolve() 得到模型全名。`);
   }
+  const targetProvider = modelRef.slice(0, modelRef.lastIndexOf('/'));
 
-  let providerEntry = null;
+  let v2 = null;
   try {
-    const v2 = JSON.parse(fs.readFileSync(config.V2_CONFIG_PATH, 'utf8'));
-    providerEntry = v2?.provider?.[PROVIDER_ID] || null;
-  } catch { providerEntry = null; }
-  if (!providerEntry || !providerEntry?.options?.apiKey) {
-    throw new Error(
-      `未在 ${config.V2_CONFIG_PATH} 找到 ${PROVIDER_ID} 的 provider 配置（含 apiKey）。` +
-      `恢复指引：先在 ZCode 桌面端登录并配置 BigModel Coding Plan，或手动把 provider 条目写入该文件后重试。`
-    );
+    v2 = JSON.parse(fs.readFileSync(config.V2_CONFIG_PATH, 'utf8'));
+  } catch { v2 = null; }
+  const allEntries = Object.entries(v2?.provider || {})
+    .filter(([, e]) => e && e.options && e.options.apiKey);
+  let providerSection;
+  if (opts.allProviders) {
+    if (!allEntries.length) {
+      throw new Error(
+        `未在 ${config.V2_CONFIG_PATH} 找到任何带 apiKey 的 provider 条目。` +
+        `恢复指引：先在 ZCode 桌面端登录并配置 provider，或手动把 provider 条目写入该文件后重试。`
+      );
+    }
+    providerSection = Object.fromEntries(allEntries);
+  } else {
+    const providerEntry = (allEntries.find(([id]) => id === targetProvider) || [null, null])[1];
+    if (!providerEntry) {
+      const known = allEntries.map(([id]) => id).join(', ') || '（无）';
+      throw new Error(
+        `未在 ${config.V2_CONFIG_PATH} 找到 ${targetProvider} 的 provider 配置（含 apiKey）。带凭据的 provider: ${known}。` +
+        `恢复指引：先在 ZCode 桌面端为该 provider 登录配置，或手动把 provider 条目写入该文件后重试。`
+      );
+    }
+    providerSection = { [targetProvider]: providerEntry };
   }
 
   const cliDir = path.join(home, '.zcode', 'cli');
   const configPath = path.join(cliDir, 'config.json');
   fs.mkdirSync(cliDir, { recursive: true });
   const payload = JSON.stringify(
-    { model: { main: modelRef }, provider: { [PROVIDER_ID]: providerEntry } },
+    { model: { main: modelRef }, provider: providerSection },
     null, 2
   );
   const tmp = `${configPath}.tmp-${process.pid}-${Date.now()}`;

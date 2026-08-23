@@ -241,7 +241,7 @@ test('model-router.resolve：默认链读 v2 config 主模型，读不到回退 
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
 });
 
-test('model-router.resolve：未知模型/不支持的 provider 抛可操作错误（列清单）', () => {
+test('model-router.resolve：未知模型/未知 provider 抛可操作错误（列清单）', () => {
   writeV2Config();
   const r = new ModelRouter();
   assert.throws(() => r.resolve('GLM-9.9'), (err) =>
@@ -249,7 +249,44 @@ test('model-router.resolve：未知模型/不支持的 provider 抛可操作错�
     && err.message.includes('GLM-5.3')
     && err.message.includes('GLM-4.7-Flash')
     && err.message.includes('恢复指引'));
-  assert.throws(() => r.resolve('other-provider/SomeModel'), /不支持的模型引用/);
+  assert.throws(() => r.resolve('other-provider/SomeModel'), (err) =>
+    /未知 provider/.test(err.message)
+    && err.message.includes('builtin:bigmodel-coding-plan')
+    && err.message.includes('恢复指引'));
+});
+
+test('model-router.resolve：provider/model 全名精确匹配多 provider（跨 provider 同名模型不串）', () => {
+  writeV2Config({
+    provider: {
+      'builtin:bigmodel-coding-plan': {
+        options: { apiKey: 'k1' },
+        models: { 'GLM-5.3': {}, 'shared-model': {} },
+      },
+      'openai-compatible/foo': {
+        options: { apiKey: 'k2' },
+        models: { 'gpt-x': {}, 'shared-model': {} },
+      },
+    },
+  });
+  const r = new ModelRouter();
+  // 各 provider 各自的全名精确解析（返回保留 provider 前缀，不归一到默认）
+  assert.equal(r.resolve('openai-compatible/foo/gpt-x'), 'openai-compatible/foo/gpt-x');
+  // 同名模型跨 provider：解析到显式指定的那个
+  assert.equal(r.resolve('openai-compatible/foo/shared-model'), 'openai-compatible/foo/shared-model');
+  assert.equal(r.resolve('builtin:bigmodel-coding-plan/shared-model'), 'builtin:bigmodel-coding-plan/shared-model');
+  // 短名仍走默认 provider
+  assert.equal(r.resolve('GLM-5.3'), 'builtin:bigmodel-coding-plan/GLM-5.3');
+  // provider 存在但模型不在该 provider 下（另一 provider 有同名）：报错只列该 provider 的模型
+  assert.throws(() => r.resolve('builtin:bigmodel-coding-plan/gpt-x'), (err) =>
+    err.message.includes('未知模型')
+    && err.message.includes('provider builtin:bigmodel-coding-plan 下可用')
+    && err.message.includes('GLM-5.3')
+    && !err.message.includes('gpt-x,'));
+  // 未知 provider 报错列全部有清单的 provider
+  assert.throws(() => r.resolve('nope/m1'), (err) =>
+    err.message.includes('未知 provider')
+    && err.message.includes('builtin:bigmodel-coding-plan')
+    && err.message.includes('openai-compatible/foo'));
 });
 
 test('model-router.resolve：清单读不到——显式指定抛错，默认放行（bootstrap 再报）', () => {
