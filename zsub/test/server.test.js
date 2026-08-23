@@ -55,17 +55,20 @@ test('extractSessionId：Z3 通道提取（有值/无值/类型不对均不报�
 
 // ------------------------------------------------------ 纯函数：tool 定义
 
-test('buildToolDefinition：单 tool zsub，description ≤1600 字符，action 枚举齐全', () => {
+test('buildToolDefinition：单 tool zsub，description ≤900 字符，action 枚举齐全', () => {
   const tool = server.buildToolDefinition();
   assert.equal(tool.name, 'zsub');
   assert.ok(tool.description.length > 0);
-  assert.ok(tool.description.length <= 1600, `description ${tool.description.length} 字符超限`);
-  // 六 action 一行速查 + 三条纪律 + skill 指针，三要素都在
-  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close']) {
+  assert.ok(tool.description.length <= 900, `description ${tool.description.length} 字符超限`);
+  // 七 action 一行速查 + 三条纪律 + skill 指针，三要素都在
+  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents']) {
     assert.ok(tool.description.includes(action), `description 缺 ${action}`);
   }
   assert.ok(tool.description.includes('zsub-orchestration'));
-  assert.deepEqual(tool.inputSchema.properties.action.enum, ['start', 'list', 'status', 'cancel', 'message', 'close']);
+  assert.deepEqual(
+    tool.inputSchema.properties.action.enum,
+    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents'],
+  );
   assert.deepEqual(tool.inputSchema.required, ['action']);
 });
 
@@ -211,6 +214,84 @@ test('tools/call：message 缺 text → isError', async () => {
   assert.equal(frames[0].result.isError, true);
   assert.match(frames[0].result.content[0].text, /text/);
   assert.equal(fake.calls.length, 0);
+});
+
+// --------------------------------------------- agents action（按需查询索引）
+
+test('tools/call agents：真实四根 resolver，返回精简视图且 source 按根推断', async (t) => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-srv-ag-'));
+  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const ws = path.join(tmp, 'ws');
+  const home = path.join(tmp, 'home');
+  const mkAgent = (dir, name, desc) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${name}.md`), `---\nname: ${name}\ndescription: ${desc}\n---\n\nbody\n`);
+  };
+  mkAgent(path.join(ws, '.agents', 'agents'), 'proj-pi', '项目 .agents 根');
+  mkAgent(path.join(ws, '.zcode', 'agents'), 'proj-zc', '项目 .zcode 根');
+  mkAgent(path.join(home, '.agents', 'agents'), 'user-pi', '用户 .agents 根');
+  mkAgent(path.join(home, '.zcode', 'agents'), 'user-zc', '用户 .zcode 根');
+
+  const { AgentMdResolver } = require('../lib/agent-md-resolver');
+  const manager = { ...makeFakeManager(), resolver: new AgentMdResolver({ homeDir: home }) };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const result = await handlers.zsub(
+    { name: 'zsub', arguments: { action: 'agents' } },
+    { cwd: ws },
+  );
+  assert.equal(result.isError, undefined);
+  const rows = JSON.parse(result.content[0].text);
+  // resolver.list 按 name 排序；source 与四根优先级标签一一对应
+  assert.deepEqual(rows.map((r) => [r.name, r.source]), [
+    ['proj-pi', 'project-agents'],
+    ['proj-zc', 'project-zcode'],
+    ['user-pi', 'user-agents'],
+    ['user-zc', 'user-zcode'],
+  ]);
+  // 精简视图：只有索引四字段（body/model 等 profile 字段不透出）
+  for (const r of rows) {
+    assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'name', 'source']);
+    assert.ok(r.file.endsWith('.md'));
+  }
+});
+
+test('tools/call agents：cwd 透传 resolver.list；description 截 200；resolver 缺失可操作错误', async () => {
+  const seenCwd = [];
+  const fakeHome = path.join(TMP, 'ag-fake-home'); // TMP 在真实 HOME 外，防 source 推断被真实 HOME 干扰
+  const fakeResolver = {
+    homeDir: fakeHome,
+    list(cwd) {
+      seenCwd.push(cwd);
+      return [
+        {
+          name: 'long',
+          description: '长'.repeat(350),
+          filePath: path.join(fakeHome, '.zcode', 'agents', 'long.md'),
+        },
+        { name: 'nodesc', filePath: path.join(cwd, '.agents', 'agents', 'nodesc.md') },
+      ];
+    },
+  };
+  const manager = { ...makeFakeManager(), resolver: fakeResolver };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const result = await handlers.zsub(
+    { name: 'zsub', arguments: { action: 'agents' } },
+    { cwd: '/proj/ag' },
+  );
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(seenCwd, ['/proj/ag']); // cwd 原样透传给 resolver.list
+  const rows = JSON.parse(result.content[0].text);
+  assert.equal(rows[0].description, '长'.repeat(200)); // 超 200 截断
+  assert.equal(rows[0].source, 'user-zcode');
+  assert.equal(rows[1].description, ''); // description 缺省容忍为空串
+  assert.equal(rows[1].source, 'project-agents'); // cwd 前缀优先于 HOME 前缀判定
+
+  // resolver 缺失（异常组装防御）：可操作错误而非 TypeError 被 catch 吞
+  const broken = server.buildToolHandlers({ manager: makeFakeManager(), nested: false });
+  const err = await broken.zsub({ name: 'zsub', arguments: { action: 'agents' } });
+  assert.equal(err.isError, true);
+  assert.match(err.content[0].text, /resolver/);
+  assert.match(err.content[0].text, /恢复指引/);
 });
 
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）

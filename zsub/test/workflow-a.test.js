@@ -337,3 +337,124 @@ test('runMapReduce：全部 map 失败 → 终止且 error 汇总首个失败原
     delete process.env.FAKE_FAIL_MATCH;
   }
 });
+
+// ------------------------------------------------------ abort（signal 契约）
+
+test('runParallel：signal 预置 aborted → 零阶段启动，status=aborted', async () => {
+  writeV2Config();
+  const concDir = path.join(TMP, 'conc-abort-pre');
+  fs.rmSync(concDir, { recursive: true, force: true });
+  fs.mkdirSync(concDir, { recursive: true });
+  process.env.FAKE_CONCURRENCY_DIR = concDir;
+  try {
+    const controller = new AbortController();
+    controller.abort(); // 预置：任何阶段启动前
+    const result = await runParallel({
+      task: '预置中止任务', workdir: TMP, signal: controller.signal, timeoutMsPerPhase: 30000,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'aborted');
+    assert.equal(result.abortedAtPhase, 'analyze');
+    assert.deepEqual(result.phases, []); // 零阶段启动
+    assert.equal(result.final, null);
+    assert.match(result.error, /已中止/);
+    assert.equal(fs.readdirSync(concDir).length, 0); // 未 spawn 任何 fake CLI
+  } finally {
+    delete process.env.FAKE_CONCURRENCY_DIR;
+  }
+});
+
+test('runParallel：批中部分完成时 abort → 已完成保留、未启动不启动、聚合不执行', async () => {
+  writeV2Config();
+  const concDir = path.join(TMP, 'conc-abort-mid');
+  fs.rmSync(concDir, { recursive: true, force: true });
+  fs.mkdirSync(concDir, { recursive: true });
+  process.env.FAKE_CONCURRENCY_DIR = concDir;
+  try {
+    const controller = new AbortController();
+    const result = await runParallel({
+      task: '批中部分完成中止任务', workdir: TMP,
+      perspectives: ['p1', 'p2', 'p3'],
+      maxConcurrent: 1, // 串行取件：第 1 个完成后 worker 才会取第 2 个
+      signal: controller.signal, timeoutMsPerPhase: 30000,
+      // 第 1 个视角完成的回调里同步 abort：p1 已到终态（保留），p2/p3 尚未启动
+      onPhase: (e) => {
+        if (String(e.status).startsWith('done')) controller.abort();
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 'aborted');
+    assert.equal(result.abortedAtPhase, 'analyze'); // 批内有未启动条目 → 中止点记批次
+    assert.equal(result.phases.length, 3);
+    // 已启动的跑到终态并保留
+    assert.equal(result.phases[0].ok, true);
+    assert.equal(result.phases[0].aborted, undefined);
+    // 未启动的由 runPhase 预检返回契约形态的 aborted 条目，不 spawn
+    for (const e of result.phases.slice(1)) {
+      assert.equal(e.ok, false);
+      assert.equal(e.aborted, true);
+      assert.equal(e.error, 'aborted');
+    }
+    assert.equal(fs.readdirSync(concDir).filter((f) => f.startsWith('s-')).length, 1);
+    // 聚合阶段未启动
+    assert.ok(!result.phases.some((p) => p.phase === 'aggregate'));
+    assert.equal(result.final, null);
+  } finally {
+    delete process.env.FAKE_CONCURRENCY_DIR;
+  }
+});
+
+test('runParallel：signal 存在但未触发 → 行为不变（status=ok，聚合照跑）', async () => {
+  writeV2Config();
+  const result = await runParallel({
+    task: 'signal 未触发回归任务', workdir: TMP,
+    signal: new AbortController().signal, timeoutMsPerPhase: 30000,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.phases.length, 4); // 3 analyze + aggregate 照跑
+  assert.equal(result.abortedAtPhase, undefined);
+  assert.ok(result.final);
+});
+
+test('runMapReduce：map 批全部完成后 abort → reduce 不启动，map 结果保留', async () => {
+  writeV2Config();
+  const items = ['m1 甲', 'm2 乙', 'm3 丙'];
+  const controller = new AbortController();
+  let doneCount = 0;
+  const result = await runMapReduce({
+    items, operation: 'reduce 边界中止的操作指令', workdir: TMP,
+    signal: controller.signal, timeoutMsPerPhase: 30000,
+    // 最后一个 map 完成回调里同步 abort：批次已收尾、reduce 未启动
+    onPhase: (e) => {
+      if (String(e.status).startsWith('done')) {
+        doneCount++;
+        if (doneCount === items.length) controller.abort();
+      }
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'reduce'); // 批内无未启动条目 → 中止点记下一阶段
+  assert.equal(result.phases.length, 3);
+  assert.ok(result.phases.every((p) => p.ok)); // 已完成的 map 全部保留
+  assert.ok(!result.phases.some((p) => p.phase === 'reduce'));
+  assert.equal(result.final, null);
+  assert.match(result.error, /已中止/);
+});
+
+test('runMapReduce：signal 预置 aborted → 零阶段启动', async () => {
+  writeV2Config();
+  const controller = new AbortController();
+  controller.abort();
+  const result = await runMapReduce({
+    items: ['a', 'b'], operation: '预置中止操作', workdir: TMP,
+    signal: controller.signal, timeoutMsPerPhase: 30000,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'map');
+  assert.deepEqual(result.phases, []);
+  assert.equal(result.final, null);
+  assert.match(result.error, /已中止/);
+});

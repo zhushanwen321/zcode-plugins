@@ -27,6 +27,23 @@
  * 错误约定：编程错误（modelRef 缺失）与环境准备失败（v2 config 缺 provider）
  * reject 可操作错误；阶段运行失败（CLI 崩溃/超时/输出不可解析）resolve 为
  * ok:false 条目，是否中断 workflow 由调用方决定。
+ *
+ * ## AbortSignal 契约（所有 workflow 入口统一实现，本文件是唯一执行落点）
+ *
+ * 所有 workflow 入口函数的 opts 增加 signal?: AbortSignal：
+ *   runChain({task, cwd, model, ..., signal})
+ * 语义（对齐 pi 的 abort：提前停止、已完成阶段保留在报告里）：
+ * 1. 每次调用 phases.runPhase({..., signal}) 前，signal.aborted 为 true →
+ *    该阶段不启动，条目记 {ok:false, error:'aborted', aborted:true}；
+ * 2. 阶段运行中收到 abort → kill 子进程（run-phase 内监听 signal，调 driver
+ *    run.cancel()），条目记 {ok:false, error:'aborted', aborted:true}；
+ * 3. workflow 编排层：发现 aborted 条目后不再启动后续阶段，整体返回报告加
+ *    {status:'aborted', abortedAtPhase:'<阶段名>'} 字段（成功/失败语义保持
+ *    不变）；status 为增量字段，取值 'ok' | 'failed' | 'aborted'；
+ * 4. signal 缺省时行为与现在完全一致（向后兼容）。
+ *
+ * error 恒用 'aborted' 字面值（不写长文案）：aborted:true 是机器判定字段，
+ * 编排层靠它停后续阶段；恢复动作（是否重跑）由上层决定。
  */
 
 const ModelRouter = require('../model-router');
@@ -39,25 +56,64 @@ const driver = require('../driver');
 const modelRouter = new ModelRouter();
 
 /**
+ * 中止条目（契约 1/2 的固定形态）。response 仅运行中中止时携带 stdout 尾部
+ * （driver cancelled 终态返回），预置中止时为 null。
+ */
+function abortedEntry(response = null) {
+  return {
+    ok: false,
+    sessionId: null,
+    response,
+    usage: null,
+    exitCode: null,
+    timedOut: false,
+    error: 'aborted',
+    aborted: true,
+    stderrTail: null,
+  };
+}
+
+/**
  * 运行单个阶段（= 一次 zcode 无头 session）。
  * @param {object} opts
  * @param {string} opts.prompt      完整阶段 prompt
  * @param {string} opts.cwd         阶段运行目录
  * @param {string} opts.modelRef    已 resolve 的模型全名（provider/model）
  * @param {number} [opts.timeoutMs] 缺省由 driver 落 config.DEFAULTS.timeoutMs
+ * @param {AbortSignal} [opts.signal] 中止信号（契约见文件头；缺省行为不变）
  * @returns {Promise<{ok:boolean, sessionId:string|null, response:string|null,
  *   usage:object|null, exitCode:number|null, timedOut:boolean,
- *   error?:string, stderrTail:null}>}
+ *   error?:string, aborted?:true, stderrTail:null}>}
  */
-async function runPhase({ prompt, cwd, modelRef, timeoutMs }) {
+async function runPhase({ prompt, cwd, modelRef, timeoutMs, signal }) {
   if (!modelRef || typeof modelRef !== 'string') {
     throw new Error(
       `runPhase: modelRef 必填（收到 ${JSON.stringify(modelRef)}）。` +
       '恢复指引：先经 ModelRouter.resolve() 得到模型全名再调用。'
     );
   }
+  // 契约 1：启动前已中止 → 不做环境准备、不 spawn
+  if (signal?.aborted) return abortedEntry();
+
   const { env } = await modelRouter.prepareRunEnv(modelRef, 'spawn');
-  const result = await driver.runHeadless({ home: env.HOME, cwd, prompt, timeoutMs });
+  // prepareRunEnv 是 await 点，中止可能落在该窗口内；abort 事件对已 aborted
+  // 的 signal 不会再触发，必须 spawn 前复查兜住这个缺口
+  if (signal?.aborted) return abortedEntry();
+
+  const run = driver.runHeadless({ home: env.HOME, cwd, prompt, timeoutMs });
+  // 契约 2：运行中收到 abort → 复用 driver 的 cancel 杀进程链
+  // （SIGTERM → killGraceMs → SIGKILL，终态 status:'cancelled'）
+  let abortRequested = false;
+  const onAbort = () => { abortRequested = true; run.cancel(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let result;
+  try {
+    result = await run;
+  } finally {
+    // signal 生命周期（整个 workflow）长于单阶段，listener 必须逐阶段摘除
+    // 防泄漏（once 只保证触发一次，不保证从已 settled 阶段摘掉引用）
+    signal?.removeEventListener('abort', onAbort);
+  }
 
   if (result.status === 'closed') {
     return {
@@ -70,9 +126,14 @@ async function runPhase({ prompt, cwd, modelRef, timeoutMs }) {
       stderrTail: null,
     };
   }
+  // 本阶段 abort 触发的 cancel → 契约 2 的 aborted 条目。若 timeout 先到，
+  // killReason 已被占用、终态为 timeout，仍按超时条目处理（中止仅是巧合撞上）
+  if (abortRequested && result.status === 'cancelled') {
+    return abortedEntry(result.response ?? null);
+  }
   // timeout / error / cancelled → ok:false。error 文案由 driver 生成（含恢复
-  // 指引）；cancelled 为防御性映射——当前调用面未暴露 cancel 句柄，后续批次
-  // 若加取消能力无需改这里的消费方。
+  // 指引）；cancelled 为防御性映射——正常中止路径已在上方转 aborted 条目，
+  // 走到这里说明 cancel 来自本层之外的句柄（当前无此调用方）。
   return {
     ok: false,
     sessionId: null,

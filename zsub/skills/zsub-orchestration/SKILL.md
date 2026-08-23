@@ -20,7 +20,7 @@ whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构�
 | 需要逐次指定模型（per-start model 路由） | zsub |
 | 需要跨窗口/跨会话查看历史 subagent 记录 | zsub |
 
-## zsub 六 action 速查（start/list/status/cancel/message/close）
+## zsub 七 action 速查（start/list/status/cancel/message/close/agents）
 
 ```
 zsub(action="start", task="<自包含任务描述>", slug="<短名>",
@@ -31,7 +31,10 @@ zsub(action="status", subagentId="<id>")                  → 单条详情 + 结
 zsub(action="message", subagentId="<id>", text="<追问>")   → 续聊一轮（仅 conversation 且 idle）
 zsub(action="cancel", subagentId="<id>")                  → 取消（SIGTERM→SIGKILL）
 zsub(action="close", subagentId="<id>")                   → 关闭会话并清理 worktree
+zsub(action="agents")                                     → 可用 agent .md 清单（name/description/file/source，四根发现）
 ```
+
+start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
 
 ## 核心纪律
 

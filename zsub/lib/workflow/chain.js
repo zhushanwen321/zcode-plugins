@@ -18,6 +18,10 @@
  *   显式 bootstrap。
  * - 防递归：driver 强制注入 ZSUB_NESTED=1（替代旧 DWF_NESTED=1），叠加隔离
  *   HOME 配置不含 plugins，阶段子进程物理上无法再起嵌套任务。
+ * - abort：入口 opts 增加可选 signal（AbortSignal 契约见 run-phase.js 头注）。
+ *   中止后已完成阶段保留在 phases、返回增量字段 status:'aborted' +
+ *   abortedAtPhase；status 现为全量返回字段（'ok'|'failed'|'aborted'），
+ *   无 signal 时除新增 status 外行为与旧版完全一致。
  */
 
 const { runPhase } = require('./phases');
@@ -74,9 +78,15 @@ const PHASES = [
  * @param {string} [opts.model] 模型（短名或全 ref）
  * @param {number} [opts.timeoutMsPerPhase]
  * @param {(e:{phase:string,status:string})=>void} [opts.onPhase]
+ *        状态取值 'running'|'done'|'failed'|'aborted'
  * @param {(expected:number)=>void} [opts.onPlan]
+ * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @returns {Promise<{ok:boolean, workflow:'chain', task:string, workdir:string,
+ *   model:string, phases:object[], final:string|null, error?:string,
+ *   status:'ok'|'failed'|'aborted', abortedAtPhase?:string,
+ *   startedAt:string, finishedAt:string}>}
  */
-async function runChain({ task, workdir, model, timeoutMsPerPhase = 600000, onPhase, onPlan }) {
+async function runChain({ task, workdir, model, timeoutMsPerPhase = 600000, onPhase, onPlan, signal }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();
   if (onPlan) onPlan(PHASES.length);
@@ -90,14 +100,28 @@ async function runChain({ task, workdir, model, timeoutMsPerPhase = 600000, onPh
     const entry = await runPhase({
       name: phase.name, label: phase.label,
       prompt: phase.buildPrompt({ task, prev: prevOutputs }),
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
     });
     phaseResults.push(entry);
-    if (onPhase) onPhase({ phase: phase.name, status: entry.ok ? 'done' : 'failed' });
+    if (onPhase) {
+      onPhase({ phase: phase.name, status: entry.aborted ? 'aborted' : entry.ok ? 'done' : 'failed' });
+    }
+    // 契约 3：aborted 判定优先于失败——中止不算阶段失败，且此后不再启动
+    // 任何后续阶段；已完成阶段已入 phaseResults，随报告原样返回
+    if (entry.aborted) {
+      return {
+        ok: false, workflow: 'chain', task, workdir, model: modelRef, phases: phaseResults,
+        final: null,
+        error: `阶段 ${phase.name}（${phase.label}）被中止（aborted）`,
+        status: 'aborted', abortedAtPhase: phase.name,
+        startedAt, finishedAt: new Date().toISOString(),
+      };
+    }
     if (!entry.ok) {
       return {
         ok: false, workflow: 'chain', task, workdir, model: modelRef, phases: phaseResults,
         final: null, error: `阶段 ${phase.name}（${phase.label}）失败: ${entry.error}`,
+        status: 'failed',
         startedAt, finishedAt: new Date().toISOString(),
       };
     }
@@ -107,6 +131,7 @@ async function runChain({ task, workdir, model, timeoutMsPerPhase = 600000, onPh
   return {
     ok: true, workflow: 'chain', task, workdir, model: modelRef, phases: phaseResults,
     final: prevOutputs.synthesize,
+    status: 'ok',
     startedAt, finishedAt: new Date().toISOString(),
   };
 }

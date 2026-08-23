@@ -21,7 +21,7 @@
  * 多 tool 结构（M3 已接线）：tool 注册表形态——buildTools() 出定义数组，
  * buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
  * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
- * 进对应 handler）。两个 tool：zsub（六 action 编排）与 run_workflow
+ * 进对应 handler）。两个 tool：zsub（七 action 编排）与 run_workflow
  * （dynamic-workflow 移植，5 种 workflow，双段 content 返回）。
  *
  * run_workflow 移植差异（相对源 dist/mcp/server.js，参数校验/分发照源）：
@@ -42,6 +42,7 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const config = require('../../lib/config');
 const { runChain } = require('../../lib/workflow/chain');
@@ -85,6 +86,7 @@ function buildToolDefinition() {
       + '- message：向 idle 的 conversation 任务投递续聊消息（subagentId + text）。\n'
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
+      + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
       + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
       + '完整用法与分流哲学：加载 skill zsub-orchestration。',
     inputSchema: {
@@ -92,7 +94,7 @@ function buildToolDefinition() {
       properties: {
         action: {
           type: 'string',
-          enum: ['start', 'list', 'status', 'cancel', 'message', 'close'],
+          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents'],
           description: '要执行的操作',
         },
         task: {
@@ -257,6 +259,9 @@ function createManager(opts = {}) {
  *   冒烟必须 spawn 真 zcode，成本不可接受。
  * - env.emitFrame：handler 中途发通知帧（progress）的通道，缺省 no-op
  *   （直接调用 handler 的测试不需要收集通知帧）。
+ * - agents action 的 resolver 经 manager.resolver 取（公开端口字段，构造
+ *   直存）而非 server 再传一份：assembleManager 组装进 manager 的必然是
+ *   同一实例，两份 resolver 会漂移（opts.resolver 注入时尤其如此）。
  */
 function buildToolHandlers({ manager, nested = false, workflows } = {}) {
   const wf = workflows || {
@@ -303,9 +308,24 @@ function buildToolHandlers({ manager, nested = false, workflows } = {}) {
         }
         case 'close':
           return okContent(await manager.close(requireSubagentId(args)));
+        case 'agents': {
+          // 按需查询版 agent 索引：pi 的 <available_subagents> 每 turn 常驻
+          // 注入在 zcode 平台做不到（进程内 extension API 才有），等价物是
+          // 本 action——Z1 结论：MCP tool 常驻注入贵，按需查询零常驻成本。
+          // resolver 取 manager.resolver（lib/assemble.js 组装进 manager 的
+          // 公开端口字段，构造直存）：server 不再注入第二份，必然同一实例。
+          const resolver = manager.resolver;
+          if (!resolver || typeof resolver.list !== 'function') {
+            return errContent(
+              'agents 需要 resolver 端口（agent .md 四根发现），当前 manager 未注入。'
+              + '恢复指引：其他 action 不受影响；agents 排障查 lib/assemble.js 的 resolver 组装。'
+            );
+          }
+          return okContent(agentListView(resolver, ctx.cwd));
+        }
         default:
           return errContent(
-            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close。`
+            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents。`
             + '恢复指引：action 必须取 inputSchema 中的枚举值。'
           );
       }
@@ -489,6 +509,40 @@ function requireSubagentId(args) {
     throw new Error('缺少必填参数 subagentId（start 返回的任务 id）。恢复指引：先用 list 查全部任务 id。');
   }
   return args.subagentId;
+}
+
+/**
+ * agents action 的来源标签推断：AgentProfile.filePath → 四根标签。
+ * resolver.list（lib/agent-md-resolver.js）不带来源根信息，且 lib 默认
+ * 形态是模块对象（读不到 homeDir/roots），source 只能按路径特征推断——
+ * list 只扫四根，filePath 必落其一：cwd 前缀 → project-*，否则 HOME 前缀
+ * → user-*（项目常开在 HOME 下，必须先判 cwd 才能区分项目根与用户根）；
+ * 目录段 .zcode/agents → -zcode，否则 .agents/agents → -agents。
+ */
+function agentSourceOf(filePath, cwd, homeDir) {
+  const scope = filePath.startsWith(cwd + path.sep) ? 'project'
+    : filePath.startsWith(homeDir + path.sep) ? 'user'
+    : 'project'; // 两个前缀都不中：理论不可达（list 只扫四根），兜底不丢行
+  const kind = filePath.includes(`${path.sep}.zcode${path.sep}agents${path.sep}`) ? 'zcode' : 'agents';
+  return `${scope}-${kind}`;
+}
+
+/**
+ * agents action 的精简视图：只透出索引四字段——name / description（截
+ * 200，索引不是正文）/ source（四根标签）/ file（绝对路径，可直接作
+ * start 的 agent 参数）。body/model/tools 等 profile 字段不透出：索引
+ * 的价值在省 token，正文按 file 路径按需读。
+ */
+function agentListView(resolver, cwd) {
+  // homeDir：注入实例（AgentMdResolver 类形态）带真实基准；模块对象形态
+  // 无此字段，回落 os.homedir()——与 lib 默认 resolver 的 homeDir 同源，无漂移
+  const homeDir = typeof resolver.homeDir === 'string' ? resolver.homeDir : os.homedir();
+  return resolver.list(cwd).map((p) => ({
+    name: p.name,
+    description: typeof p.description === 'string' ? p.description.slice(0, 200) : '',
+    source: agentSourceOf(p.filePath || '', cwd, homeDir),
+    file: p.filePath,
+  }));
 }
 
 // ----------------------------------------------------------------- 主循环

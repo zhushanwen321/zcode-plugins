@@ -287,3 +287,119 @@ test('review-fix-loop：恒不 clean 且逐轮递减 → 默认 maxRounds=5 熔�
     delete process.env.FAKE_DECLINE;
   }
 });
+
+// ------------------------------------------------- abort（signal 契约）
+
+test('scatter-gather：signal 预置 aborted → 零阶段启动', async () => {
+  writeV2Config();
+  resetCalls();
+  const controller = new AbortController();
+  controller.abort();
+  const result = await runScatterGather({
+    task: '预置中止的大任务', workdir: makeWorkdir('sg-abort-pre'), model: MODEL_REF,
+    signal: controller.signal,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'scatter');
+  assert.deepEqual(result.phases, []);
+  assert.equal(result.final, null);
+  assert.match(result.error, /已中止/);
+  assert.deepEqual(readCalls(), []); // 未 spawn 任何 fake CLI
+});
+
+test('scatter-gather：process 批全部完成后 abort → gather 不启动，已完成阶段保留', async () => {
+  writeV2Config();
+  resetCalls();
+  const controller = new AbortController();
+  let processDone = 0;
+  const result = await runScatterGather({
+    task: 'gather 边界中止的大任务', workdir: makeWorkdir('sg-abort-gather'), model: MODEL_REF,
+    signal: controller.signal,
+    // 最后一个子任务完成回调里同步 abort：process 批已收尾、gather 未启动
+    onPhase: (e) => {
+      if (e.phase.startsWith('process:') && String(e.status).startsWith('done')) {
+        processDone++;
+        if (processDone === 2) controller.abort();
+      }
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'gather'); // 批内无未启动条目 → 中止点记下一阶段
+  assert.deepEqual(result.phases.map((p) => p.phase), ['scatter', 'process', 'process']);
+  assert.ok(result.phases.every((p) => p.ok)); // 已完成阶段全部保留
+  assert.equal(result.final, null);
+  assert.ok(!readCalls().some((c) => c.prompt.includes('gather 者'))); // gather 未启动
+});
+
+test('scatter-gather：signal 存在但未触发 → 行为不变（status=ok）', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runScatterGather({
+    task: 'signal 未触发的大任务', workdir: makeWorkdir('sg-live-signal'), model: MODEL_REF,
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.phases.map((p) => p.phase), ['scatter', 'process', 'process', 'gather']);
+  assert.equal(result.abortedAtPhase, undefined);
+});
+
+test('review-fix-loop：round 1 完成后 abort → round 2 不启动，status=aborted', async () => {
+  writeV2Config();
+  resetCalls();
+  const controller = new AbortController();
+  const result = await runReviewFixLoop({
+    task: '轮间中止演示', workdir: makeWorkdir('rfl-abort-round'),
+    signal: controller.signal,
+    // R1 修复完成回调里同步 abort：本轮已完整结束、round 2 尚未启动
+    onPhase: (e) => {
+      if (e.phase === 'round1-fix' && e.status === 'done') controller.abort();
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'round1-fix');
+  assert.equal(result.loop.status, 'aborted');
+  assert.equal(result.loop.rounds, 1); // round 1 摘要保留
+  assert.equal(result.phases.length, 3); // R1 双审 + fix；round 2 review 未启动
+  assert.ok(result.phases.every((p) => p.ok));
+  const calls = readCalls();
+  assert.equal(calls.filter((c) => c.prompt.includes('审查者')).length, 2); // 仅 R1 双审
+  assert.ok(result.final.includes('已中止'));
+  assert.match(result.error, /已中止/);
+  // 中止时 R1 聚合出的 must-fix 原样保留
+  assert.equal(result.loop.remainingCount, 1);
+});
+
+test('review-fix-loop：signal 预置 aborted → 零阶段启动', async () => {
+  writeV2Config();
+  resetCalls();
+  const controller = new AbortController();
+  controller.abort();
+  const result = await runReviewFixLoop({
+    task: '预置中止审查', workdir: makeWorkdir('rfl-abort-pre'), signal: controller.signal,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'aborted');
+  assert.equal(result.abortedAtPhase, 'round1-review');
+  assert.deepEqual(result.phases, []);
+  assert.equal(result.loop.status, 'aborted');
+  assert.equal(result.loop.rounds, 0);
+  assert.deepEqual(readCalls(), []); // 未 spawn 任何 fake CLI
+});
+
+test('review-fix-loop：signal 存在但未触发 → 行为不变（status=ok）', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runReviewFixLoop({
+    task: 'signal 未触发的审查', workdir: makeWorkdir('rfl-live-signal'),
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.loop.status, 'clean');
+  assert.equal(result.phases.length, 5); // 默认场景：R1 双审+fix + R2 双审
+  assert.equal(result.abortedAtPhase, undefined);
+});

@@ -14,6 +14,13 @@
  *   本模块不再触碰 HOME 写盘。
  * - runPhase 调用补 modelRef 透传（zsub 的 per-model HOME 池按模型隔离，源版无此参数）。
  * - pool/jsonout 在 zsub 位于 lib/ 根而非 lib/workflow/，require 路径改 ../pool、../jsonout。
+ * - abort（契约见 run-phase.js 头注）：opts.signal 缺省时行为完全不变。
+ *   signal 透传给每次 runPhase（条目级预检与运行中杀停由 run-phase 负责）；
+ *   本层编排检查点：scatter 启动前（零 spawn 直接 aborted 返回）、scatter 完成
+ *   后（process 批不启动）、process 批完成后（gather 不再启动）、gather 完成后。
+ *   process 批中 abort 时已启动的子任务跑到终态或被杀停、结果保留，未启动的由
+ *   runPhase 预检返回 aborted 条目。整体返回增量 status（'ok'|'failed'|'aborted'）
+ *   与 abortedAtPhase（仅 aborted 携带）。
  */
 
 const { runPhase } = require('./phases');
@@ -26,6 +33,9 @@ const modelRouter = new ModelRouter();
 
 const MAX_SUBTASKS = 4;
 
+/** signal 缺省（undefined）与未触发都视为未中止；编排层只认 signal.aborted 单一事实源。 */
+function isAborted(signal) { return !!signal && signal.aborted === true; }
+
 /**
  * @param {object} opts
  * @param {string} opts.task 大任务描述
@@ -34,13 +44,25 @@ const MAX_SUBTASKS = 4;
  * @param {string} [opts.model]
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase]
+ * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
  */
 async function runScatterGather({
-  task, subtaskCount, workdir, model,
+  task, subtaskCount, workdir, model, signal,
   maxConcurrent = 3, timeoutMsPerPhase = 600000, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();
+
+  // 检查点（scatter 启动前）：signal 已 aborted → 零 spawn 直接 aborted 返回
+  if (isAborted(signal)) {
+    return {
+      ok: false, status: 'aborted', abortedAtPhase: 'scatter',
+      workflow: 'scatter-gather', task, workdir, model: modelRef,
+      phases: [], final: null,
+      error: '已中止（aborted）: scatter 阶段启动前 signal 已 aborted，零阶段启动',
+      startedAt, finishedAt: new Date().toISOString(),
+    };
+  }
 
   // 段 1：scatter（结构化拆分）
   if (onPhase) onPhase({ phase: 'scatter', status: 'running' });
@@ -55,12 +77,23 @@ async function runScatterGather({
       `## 输出格式\n先用 2-3 句说明拆分思路，然后必须输出一个 \`\`\`json 围栏块：\n` +
       '```json\n{"subtasks":[{"name":"简短名称","description":"子任务详细描述（含涉及文件/范围）"}]}\n```\n' +
       `不要输出其他 json 块。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
   });
-  if (onPhase) onPhase({ phase: 'scatter', status: scatter.ok ? 'done' : 'failed' });
+  if (onPhase) onPhase({ phase: 'scatter', status: scatter.aborted ? 'aborted' : scatter.ok ? 'done' : 'failed' });
+  // 检查点（scatter 完成后）：aborted → process 批不启动（含 scatter 运行中被
+  // run-phase 杀停的情况，条目保留）
+  if (isAborted(signal)) {
+    return {
+      ok: false, status: 'aborted', abortedAtPhase: 'scatter',
+      workflow: 'scatter-gather', task, workdir, model: modelRef,
+      phases: [scatter], final: null,
+      error: '已中止（aborted）: scatter 阶段中止，子任务批未启动',
+      startedAt, finishedAt: new Date().toISOString(),
+    };
+  }
   if (!scatter.ok) {
     return {
-      ok: false, workflow: 'scatter-gather', task, workdir, model: modelRef,
+      ok: false, status: 'failed', workflow: 'scatter-gather', task, workdir, model: modelRef,
       phases: [scatter], final: null, error: `scatter 阶段失败: ${scatter.error}`,
       startedAt, finishedAt: new Date().toISOString(),
     };
@@ -70,7 +103,7 @@ async function runScatterGather({
   const subtasks = Array.isArray(parsed?.subtasks) ? parsed.subtasks : null;
   if (!subtasks || !subtasks.length) {
     return {
-      ok: false, workflow: 'scatter-gather', task, workdir, model: modelRef,
+      ok: false, status: 'failed', workflow: 'scatter-gather', task, workdir, model: modelRef,
       phases: [scatter], final: null,
       error: `scatter 输出无法解析出 subtasks 数组。原始输出片段: ${(scatter.response || '').slice(0, 300)}`,
       startedAt, finishedAt: new Date().toISOString(),
@@ -97,18 +130,32 @@ async function runScatterGather({
         `## 你的子任务\n${st.name}: ${st.description}\n\n` +
         `## 约束\n只做本子任务边界内的事（允许修改/新建文件、运行命令验证），不要越界做其他子任务的事。\n\n` +
         `## 输出格式\n以「## ${st.name} 结果」开头：做了什么 / 改动清单（文件路径）/ 验证方式 / 未尽事项。不超过 400 字。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
     });
     if (entry.ok) outputs[i] = entry.response;
-    completed++;
-    if (onPhase) onPhase({ phase: `process:${st.name}`, status: entry.ok ? `done (${completed}/${norm.length})` : 'failed' });
+    if (!entry.aborted) completed++;
+    if (onPhase) onPhase({ phase: `process:${st.name}`, status: entry.aborted ? 'aborted' : entry.ok ? `done (${completed}/${norm.length})` : 'failed' });
     return entry;
   });
   phaseResults.push(...processEntries);
+
+  // 检查点（process 批完成后）：批中/批尾发现中止 → gather 不再启动。批内有
+  // 未启动条目时中止点记为 process，否则记为下一个未启动阶段 gather
+  if (isAborted(signal)) {
+    return {
+      ok: false, status: 'aborted',
+      abortedAtPhase: processEntries.some((e) => e.aborted) ? 'process' : 'gather',
+      workflow: 'scatter-gather', task, workdir, model: modelRef,
+      phases: phaseResults, final: null,
+      error: `已中止（aborted）: process 批次中止，${processEntries.filter((e) => e.ok).length}/${norm.length} 个子任务已完成`,
+      startedAt, finishedAt: new Date().toISOString(),
+    };
+  }
+
   const failedCount = outputs.filter((o) => o === null).length;
   if (failedCount === norm.length) {
     return {
-      ok: false, workflow: 'scatter-gather', task, workdir, model: modelRef,
+      ok: false, status: 'failed', workflow: 'scatter-gather', task, workdir, model: modelRef,
       phases: phaseResults, final: null,
       error: `全部 ${norm.length} 个子任务处理失败: ${phaseResults[1].error}`,
       startedAt, finishedAt: new Date().toISOString(),
@@ -126,13 +173,25 @@ async function runScatterGather({
       `## 你的职责\n先核对实际状态：运行 git status 与 git diff --stat（非 git 仓库用 ls 核对），对照各子任务自述。\n\n` +
       `## 输出格式\n以「## 最终报告」开头：1) 大任务整体完成度 2) 实际改动总清单 3) 子任务间的遗漏/重复/冲突\n` +
       `4) 遗留风险与建议。不超过 500 字。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
   });
   phaseResults.push(gather);
-  if (onPhase) onPhase({ phase: 'gather', status: gather.ok ? 'done' : 'failed' });
+  if (onPhase) onPhase({ phase: 'gather', status: gather.aborted ? 'aborted' : gather.ok ? 'done' : 'failed' });
+
+  // 检查点（gather 完成后）：运行中 abort → 整体按 aborted 返回，条目保留
+  if (isAborted(signal)) {
+    return {
+      ok: false, status: 'aborted', abortedAtPhase: 'gather',
+      workflow: 'scatter-gather', task, workdir, model: modelRef,
+      phases: phaseResults, final: null,
+      error: '已中止（aborted）: gather 阶段中止',
+      startedAt, finishedAt: new Date().toISOString(),
+    };
+  }
 
   return {
-    ok: gather.ok, workflow: 'scatter-gather', task, workdir, model: modelRef,
+    ok: gather.ok, status: gather.ok ? 'ok' : 'failed',
+    workflow: 'scatter-gather', task, workdir, model: modelRef,
     phases: phaseResults, final: gather.ok ? gather.response : null,
     sections: [{
       title: `子任务清单（scatter 拆出 ${norm.length} 个）`,

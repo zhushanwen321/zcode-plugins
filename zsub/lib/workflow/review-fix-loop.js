@@ -18,6 +18,12 @@
  *   本模块不再触碰 HOME 写盘。
  * - runPhase 调用补 modelRef 透传（zsub 的 per-model HOME 池按模型隔离，源版无此参数）。
  * - pool/jsonout 在 zsub 位于 lib/ 根而非 lib/workflow/，require 路径改 ../pool、../jsonout。
+ * - abort（契约见 run-phase.js 头注）：opts.signal 缺省时行为完全不变。signal
+ *   透传给每次 runPhase（条目级预检与运行中杀停由 run-phase 负责）；本层编排
+ *   检查点：每轮 review 批启动前（轮间中止，零 spawn）、review 批完成后（本轮
+ *   聚合与 fix 不再进行——部分审查者缺席时聚合结论不可信）、fix 启动前、fix
+ *   完成后。整体返回增量 status（'ok'|'failed'|'aborted'）与 abortedAtPhase
+ *   （仅 aborted 携带）；loop.status 同步细分出 'aborted'。
  */
 
 const { runPhase } = require('./phases');
@@ -44,6 +50,9 @@ function reviewerDesc(r) { return REVIEWER_DESC[r] || '按该审查焦点深入�
 function dedupKey(title) {
   return String(title).toLowerCase().replace(/\s+/g, ' ').trim();
 }
+
+/** signal 缺省（undefined）与未触发都视为未中止；编排层只认 signal.aborted 单一事实源。 */
+function isAborted(signal) { return !!signal && signal.aborted === true; }
 
 /** 聚合：合并多审查者的 issues，去重（标题归一化相同视为同一问题，保留最高严重度）。 */
 function aggregateIssues(reviewerOutputs) {
@@ -89,10 +98,11 @@ function issuesJsonBlock(issues) {
  * @param {string} [opts.model]
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase]
+ * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
  */
 async function runReviewFixLoop({
   task, reviewTarget = 'git 未提交改动', reviewers, maxRounds = 5,
-  workdir, model, maxConcurrent = 3, timeoutMsPerPhase = 600000, onPhase, onPlan,
+  workdir, model, signal, maxConcurrent = 3, timeoutMsPerPhase = 600000, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();
@@ -109,11 +119,15 @@ async function runReviewFixLoop({
   let lastFixResponse = null;
   let lastAction = null; // 'review' | 'fix'：循环因 maxRounds 耗尽退出时用于区分 fixed-unverified
   let status = 'max-rounds';
+  let abortedAtPhase = null; // status==='aborted' 时的中止检查点（如 'round2-review'）
   let remaining = [];
   let prevMustFixCount = null;
   let stagnantRounds = 0;
 
   for (let round = 1; round <= maxRounds; round++) {
+    // 检查点（轮间）：上一轮结束后 signal 已 aborted → 本轮任何阶段不再启动
+    if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-review`; break; }
+
     // ── 并行 review（上一轮 clean 且其后无 fix 的审查者跳过）──
     const active = rs.filter((r) => !cleanReviewers.has(r));
     if (active.length === 0) { status = 'clean'; break; }
@@ -136,9 +150,13 @@ async function runReviewFixLoop({
         '{"status":"issues","issues":[{"id":"A1","severity":"major","title":"问题标题","detail":"说明与依据","file":"相对路径"}]}\n' +
         '```\n' +
         `不要报风格类 minor 问题；不要输出其他 json 块。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
     }));
     for (const entry of reviews) phaseResults.push(entry);
+
+    // 检查点（review 批完成后）：aborted → 本轮聚合与 fix 不再进行，已完成
+    // 审查条目随报告保留
+    if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-review`; break; }
 
     // ── 聚合（JS 去重合并）──
     const parsedReviews = active.map((r, i) => {
@@ -173,6 +191,9 @@ async function runReviewFixLoop({
     } else stagnantRounds = 0;
     prevMustFixCount = mustFix.length;
 
+    // 检查点（fix 启动前）：aborted → 本轮聚合出的 must-fix 原样保留给报告
+    if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-fix`; remaining = mustFix; break; }
+
     // ── fix ──
     if (onPhase) onPhase({ phase: `round${round}-fix`, status: `running (${mustFix.length} 个 must-fix)` });
     const fix = await runPhase({
@@ -183,10 +204,12 @@ async function runReviewFixLoop({
         `## 必须修复的问题（按 id 逐条处理）\n\`\`\`json\n${issuesJsonBlock(mustFix)}\n\`\`\`\n\n` +
         `## 你的职责\n逐条修复上述问题（允许修改文件、运行命令验证）。对确实不该修/修不了的要给出理由，不要为凑数做表面修改。\n\n` +
         `## 输出格式\n以「## 修复结果」开头，逐条给出：问题 id → 已修复（怎么修的）/ 拒绝修复（理由）。不超过 500 字。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
     });
     phaseResults.push(fix);
-    if (onPhase) onPhase({ phase: `round${round}-fix`, status: fix.ok ? 'done' : 'failed' });
+    if (onPhase) onPhase({ phase: `round${round}-fix`, status: fix.aborted ? 'aborted' : fix.ok ? 'done' : 'failed' });
+    // 检查点（fix 完成后）：运行中 abort 时 fix 条目已被 run-phase 杀停并标记
+    if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-fix`; remaining = mustFix; break; }
     if (!fix.ok) { status = 'fix-failed'; remaining = mustFix; break; }
     lastFixResponse = fix.response;
     lastAction = 'fix';
@@ -204,14 +227,18 @@ async function runReviewFixLoop({
     ? remaining.map((i) => `- **${i.id} [${i.severity}]** ${i.title}${i.file ? `（${i.file}）` : ''}\n  ${i.detail}`).join('\n')
     : '';
 
-  const finalText = status === 'clean'
-    ? `## 审查通过\n\n共 ${roundSummaries.length} 轮，所有审查者（${rs.join('、')}）均无 must-fix 问题。\n${lastFixResponse ? `\n最后一轮修复说明：\n${lastFixResponse.slice(0, 1500)}` : ''}`
-    : status === 'fixed-unverified'
-      ? `## 已修复，待复核\n\n共 ${roundSummaries.length} 轮，最后一轮修复已完成且未再报新 must-fix，但轮数（${maxRounds}）用尽未做复核。建议再跑一轮确认，或人工检查。\n\n最后一轮修复说明：\n${(lastFixResponse || '').slice(0, 1500)}`
-      : `## ${status === 'stuck' ? '修复停滞，人工接管' : status === 'fix-failed' ? '修复阶段失败' : `达到最大轮数（${maxRounds}）`}\n\n剩余 must-fix ${remaining.length} 个：\n${remainingMd}`;
+  const finalText = status === 'aborted'
+    ? `## 已中止\n\n在 ${abortedAtPhase} 检查点收到 abort，后续阶段未启动；已完成 ${roundSummaries.length} 轮，已启动阶段的条目保留在下方阶段表。${remaining.length ? `\n\n中止时剩余 must-fix ${remaining.length} 个（未处理）：\n${remainingMd}` : ''}`
+    : status === 'clean'
+      ? `## 审查通过\n\n共 ${roundSummaries.length} 轮，所有审查者（${rs.join('、')}）均无 must-fix 问题。\n${lastFixResponse ? `\n最后一轮修复说明：\n${lastFixResponse.slice(0, 1500)}` : ''}`
+      : status === 'fixed-unverified'
+        ? `## 已修复，待复核\n\n共 ${roundSummaries.length} 轮，最后一轮修复已完成且未再报新 must-fix，但轮数（${maxRounds}）用尽未做复核。建议再跑一轮确认，或人工检查。\n\n最后一轮修复说明：\n${(lastFixResponse || '').slice(0, 1500)}`
+        : `## ${status === 'stuck' ? '修复停滞，人工接管' : status === 'fix-failed' ? '修复阶段失败' : `达到最大轮数（${maxRounds}）`}\n\n剩余 must-fix ${remaining.length} 个：\n${remainingMd}`;
 
   return {
     ok: status === 'clean',
+    status: status === 'clean' ? 'ok' : status === 'aborted' ? 'aborted' : 'failed',
+    ...(status === 'aborted' ? { abortedAtPhase } : {}),
     workflow: 'review-fix-loop',
     task: task || reviewTarget,
     workdir, model: modelRef,
@@ -223,9 +250,11 @@ async function runReviewFixLoop({
       ...(remaining.length ? [{ title: '剩余 must-fix（未解决）', body: remainingMd }] : []),
     ],
     loop: { status, rounds: roundSummaries.length, reviewers: rs, remainingCount: remaining.length },
-    ...(status === 'clean' ? {} : { error: status === 'fixed-unverified'
-      ? `轮数用尽：最后一轮修复已完成但未经复核（fixed-unverified），建议再跑一轮确认`
-      : `审查-修复循环未收敛: ${status}（剩余 ${remaining.length} 个 must-fix）` }),
+    ...(status === 'clean' ? {} : { error: status === 'aborted'
+      ? `审查-修复循环已中止（aborted）: ${abortedAtPhase}（已完成 ${roundSummaries.length} 轮）`
+      : status === 'fixed-unverified'
+        ? `轮数用尽：最后一轮修复已完成但未经复核（fixed-unverified），建议再跑一轮确认`
+        : `审查-修复循环未收敛: ${status}（剩余 ${remaining.length} 个 must-fix）` }),
     startedAt, finishedAt: new Date().toISOString(),
   };
 }

@@ -14,22 +14,25 @@
  *   config.DEFAULTS.timeoutMs（同值，单一权威来源）。
  * - 条目新增 timedOut 字段：report.js 从源版本起就读 p.timedOut 显示
  *   「超时」标记，但旧条目从未赋值（潜伏不一致），本版补齐使标记真正生效。
+ * - 透传 signal（AbortSignal 契约见 run-phase.js 头注）：中止条目额外落
+ *   aborted:true 字段，供 workflow 编排层识别并停止后续阶段；非中止条目
+ *   不带该字段（保持旧形态）。
  */
 
 const { runPhase: execPhase } = require('./run-phase');
 
 /**
  * 运行单个阶段并产出报告条目。
- * @param {object} opts（prompt/cwd/modelRef/timeoutMs 语义见 run-phase.js）
+ * @param {object} opts（prompt/cwd/modelRef/timeoutMs/signal 语义见 run-phase.js）
  * @param {string} opts.name  阶段标识（如 'analyze'）
  * @param {string} [opts.label] 人读说明，缺省回落 name
  * @returns {Promise<{phase:string,label:string,ok:boolean,sessionId:string|null,
  *   response:string|null,usage:object|null,timedOut:boolean,durationMs:number,
- *   error?:string}>}
+ *   error?:string,aborted?:true}>}
  */
-async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs }) {
+async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs, signal }) {
   const started = Date.now();
-  const result = await execPhase({ prompt, cwd, modelRef, timeoutMs });
+  const result = await execPhase({ prompt, cwd, modelRef, timeoutMs, signal });
   return {
     phase: name,
     label: label || name,
@@ -40,6 +43,7 @@ async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs }) {
     timedOut: result.timedOut === true,
     durationMs: Date.now() - started,
     ...(result.error ? { error: result.error } : {}),
+    ...(result.aborted ? { aborted: true } : {}),
   };
 }
 
