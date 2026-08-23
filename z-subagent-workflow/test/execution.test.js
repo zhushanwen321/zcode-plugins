@@ -370,6 +370,62 @@ test('model-router.prepareRunEnv(appserver)：createParams(object model) + 单�
   await assert.rejects(() => new ModelRouter().prepareRunEnv(null, 'appserver'), /必填/);
 });
 
+test('model-router.prepareRunEnv(spawn)：多 provider 池目录隔离 + 池内只写目标 provider 凭据', async () => {
+  writeV2Config({
+    provider: {
+      'builtin:bigmodel-coding-plan': { options: { apiKey: 'k1' }, models: { 'GLM-5.3': {}, 'shared-model': {} } },
+      'openai-compatible/foo': { options: { apiKey: 'k2' }, models: { 'gpt-x': {}, 'shared-model': {} } },
+    },
+  });
+  const r = new ModelRouter();
+  const a = await r.prepareRunEnv('builtin:bigmodel-coding-plan/shared-model', 'spawn');
+  const b = await r.prepareRunEnv('openai-compatible/foo/shared-model', 'spawn');
+  // 同名模型跨 provider：池目录不同（凭据/配置互不污染）
+  assert.notEqual(a.env.HOME, b.env.HOME);
+  assert.equal(a.env.HOME, config.homePoolDir('shared-model', 'builtin:bigmodel-coding-plan'));
+  assert.equal(b.env.HOME, config.homePoolDir('shared-model', 'openai-compatible/foo'));
+  // 池内 config 只含目标 provider（凭据落盘面最小）
+  const cfgA = JSON.parse(fs.readFileSync(path.join(a.env.HOME, '.zcode', 'cli', 'config.json'), 'utf8'));
+  const cfgB = JSON.parse(fs.readFileSync(path.join(b.env.HOME, '.zcode', 'cli', 'config.json'), 'utf8'));
+  assert.deepEqual(Object.keys(cfgA.provider), ['builtin:bigmodel-coding-plan']);
+  assert.deepEqual(Object.keys(cfgB.provider), ['openai-compatible/foo']);
+  assert.equal(cfgB.provider['openai-compatible/foo'].options.apiKey, 'k2');
+});
+
+test('model-router.prepareRunEnv(appserver)：多 provider 下 createParams 跟随 provider，HOME 写全部凭据', async () => {
+  writeV2Config({
+    provider: {
+      'builtin:bigmodel-coding-plan': { options: { apiKey: 'k1' }, models: { 'GLM-5.3': {} } },
+      'openai-compatible/foo': { options: { apiKey: 'k2' }, models: { 'gpt-x': {} } },
+    },
+  });
+  const out = await new ModelRouter().prepareRunEnv('openai-compatible/foo/gpt-x', 'appserver');
+  // providerId 跟随 modelRef（不再硬编码默认 provider）
+  assert.deepEqual(out, { createParams: { model: { providerId: 'openai-compatible/foo', modelId: 'gpt-x' } } });
+  // appserver 共享 HOME：长驻进程一次性读全部带凭据 provider（任意 provider 的 session 可用）
+  const homeCfg = JSON.parse(fs.readFileSync(
+    path.join(config.appserverHomeDir(), '.zcode', 'cli', 'config.json'), 'utf8'));
+  assert.deepEqual(Object.keys(homeCfg.provider).sort(),
+    ['builtin:bigmodel-coding-plan', 'openai-compatible/foo']);
+});
+
+test('driver.bootstrapIsolatedHome：目标 provider 无凭据 → 可操作错误列带凭据清单', () => {
+  writeV2Config({
+    provider: {
+      'builtin:bigmodel-coding-plan': { options: { apiKey: 'k1' }, models: { 'GLM-5.3': {} } },
+      'openai-compatible/foo': { options: { apiKey: 'k2' }, models: { 'gpt-x': {} } },
+      'no-creds/bar': { options: {}, models: { 'm1': {} } }, // 有模型清单但无 apiKey
+    },
+  });
+  assert.throws(
+    () => driver.bootstrapIsolatedHome(path.join(TMP, 'bs-home-3'), 'no-creds/bar/m1'),
+    (err) => err.message.includes('no-creds/bar')
+      && err.message.includes('builtin:bigmodel-coding-plan')
+      && err.message.includes('openai-compatible/foo')
+      && err.message.includes('恢复指引')
+  );
+});
+
 // ----------------------------------------------------------------- slots
 
 test('slots：并发上限（超限排队，释放补位）', async () => {
