@@ -31,7 +31,7 @@
 **In**：五 action；agent .md 四根发现；model 路由（双机制）；conversation 续聊；worktree；schema 近似输出；record store；防递归；并发池；mailbox 回流 + polling 兜底；CLI 薄壳（调试 + bash 通道留位）；AppServerRunner（探针门控）。
 
 **Out**：
-- workflow 编排（dynamic-workflow 已交付，收敛到 zsub lib 是后续课题）
+- ~~workflow 编排（dynamic-workflow 已交付，收敛到 zsub lib 是后续课题）~~ **已收敛（2026-08-23 移植完成）**：5 个 workflow 移植至 `lib/workflow/`（共享 runPhase 执行辅助），`run_workflow` tool 并入双 tool 注册表，CLI 加 workflow 子命令，dynamic-workflow 插件已卸载、zsub 为唯一一套
 - 简单纯后台任务的「原生路径」（frontmatter `background:true` + 引擎 `Agent` tool 已覆盖独立 turn 唤醒 + goal gate；zsub skill 中指引分流，不重复造）
 - fork（`session/fork` 留探针后评估）、TUI/GUI 视图（无插件 UI 扩展点）、goal 联动（外挂不进 runtimeTaskRegistry；bash 通道为后续可选增强，见 D4）
 

@@ -1,18 +1,21 @@
-# zsub — zcode subagent 编排插件
+# zsub — zcode subagent 编排 + workflow 插件
 
-> 无头 subagent 生命周期管理：start / list / status / cancel / message / close。
-> 补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
+> 两个 MCP tool：
+> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
+> **`run_workflow`** — 5 种确定性多阶段编排（chain/parallel/map-reduce/scatter-gather/review-fix-loop），自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，zsub 是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-orchestration`。
 
 ## 架构（端口/适配器内核）
 
 ```
-入口层   MCP 单 tool `zsub`（粗粒度）+ skill zsub-orchestration（渐进式）+ CLI 薄壳
-编排层   SubagentManager —— 只依赖 lib/ports.js 契约
+入口层   MCP 双 tool：zsub（五 action）+ run_workflow（5 种编排）+ skill + CLI 薄壳
+编排层   SubagentManager（只依赖 lib/ports.js 契约）/ lib/workflow/（确定性管线）
 端口层   RunnerPort        NotifierPort        ModelRouterPort
           ├ SpawnRunner      ├ MailboxNotifier    ├ home-pool（spawn 配套）
           └ AppServerRunner  └ PollingNotifier    └ per-session（apc 配套）
 域层     resolver / prompt-builder / record-store / output-store / worktree / jsonout
+         workflow/: run-phase（共享执行辅助）+ chain/parallel/map-reduce/
+                    scatter-gather/review-fix-loop + report
 ```
 
 三个决策位（执行引擎 / 回流通道 / 入口形态）正交且各自可换——更换实现不动 manager。平台版本漂移被限制在端口实现内部消化（`interpretEvent` 等单点防洪堤）。
@@ -25,15 +28,23 @@
 
 ## 使用
 
-主 agent 调用 `zsub` tool（五 action）；人类可直接调试：
+主 agent 调用 `zsub`（五 action）与 `run_workflow`（编排）两个 tool；人类可直接调试：
 
 ```bash
-node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model GLM-4.7-Flash
+node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model GLM-5.3
 node bin/zsub.js list
 node bin/zsub.js status --id sa-xxxx
 node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"
 node bin/zsub.js cancel --id sa-xxxx
+
+node bin/zsub.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
+node bin/zsub.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
+  --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
 ```
+
+## 从 dynamic-workflow 迁移
+
+原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（含 review-fix-loop 的 maxRounds 熔断/stuck 检测/must-fix 聚合语义），tool 名从 `mcp__dynamic-workflow__run_workflow` 变为 `mcp__zsub__run_workflow`，报告品牌改为 `# zsub ·`。旧插件目录保留在原 worktree 作历史归档。
 
 结果全文落 `~/.zcode/zsub/outputs/<id>.md`；worktree 任务的 patch 落 `<id>.patch`（完成通知含 `git apply` 指引）。
 
