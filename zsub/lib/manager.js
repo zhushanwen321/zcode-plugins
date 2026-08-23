@@ -222,6 +222,9 @@ class SubagentManager {
         schemaParseFailed: finRec && finRec.schemaParseFailed === true ? true : undefined,
       };
     }
+    // wait=false 后台路径：执行体失败已落 record（error 终态），挂 no-op catch
+    // 防 unhandledRejection 击穿 server 进程（同 message() 续聊轮处理）
+    p.catch(() => {});
     const handle = { subagentId, slug, status: 'running', notify: this._mode, conversation };
     // polling 档结果不会自动回流（Z5 物理上限），必须当场给轮询指引
     if (this._mode === 'polling' && typeof this.notifier.pollingGuidance === 'function') {
@@ -378,7 +381,9 @@ class SubagentManager {
       // subagent 探活循环——wf record 无 exec 字段会被误判死进程并写入
       // subagent 语义的 lostReason update 事件（事件流 append-only，永久污染）
       if (rec.recordType !== undefined && rec.recordType !== 'subagent') continue;
-      const alive = rec.exec ? this.runner.alive(rec.exec) : false;
+      // AppServerRunner.alive 是 async（session/list 探活），必须 await 取真值；
+      // 直接以返回值判断会把 Promise 误当存活，导致死进程全部误入 orphan 分支
+      const alive = rec.exec ? await this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
         this.records.update(rec.subagentId, {
