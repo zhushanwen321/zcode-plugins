@@ -407,6 +407,51 @@ test('recover：死 pid → lost 落因，活 pid → 保留 + 孤儿标记', as
   assert.match(orphan.lostReason, /孤儿/);
 });
 
+// ------------------------------- R1/R2 回归（上轮 must-fix 的反退化锚点）
+
+test('R1 回归：alive 返回 Promise 时 recover 仍正确分流死/活进程（await 退化即翻车）', async () => {
+  // AppServerRunner.alive 是 async——若 manager 漏 await，Promise 恒 truthy，
+  // 死进程全部误入 orphan 分支。此用例用 Promise 返回的 alive 钉住该语义。
+  const runner = new FakeRunner();
+  runner.alive = (exec) => Promise.resolve(Boolean(exec && runner.livePids.has(exec.pid)));
+  const { manager, records } = buildManager({ runner });
+  records.create({ subagentId: 'sa-dead-async-1', slug: 'dead-async', exec: { kind: 'fake', pid: 4194305 } });
+  records.transition('sa-dead-async-1', 'created', 'running');
+  records.create({ subagentId: 'sa-live-async-1', slug: 'live-async', exec: { kind: 'fake', pid: process.pid } });
+  records.transition('sa-live-async-1', 'created', 'running');
+
+  const summary = await manager.recover();
+  assert.deepEqual(summary.dead, ['sa-dead-async-1']);
+  assert.deepEqual(summary.orphan, ['sa-live-async-1']);
+  assert.match(records.get('sa-dead-async-1').lostReason, /进程已死/);
+  assert.equal(records.get('sa-live-async-1').orphan, true);
+});
+
+test('R2 回归：start 同步抛错 + wait=false → 句柄正常返回、record 收敛 error、无 unhandledRejection', async () => {
+  const rejections = [];
+  const onUnhandled = (e) => rejections.push(e);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const runner = new FakeRunner();
+    runner.start = () => { throw new Error('spawn 失败：ENOENT'); };
+    const c = ctx();
+    const { manager, records } = buildManager({ runner });
+    const h = await manager.start({ task: '注定起不来的任务书', slug: 'start-throw' }, c);
+    assert.equal(h.status, 'running'); // handle 正常返回，不向上抛
+    const rec = await waitFor(() => {
+      const r = records.get(h.subagentId);
+      return r && r.status === 'error' ? r : null;
+    });
+    assert.match(rec.error, /ENOENT/);
+    assert.equal(rec.notified, undefined, 'start 抛错路径不经 _completeRun，无完成通知（消费方以 record error 终态为准）');
+    // 等 no-op catch 之外的逃逸 rejection 浮出（至少一个宏任务轮）
+    await sleep(50);
+    assert.deepEqual(rejections, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', async () => {
   const { manager, records } = buildManager(); // 不注入 worktree → noOp 占位
   await assert.rejects(
