@@ -36,7 +36,9 @@ const { AgentMdResolver } = require('../lib/agent-md-resolver');
 const AppServerRunner = require('../lib/runner-appserver');
 const driver = require('../lib/driver');
 
-const MODEL = 'GLM-5.3'; // 2026-08-23：GLM-4.7-Flash 已不在 builtin:bigmodel-coding-plan 启用清单，全部用 GLM-5.3
+const MODEL = process.env.ZSW_E2E_MODEL || 'GLM-5.3'; // 真机模型可配置；换环境用 env 覆盖而非改代码
+// bootstrapIsolatedHome 需要 provider 全名；MODEL 允许短名或全名，统一在此推导
+const MODEL_REF = MODEL.includes('/') ? MODEL : `builtin:bigmodel-coding-plan/${MODEL}`;
 const USER_HOME = path.join(TMP, 'user-home'); // 隔离 user 级 agent 根（不读真实 HOME）
 // 限流实测（2026-08-23）：账户分钟级 RPM 窗口，连续调用必撞 429；CLI 内部长退避
 // 重试 ~2 分钟内可挤过。CALL_MS 给足内部重试窗口；GAP_MS 场景间错峰。
@@ -78,7 +80,7 @@ const isTerminal = (s) => ['closed', 'idle', 'cancelled', 'error', 'timeout', 'l
  */
 async function waitForQuotaWindow() {
   const home = path.join(TMP, 'quota-probe-home');
-  driver.bootstrapIsolatedHome(home, 'builtin:bigmodel-coding-plan/GLM-5.3');
+  driver.bootstrapIsolatedHome(home, MODEL_REF);
   for (let i = 1; i <= 8; i++) {
     CALLS.starts += 1;
     const t0 = Date.now();

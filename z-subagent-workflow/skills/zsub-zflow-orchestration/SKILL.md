@@ -20,7 +20,7 @@ whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构�
 | 需要逐次指定模型（per-start model 路由） | zsub |
 | 需要跨窗口/跨会话查看历史 subagent 记录 | zsub |
 
-## zsub 七 action 速查（start/list/status/cancel/message/close/agents）
+## zsub 八 action 速查（start/list/status/cancel/message/close/agents/models）
 
 ```
 zsub(action="start", task="<自包含任务描述>", slug="<短名>",
@@ -31,10 +31,11 @@ zsub(action="status", subagentId="<id>")                  → 单条详情 + 结
 zsub(action="message", subagentId="<id>", text="<追问>")   → 续聊一轮（仅 conversation 且 idle）
 zsub(action="cancel", subagentId="<id>")                  → 取消（SIGTERM→SIGKILL）
 zsub(action="close", subagentId="<id>")                   → 关闭会话并清理 worktree
-zsub(action="agents")                                     → 可用 agent .md 清单（name/description/file/source，四根发现）
+zsub(action="agents")                                     → 可用 agent .md 清单（name/description/when/file/source，四根发现）
+zsub(action="models")                                     → 可用模型清单（短名/上下文窗口/推理档位/默认标记）
 ```
 
-start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
+start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
 
 ## 核心纪律
 
@@ -42,8 +43,14 @@ start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清
 2. **禁止轮询**：`wait=false` 启动后不要反复调 list/status 等结果。mailbox 模式下完成通知会自动注入；polling 模式下按 start 返回里的指引做一次性查询。通知到达前去做别的事，或结束当前轮次。
 3. **通知即确认**：收到 `[subagent 完成]` 消息后直接处理结果，不要再调 status"二次确认"。
 4. **并发克制**：默认上限 3。嵌套 subagent 深度越深可用并发越少（自动分层），不要试图绕过。
-5. **模型路由**：默认 GLM-5.3（builtin:bigmodel-coding-plan 当前唯一启用模型）。不要凭记忆传其他短名——传错会收到「未知模型」错误并列出实际可用清单，按清单重传即可。
+5. **模型路由（环境无关）**：档位原则——重量任务（设计/架构/深度调研/复杂修复）不传 model，跟随默认主模型；简单任务（探索/计数/格式转换/测试）显式传轻量模型（`model="<轻量模型短名>"`）降成本。可用模型集随 v2 config 变化，不要凭记忆硬编码名字——路由决策前先 `zsub(action="models")` 查当前清单（短名/上下文窗口/推理档位/默认标记）；传未知模型名也会在报错中收到可用清单，按清单重传即可。
 6. **worktree 任务收到完成通知后**：通知里含 `patchFile` 路径——需要落地改动时执行 `git apply <patchFile>`；不需要则明确告知用户改动保留在 patch 中未应用。
+7. **嵌套不支持**：zsub 不支持嵌套派发（子任务的 subagent 会被防递归门禁拒绝）；树形/多层的深度任务改用 zflow（review-fix-loop / scatter-gather），它们的阶段是编排不是嵌套。
+
+### conversation 何时开
+
+- ✅ 适用：多轮协作（审查-修复往复）、长间隔追问（>5min 后还要继续同一任务）。
+- ❌ 不适用：单次探索/查询——默认 one-shot 即可，开了 conversation 反而占住会话资源。
 
 ## 结果去向
 
@@ -74,7 +81,7 @@ zflow(action="lint", file="<脚本路径>") → 校验脚本（node --check 语�
 | 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds 可调 |
 | 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
 
-通用参数：run 的 `workflow` / `task` / `workdir` 必填（绝对路径，阶段在其下工作）；`model` / `maxConcurrent`（默认 3）/ `timeoutMsPerPhase`（默认 600000）/ `timeoutMs`（整体超时，默认 1800000）。运行可达数分钟——后台 run 完成自动通知，通知到达前去做别的事。
+通用参数：run 的 `workflow` / `task` / `workdir` 必填（绝对路径，阶段在其下工作）；`model`（可用清单先查 `zsub(action="models")`——模型集随环境变化，勿硬编码）/ `maxConcurrent`（默认 3）/ `timeoutMsPerPhase`（默认 600000）/ `timeoutMs`（整体超时，默认 1800000）。运行可达数分钟——后台 run 完成自动通知，通知到达前去做别的事。
 
 ### 自定义 workflow 脚本（script:<name>）
 

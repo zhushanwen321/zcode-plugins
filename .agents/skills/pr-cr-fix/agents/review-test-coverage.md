@@ -9,7 +9,7 @@ name: review-test-coverage
 
 领域事实：
 
-- 测试框架：node 内置 `node --test`（`zsub/test/*.test.js`；fixtures 已移出 test/ 保持 bare glob 干净——新增 fixture 不要放回 test/）
+- 测试框架：node 内置 `node --test`（`z-subagent-workflow/test/*.test.js`；fixtures 已移出 test/ 保持 bare glob 干净——新增 fixture 不要放回 test/）
 - 测试分层：单测（fake runner/notifier 注入）+ e2e（真机 headless，E1-E8 场景）+ real-shape 冒烟——单测 mock 的协议假设必须与 e2e 验证过的真实协议一致
 - 历史教训（eef596a 提交记录）：对抗式审查发现的 6 个 bug 全是 e2e 抓的——「单测全绿」不等于「协议正确」
 

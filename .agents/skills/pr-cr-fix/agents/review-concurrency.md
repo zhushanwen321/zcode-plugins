@@ -7,7 +7,7 @@ name: review-concurrency
 
 审查 `git diff main...HEAD` 中变更的并发正确性与资源生命周期。zsub 是子进程编排器——每个泄漏的进程、每条断掉的 abort 链、每个孤儿 worktree 都会在真机上累积成事故。
 
-领域事实（权威源 `zsub/lib/slots.js`、`zsub/lib/reaper.js`、`zsub/lib/worktree.js`、各 workflow 头注的 abort 契约）：
+领域事实（权威源 `z-subagent-workflow/lib/slots.js`、`z-subagent-workflow/lib/reaper.js`、`z-subagent-workflow/lib/worktree.js`、各 workflow 头注的 abort 契约）：
 
 - **AbortSignal 契约**（run-phase.js 头注）：signal 缺省时行为完全不变；条目级预检（spawn 前查 signal，零浪费）+ 运行中杀停（SIGTERM→SIGKILL）+ 编排层检查点（如 review-fix-loop 的轮间/review 批后/fix 前/fix 后四类）
 - **slots 深度分层**：嵌套 subagent 越深可用并发越少（自动分层）；workflow 池与 subagent 池相互独立（默认各 3，2×3=6 与 subagent 池满载同级）

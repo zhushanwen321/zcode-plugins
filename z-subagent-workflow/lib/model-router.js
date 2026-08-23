@@ -144,6 +144,45 @@ class ModelRouter {
   }
 
   /**
+   * 列出当前可用模型（zsub models action 数据源）。
+   * 为什么返回结构化条目而非裸名字数组：路由决策要的不只是「有哪些」，
+   * 还有档位信息（上下文窗口/推理档位/默认标记）——裸名字会让调用方
+   * 再查一次 v2 config。字段全部可选透出：config 里没有的维度不造默认值
+   * （如本机实测条目无 label），避免误导路由。
+   * @returns {Array<{name: string, label?: string, contextWindow?: number,
+   *   reasoning?: {variants: string[], defaultVariant?: string}, default?: true}>}
+   * @throws 清单不可读（可操作错误，含恢复指引）
+   */
+  listModels() {
+    const v2 = readV2Config();
+    const models = availableModels(v2);
+    if (!models.length) {
+      throw new Error(
+        `无法从 ${config.V2_CONFIG_PATH} 读取 ${PROVIDER_ID} 的模型清单。` +
+        `恢复指引：确认 ZCode 桌面端已登录并配置该 provider（v2 config 内存在含 models 的条目）后重试。`
+      );
+    }
+    const defShort = modelShort(defaultModelRef(v2));
+    return models.map((name) => {
+      const def = v2.provider[PROVIDER_ID].models[name] || {};
+      const entry = { name };
+      const label = trimToNull(def.label);
+      if (label) entry.label = label;
+      const ctx = def.limit && def.limit.context;
+      if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
+      const r = def.reasoning;
+      if (r && Array.isArray(r.variants) && r.variants.length > 0) {
+        entry.reasoning = { variants: r.variants };
+        if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
+          entry.reasoning.defaultVariant = r.defaultVariant;
+        }
+      }
+      if (name === defShort) entry.default = true; // 默认标记：重量任务省略 model 即用它
+      return entry;
+    });
+  }
+
+  /**
    * 准备运行环境（runner 启动前必须调用，结果放进 taskCtx.runEnv）。
    * @param {string} modelRef  resolve() 的产物
    * @param {'spawn'|'appserver'} [runnerKind='spawn']

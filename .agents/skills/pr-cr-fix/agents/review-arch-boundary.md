@@ -7,7 +7,7 @@ name: review-arch-boundary
 
 审查 `git diff main...HEAD` 中变更对 zsub 端口/适配器架构边界的影响。
 
-zsub 的架构地基（权威源 `design/DESIGN-v3.md` §3.1/§5.3、`zsub/lib/ports.js` 头注）：
+zsub 的架构地基（权威源 `design/DESIGN-v3.md` §3.1/§5.3、`z-subagent-workflow/lib/ports.js` 头注）：
 
 ```
 入口层   MCP 双 tool（dist/mcp/server.js）+ CLI（bin/zsub.js）——只是 manager 薄壳

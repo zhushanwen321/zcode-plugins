@@ -258,6 +258,38 @@ test('model-router.resolve：清单读不到——显式指定抛错，默认放
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
 });
 
+test('model-router.listModels：读 v2 config 出结构化清单（默认标记/可选维度）；清单不可读抛可操作错误', () => {
+  writeV2Config({
+    provider: {
+      'builtin:bigmodel-coding-plan': {
+        options: { apiKey: 'k' },
+        models: {
+          'GLM-5.3': {
+            label: 'GLM 5.3',
+            limit: { context: 1000000, output: 128000 },
+            reasoning: { variants: ['low', 'high', 'max'], defaultVariant: 'max' },
+          },
+          'GLM-4.7-Flash': {}, // 裸条目：无 label/limit/reasoning，不造默认值
+        },
+      },
+    },
+  });
+  assert.deepEqual(new ModelRouter().listModels(), [
+    {
+      name: 'GLM-5.3',
+      label: 'GLM 5.3',
+      contextWindow: 1000000,
+      reasoning: { variants: ['low', 'high', 'max'], defaultVariant: 'max' },
+      default: true, // model.main 指向它
+    },
+    { name: 'GLM-4.7-Flash' },
+  ]);
+
+  writeV2Config({ provider: {} }); // 无 models：清单不可读
+  assert.throws(() => new ModelRouter().listModels(), (err) =>
+    /模型清单/.test(err.message) && err.message.includes('恢复指引'));
+});
+
 test('model-router.prepareRunEnv(spawn)：建 HOME 池 + mtime 条件重写', async () => {
   writeV2Config();
   const r = new ModelRouter();

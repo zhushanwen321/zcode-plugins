@@ -7,7 +7,7 @@ name: review-mcp-contract
 
 审查 `git diff main...HEAD` 中变更的对外契约（MCP tool schema / CLI 参数）与持久化 IO 一致性。契约漂移不会在测试里暴露（测试测的是实现，不是文档承诺），只会在主 agent 真实调用时翻车。
 
-领域事实（权威源 `zsub/dist/mcp/server.js` 的 tool 定义、`zsub/lib/record-store.js`、`zsub/lib/output-store.js`、`zsub/lib/notifier-mailbox.js`、`zsub/lib/jsonout.js`）：
+领域事实（权威源 `z-subagent-workflow/dist/mcp/server.js` 的 tool 定义、`z-subagent-workflow/lib/record-store.js`、`z-subagent-workflow/lib/output-store.js`、`z-subagent-workflow/lib/notifier-mailbox.js`、`z-subagent-workflow/lib/jsonout.js`）：
 
 - 双 tool：`zsub`（七 action：start/list/status/cancel/message/close/agents）+ `run_workflow`（六 action：run/abort/status/list/scripts/lint）
 - schema 是给 LLM 看的 API 文档：description 里的行为描述与实现不一致 = 主 agent 被误导传错参

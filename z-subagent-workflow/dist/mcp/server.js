@@ -5,7 +5,7 @@
  * 为什么粗粒度收敛而不是每 action 一个 tool：Z1 实测 MCP tool 的
  * name+description+inputSchema 全量常驻注入每个 LLM 请求（无按需加载），
  * 细粒度多 tool 的 token 成本线性上涨——所以编排原语收敛为 `zsub`
- * tool（action 枚举参数），description 压到 ≤1.5KB，完整用法与分流哲学放
+ * tool（action 枚举参数），description 压到 ≤1.25KB，完整用法与分流哲学放
  * skill zsub-zflow-orchestration（Z7 渐进式：一行索引常驻，正文按需读）。
  *
  * 协议：MCP over stdio，换行分隔的 JSON-RPC 2.0（照 dynamic-workflow
@@ -21,7 +21,7 @@
  * 多 tool 结构（M3 接线，N2-b 改造）：tool 注册表形态——buildTools() 出定义
  * 数组，buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
  * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
- * 进对应 handler）。两个 tool：zsub（七 action 编排）与 zflow
+ * 进对应 handler）。两个 tool：zsub（八 action 编排）与 zflow
  * （六 action：run / abort / status / list / scripts / lint）。
  *
  * zflow 管理面（N2-b，后台化改造）：
@@ -72,20 +72,22 @@ function extractSessionId(meta) {
 
 /**
  * zsub 单 tool 定义（现有测试与外部依赖此单 tool 形态，故独立保留）。
- * description 是常驻注入成本，控制在 ~1.5KB 内（见头注）。
+ * description 是常驻注入成本，控制在 ≤1250 字符（见头注）。
  */
 function buildToolDefinition() {
   return {
     name: TOOL_NAME,
     description:
       '编排后台 subagent 生命周期（zcode 外挂编排器，与原生 background agent 互补）。action 速查：\n'
-      + '- start：后台启动任务，立即返回 subagentId，完成后结果自动通知本会话。参数：task（必填，自包含任务书）、slug（必填，短名）、agent?（agent .md 名或路径）、model?、schema?（输出契约）、worktree?（改动隔离，完成回传 patch 与 git apply 指引）、conversation?（可续聊）、wait?（同步等结果）、timeoutMs?。\n'
+      + '- start：后台启动任务，立即返回 subagentId；完成后结果通知本会话（mailbox 启用时自动到达，未启用按 start 返回指引做一次性 status 查询）。参数：task（必填，自包含任务书）、slug（必填，短名）、agent?（agent .md 名或路径）、model?、schema?（输出契约）、worktree?（改动隔离，完成回传 patch 与 git apply 指引）、conversation?（可续聊）、wait?（同步等结果）、timeoutMs?。\n'
       + '- list：任务精简列表（id/slug/status/error/patchFile）。\n'
       + '- status：单任务全量 + 结果文件路径（subagentId；closed 后 Read 该文件取全文）。\n'
       + '- message：向 idle 的 conversation 任务投递续聊消息（subagentId + text）。\n'
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
-      + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
+      + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
+      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。\n'
+      + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
       + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
       + '完整用法与分流哲学：加载 skill zsub-zflow-orchestration。',
     inputSchema: {
@@ -93,7 +95,7 @@ function buildToolDefinition() {
       properties: {
         action: {
           type: 'string',
-          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents'],
+          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models'],
           description: '要执行的操作',
         },
         task: {
@@ -139,13 +141,14 @@ function buildRunWorkflowToolDefinition() {
   return {
     name: 'zflow',
     description:
-      'Deterministic multi-phase workflows driving headless zcode sessions; each phase runs in an isolated agent session. ' +
-      'Runs are managed background tasks (runId prefix wf-). action=run: start a run, returns runId immediately; ' +
-      'completion auto-notifies this session — do NOT poll (wait=true sync-waits + returns the final report, tests only). ' +
+      'Deterministic multi-phase workflows over headless zcode sessions; each phase = an isolated agent session. ' +
+      'Managed background tasks (runId prefix wf-). action=run returns runId at once; ' +
+      'completion auto-notifies when mailbox is enabled, else run response carries one-shot status guidance — do NOT poll ' +
+      '(wait=true sync-waits + final report, tests only). ' +
       'Workflows: "chain" analyze->implement->summarize; "parallel" multi-perspective review then aggregate; ' +
       '"map-reduce" map over a KNOWN items array then reduce; "scatter-gather" split into 2-4 subtasks, parallel, merge; ' +
       '"review-fix-loop" review->must-fix->fix->re-review until clean (WRITES files); ' +
-      '"script:<name>" custom workflow script (four-root discovery; action=scripts lists them). ' +
+      '"script:<name>" custom workflow script (four-root discovery; action=scripts lists). ' +
       'action=abort(runId): stop a run. action=status(runId): run detail + report path. ' +
       'action=list: all runs. action=scripts: builtin 5 + custom scripts. action=lint(file): validate a script. ' +
       'Runs can take minutes; WARNING: transform/fix phases may modify files under workdir.',
@@ -168,7 +171,7 @@ function buildRunWorkflowToolDefinition() {
         workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
         model: {
           type: 'string',
-          description: `Model override (${PROVIDER_ID} short name; only models enabled for the provider are valid, e.g. GLM-5.3). Default GLM-5.3.`,
+          description: `Model override (${PROVIDER_ID} short or full name; invalid names fail with the list of models actually enabled for the provider). Defaults to the provider's configured main model.`,
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },
@@ -334,9 +337,29 @@ function buildToolHandlers({ manager, wfManager, nested = false } = {}) {
           }
           return okContent(agentListView(resolver, ctx.cwd));
         }
+        case 'models': {
+          // 模型清单按需查询（与 agents 同理：常驻注入贵，按需零成本）。
+          // 模型集随 v2 config 变化（桌面端启停即变），description/skill 里
+          // 硬编码模型名会过时——路由决策前先查本 action。modelRouter 同样
+          // 取 manager 公开端口字段（与 resolver 同一理由：单一实例防漂移）。
+          const router = manager.modelRouter;
+          if (!router || typeof router.listModels !== 'function') {
+            return errContent(
+              'models 需要 modelRouter 端口（v2 config 模型清单），当前 manager 未注入。'
+              + '恢复指引：其他 action 不受影响；models 排障查 lib/assemble.js 的 modelRouter 组装。'
+            );
+          }
+          // listModels 抛的清单不可读错误是可操作错误（含恢复指引），
+          // 由外层 catch 原样透传
+          return okContent({
+            provider: PROVIDER_ID,
+            models: router.listModels(),
+            guidance: '选择指引：重量任务（设计/架构/深调研/复杂修复）省略 model 用默认（default 标记）；简单任务（探索/计数/格式转换/测试）传轻量模型短名降成本。',
+          });
+        }
         default:
           return errContent(
-            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents。`
+            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents | models。`
             + '恢复指引：action 必须取 inputSchema 中的枚举值。'
           );
       }
@@ -523,10 +546,11 @@ function agentSourceOf(filePath, cwd, homeDir) {
 }
 
 /**
- * agents action 的精简视图：只透出索引四字段——name / description（截
- * 200，索引不是正文）/ source（四根标签）/ file（绝对路径，可直接作
- * start 的 agent 参数）。body/model/tools 等 profile 字段不透出：索引
- * 的价值在省 token，正文按 file 路径按需读。
+ * agents action 的精简视图：只透出索引五字段——name / description（截
+ * 200，索引不是正文）/ when（「何时用我」提示，截 200）/ source（四根
+ * 标签）/ file（绝对路径，可直接作 start 的 agent 参数）。body/model/
+ * tools 等 profile 字段不透出：索引的价值在省 token，正文按 file 路径
+ * 按需读。
  */
 function agentListView(resolver, cwd) {
   // homeDir：注入实例（AgentMdResolver 类形态）带真实基准；模块对象形态
@@ -535,6 +559,7 @@ function agentListView(resolver, cwd) {
   return resolver.list(cwd).map((p) => ({
     name: p.name,
     description: typeof p.description === 'string' ? p.description.slice(0, 200) : '',
+    when: typeof p.when === 'string' ? p.when.slice(0, 200) : '',
     source: agentSourceOf(p.filePath || '', cwd, homeDir),
     file: p.filePath,
   }));

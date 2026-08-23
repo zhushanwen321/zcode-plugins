@@ -1,14 +1,14 @@
 # zsub — zcode subagent 编排 + workflow 插件
 
 > 两个 MCP tool：
-> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
+> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
 > **`zflow`** — 确定性多阶段编排（六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 后台化（立即返回 runId，完成自动通知）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，zsub 是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
 
 ```
-入口层   MCP 双 tool：zsub（七 action）+ zflow（六 action）+ skill + CLI 薄壳
+入口层   MCP 双 tool：zsub（八 action）+ zflow（六 action）+ skill + CLI 薄壳
 编排层   SubagentManager（subagent 生命周期，只依赖 lib/ports.js 契约）
          WorkflowManager（workflow run 生命周期，共享 records/outputs/notifier）
          lib/workflow/（内置 5 种确定性管线）+ workflow-script（自定义脚本四根发现/执行/校验）
@@ -30,10 +30,10 @@
 
 ## 使用
 
-主 agent 调用 `zsub`（七 action：start/list/status/cancel/message/close/agents）与 `zflow`（六 action：run/abort/status/list/scripts/lint）两个 tool；人类可直接调试：
+主 agent 调用 `zsub`（八 action：start/list/status/cancel/message/close/agents/models）与 `zflow`（六 action：run/abort/status/list/scripts/lint）两个 tool；人类可直接调试：
 
 ```bash
-node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model GLM-5.3
+node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 可用模型查 MCP zsub(action="models")
 node bin/zsub.js list
 node bin/zsub.js status --id sa-xxxx
 node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出

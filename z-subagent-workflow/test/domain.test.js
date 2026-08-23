@@ -201,6 +201,20 @@ test('frontmatter: 无 frontmatter / 围栏未闭合 / maxTurns 非法值', () =
   assert.equal(badTurns.maxTurns, undefined, '非法 maxTurns 丢弃');
 });
 
+test('frontmatter: when 字段（「何时用我」索引提示）可选透出', () => {
+  const withWhen = parseAgentMd(
+    '---\nname: reviewer\ndescription: d\nwhen: 代码审查、修复方案验证\n---\n\nb',
+    '/x/reviewer.md',
+  );
+  assert.equal(withWhen.when, '代码审查、修复方案验证');
+  // 缺 when 不造默认值（server 视图统一容忍为空串）
+  const noWhen = parseAgentMd('---\nname: a\ndescription: d\n---\n\nb', '/x/a.md');
+  assert.equal(noWhen.when, undefined);
+  // 非字符串（行数组形态）按消费契约丢弃，不抛错
+  const arrWhen = parseAgentMd('---\nname: b\nwhen:\n  - x\n---\nb', '/x/b.md');
+  assert.equal(arrWhen.when, undefined);
+});
+
 // ---------------------------------------------------------------------------
 // prompt-builder
 // ---------------------------------------------------------------------------

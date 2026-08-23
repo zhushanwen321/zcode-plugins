@@ -7,7 +7,7 @@ name: review-business-logic
 
 审查 `git diff main...HEAD` 中变更的编排逻辑正确性：状态机、错误路径、边界条件、语义陷阱。这些是「单测能过但真机翻车」的高发区。
 
-领域事实（权威源 `zsub/lib/manager.js`、`zsub/lib/workflow-manager.js`、`zsub/lib/workflow/review-fix-loop.js` 各自头注与实现）：
+领域事实（权威源 `z-subagent-workflow/lib/manager.js`、`z-subagent-workflow/lib/workflow-manager.js`、`z-subagent-workflow/lib/workflow/review-fix-loop.js` 各自头注与实现）：
 
 - **subagent 状态机**：running →（closed | error | timeout | cancelled）；conversation 模式完成后进 idle（可续聊），close 终态化 + 清理 worktree
 - **workflow 终态**：ok | failed | aborted；review-fix-loop 细分 clean / stuck（must-fix 连续 2 轮不降）/ fix-failed / max-rounds / fixed-unverified（最后一步是修复成功但未复核）

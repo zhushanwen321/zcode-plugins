@@ -56,19 +56,19 @@ test('extractSessionId：Z3 通道提取（有值/无值/类型不对均不报�
 
 // ------------------------------------------------------ 纯函数：tool 定义
 
-test('buildToolDefinition：单 tool zsub，description ≤900 字符，action 枚举齐全', () => {
+test('buildToolDefinition：单 tool zsub，description ≤1250 字符，action 枚举齐全', () => {
   const tool = server.buildToolDefinition();
   assert.equal(tool.name, 'zsub');
   assert.ok(tool.description.length > 0);
-  assert.ok(tool.description.length <= 900, `description ${tool.description.length} 字符超限`);
-  // 七 action 一行速查 + 三条纪律 + skill 指针，三要素都在
-  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents']) {
+  assert.ok(tool.description.length <= 1250, `description ${tool.description.length} 字符超限`);
+  // 八 action 一行速查 + 三条纪律 + skill 指针，三要素都在
+  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models']) {
     assert.ok(tool.description.includes(action), `description 缺 ${action}`);
   }
   assert.ok(tool.description.includes('zsub-zflow-orchestration'));
   assert.deepEqual(
     tool.inputSchema.properties.action.enum,
-    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents'],
+    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models'],
   );
   assert.deepEqual(tool.inputSchema.required, ['action']);
 });
@@ -224,11 +224,12 @@ test('tools/call agents：真实四根 resolver，返回精简视图且 source �
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const ws = path.join(tmp, 'ws');
   const home = path.join(tmp, 'home');
-  const mkAgent = (dir, name, desc) => {
+  const mkAgent = (dir, name, desc, when) => {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${name}.md`), `---\nname: ${name}\ndescription: ${desc}\n---\n\nbody\n`);
+    const whenLine = when ? `when: ${when}\n` : '';
+    fs.writeFileSync(path.join(dir, `${name}.md`), `---\nname: ${name}\ndescription: ${desc}\n${whenLine}---\n\nbody\n`);
   };
-  mkAgent(path.join(ws, '.agents', 'agents'), 'proj-pi', '项目 .agents 根');
+  mkAgent(path.join(ws, '.agents', 'agents'), 'proj-pi', '项目 .agents 根', '代码审查与修复验证');
   mkAgent(path.join(ws, '.zcode', 'agents'), 'proj-zc', '项目 .zcode 根');
   mkAgent(path.join(home, '.agents', 'agents'), 'user-pi', '用户 .agents 根');
   mkAgent(path.join(home, '.zcode', 'agents'), 'user-zc', '用户 .zcode 根');
@@ -249,14 +250,17 @@ test('tools/call agents：真实四根 resolver，返回精简视图且 source �
     ['user-pi', 'user-agents'],
     ['user-zc', 'user-zcode'],
   ]);
-  // 精简视图：只有索引四字段（body/model 等 profile 字段不透出）
+  // 精简视图：只有索引五字段（body/model 等 profile 字段不透出）
   for (const r of rows) {
-    assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'name', 'source']);
+    assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'name', 'source', 'when']);
     assert.ok(r.file.endsWith('.md'));
   }
+  // when（何时用我）透传：有则原样、无则空串
+  assert.equal(rows[0].when, '代码审查与修复验证');
+  assert.equal(rows[1].when, '');
 });
 
-test('tools/call agents：cwd 透传 resolver.list；description 截 200；resolver 缺失可操作错误', async () => {
+test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；resolver 缺失可操作错误', async () => {
   const seenCwd = [];
   const fakeHome = path.join(TMP, 'ag-fake-home'); // TMP 在真实 HOME 外，防 source 推断被真实 HOME 干扰
   const fakeResolver = {
@@ -267,6 +271,7 @@ test('tools/call agents：cwd 透传 resolver.list；description 截 200；resol
         {
           name: 'long',
           description: '长'.repeat(350),
+          when: '何'.repeat(250),
           filePath: path.join(fakeHome, '.zcode', 'agents', 'long.md'),
         },
         { name: 'nodesc', filePath: path.join(cwd, '.agents', 'agents', 'nodesc.md') },
@@ -283,8 +288,10 @@ test('tools/call agents：cwd 透传 resolver.list；description 截 200；resol
   assert.deepEqual(seenCwd, ['/proj/ag']); // cwd 原样透传给 resolver.list
   const rows = JSON.parse(result.content[0].text);
   assert.equal(rows[0].description, '长'.repeat(200)); // 超 200 截断
+  assert.equal(rows[0].when, '何'.repeat(200)); // when 同样截 200
   assert.equal(rows[0].source, 'user-zcode');
   assert.equal(rows[1].description, ''); // description 缺省容忍为空串
+  assert.equal(rows[1].when, ''); // when 缺省容忍为空串
   assert.equal(rows[1].source, 'project-agents'); // cwd 前缀优先于 HOME 前缀判定
 
   // resolver 缺失（异常组装防御）：可操作错误而非 TypeError 被 catch 吞
@@ -293,6 +300,71 @@ test('tools/call agents：cwd 透传 resolver.list；description 截 200；resol
   assert.equal(err.isError, true);
   assert.match(err.content[0].text, /resolver/);
   assert.match(err.content[0].text, /恢复指引/);
+});
+
+// ------------------------------------------- models action（模型清单按需查询）
+
+test('tools/call models：真实 ModelRouter + 临时 v2 config，返回清单 + 默认标记 + 选择指引', async (t) => {
+  // fake v2 config（execution.test.js 同款手法）：本文件 HOME 已指临时目录，
+  // config.V2_CONFIG_PATH 在模块加载期冻结为该 HOME 下的路径，直接落这里
+  const v2Path = require('../lib/config').V2_CONFIG_PATH;
+  fs.mkdirSync(path.dirname(v2Path), { recursive: true });
+  fs.writeFileSync(v2Path, JSON.stringify({
+    model: { main: 'builtin:bigmodel-coding-plan/GLM-5.3' },
+    provider: {
+      'builtin:bigmodel-coding-plan': {
+        options: { apiKey: 'test-key' },
+        models: {
+          'GLM-5.3': {
+            limit: { context: 1000000 },
+            reasoning: { variants: ['low', 'high', 'max'], defaultVariant: 'max' },
+          },
+          'GLM-4.7-Flash': {},
+        },
+      },
+    },
+  }));
+  t.after(() => { fs.rmSync(v2Path, { force: true }); });
+
+  const ModelRouter = require('../lib/model-router');
+  const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const result = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.provider, 'builtin:bigmodel-coding-plan');
+  // 结构化条目：短名 + 可选维度（无 label 不造默认值）+ 默认标记
+  assert.deepEqual(payload.models, [
+    {
+      name: 'GLM-5.3',
+      contextWindow: 1000000,
+      reasoning: { variants: ['low', 'high', 'max'], defaultVariant: 'max' },
+      default: true,
+    },
+    { name: 'GLM-4.7-Flash' },
+  ]);
+  assert.match(payload.guidance, /轻量/); // 档位原则压缩成一行指引
+});
+
+test('tools/call models：清单不可读可操作错误；modelRouter 缺失可操作错误', async () => {
+  const v2Path = require('../lib/config').V2_CONFIG_PATH;
+  fs.mkdirSync(path.dirname(v2Path), { recursive: true });
+  fs.writeFileSync(v2Path, JSON.stringify({ provider: {} })); // 无 models：清单不可读
+  const ModelRouter = require('../lib/model-router');
+  const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const err = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
+  assert.equal(err.isError, true);
+  assert.match(err.content[0].text, /模型清单/);
+  assert.match(err.content[0].text, /恢复指引/);
+  fs.rmSync(v2Path, { force: true });
+
+  // modelRouter 未注入（异常组装防御）：可操作错误而非 TypeError 炸穿
+  const broken = server.buildToolHandlers({ manager: makeFakeManager(), nested: false });
+  const noPort = await broken.zsub({ name: 'zsub', arguments: { action: 'models' } });
+  assert.equal(noPort.isError, true);
+  assert.match(noPort.content[0].text, /modelRouter/);
+  assert.match(noPort.content[0].text, /恢复指引/);
 });
 
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）

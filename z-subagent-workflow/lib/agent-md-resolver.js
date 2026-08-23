@@ -23,7 +23,7 @@ const MAX_DEPTH = 16;
 
 /** 手写 frontmatter mini 解析的消费字段白名单（其余字段忽略，避免污染 profile）。 */
 const CONSUMED_KEYS = new Set([
-  'name', 'description', 'model', 'tools', 'disallowedTools', 'skills', 'maxTurns',
+  'name', 'description', 'when', 'model', 'tools', 'disallowedTools', 'skills', 'maxTurns',
 ]);
 
 class AgentMdResolver {
@@ -119,6 +119,9 @@ class AgentMdResolver {
         return;
       }
       for (const ent of entries) {
+        // 依赖目录不是 agent 定义的家（真机实测 ~/.zcode/agents 下有 node_modules，
+        // 递归扫会把依赖包的 README/changelog 灌进 agents 清单）
+        if (ent.name === 'node_modules' || ent.name === '.git') continue;
         const full = path.join(dir, ent.name);
         let real;
         try {
@@ -234,6 +237,10 @@ function toProfile(fm, filePath, body) {
   };
   const model = pickStr(fm.model);
   if (model) profile.model = model;
+  // when（何时用我）：索引提示字段，pi 的 available_subagents 索引含此字段——
+  // 主 agent 挑 agent 时比 description 更直接命中场景
+  const when = pickStr(fm.when);
+  if (when) profile.when = when;
   for (const key of ['tools', 'disallowedTools', 'skills']) {
     const arr = pickStrArr(fm[key]);
     if (arr) profile[key] = arr;

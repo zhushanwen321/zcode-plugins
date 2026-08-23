@@ -43,14 +43,14 @@ e2e.test.js 是真机 + 真实模型调用（成本高、账户限流敏感）�
 
 ## 阶段 2：review-fix-loop（主 agent 直接派 workflow，禁止 subagent 封装）
 
-用本项目自产的 `run_workflow` MCP tool（dogfooding；无 MCP 环境时 CLI 等价：`node zsub/bin/zsub.js workflow --workflow review-fix-loop ...`）：
+用本项目自产的 `run_workflow` MCP tool（dogfooding；无 MCP 环境时 CLI 等价：`node z-subagent-workflow/bin/zsub.js workflow --workflow review-fix-loop ...`）：
 
 ```
 run_workflow(action="run",
   workflow="review-fix-loop",
   task=<下方模板，含 agent.md 映射表>,
   workdir=<仓库绝对路径>,
-  reviewTarget="git diff main...HEAD 的全部变更（分支整体，含 zsub/lib、zsub/bin、zsub/dist、zsub/test、zsub/skills；design/ 文档变更一并审查）",
+  reviewTarget="git diff main...HEAD 的全部变更（分支整体，含 z-subagent-workflow/lib、z-subagent-workflow/bin、z-subagent-workflow/dist、z-subagent-workflow/test、z-subagent-workflow/skills；design/ 文档变更一并审查）",
   reviewers=["arch-boundary", "concurrency", "business-logic", "mcp-contract", "test-coverage"],
   maxRounds=3)
 ```
@@ -131,7 +131,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 
 ## [OPTIONAL] prompt 文本质量审查（CoT Leakage）
 
-diff 触及 `zsub/skills/`、agent.md、prompt-builder、workflow prompt 模板时，加载 `references/cot-leakage.md` 的分类法补充审查（泄漏 vs 引用）。zsub 大量产物是 prompt 文本本身，此项对它尤其相关。
+diff 触及 `z-subagent-workflow/skills/`、agent.md、prompt-builder、workflow prompt 模板时，加载 `references/cot-leakage.md` 的分类法补充审查（泄漏 vs 引用）。zsub 大量产物是 prompt 文本本身，此项对它尤其相关。
 
 ## 本 skill 目录结构
 

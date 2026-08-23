@@ -3,7 +3,7 @@
 /**
  * zsub CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
- *   1. 人类调试与脚本化（不需要 LLM，直接驱动七 action + workflow 六面）
+ *   1. 人类调试与脚本化（不需要 LLM，直接驱动八 action + workflow 六面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
  *      CLI 进程被引擎跟踪，完成时触发原生 task-notification（独立 turn
  *      唤醒 + goal gate，Z4/Z6 语义）。这是 TaskNotificationNotifier
@@ -99,7 +99,7 @@ function workflowUsage(exitCode = 1) {
     + '                            review-fix-loop / script:<自定义脚本名>\n'
     + '  --task <text>             任务描述（必填，自包含）\n'
     + '  --workdir <path>          工作目录（必填，绝对路径）\n'
-    + '  --model <name>            模型短名（默认 GLM-5.3；仅限 provider 已启用的模型，传错会列出可用清单）\n'
+    + '  --model <name>            模型短名或 provider 全名（默认跟随配置的 main 模型；仅限 provider 已启用的模型，传错会列出可用清单）\n'
     + '  --max-concurrent <n>      单 workflow 内阶段并发上限（默认 3）\n'
     + '  --timeout-per-phase <ms>  单阶段超时（默认 600000）\n'
     + '  --timeout-ms <ms>         workflow 整体超时（默认 1800000）\n'
