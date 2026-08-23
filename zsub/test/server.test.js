@@ -213,6 +213,59 @@ test('tools/call：message 缺 text → isError', async () => {
   assert.equal(fake.calls.length, 0);
 });
 
+// ------------------------------------------- 多 tool 注册表形态（结构化改造）
+
+test('buildTools：返回数组形态，现阶段仅含 zsub，与单 tool 定义完全一致', () => {
+  const tools = server.buildTools();
+  assert.ok(Array.isArray(tools), 'tools/list 数据源必须是数组（多 tool 注册表形态）');
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].name, 'zsub');
+  assert.deepEqual(tools[0], server.buildToolDefinition()); // tool 形态不变（回归红线）
+});
+
+test('dispatchToolCall：注册表未收录的 tool 名走 -32601（含原型链属性名）', async () => {
+  const srv = server.createServer({ manager: makeFakeManager(), nested: false });
+  // M3 接线 run_workflow 入表后，此断言需同步改为正向调用测试
+  await assert.rejects(
+    srv.dispatchToolCall({ name: 'run_workflow', arguments: {} }),
+    (e) => e instanceof server.RpcError && e.code === -32601 && /run_workflow/.test(e.message),
+  );
+  // 注册表键必须精确匹配：原型链属性名不得被误当 handler 命中
+  await assert.rejects(
+    srv.dispatchToolCall({ name: 'constructor', arguments: {} }),
+    (e) => e.code === -32601 && /constructor/.test(e.message),
+  );
+  await assert.rejects(
+    srv.dispatchToolCall(undefined),
+    (e) => e.code === -32601,
+  );
+});
+
+test('注册表隔离：zsub handler 可脱离 dispatch 单独调用（buildToolHandlers 工厂）', async () => {
+  const fake = makeFakeManager();
+  const handlers = server.buildToolHandlers({ manager: fake, nested: false });
+  assert.deepEqual(Object.keys(handlers), ['zsub']); // 现阶段注册表只有 zsub（M3 后 +run_workflow）
+  const result = await handlers.zsub(
+    {
+      name: 'zsub',
+      arguments: { action: 'start', task: '任务书', slug: 'iso' },
+      _meta: { 'com.zcode/request-context': { session_id: 'sess_iso' } },
+    },
+    { cwd: '/proj/iso' }, // env 显式注入：证明 ctx 组装封装在 handler 内，不依赖 dispatch
+  );
+  assert.equal(result.isError, undefined);
+  assert.equal(JSON.parse(result.content[0].text).subagentId, 'sa-x');
+  assert.equal(fake.calls[0].ctx.targetSessionId, 'sess_iso');
+  assert.equal(fake.calls[0].ctx.cwd, '/proj/iso');
+
+  // 嵌套门禁也在 handler 内：直接调用同样拒绝且不触达 manager
+  const nestedHandlers = server.buildToolHandlers({ manager: fake, nested: true });
+  const rejected = await nestedHandlers.zsub({ name: 'zsub', arguments: { action: 'list' } });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
+  assert.equal(fake.calls.length, 1); // 仅上面的 start，嵌套档零触达
+});
+
 // ---------------------------------------------------------- 进程级测试
 
 /** spawn 真实 server 进程：发送 initialize + tools/list，收帧后关 stdin。 */

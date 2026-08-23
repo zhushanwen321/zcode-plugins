@@ -18,9 +18,16 @@
  * 启动序列：NESTED → 只挂协议层；否则 notifier.sweepStaleTmp（mailbox 档）
  * → manager.recover()（record 重建 + 探活）→ 挂 stdin。
  *
- * 可测性：纯函数（extractSessionId / buildToolDefinition / createFrameDecoder
- * / createServer / createManager）导出供 node:test；stdio 主循环只在
- * require.main === module 时启动，require 本模块零副作用。
+ * 多 tool 结构（M3 接线）：tool 注册表形态——buildTools() 出定义数组，
+ * buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
+ * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
+ * 进对应 handler）。第二个 tool run_workflow（dynamic-workflow 移植，5 种
+ * workflow）落地时只需在两表各加一项，协议层分发零改动。
+ *
+ * 可测性：纯函数（extractSessionId / buildToolDefinition / buildTools /
+ * buildToolHandlers / createFrameDecoder / createServer / createManager）导出
+ * 供 node:test；stdio 主循环只在 require.main === module 时启动，require
+ * 本模块零副作用。
  */
 
 const config = require('../../lib/config');
@@ -42,7 +49,10 @@ function extractSessionId(meta) {
   return typeof sid === 'string' && sid !== '' ? sid : undefined;
 }
 
-/** 单 tool 定义。description 是常驻注入成本，控制在 ~1.5KB 内（见头注）。 */
+/**
+ * zsub 单 tool 定义（现有测试与外部依赖此单 tool 形态，故独立保留）。
+ * description 是常驻注入成本，控制在 ~1.5KB 内（见头注）。
+ */
 function buildToolDefinition() {
   return {
     name: TOOL_NAME,
@@ -82,6 +92,15 @@ function buildToolDefinition() {
       required: ['action'],
     },
   };
+}
+
+/**
+ * 本 server 暴露的全量 tool 定义（tools/list 的数据源）。为什么是数组：
+ * M3 接线 run_workflow（dynamic-workflow 移植）时在此追加一项即可，
+ * tools/list 与分发层零改动。
+ */
+function buildTools() {
+  return [buildToolDefinition()];
 }
 
 /**
@@ -125,14 +144,19 @@ function createManager(opts = {}) {
 }
 
 /**
- * 协议处理器（可测）：输入一个 JSON-RPC 消息对象，返回待写出的帧数组。
- * 通知帧（无 id）不产生输出；tools/call 串行排队由调用方（main 循环）保证。
+ * tool handler 注册表工厂：{ [toolName]: handler(params, env) }。
+ * - 为什么是工厂而不是模块级表：handler 闭包持有 manager / nested，
+ *   每次 createServer 一份，实例间互不串线。
+ * - 为什么 null 原型 + hasOwnProperty 守卫：防止 params.name 撞 Object
+ *   原型链属性名（如 "constructor"）被误当 handler 命中——注册表键必须
+ *   精确匹配（改造前 `name !== TOOL_NAME` 严格比较的等价行为）。
+ * - 嵌套门禁在各自 handler 内而非分发层：拒绝文案按 tool 定制。
+ * - M3 接线：run_workflow（dynamic-workflow 移植）在此追加一项即可，
+ *   键 = tool 名，值 = handler(params, env)，分发层零改动。
  */
-function createServer({ manager, nested = false, log = () => {} } = {}) {
-  async function dispatchToolCall(params, env = {}) {
-    if (!params || params.name !== TOOL_NAME) {
-      throw new RpcError(-32601, `Unknown tool: ${params && params.name}`);
-    }
+function buildToolHandlers({ manager, nested = false } = {}) {
+  const handlers = Object.create(null);
+  handlers[TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
       return errContent(
         '嵌套调用已拒绝：ZSUB_NESTED=1 环境下 zsub 不提供编排（防递归第二重门禁，D10）。'
@@ -178,6 +202,31 @@ function createServer({ manager, nested = false, log = () => {} } = {}) {
       // manager 抛的都是可操作错误（含恢复指引），原样回给主 agent
       return errContent(String(e && e.message || e));
     }
+  };
+  return handlers;
+}
+
+/**
+ * 协议处理器（可测）：输入一个 JSON-RPC 消息对象，返回待写出的帧数组。
+ * 通知帧（无 id）不产生输出；tools/call 串行排队由调用方（main 循环）保证。
+ */
+function createServer({ manager, nested = false, log = () => {} } = {}) {
+  const toolHandlers = buildToolHandlers({ manager, nested });
+
+  /**
+   * 两级分发第一级：按 params.name 查注册表，未命中抛 -32601（协议级
+   * 错误，走 JSON-RPC error 帧）；命中则整包交给对应 handler（第二级，
+   * zsub 的 switch(action) 见 buildToolHandlers）。
+   */
+  async function dispatchToolCall(params, env = {}) {
+    const name = params && params.name;
+    const handler = Object.prototype.hasOwnProperty.call(toolHandlers, name)
+      ? toolHandlers[name]
+      : undefined;
+    if (!handler) {
+      throw new RpcError(-32601, `Unknown tool: ${name}`);
+    }
+    return handler(params, env);
   }
 
   async function handleMessage(msg) {
@@ -200,7 +249,7 @@ function createServer({ manager, nested = false, log = () => {} } = {}) {
         break;
       case 'tools/list':
         // 防递归第二重：嵌套环境不注册工具
-        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: nested ? [] : [buildToolDefinition()] } });
+        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: nested ? [] : buildTools() } });
         break;
       case 'tools/call':
         try {
@@ -226,7 +275,7 @@ function createServer({ manager, nested = false, log = () => {} } = {}) {
     return frames;
   }
 
-  return { handleMessage, dispatchToolCall };
+  return { handleMessage, dispatchToolCall, toolHandlers };
 }
 
 function requireSubagentId(args) {
@@ -352,6 +401,8 @@ if (require.main === module) {
 module.exports = {
   extractSessionId,
   buildToolDefinition,
+  buildTools,
+  buildToolHandlers,
   createFrameDecoder,
   createServer,
   createManager,
