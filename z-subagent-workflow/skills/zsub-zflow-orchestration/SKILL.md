@@ -4,7 +4,7 @@ description: Use when delegating tasks to background subagents via the zsub tool
 whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、需要跨窗口管理 subagent 记录、或需要确定性多阶段编排（无需中途干预）时。
 ---
 
-# zsub 编排指南
+# zsub/zflow 编排指南
 
 ## 分流决策：先用原生，再考虑 zsub
 
@@ -54,7 +54,7 @@ start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清
 
 ## 结果去向
 
-- 完成通知（mailbox 注入）含结果摘要；全文在 `~/.zcode/zsub/outputs/<subagentId>.md`。
+- 完成通知（mailbox 注入）含结果摘要；全文在 `~/.zcode/zsw/outputs/<subagentId>.md`。
 - 终态 record 的 error/timeout 字段含失败原因与恢复指引（如调大 timeoutMs、拆小任务）。
 
 ## workflow 编排（zflow tool，六 action）
@@ -88,8 +88,8 @@ zflow(action="lint", file="<脚本路径>") → 校验脚本（node --check 语�
 内置 5 种之外的编排用脚本扩展，调用形态 `workflow="script:<脚本名>"`。脚本发现四根（同构 agent .md 惯例；同名高优先级胜出，只扫各根顶层 `*.js`）：
 
 ```
-<ws>/.agents/workflows/  >  <ws>/.zsub/workflows/
->  ~/.agents/workflows/  >  ~/.zsub/workflows/
+<ws>/.agents/workflows/  >  <ws>/.zsw/workflows/
+>  ~/.agents/workflows/  >  ~/.zsw/workflows/
 ```
 
 脚本契约（CJS 模块，权威定义在 `lib/workflow-script.js` 头注）：
@@ -119,7 +119,7 @@ module.exports = {
 - 开发流程：写脚本 → `lint` 校验 → `scripts` 确认被发现 → `zflow(action="run", workflow="script:<名>", ...)`。
 - 脚本在 server 进程内执行（fresh require，改动即生效）：不要维护跨 run 的可变全局态；信任前提与「用户主动放进四根目录的代码」一致。
 
-CLI 等价入口（脚本化/调试）：`node bin/zsub.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`（`--action` 缺省 run，同步等完成——CLI 一次性进程无后台模式）；管理面 `node bin/zsub.js workflow --action <abort|status|list|scripts|lint> [--id <runId> | --file <脚本>]`。用法详见 `node bin/zsub.js workflow --help`。
+CLI 等价入口（脚本化/调试）：`node bin/zsw.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`（`--action` 缺省 run，同步等完成——CLI 一次性进程无后台模式）；管理面 `node bin/zsw.js workflow --action <abort|status|list|scripts|lint> [--id <runId> | --file <脚本>]`。用法详见 `node bin/zsw.js workflow --help`。
 
 ### 何时用 workflow vs subagent（zsub start）
 

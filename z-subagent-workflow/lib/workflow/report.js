@@ -25,7 +25,7 @@ function buildMarkdownReport(result) {
   const ok = result.ok;
 
   // 品牌行定案（M1-a 决策点）：报告归属 zsub，不再沿用源插件名
-  lines.push(`# zsub · ${result.workflow} 报告`);
+  lines.push(`# zsw · ${result.workflow} 报告`);
   lines.push('');
   lines.push(`- **状态**: ${ok ? '✅ 成功' : `❌ 失败${result.error ? ` — ${result.error}` : ''}`}`);
   lines.push(`- **任务**: ${clip(result.task, 300)}`);

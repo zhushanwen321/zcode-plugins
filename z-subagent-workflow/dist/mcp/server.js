@@ -52,7 +52,7 @@ const workflowScript = require('../../lib/workflow-script');
 const { DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
 const { DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
 
-const SERVER_INFO = { name: 'zsub', version: '0.1.0' };
+const SERVER_INFO = { name: 'zsw', version: '0.1.0' }; // MCP server 标识用插件缩写；TOOL_NAME 是 tool 语义名，两者不同源
 const TOOL_NAME = 'zsub';
 const RUN_WORKFLOW_TOOL_NAME = 'zflow';
 
@@ -447,7 +447,7 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
     // 常开（一行 jsonl，成本可忽略）；ZSW_ROOT 隔离的测试环境天然不污染。
     try {
       const fs = require('node:fs');
-      const root = require('../../lib/config').zsubRoot();
+      const root = require('../../lib/config').zswRoot();
       fs.mkdirSync(root, { recursive: true });
       fs.appendFileSync(require('node:path').join(root, 'meta-debug.jsonl'), JSON.stringify({
         ts: Date.now(), tool: params && params.name,

@@ -7,7 +7,7 @@
  *
  * [MF#1] patch 必须落在 worktree 目录之外。cleanup 会删整个 worktree 目录，
  *        patch 写在里面 = 随任务结束静默丢失。落盘位置由 output-store.writePatch
- *        固定为 <zsubRoot>/outputs/<id>.patch，与 worktree 目录 <zsubRoot>/wt-<id>
+ *        固定为 <zswRoot>/outputs/<id>.patch，与 worktree 目录 <zswRoot>/wt-<id>
  *        是兄弟目录，结构性保证互不包含。
  *
  * [MF#2] 新增文件必须进 diff：`git add -A -N`（intent-to-add）给 untracked 文件
@@ -35,12 +35,12 @@
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { zsubRoot } = require('./config');
+const { zswRoot } = require('./config');
 const { writePatch } = require('./output-store');
 
 /** subagentId 白名单：sa-<rand> 天然满足；防路径注入/分支名注入。 */
 const SAFE_ID_RE = /^[\w-]+$/;
-/** worktree 目录名前缀（<zsubRoot>/wt-<subagentId>），listOrphans 按它认领。 */
+/** worktree 目录名前缀（<zswRoot>/wt-<subagentId>），listOrphans 按它认领。 */
 const WT_DIR_PREFIX = 'wt-';
 /** 分支命名空间（zsub/<subagentId>），统一前缀便于人肉排查。 */
 const BRANCH_NS = 'zsub/';
@@ -94,9 +94,9 @@ function git(repoDir, args) {
   });
 }
 
-/** worktree 目录绝对路径（<zsubRoot>/wt-<subagentId>）。 */
+/** worktree 目录绝对路径（<zswRoot>/wt-<subagentId>）。 */
 function wtDir(subagentId) {
-  return path.join(zsubRoot(), WT_DIR_PREFIX + subagentId);
+  return path.join(zswRoot(), WT_DIR_PREFIX + subagentId);
 }
 
 /** worktree 的 gitdir（<mainRepo>/.git/worktrees/<id>）绝对路径。 */
@@ -107,13 +107,13 @@ async function worktreeGitDir(worktreeDir) {
 }
 
 /**
- * 判断目录是否直接位于 zsubRoot 下。git 会把 worktree 路径 realpath 化
- * （macOS /var → /private/var），porcelain 回显的路径可能与 zsubRoot() 字串
+ * 判断目录是否直接位于 zswRoot 下。git 会把 worktree 路径 realpath 化
+ * （macOS /var → /private/var），porcelain 回显的路径可能与 zswRoot() 字串
  * 不同源，先字串比对、失配再 realpath 对账。realpath 的是父目录而非目录本身：
  * 孤儿 worktree 目录可能已被外部删除（元数据仍在），父目录必然存在。
  */
 function isUnderZsubRoot(dir) {
-  const root = zsubRoot();
+  const root = zswRoot();
   const parent = path.dirname(dir);
   if (parent === root) return true;
   try {
@@ -156,7 +156,7 @@ async function prepare({ mainRepo, slug, subagentId } = {}) {
   }
   const base = (await git(mainRepo, ['rev-parse', 'HEAD'])).trim();
 
-  fs.mkdirSync(zsubRoot(), { recursive: true });
+  fs.mkdirSync(zswRoot(), { recursive: true });
   const dir = wtDir(subagentId);
   const branch = BRANCH_NS + subagentId;
   await git(mainRepo, ['worktree', 'add', dir, '-b', branch]);
@@ -204,7 +204,7 @@ async function collectPatch({ worktreeDir, subagentId } = {}) {
   const diff = await git(worktreeDir, base ? ['diff', base] : ['diff']);
   if (diff.length === 0) return null;
 
-  // [MF#1] writePatch 固定落 <zsubRoot>/outputs/（worktree 的兄弟目录），
+  // [MF#1] writePatch 固定落 <zswRoot>/outputs/（worktree 的兄弟目录），
   // cleanup 删 worktree 不影响 patch。
   return writePatch(subagentId, diff);
 }
@@ -239,7 +239,7 @@ async function cleanup({ mainRepo, worktreeDir, branch } = {}) {
 
 /**
  * 列孤儿 worktree（reaper 消费）：git worktree list 物理面 × knownSubagentIds
- * 对账（D12）。只认领本 zsubRoot 下、wt-<id> 命名的目录——主树与其他工具的
+ * 对账（D12）。只认领本 zswRoot 下、wt-<id> 命名的目录——主树与其他工具的
  * worktree 永不触碰；id 在 known 集合（record store 仍认识）的跳过。
  *
  * @param {object} p

@@ -8,7 +8,7 @@
  * 隔离原则（同 test/workflow-base.test.js）：禁止真跑 zcode.cjs、禁止碰真实
  * ~/.zcode 与真实 ~/.agents。ZSW_ROOT / ZCODE_MAILBOX_ROOT / HOME 指到临时
  * 目录后再 require lib；ZSW_ZCODE_CLI 指 fake CLI。HOME 侧两根
- * （~/.agents/workflows、~/.zsub/workflows）因 os.homedir() 读 $HOME 而被
+ * （~/.agents/workflows、~/.zsw/workflows）因 os.homedir() 读 $HOME 而被
  * 一并隔离。
  */
 
@@ -18,8 +18,8 @@ const path = require('node:path');
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-wfscript-'));
-process.env.ZSW_ROOT = path.join(TMP, 'zsub-root');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-wfscript-'));
+process.env.ZSW_ROOT = path.join(TMP, 'zsw-root');
 process.env.ZCODE_MAILBOX_ROOT = path.join(TMP, 'mailbox');
 process.env.HOME = path.join(TMP, 'home');
 fs.mkdirSync(process.env.HOME, { recursive: true });
@@ -46,9 +46,9 @@ const WS = path.join(TMP, 'ws'); // workspace 侧两根的定位根
 fs.mkdirSync(WS, { recursive: true });
 
 const WS_AGENTS = path.join(WS, '.agents', 'workflows');
-const WS_ZSUB = path.join(WS, '.zsub', 'workflows');
+const WS_ZSUB = path.join(WS, '.zsw', 'workflows');
 const USER_AGENTS = path.join(process.env.HOME, '.agents', 'workflows');
-const USER_ZSUB = path.join(process.env.HOME, '.zsub', 'workflows');
+const USER_ZSUB = path.join(process.env.HOME, '.zsw', 'workflows');
 
 /** 写一个合法脚本（默认只返回纯文本报告）。 */
 function writeScript(dir, name, body) {
@@ -90,14 +90,14 @@ after(() => {
 test('listScripts：四根优先级 + 同名高优先级胜出 + 只扫顶层 .js', () => {
   // 同名四根全放：workspace-agents 必须胜出
   writeScript(WS_AGENTS, 'dup', stdScript('来自 ws-agents', "'a'"));
-  writeScript(WS_ZSUB, 'dup', stdScript('来自 ws-zsub', "'a'"));
+  writeScript(WS_ZSUB, 'dup', stdScript('来自 ws-zsw', "'a'"));
   writeScript(USER_AGENTS, 'dup', stdScript('来自 user-agents', "'a'"));
-  writeScript(USER_ZSUB, 'dup', stdScript('来自 user-zsub', "'a'"));
-  // user 侧两级同名：user-agents 胜 user-zsub
+  writeScript(USER_ZSUB, 'dup', stdScript('来自 user-zsw', "'a'"));
+  // user 侧两级同名：user-agents 胜 user-zsw
   writeScript(USER_AGENTS, 'shadowed', stdScript('来自 user-agents', "'a'"));
-  writeScript(USER_ZSUB, 'shadowed', stdScript('来自 user-zsub', "'a'"));
+  writeScript(USER_ZSUB, 'shadowed', stdScript('来自 user-zsw', "'a'"));
   // 仅低优先级根存在：照常发现
-  writeScript(USER_ZSUB, 'only-user', stdScript('仅 user-zsub', "'a'"));
+  writeScript(USER_ZSUB, 'only-user', stdScript('仅 user-zsw', "'a'"));
   // 非 .js 不入列；子目录不递归
   fs.writeFileSync(path.join(WS_AGENTS, 'readme.txt'), 'x');
   writeScript(path.join(WS_AGENTS, 'subdir'), 'nested', stdScript('子目录脚本', "'a'"));
@@ -117,7 +117,7 @@ test('listScripts：四根优先级 + 同名高优先级胜出 + 只扫顶层 .j
   const sh = list.find((s) => s.name === 'shadowed');
   assert.equal(sh.source, 'user-agents');
   const only = list.find((s) => s.name === 'only-user');
-  assert.equal(only.source, 'user-zsub');
+  assert.equal(only.source, 'user-zsw');
 
   // 缺 cwd 报可操作错误
   assert.throws(() => wfScript.listScripts(''), /listScripts 需要 cwd/);

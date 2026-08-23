@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * zsub CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
+ * zsw CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
  *   1. 人类调试与脚本化（不需要 LLM，直接驱动八 action + workflow 六面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
@@ -18,15 +18,15 @@
  * 让 CLI 阻塞到完成即可——阻塞到完成正是该场景想要的语义（完成即通知）。
  *
  * 用法：
- *   node bin/zsub.js start --task "<任务书>" --slug <短名> [--agent <名>]
+ *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
  *        [--conversation] [--timeout-ms <n>] [--target-session <sess_id>]
- *   node bin/zsub.js list
- *   node bin/zsub.js status --id <subagentId>
- *   node bin/zsub.js message --id <subagentId> --text "<续聊消息>"（阻塞到本轮完成）
- *   node bin/zsub.js cancel --id <subagentId>
- *   node bin/zsub.js close --id <subagentId>
- *   node bin/zsub.js workflow [--action <run|abort|status|list|scripts|lint>]
+ *   node bin/zsw.js list
+ *   node bin/zsw.js status --id <subagentId>
+ *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（阻塞到本轮完成）
+ *   node bin/zsw.js cancel --id <subagentId>
+ *   node bin/zsw.js close --id <subagentId>
+ *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>]
  *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
  *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
  *        （N2-b 起经 WorkflowManager：record / outputs / 完成通知与 MCP
@@ -43,11 +43,11 @@ const { assembleManager } = require('../lib/assemble');
 function usage(exitCode = 1) {
   process.stderr.write(
     '用法见文件头注。示例：\n'
-    + '  node bin/zsub.js start --task "审查 README" --slug review\n'
-    + '  node bin/zsub.js list\n'
-    + '  node bin/zsub.js status --id sa-xxxx\n'
-    + '  node bin/zsub.js message --id sa-xxxx --text "补充重点"\n'
-    + '  node bin/zsub.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
+    + '  node bin/zsw.js start --task "审查 README" --slug review\n'
+    + '  node bin/zsw.js list\n'
+    + '  node bin/zsw.js status --id sa-xxxx\n'
+    + '  node bin/zsw.js message --id sa-xxxx --text "补充重点"\n'
+    + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
   );
   process.exit(exitCode);
 }
@@ -87,10 +87,10 @@ const BUILTIN_WORKFLOW_INFO = [
 
 function workflowUsage(exitCode = 1) {
   process.stderr.write(
-    'zsub workflow：workflow 编排与管理（经 WorkflowManager，record/outputs/通知与 MCP zflow 同源）\n'
+    'zsw workflow：workflow 编排与管理（经 WorkflowManager，record/outputs/通知与 MCP zflow 同源）\n'
     + '\n'
     + '用法:\n'
-    + '  node bin/zsub.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
+    + '  node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
     + '  （--action 缺省 = run；管理面 action 与 MCP zflow tool 一一对应）\n'
     + '\n'
     + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
@@ -211,7 +211,7 @@ async function runWorkflowCommand(rest) {
 
   const { wfManager } = await assembleManager();
   try { wfManager.records.rebuildFromLog(); } catch (e) {
-    process.stderr.write(`[zsub] record 重建失败（继续）: ${e && e.message || e}\n`);
+    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
   }
   const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
 
@@ -260,7 +260,7 @@ async function main() {
   // 副作用如实声明：非终态 record 在 CLI 视角显示 lost（CLI 无法确知其他
   // 进程持有执行体的死活），这是内存态，退出即消，不污染事件流。
   try { manager.records.rebuildFromLog(); } catch (e) {
-    process.stderr.write(`[zsub] record 重建失败（继续）: ${e && e.message || e}\n`);
+    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
   }
 
   const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
@@ -279,7 +279,7 @@ async function main() {
         // running），且没有任何常驻组件会接管。显式报错优于静默忽略——用户
         // 可能照旧文档/旧脚本使用，静默忽略会制造僵尸任务。
         process.stderr.write(
-          '[zsub] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running），'
+          '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running），'
           + '没有常驻组件会接管 CLI 启动的后台任务。'
           + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
           + '需要异步启动与完成通知请走 MCP zsub tool。\n'
@@ -336,6 +336,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  process.stderr.write(`[zsub] 错误: ${e && e.message || e}\n`);
+  process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
   process.exit(1);
 });

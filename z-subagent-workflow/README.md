@@ -1,8 +1,8 @@
-# zsub — zcode subagent 编排 + workflow 插件
+# z-subagent-workflow — zcode subagent 编排 + workflow 插件
 
 > 两个 MCP tool：
 > **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **`zflow`** — 确定性多阶段编排（六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 后台化（立即返回 runId，完成自动通知）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，zsub 是唯一一套）。
+> **`zflow`** — 确定性多阶段编排（六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 后台化（立即返回 runId，完成自动通知）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
@@ -24,53 +24,61 @@
 
 ## 安装（一次性）
 
-1. 注册插件目录：`~/.zcode/cli/config.json` 的 `plugins.dirs` 数组追加本插件绝对路径（`<repo>/zsub`），重启 ZCode。
-2. 启用完成通知（推荐）：`launchctl setenv ZCODE_MESSAGE_ENABLED 1` 后重启 ZCode。未启用时 zsub 自动降级为 polling 模式（start 返回轮询指引），功能不受损、体验降档。
-3. 验证：主会话问「列出可用 MCP 工具」，应出现 `zsub`。
+1. 注册插件目录：`~/.zcode/cli/config.json` 的 `plugins.dirs` 数组追加本插件绝对路径（`<repo>/z-subagent-workflow`），重启 ZCode。
+2. 启用完成通知（推荐）：`ZCODE_MESSAGE_ENABLED=1` 是**宿主引擎**（ZCode 桌面端）的 mailbox 开关——插件只是投递方，引擎不开启 drain 就没有通知回流，插件自动降级为 polling 模式（start/run 返回轮询指引），功能不受损、体验降档。按平台设置（作用目标是启动 ZCode 的那个图形会话环境）：
+
+   | 平台 | 操作（持久） | 立即生效 |
+   |------|-------------|---------|
+   | macOS | 建 LaunchAgent：`~/Library/LaunchAgents/com.user.zsw.message-enabled.plist`，内容为 RunAtLoad 执行 `launchctl setenv ZCODE_MESSAGE_ENABLED 1`，然后 `launchctl load` 该 plist | `launchctl setenv ZCODE_MESSAGE_ENABLED 1` 后重启 ZCode（仅当前开机会话有效） |
+   | Windows | 系统设置 → 环境变量 → 用户变量新增 `ZCODE_MESSAGE_ENABLED=1`（或 `setx ZCODE_MESSAGE_ENABLED 1`），注销重登 | 同左（设置后重启 ZCode） |
+   | Linux | `~/.config/environment.d/zsw.conf` 写 `ZCODE_MESSAGE_ENABLED=1`（systemd 用户会话；或桌面环境自启脚本内 export） | 当前会话 `export` 后从终端启动 ZCode |
+
+   设置后**重启 ZCode**（MCP server 是引擎子进程，必须在变量生效后启动才继承）。长期期望 ZCode 官方提供 settings 内的开关，消除 env 继承链依赖。
+3. 验证：主会话问「列出可用 MCP 工具」，应出现 `zsub` 与 `zflow`。
 
 ## 使用
 
 主 agent 调用 `zsub`（八 action：start/list/status/cancel/message/close/agents/models）与 `zflow`（六 action：run/abort/status/list/scripts/lint）两个 tool；人类可直接调试：
 
 ```bash
-node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 可用模型查 MCP zsub(action="models")
-node bin/zsub.js list
-node bin/zsub.js status --id sa-xxxx
-node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出
-node bin/zsub.js cancel --id sa-xxxx
+node bin/zsw.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 可用模型查 MCP zsub(action="models")
+node bin/zsw.js list
+node bin/zsw.js status --id sa-xxxx
+node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出
+node bin/zsw.js cancel --id sa-xxxx
 ```
 
 workflow 管理面（MCP `zflow` 六 action 的 CLI 等价；record/outputs/通知同源）：
 
 ```bash
 # run（--action 缺省；同步等完成 + 报告。异步 runId + 完成通知走 MCP zflow）
-node bin/zsub.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
-node bin/zsub.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
+node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
+node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
-node bin/zsub.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # 自定义脚本
+node bin/zsw.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # 自定义脚本
 
 # abort / status / list / scripts / lint
-node bin/zsub.js workflow --action list
-node bin/zsub.js workflow --action status --id wf-xxxxxxxx
-node bin/zsub.js workflow --action abort --id wf-xxxxxxxx
-node bin/zsub.js workflow --action scripts          # 内置 5 + 自定义脚本清单
-node bin/zsub.js workflow --action lint --file <脚本路径>
+node bin/zsw.js workflow --action list
+node bin/zsw.js workflow --action status --id wf-xxxxxxxx
+node bin/zsw.js workflow --action abort --id wf-xxxxxxxx
+node bin/zsw.js workflow --action scripts          # 内置 5 + 自定义脚本清单
+node bin/zsw.js workflow --action lint --file <脚本路径>
 ```
 
-**自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsub/workflows` > `~/.agents/workflows` > `~/.zsub/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
+**自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsw/workflows` > `~/.agents/workflows` > `~/.zsw/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
 
 CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` / `zflow` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。
 
 ## 从 dynamic-workflow 迁移
 
-原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（含 review-fix-loop 的 maxRounds 熔断/stuck 检测/must-fix 聚合语义），tool 名从 `mcp__dynamic-workflow__zflow` 变为 `mcp__zsub__zflow`，报告品牌改为 `# zsub ·`。旧插件目录保留在原 worktree 作历史归档。
+原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（含 review-fix-loop 的 maxRounds 熔断/stuck 检测/must-fix 聚合语义），tool 名从 `mcp__dynamic-workflow__zflow` 变为 `mcp__zsw__zflow`，报告品牌为 `# zsw ·`（命名体系见 CONTEXT.md）。旧插件目录保留在原 worktree 作历史归档。
 
-结果全文落 `~/.zcode/zsub/outputs/<id>.md`；worktree 任务的 patch 落 `<id>.patch`（完成通知含 `git apply` 指引）。
+结果全文落 `~/.zcode/zsw/outputs/<id>.md`；worktree 任务的 patch 落 `<id>.patch`（完成通知含 `git apply` 指引）。
 
 ## 状态与目录
 
 ```
-~/.zcode/zsub/
+~/.zcode/zsw/
 ├── records.jsonl        append-only 事件流（崩溃后重放恢复）
 ├── outputs/             结果全文 + patch
 ├── home-<model>/        per-model 隔离 HOME（spawn runner 模型路由）
@@ -87,7 +95,7 @@ CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（�
 - **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 12 个 zcode 进程。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **appserver conversation 会话无 idle TTL 回收**：`config.idleConversationTtlMs` 为预留常量，未接线。
-- **mailbox 引擎侧语义**：drain 单次最多 20 条（zsub 用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，zsub 自身投递已用原子写 + 写前自检规避）。
+- **mailbox 引擎侧语义**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。
 
 ## 验收手册（真机 GUI，安装后逐项执行）
 

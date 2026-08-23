@@ -121,7 +121,7 @@ function buildDualReport(result) {
   try {
     md = buildMarkdownReport(result);
   } catch (e) {
-    md = `# zsub · ${result && result.workflow ? result.workflow : 'workflow'} 报告\n\n`
+    md = `# zsw · ${result && result.workflow ? result.workflow : 'workflow'} 报告\n\n`
       + `（markdown 报告生成失败: ${String(e && e.message || e)}，完整数据见下方 JSON 段）`;
   }
   return `${md}\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
@@ -379,7 +379,7 @@ class WorkflowManager {
         invocation = {
           threw: true,
           error: String(err && err.message || err),
-          reportText: `# zsub · ${plan.workflow} 异常\n\n`
+          reportText: `# zsw · ${plan.workflow} 异常\n\n`
             + `入口执行抛错：${String(err && err.message || err)}\n`
             + '\n```json\n' + JSON.stringify({ ok: false, workflow: plan.workflow, task: plan.task, error: String(err && err.message || err) }, null, 2) + '\n```',
         };

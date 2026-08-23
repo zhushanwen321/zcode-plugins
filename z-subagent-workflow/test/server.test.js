@@ -114,7 +114,7 @@ test('协议层：initialize 回 serverInfo 与 protocolVersion', async () => {
   });
   assert.equal(frames.length, 1);
   assert.equal(frames[0].id, 1);
-  assert.equal(frames[0].result.serverInfo.name, 'zsub');
+  assert.equal(frames[0].result.serverInfo.name, 'zsw'); // server 标识 = 插件缩写（CONTEXT.md）；tool 名 zsub/zflow 是另一层
   assert.equal(frames[0].result.protocolVersion, '2025-03-26');
   assert.deepEqual(frames[0].result.capabilities, { tools: {} });
 });
@@ -720,7 +720,7 @@ test('zflow 后台冒烟（真实 WorkflowManager）：run 立即返句柄 → s
   // outputs 落盘断言：报告 = markdown 品牌头 + ```json 机器段（双段合一文件）
   assert.ok(fs.existsSync(fin.outputFile), `outputs 未落盘: ${fin.outputFile}`);
   const text = fs.readFileSync(fin.outputFile, 'utf8');
-  assert.match(text, /^# zsub · chain 报告/);
+  assert.match(text, /^# zsw · chain 报告/);
   assert.match(text, /```json\n/);
 
   const listed = JSON.parse((await srv.dispatchToolCall({
@@ -805,7 +805,7 @@ test('进程级：正常档 initialize→tools/list 出双 tool，stdin 关闭�
   assert.equal(r.code, 0);
   assert.equal(r.restStdout.trim(), ''); // stdout 只走协议帧（帧已全部解析，无半截残留）
   const init = r.frames.find((f) => f.id === 1);
-  assert.equal(init.result.serverInfo.name, 'zsub');
+  assert.equal(init.result.serverInfo.name, 'zsw');
   const tl = r.frames.find((f) => f.id === 2);
   assert.equal(tl.result.tools.length, 2);
   assert.deepEqual(tl.result.tools.map((t) => t.name), ['zsub', 'zflow']);

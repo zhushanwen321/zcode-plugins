@@ -160,7 +160,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + 报告双段
 
   // 报告落盘：markdown 人读段 + ```json 机器段（对齐 report.buildContentBlocks）
   const reportText = fs.readFileSync(rec.outputFile, 'utf8');
-  assert.ok(reportText.includes('# zsub · chain 报告'));
+  assert.ok(reportText.includes('# zsw · chain 报告'));
   assert.ok(reportText.includes('## 最终结论'));
   assert.ok(reportText.includes('```json'));
   assert.ok(reportText.includes('"status": "ok"'));
@@ -189,7 +189,7 @@ test('start(wait=true)：阻塞到终态，返回报告全文（与落盘文件�
     c,
   );
   assert.equal(out.status, 'closed');
-  assert.ok(out.report.includes('# zsub · parallel 报告'));
+  assert.ok(out.report.includes('# zsw · parallel 报告'));
   assert.ok(out.report.includes('```json'));
   assert.equal(out.error, null);
   assert.equal(fs.readFileSync(out.outputFile, 'utf8'), out.report); // 全文 = 落盘内容
@@ -338,8 +338,8 @@ test('timeoutMs：整体超时 → abort 执行体 + record timeout + 通知（�
 test('script: 前缀：分发到真实 workflow-script 发现层，报告 = 脚本 markdown + json 围栏', async () => {
   // 脚本落 ws 的 .zsub/workflows（ctx.cwd = ws 触发真实四根发现）
   const ws = path.join(TMP, 'ws-script');
-  fs.mkdirSync(path.join(ws, '.zsub', 'workflows'), { recursive: true });
-  fs.writeFileSync(path.join(ws, '.zsub', 'workflows', 'hello.js'), `'use strict';
+  fs.mkdirSync(path.join(ws, '.zsw', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.zsw', 'workflows', 'hello.js'), `'use strict';
 module.exports = {
   name: 'hello', description: '测试脚本',
   run: async (c) => {

@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * bin/zsub.js CLI 入口测试（子进程黑盒）：参数解析、各子命令、--json 输出、
+ * bin/zsw.js CLI 入口测试（子进程黑盒）：参数解析、各子命令、--json 输出、
  * usage/退出码。不跑真 zcode——只覆盖不需要 spawn 引擎的路径（list/status/
  * cancel/close/管理面 workflow action 与错误分支）。
  *
@@ -16,8 +16,8 @@ const path = require('node:path');
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-cli-'));
-const BIN = path.join(__dirname, '..', 'bin', 'zsub.js');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-cli-'));
+const BIN = path.join(__dirname, '..', 'bin', 'zsw.js');
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -27,7 +27,7 @@ function run(args, extraEnv = {}) {
       {
         env: {
           ...process.env,
-          ZSW_ROOT: path.join(TMP, 'zsub-root'),
+          ZSW_ROOT: path.join(TMP, 'zsw-root'),
           ZCODE_MAILBOX_ROOT: path.join(TMP, 'mailbox'),
           HOME: path.join(TMP, 'home'),
           ZCODE_PROJECT_DIR: TMP,

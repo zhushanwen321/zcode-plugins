@@ -391,7 +391,7 @@ function sampleResult(overrides = {}) {
 
 test('report.buildMarkdownReport：成功报告含元信息/附加段/阶段表/最终结论', () => {
   const md = report.buildMarkdownReport(sampleResult());
-  assert.ok(md.includes('# zsub · chain 报告'));
+  assert.ok(md.includes('# zsw · chain 报告'));
   assert.ok(md.includes('✅ 成功'));
   assert.ok(md.includes('**总耗时**: 7.0s'));
   assert.ok(md.includes('**总 tokens**: 120'));
@@ -423,7 +423,7 @@ test('report.buildContentBlocks：双段结构，JSON 围栏可完整还原', ()
   const blocks = report.buildContentBlocks(sample);
   assert.equal(blocks.length, 2);
   assert.equal(blocks[0].type, 'text');
-  assert.ok(blocks[0].text.startsWith('# zsub'));
+  assert.ok(blocks[0].text.startsWith('# zsw'));
   assert.equal(blocks[1].type, 'text');
   assert.ok(blocks[1].text.startsWith('```json\n'));
   assert.ok(blocks[1].text.endsWith('\n```'));

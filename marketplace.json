@@ -8,13 +8,13 @@
   },
   "plugins": [
     {
-      "name": "zsub",
-      "source": "./zsub",
+      "name": "z-subagent-workflow",
+      "source": "./z-subagent-workflow",
       "version": "0.1.0",
-      "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and run_workflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
+      "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
       "description_i18n": {
-        "en": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and run_workflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
-        "zh-CN": "zcode 的 subagent 编排与确定性多阶段 workflow：MCP 双工具 zsub（无头子会话生命周期管理）与 run_workflow（五种内置编排 + 自定义脚本扩展）。"
+        "en": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
+        "zh-CN": "zcode 的 subagent 编排与确定性多阶段 workflow：MCP 双工具 zsub（无头子会话生命周期管理）与 zflow（五种内置编排 + 自定义脚本扩展）。"
       },
       "author": {
         "name": "zhushanwen",

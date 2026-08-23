@@ -456,7 +456,7 @@ class AppServerConnection {
 class AppServerRunner {
   /**
    * @param {object} [opts]
-   * @param {string} [opts.homeDir]  隔离 HOME（默认 zsubRoot 下单一目录——apc 模式
+   * @param {string} [opts.homeDir]  隔离 HOME（默认 zswRoot 下单一目录——apc 模式
    *                                 无 per-model 池，D5「单一隔离 HOME」）
    * @param {string} [opts.cwd]      app-server 进程 --cwd 默认值（首个 start 可覆盖）
    */

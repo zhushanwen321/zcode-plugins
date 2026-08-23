@@ -25,8 +25,8 @@
  *
  * ## 发现（四根，同构 agent .md 惯例；同名高优先级胜出）
  *
- *   <ws>/.agents/workflows/  >  <ws>/.zsub/workflows/
- *   >  ~/.agents/workflows/  >  ~/.zsub/workflows/
+ *   <ws>/.agents/workflows/  >  <ws>/.zsw/workflows/
+ *   >  ~/.agents/workflows/  >  ~/.zsw/workflows/
  *
  *   只扫各根顶层 *.js（不递归）。ws 侧根由调用方传入的 cwd 决定。
  *
@@ -58,7 +58,7 @@ const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const LINT_CHECK_TIMEOUT_MS = 10_000;
 
 /** 四根优先级文案（错误信息复用，与 scriptRoots 保持同一顺序）。 */
-const ROOTS_DESC = '<ws>/.agents/workflows > <ws>/.zsub/workflows > ~/.agents/workflows > ~/.zsub/workflows';
+const ROOTS_DESC = '<ws>/.agents/workflows > <ws>/.zsw/workflows > ~/.agents/workflows > ~/.zsw/workflows';
 
 /**
  * 四根根目录（按优先级序）。
@@ -67,9 +67,9 @@ const ROOTS_DESC = '<ws>/.agents/workflows > <ws>/.zsub/workflows > ~/.agents/wo
 function scriptRoots(cwd) {
   return [
     { base: path.join(cwd, '.agents', 'workflows'), source: 'workspace-agents' },
-    { base: path.join(cwd, '.zsub', 'workflows'), source: 'workspace-zsub' },
+    { base: path.join(cwd, '.zsw', 'workflows'), source: 'workspace-zsw' },
     { base: path.join(os.homedir(), '.agents', 'workflows'), source: 'user-agents' },
-    { base: path.join(os.homedir(), '.zsub', 'workflows'), source: 'user-zsub' },
+    { base: path.join(os.homedir(), '.zsw', 'workflows'), source: 'user-zsw' },
   ];
 }
 

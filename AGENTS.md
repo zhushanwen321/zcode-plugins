@@ -24,7 +24,7 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
    加载。因此插件**运行时禁止引用插件根之外的任何路径**（manifest 组件路径逃逸插件根直接判 invalid；
    共享代码在构建期复制/内联进各插件）。CLI 直跑入口（`bin/`）与 skill 内脚本同理须自包含。
 3. **引擎 agent .md 发现只认 `.zcode/agents` 双根（项目级 + 用户级 `~/.zcode/agents/`）且扫描跳过
-   symlink**——软链形态一律不可见，只能放真实文件副本（zsub 的四根 resolver 即为补此缺口）。
+   symlink**——软链形态一律不可见，只能放真实文件副本（z-subagent-workflow 的四根 resolver 即为补此缺口）。
 4. **zcode CLI 无公开契约**：`--allowed-tools` 拒收（只有 denylist `--disallowed-tools`）；
    `--settings` / `--max-turns` 在 help 中存在但解析器拒收（help 漂移）。升级 zcode 后先跑冒烟
    探针再改代码（探针命令见 local-dev-guide）。
@@ -49,13 +49,13 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 
 ## 开发红线
 
-- **零依赖 plain Node CJS 优先**：zsub/dynamic-workflow 均无 package.json。引入依赖需评估对
+- **零依赖 plain Node CJS 优先**：z-subagent-workflow（前身 zsub / dynamic-workflow）无 package.json。引入依赖需评估对
   「inline 加载 + marketplace 副本 + 无构建链安装」三种形态的影响，见 docs/standards.md。
 - 插件 manifest 必需字段仅 `name`（`^[a-z0-9][a-z0-9._-]{0,127}$`）；`agents` 字段当前「记录不执行」。
   字段规范见 development-guide。
 - MCP server 的 **stdout 是 JSON-RPC 通道**：人读日志/进度一律走 stderr 并落盘
   `~/.zcode/<plugin>/`（规范见 logging-conventions.md）。
-- 嵌套调用防护：被插件 spawn 的无头 zcode 子进程必须带嵌套标记 env（如 `ZSUB_NESTED=1` /
+- 嵌套调用防护：被插件 spawn 的无头 zcode 子进程必须带嵌套标记 env（如 `ZSW_NESTED=1`，
   `DWF_NESTED=1`），嵌套环境下 MCP server 不注册工具，防递归编排。
 - 同名遮蔽：插件 skills/commands 在发现顺序中优先级最低（用户级/工作区级同名资源会遮蔽插件资源），
   命名带插件前缀降低冲突面。
@@ -64,7 +64,7 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 
 - `origin` = 本地 `.bare`，工作区根不是 git repo；每 worktree 一分支，分支名 `feat-zcode-<插件>-<主题>`。
 - **新分支/worktree 必须用户明确授权**（全局规则 17）；merge 用 `--no-ff` 保留分支历史。
-- commit 英文 conventional 风格（`feat(zsub): ...`）；完成即提交，禁留脏工作区。
+- commit 英文 conventional 风格（scope 用插件缩写，如 `feat(zsw): ...`）；完成即提交，禁留脏工作区。
 - 合入 main 时同步更新 `marketplace.json` 条目与 README「现有插件」表。
 
 ## 新插件脚手架

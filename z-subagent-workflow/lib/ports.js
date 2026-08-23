@@ -7,7 +7,7 @@
  *
  *   决策位① 执行引擎  RunnerPort     : spawn（基线）| appserver（长线）
  *   决策位② 回流通道  NotifierPort   : mailbox（主）| polling（兜底）| task-notification（预留）
- *   决策位③ 入口形态  （MCP / CLI）   : dist/mcp/server.js 与 bin/zsub.js 都只是 manager 的薄壳
+ *   决策位③ 入口形态  （MCP / CLI）   : dist/mcp/server.js 与 bin/zsw.js 都只是 manager 的薄壳
  *
  * 更换决策 = 在 createRuntime 里换一个实现类，manager 零改动。
  * 平台版本漂移（zcode 闭源升级）被限制在端口实现内部消化。
