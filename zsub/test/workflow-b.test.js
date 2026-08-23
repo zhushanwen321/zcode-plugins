@@ -54,7 +54,11 @@ fs.writeFileSync(FAKE_CLI, [
   "  console.log('this is not json at all');",
   "} else if (prompt.includes('审查者')) {",
   "  const revisiting = prompt.includes('上一轮修复说明');",
-  "  if (process.env.FAKE_DECLINE === '1') {",
+  // FAKE_FAIL_REVIEWERS=名称列表：命中者输出非 JSON → runPhase ok:false（模拟 CLI 崩溃/超时）
+  "  const failList = (process.env.FAKE_FAIL_REVIEWERS || '').split(',').map((s) => s.trim()).filter(Boolean);",
+  "  if (failList.some((x) => prompt.includes('审查者「' + x + '」'))) {",
+  "    console.log('this is not json at all');",
+  "  } else if (process.env.FAKE_DECLINE === '1') {",
   "    const f = process.env.FAKE_STATE_FILE;",
   "    const n = Number(fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '0') + 1;",
   "    fs.writeFileSync(f, String(n));",
@@ -402,4 +406,43 @@ test('review-fix-loop：signal 存在但未触发 → 行为不变（status=ok�
   assert.equal(result.loop.status, 'clean');
   assert.equal(result.phases.length, 5); // 默认场景：R1 双审+fix + R2 双审
   assert.equal(result.abortedAtPhase, undefined);
+});
+
+test('review-fix-loop：全部审查者执行失败（ok:false）→ review-failed，不得按 0 问题判 clean', async () => {
+  process.env.FAKE_GARBAGE = '1'; // fake CLI 输出非 JSON → runPhase ok:false（执行失败）
+  try {
+    const out = await runReviewFixLoop({
+      task: '审查一个会被全部审查失败的场景',
+      workdir: TMP,
+      maxRounds: 2,
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.status, 'failed');
+    assert.equal(out.loop.status, 'review-failed');
+    assert.match(out.error, /review-failed/);
+    assert.match(out.final, /审查阶段失败/);
+    assert.match(out.final, /不能按 clean 处理/);
+  } finally {
+    delete process.env.FAKE_GARBAGE;
+  }
+});
+
+test('review-fix-loop：部分审查者执行失败 + 其余 clean → 通过但轮次摘要含执行失败告警', async () => {
+  process.env.FAKE_FAIL_REVIEWERS = 'correctness'; // 仅 correctness 执行失败，robustness 输出 clean
+  try {
+    const out = await runReviewFixLoop({
+      task: '部分审查失败场景', workdir: TMP, maxRounds: 2,
+    });
+    // 有至少一个成功且 must-fix=0 → 仍可判 clean（review-failed 只留给全部失败）
+    assert.equal(out.ok, true);
+    assert.equal(out.loop.status, 'clean');
+    // 轮次摘要如实区分：失败审查者显示执行失败 + 告警计数，不得伪装成 0 问题
+    const round1 = out.sections.find((s) => s.title === '轮次摘要').body.split('\n')[0];
+    assert.match(round1, /correctness: 审查执行失败/);
+    assert.match(round1, /robustness: clean/);
+    assert.match(round1, /（1 个审查者执行失败）/);
+    assert.doesNotMatch(round1, /correctness: 0 个问题/);
+  } finally {
+    delete process.env.FAKE_FAIL_REVIEWERS;
+  }
 });

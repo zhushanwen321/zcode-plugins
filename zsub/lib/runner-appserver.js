@@ -784,7 +784,7 @@ class AppServerRunner {
    * @param {object} [opts] {timeoutMs?}
    * @returns {Promise<RunResult>}
    */
-  async resume(exec, message, opts = {}) {
+  async resume(exec, message, opts = {}, onHandle) {
     if (!exec || exec.kind !== 'apc' || typeof exec.sessionId !== 'string' || !exec.sessionId) {
       throw new Error(
         'AppServerRunner.resume: 需要 apc 句柄（exec.kind==="apc" 且 exec.sessionId 已回填）。'
@@ -819,6 +819,12 @@ class AppServerRunner {
         };
       }
       const turn = this._createTurn(exec.sessionId, timeoutMs, conn);
+      // S-6① 接线：把 turn.cancel 经 onHandle 暴露给上层（manager 的 handles
+      // 表），cancel(action) 即可中止在飞轮（finish cancelled + session/stop），
+      // 不再空等 timeoutMs 白耗 token
+      if (typeof onHandle === 'function') {
+        onHandle({ cancel: () => turn.cancel() });
+      }
       return await turn.promise;
     } catch (err) {
       const inactive = err && err.code === -32004;

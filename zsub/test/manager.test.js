@@ -579,3 +579,59 @@ test('schema 提取失败：无 JSON → record.schemaParseFailed + 通知提示
   assert.ok(!env2.content.includes('schema 契约'));
   assert.ok(!env2.content.includes('已提取结构化输出'));
 });
+
+// ------------------------------------------- 双池隔离与排队期取消（补边界）
+
+test('recordType 越界：wf record 不经 zsub 面 status/cancel/close（_mustGet 校验）', async () => {
+  const { manager, records } = buildManager();
+  const wf = 'wf-test0001';
+  records.create({ subagentId: wf, recordType: 'workflow', slug: 'chain', task: 'x', status: 'created' });
+  for (const fn of [
+    async () => manager.status(wf),
+    () => manager.cancel(wf),
+    () => manager.close(wf),
+  ]) {
+    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message) && /run_workflow/.test(err.message));
+  }
+  // record 未被越界改写（终态化/transition 都没发生）
+  assert.equal(records.get(wf).status, 'created');
+});
+
+test('recover：共享 store 的 workflow record 不进 subagent 探活循环', async () => {
+  const { manager, records } = buildManager();
+  const wf = 'wf-test0002';
+  // wf record 非终态且无 exec：若不过滤会被误判死进程 + 写入 lostReason update
+  records.create({ subagentId: wf, recordType: 'workflow', slug: 'parallel', task: 'x', status: 'running' });
+  const rec = await manager.recover();
+  assert.ok(!rec.dead.includes(wf), 'wf record 不进 dead 名单');
+  assert.ok(!rec.orphan.includes(wf));
+  assert.equal(records.get(wf).lostReason, undefined, '事件流未被 subagent 语义的 lostReason 污染');
+});
+
+test('排队期 cancel：槽位占满时取消 → 零 spawn 直接终态化', async () => {
+  // 阻塞 slots：第一次 acquire 挂起（占满），手动放行
+  let releaseFirst;
+  const gate = new Promise((r) => { releaseFirst = r; });
+  let acquired = 0;
+  const state = { running: 0 };
+  const slots = {
+    async acquire() {
+      acquired += 1;
+      if (acquired === 1) { await gate; return () => {}; } // 第一个调用方排队等待
+      return () => {};
+    },
+    running: () => state.running,
+  };
+  const { manager, runner, records } = buildManager({ slots });
+  const c = ctx();
+  const h = await manager.start({ task: '排队任务的命运', slug: 'queued-cancel' }, c);
+  assert.equal(records.get(h.subagentId).status, 'created'); // 尚未拿到槽位
+  const fin = await manager.cancel(h.subagentId);
+  assert.equal(fin.cancelled, true);
+  assert.match(fin.note, /排队中被取消，进程未启动/);
+  assert.equal(runner.startCalls.length, 0, '零 spawn：进程从未启动');
+  // 放行槽位：执行体自查终态后安静退出（不抛、不 transition）
+  releaseFirst();
+  await manager.pending.get(h.subagentId);
+  assert.equal(records.get(h.subagentId).status, 'cancelled');
+});

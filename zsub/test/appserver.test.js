@@ -484,3 +484,77 @@ test('进程意外退出：进行中的一轮收敛为 error 终态，done 不�
   assert.equal(result.status, 'error');
   assert.match(result.error, /app-server/);
 });
+
+// ------------------------------------------- resume 边界（runFail/busy/cancel）
+
+test('resume busy：同会话一轮进行中再 resume → 保守报 busy（A5）', async () => {
+  process.env.FAKE_TURN_DELAY_MS = '1500';
+  try {
+    const { runner } = newRunner();
+    const handle = runner.start(baseTaskCtx('慢轮任务'));
+    await waitFor(() => handle.exec.sessionId);
+    // busy 判定看 _turns 注册表，而 turn 在 send 应答后才创建（runner-appserver.js
+    // start 的 ctl.turn 接线）——只等 sessionId 会在高负载下抢跑（曾偶发 resume
+    // 自建 turn 跑到 timeout），必须等到首轮 turn 真正 in-flight
+    await waitFor(() => runner._turns.has(handle.exec.sessionId));
+    const r2 = await runner.resume(handle.exec, '趁轮在飞续聊', { timeoutMs: 15000 });
+    assert.equal(r2.status, 'error');
+    assert.match(r2.error, /busy/);
+    const result = await handle.done;
+    assert.equal(result.status, 'closed'); // 首轮不受 busy 尝试影响
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_TURN_DELAY_MS;
+  }
+});
+
+test('send-reject：start 与 resume 的 accepted:false 均报错且带恢复指引', async () => {
+  process.env.FAKE_MODE = 'send-reject';
+  try {
+    const { runner } = newRunner();
+    const handle = runner.start(baseTaskCtx('投递被拒'));
+    const r1 = await handle.done;
+    assert.equal(r1.status, 'error');
+    assert.match(r1.error, /accepted:false/);
+    const r2 = await runner.resume(handle.exec, '续聊也被拒', { timeoutMs: 15000 });
+    assert.equal(r2.status, 'error');
+    assert.match(r2.error, /accepted:false/);
+    assert.match(r2.error, /重新 start/);
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_MODE;
+  }
+});
+
+test('resume 不活跃会话：-32004 错误追加「会话不活跃…重新 start」恢复提示', async () => {
+  const { runner } = newRunner();
+  // 从未 create 过的 sessionId（fake 对未知会话回 -32004）
+  const r = await runner.resume({ kind: 'apc', sessionId: 'sess_fake_never' }, '幽灵会话', { timeoutMs: 15000 });
+  assert.equal(r.status, 'error');
+  assert.match(r.error, /会话不活跃/);
+  assert.match(r.error, /重新 start/);
+  await runner.shutdown();
+});
+
+test('resume 在飞轮可经 onHandle 句柄中止（S-6① 接线）：cancel 即回 cancelled，不空等 timeoutMs', async () => {
+  process.env.FAKE_TURN_DELAY_MS = '3000';
+  try {
+    const { runner, stateFile } = newRunner();
+    const handle = runner.start(baseTaskCtx('待中止的续聊轮'));
+    await handle.done; // 首轮完成，会话 idle
+    let turnCancel = null;
+    const t0 = Date.now();
+    const p = runner.resume(handle.exec, '会被取消的续聊', { timeoutMs: 30000 }, (h) => {
+      if (h && typeof h.cancel === 'function') turnCancel = h.cancel;
+    });
+    await waitFor(() => typeof turnCancel === 'function');
+    turnCancel();
+    const result = await p;
+    assert.equal(result.status, 'cancelled');
+    assert.ok(Date.now() - t0 < 2500, '远早于 3s 轮延迟返回，未空等超时');
+    await waitFor(() => readState(stateFile).some((e) => e.ev === 'stop')); // stop 异步 best-effort，等落盘
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_TURN_DELAY_MS;
+  }
+});

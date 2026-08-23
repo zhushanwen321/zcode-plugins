@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * 无头真机 e2e（DESIGN-v3 §4.1）：真实 zcode.cjs + 真实模型（GLM-4.7-Flash）。
+ * 无头真机 e2e（DESIGN-v3 §4.1）：真实 zcode.cjs + 真实模型（GLM-5.3）。
  *
  * 与单测的隔离差异（为什么 env 这么设）：
  * - ZSUB_ROOT / ZCODE_MAILBOX_ROOT 指临时目录：records/outputs/home 池/mailbox
@@ -36,7 +36,7 @@ const { AgentMdResolver } = require('../lib/agent-md-resolver');
 const AppServerRunner = require('../lib/runner-appserver');
 const driver = require('../lib/driver');
 
-const MODEL = 'GLM-4.7-Flash';
+const MODEL = 'GLM-5.3'; // 2026-08-23：GLM-4.7-Flash 已不在 builtin:bigmodel-coding-plan 启用清单，全部用 GLM-5.3
 const USER_HOME = path.join(TMP, 'user-home'); // 隔离 user 级 agent 根（不读真实 HOME）
 // 限流实测（2026-08-23）：账户分钟级 RPM 窗口，连续调用必撞 429；CLI 内部长退避
 // 重试 ~2 分钟内可挤过。CALL_MS 给足内部重试窗口；GAP_MS 场景间错峰。
@@ -52,7 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mkEmptyUserHome = () => fs.mkdirSync(path.join(USER_HOME, '.agents', 'agents'), { recursive: true });
 
 /** 组装 manager：user 级 agent 根注入临时 HOME（四根发现的 3/4 根指向空目录）。 */
-function buildManager(opts = {}) {
+async function buildManager(opts = {}) {
   return assembleManager({ resolver: new AgentMdResolver({ homeDir: USER_HOME }), ...opts });
 }
 
@@ -78,7 +78,7 @@ const isTerminal = (s) => ['closed', 'idle', 'cancelled', 'error', 'timeout', 'l
  */
 async function waitForQuotaWindow() {
   const home = path.join(TMP, 'quota-probe-home');
-  driver.bootstrapIsolatedHome(home, 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  driver.bootstrapIsolatedHome(home, 'builtin:bigmodel-coding-plan/GLM-5.3');
   for (let i = 1; i <= 8; i++) {
     CALLS.starts += 1;
     const t0 = Date.now();
@@ -187,7 +187,7 @@ after(() => {
 // ------------------------------------------------------------------ E1
 
 test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令「菠萝啤」', async () => {
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   const res = await startWithRetry(manager, {
     task: '报告就绪',
     slug: 'e1-agent-inject',
@@ -206,7 +206,7 @@ test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令�
 
 test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', async () => {
   const TARGET = 'sess_e2etest-abc'; // 匹配引擎 drain 的 /^sess_[A-Za-z0-9._-]+$/
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   // bg + 429 容错：失败限流则重开一个 bg（计数进 CALLS）
   let id = null;
   for (let i = 0; ; i++) {
@@ -254,7 +254,7 @@ test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', asy
 // ------------------------------------------------------------------ E3
 
 test('E3 conversation resume：两轮同 session，第二轮答出第一轮暗号', async () => {
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   const ctxv = { cwd: path.join(TMP, 'e1-proj'), targetSessionId: 'sess_e2etest-abc' }; // 与 E2 同 target：顺带验证跨投递文件名单调
   const res = await startWithRetry(manager, {
     task: '记住暗号：紫葡萄。只回复：收到',
@@ -287,7 +287,7 @@ test('E3 conversation resume：两轮同 session，第二轮答出第一轮暗�
 // ------------------------------------------------------------------ E4
 
 test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', async () => {
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   const h = await manager.start(
     { task: '从 1 逐个数到 1000000，不要停', slug: 'e4-cancel', model: MODEL, timeoutMs: 120_000 },
     { cwd: path.join(TMP, 'e1-proj'), targetSessionId: 'sess_e4' },
@@ -337,7 +337,7 @@ test('E5 worktree：主树干净、patch 可 apply、close 后无 worktree 残�
   await git(repo, ['add', '-A']);
   await git(repo, ['-c', 'user.email=zsub@e2e.test', '-c', 'user.name=zsub-e2e', 'commit', '-q', '-m', 'init']);
 
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   const res = await startWithRetry(manager, {
     task: '在当前目录创建 hello.txt 文件，内容为 hi。不要做任何其他事。',
     slug: 'e5-worktree',
@@ -393,7 +393,7 @@ test('E6 崩溃恢复：server 进程死亡后 recover 把死 pid running record
   CALLS.killedBeforeFlight += 1;
   await sleep(400);
 
-  const { manager } = buildManager();
+  const { manager } = await buildManager();
   const summary = await manager.recover();
   assert.ok(summary.dead.includes(line.id), `dead=[${summary.dead}] 应含 ${line.id}`);
   const rec = manager.status(line.id);
@@ -423,7 +423,7 @@ test('E7 appserver 全链路：probe → start（真实模型）→ message 续�
   runner._ensureConnection(e7proj).onPush((method, params) => {
     pushLog.push(method + (params && params.kind ? `(${params.kind})` : ''));
   });
-  const { manager } = buildManager({ runnerKind: 'appserver', runner });
+  const { manager } = await buildManager({ runnerKind: 'appserver', runner });
   try {
     const res = await startWithRetry(manager, {
       task: '直接回复文本：茄子紫。禁止使用任何工具，禁止搜索。',

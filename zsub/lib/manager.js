@@ -374,6 +374,10 @@ class SubagentManager {
     const orphan = [];
     for (const rec of this.records.list()) {
       if (TERMINAL_STATUSES.has(rec.status)) continue; // 终态无需探活
+      // recordType 过滤（与 list() 同款）：共享 store 时 workflow record 不进
+      // subagent 探活循环——wf record 无 exec 字段会被误判死进程并写入
+      // subagent 语义的 lostReason update 事件（事件流 append-only，永久污染）
+      if (rec.recordType !== undefined && rec.recordType !== 'subagent') continue;
       const alive = rec.exec ? this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
@@ -608,6 +612,16 @@ class SubagentManager {
     const rec = this.records.get(id);
     if (!rec) {
       throw new Error(`subagent "${id}" 不存在。恢复指引：用 list 查看全部任务 id。`);
+    }
+    // recordType 校验（与 WorkflowManager._mustGet 对称）：workflow record 不经
+    // zsub 面读写——cancel/close 的 transition 语义会越界落 wf record 终态。
+    // 旧 record 无该字段视为 subagent。
+    if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
+      throw new Error(
+        `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
+        + '恢复指引：wf- 前缀的 runId 请用 workflow 面的 run_workflow tool'
+        + '（action=abort/status）或 CLI `zsub workflow --action ...`。'
+      );
     }
     return rec;
   }

@@ -159,10 +159,14 @@ async function runReviewFixLoop({
     if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-review`; break; }
 
     // ── 聚合（JS 去重合并）──
+    // entry.ok=false（审查者执行失败：CLI 崩溃/超时）单列 runFail——与 parseFail
+    // （执行成功但输出解析失败）分开：失败的审查者既不算 clean 也不算发现
+    // 问题；全部失败时不得按 0 问题判 clean
     const parsedReviews = active.map((r, i) => {
       const entry = reviews[i];
-      const obj = entry.ok ? extractJsonObject(entry.response || '') : null;
-      if (!obj) return { reviewer: r, issues: [], parseFail: entry.ok ? true : false, entry };
+      if (!entry.ok) return { reviewer: r, issues: [], runFail: true, entry };
+      const obj = extractJsonObject(entry.response || '');
+      if (!obj) return { reviewer: r, issues: [], parseFail: true, entry };
       const issues = Array.isArray(obj.issues)
         ? obj.issues.filter((x) => x && typeof x.title === 'string')
         : [];
@@ -170,19 +174,31 @@ async function runReviewFixLoop({
     });
     const { mustFix } = aggregateIssues(parsedReviews);
     const parseFails = parsedReviews.filter((p) => p.parseFail);
+    const runFails = parsedReviews.filter((p) => p.runFail);
 
     roundSummaries.push({
       round,
       detail: parsedReviews.map((p) =>
-        `${p.reviewer}: ${p.parseFail ? '输出解析失败' : p.clean ? 'clean' : `${p.issues.length} 个问题`}`
-      ).join('；') + (parseFails.length ? `（${parseFails.length} 个审查者输出无法解析，按 clean 处理并告警）` : ''),
+        `${p.reviewer}: ${p.runFail ? '审查执行失败' : p.parseFail ? '输出解析失败' : p.clean ? 'clean' : `${p.issues.length} 个问题`}`
+      ).join('；')
+        + (runFails.length ? `（${runFails.length} 个审查者执行失败）` : '')
+        + (parseFails.length ? `（${parseFails.length} 个审查者输出无法解析，按 clean 处理并告警）` : ''),
       mustFixCount: mustFix.length,
     });
     for (const p of parsedReviews) if (p.clean && !p.parseFail) cleanReviewers.add(p);
 
     if (onPhase) onPhase({ phase: `round${round}-review`, status: `done, must-fix=${mustFix.length}` });
 
-    if (mustFix.length === 0) { status = 'clean'; lastAction = 'review'; remaining = []; break; }
+    if (mustFix.length === 0) {
+      // 零成功审查（全部执行失败/解析失败）≠ clean：无任何可信结论时失败收场
+      if (runFails.length + parseFails.length === parsedReviews.length) {
+        status = 'review-failed';
+        lastAction = 'review';
+        remaining = [];
+        break;
+      }
+      status = 'clean'; lastAction = 'review'; remaining = []; break;
+    }
 
     // ── 停滞检测：must-fix 数量连续 2 轮不降 → 判定卡住，保留现场 ──
     if (prevMustFixCount !== null && mustFix.length >= prevMustFixCount) {
@@ -229,7 +245,9 @@ async function runReviewFixLoop({
 
   const finalText = status === 'aborted'
     ? `## 已中止\n\n在 ${abortedAtPhase} 检查点收到 abort，后续阶段未启动；已完成 ${roundSummaries.length} 轮，已启动阶段的条目保留在下方阶段表。${remaining.length ? `\n\n中止时剩余 must-fix ${remaining.length} 个（未处理）：\n${remainingMd}` : ''}`
-    : status === 'clean'
+    : status === 'review-failed'
+      ? `## 审查阶段失败\n\n共 ${roundSummaries.length} 轮，全部审查者执行失败或输出无法解析，没有任何可信审查结论——不能按 clean 处理。恢复指引：检查模型 CLI 可用性与 timeoutMsPerPhase 后重跑。`
+      : status === 'clean'
       ? `## 审查通过\n\n共 ${roundSummaries.length} 轮，所有审查者（${rs.join('、')}）均无 must-fix 问题。\n${lastFixResponse ? `\n最后一轮修复说明：\n${lastFixResponse.slice(0, 1500)}` : ''}`
       : status === 'fixed-unverified'
         ? `## 已修复，待复核\n\n共 ${roundSummaries.length} 轮，最后一轮修复已完成且未再报新 must-fix，但轮数（${maxRounds}）用尽未做复核。建议再跑一轮确认，或人工检查。\n\n最后一轮修复说明：\n${(lastFixResponse || '').slice(0, 1500)}`
@@ -252,7 +270,9 @@ async function runReviewFixLoop({
     loop: { status, rounds: roundSummaries.length, reviewers: rs, remainingCount: remaining.length },
     ...(status === 'clean' ? {} : { error: status === 'aborted'
       ? `审查-修复循环已中止（aborted）: ${abortedAtPhase}（已完成 ${roundSummaries.length} 轮）`
-      : status === 'fixed-unverified'
+      : status === 'review-failed'
+        ? `审查阶段失败：全部审查者执行失败或输出无法解析（review-failed），无可信结论`
+        : status === 'fixed-unverified'
         ? `轮数用尽：最后一轮修复已完成但未经复核（fixed-unverified），建议再跑一轮确认`
         : `审查-修复循环未收敛: ${status}（剩余 ${remaining.length} 个 must-fix）` }),
     startedAt, finishedAt: new Date().toISOString(),

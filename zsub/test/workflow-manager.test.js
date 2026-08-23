@@ -416,3 +416,66 @@ test('并发上限：默认池 limit=2，第三个 run 排队 created，槽释�
   assert.equal(startedCount, 3);
   assert.deepEqual(manager.list().map((x) => x.status), ['closed', 'closed', 'closed']);
 });
+
+// ------------------------------------------- 两级超时预算交互（per-phase vs 整体）
+
+/** 模拟 chain 的 per-phase 超时产物形态（runPhase 超时：timedOut 条目 + failed）。 */
+function perPhaseTimeoutResult(opts) {
+  const now = new Date().toISOString();
+  return {
+    ok: false, status: 'failed', workflow: 'chain',
+    task: opts.task, workdir: opts.workdir, model: opts.model || 'fake/model',
+    phases: [{
+      phase: 'analyze', label: '分析', ok: false, timedOut: true, durationMs: 60000,
+      error: '阶段超时（timeoutMsPerPhase=60000ms）：60s 内未完成',
+    }],
+    final: null, error: '阶段 analyze（分析）超时',
+    startedAt: now, finishedAt: now,
+  };
+}
+
+test('timeoutMsPerPhase 先于整体 timeoutMs 触发 → timedOut 条目 + 终态 error（非 timeout）', async () => {
+  const { manager } = buildManager({
+    workflows: {
+      chain: async (opts) => perPhaseTimeoutResult(opts),
+    },
+  });
+  const c = ctx();
+  // 整体预算 5s 远大于单阶段 60ms：只有 per-phase 先触发
+  const fin = await manager.start(
+    { workflow: 'chain', task: '单阶段超时', workdir: TMP, timeoutMs: 5000, timeoutMsPerPhase: 60, wait: true },
+    c,
+  );
+  assert.equal(fin.status, 'error', 'per-phase 超时的终态是 error/failed，不是整体 timeout');
+  const rec = manager.status(fin.runId);
+  assert.equal(rec.status, 'error');
+  assert.equal(rec.closedReason, 'failed');
+  assert.match(rec.error, /阶段 analyze.*超时/);
+  assert.ok(rec.outputFile);
+  const report = fs.readFileSync(rec.outputFile, 'utf8');
+  assert.match(report, /timedOut/); // 报告保留 timedOut 阶段条目（诊断依据）
+});
+
+test('整体 timeoutMs 在阶段间/阶段内计时触发（gap 不豁免）→ 终态 timeout', async () => {
+  // 入口两段各 60ms，中间 idle 等 200ms——整体 300ms 在第二段前触发
+  const { manager } = buildManager({
+    workflows: {
+      chain: (opts) => new Promise((resolve) => {
+        const finish = () => resolve(perPhaseTimeoutResult(opts));
+        if (opts.signal?.aborted) { finish(); return; }
+        opts.signal?.addEventListener('abort', finish, { once: true });
+        setTimeout(finish, 5000); // 挂住：只有整体超时或 abort 能唤醒
+      }),
+    },
+  });
+  const c = ctx();
+  const fin = await manager.start(
+    { workflow: 'chain', task: '整体预算先耗尽', workdir: TMP, timeoutMs: 200, timeoutMsPerPhase: 5000, wait: true },
+    c,
+  );
+  assert.equal(fin.status, 'timeout', '整体预算先于 per-phase 触发 → timeout 终态');
+  const rec = manager.status(fin.runId);
+  assert.equal(rec.status, 'timeout');
+  assert.equal(rec.closedReason, 'timeout');
+  assert.match(rec.error, /整体超时/);
+});

@@ -168,7 +168,7 @@ function buildRunWorkflowToolDefinition() {
         workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
         model: {
           type: 'string',
-          description: `Model override (${PROVIDER_ID} short name, e.g. GLM-5.3 / GLM-4.7-Flash). Default GLM-5.3.`,
+          description: `Model override (${PROVIDER_ID} short name; only models enabled for the provider are valid, e.g. GLM-5.3). Default GLM-5.3.`,
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },
@@ -557,31 +557,9 @@ async function main() {
   if (config.NESTED) {
     log('ZSUB_NESTED=1：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
-    // runner 决策位：ZSUB_RUNNER=appserver 时先探针（D3 门控），失败降级 spawn
-    let runnerKind = process.env.ZSUB_RUNNER === 'appserver' ? 'appserver' : 'spawn';
-    if (runnerKind === 'appserver') {
-      const AppServerRunner = require('../../lib/runner-appserver');
-      try {
-        // app-server 进程启动即要求隔离 HOME 存在模型/provider 配置（e2e 实测
-        // 2026-08-23：无配置时 session/create 直接 -32603 "Model config is
-        // missing"），probe 必须发生在 prepareRunEnv 的 bootstrap 之后，否则
-        // 真实部署中 appserver 永远误降级 spawn。
-        const ModelRouter = require('../../lib/model-router');
-        const router = new ModelRouter();
-        await router.prepareRunEnv(router.resolve(), 'appserver');
-        const probe = await new AppServerRunner().probe();
-        if (probe.ok) {
-          log(`appserver probe OK（protocol ${probe.protocolVersion || '?'}），runner=appserver`);
-        } else {
-          log(`appserver probe FAILED（${probe.reason}），降级 runner=spawn`);
-          runnerKind = 'spawn';
-        }
-      } catch (e) {
-        log(`appserver probe crashed（${e && e.message || e}），降级 runner=spawn`);
-        runnerKind = 'spawn';
-      }
-    }
-    const assembled = createManager({ runnerKind });
+    // runner 决策位（D3 门控）：ZSUB_RUNNER=appserver 的 probe+降级链已下沉
+    // lib/assemble（MCP 与 CLI 共用同一决策，避免两入口行为漂移）
+    const assembled = await createManager();
     manager = assembled.manager;
     wfManager = assembled.wfManager;
     const notifier = assembled.notifier;

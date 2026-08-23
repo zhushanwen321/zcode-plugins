@@ -10,12 +10,48 @@
  * （'subagent' 缺省 / 'workflow'），完成通知同走 mailbox。
  *
  * runnerKind 解析顺序：显式参数 > ZSUB_RUNNER env > 默认 spawn。
- * appserver 的 probe 门控不在本模块（main 循环与 CLI 各自决定降级策略）。
+ * appserver 的 probe 门控（D3）在本模块统一执行：ZSUB_RUNNER=appserver 时先
+ * prepareRunEnv + probe()，失败降级 spawn——MCP 与 CLI 两个入口共用同一
+ * 决策，行为不漂移。
  */
 
 const config = require('./config');
 
-function assembleManager(opts = {}) {
+/** stderr 诊断（assemble 被 MCP 与 CLI 共用，log 走 stderr 不污染协议/stdout）。 */
+function log(msg) {
+  process.stderr.write(`[zsub] ${new Date().toISOString()} ${msg}\n`);
+}
+
+/**
+ * ZSUB_RUNNER=appserver 时的探针门控（D3）：app-server 协议不可用则降级 spawn。
+ * 传入 opts.runner 显式注入 runner 的调用方（测试）不探测——注入即接管。
+ * @returns {Promise<'appserver'|'spawn'>} 探测后的最终 runnerKind
+ */
+async function resolveRunnerKind(requested) {
+  if (requested !== 'appserver') return requested;
+  try {
+    // app-server 进程启动即要求隔离 HOME 存在模型/provider 配置（e2e 实测
+    // 2026-08-23：无配置时 session/create 直接 -32603 "Model config is
+    // missing"），probe 必须发生在 prepareRunEnv 的 bootstrap 之后，否则
+    // 真实部署中 appserver 永远误降级 spawn。
+    const ModelRouter = require('./model-router');
+    const AppServerRunner = require('./runner-appserver');
+    const router = new ModelRouter();
+    await router.prepareRunEnv(router.resolve(), 'appserver');
+    const probe = await new AppServerRunner().probe();
+    if (probe.ok) {
+      log(`appserver probe OK（protocol ${probe.protocolVersion || '?'}），runner=appserver`);
+      return 'appserver';
+    }
+    log(`appserver probe FAILED（${probe.reason}），降级 runner=spawn`);
+    return 'spawn';
+  } catch (e) {
+    log(`appserver probe crashed（${e && e.message || e}），降级 runner=spawn`);
+    return 'spawn';
+  }
+}
+
+async function assembleManager(opts = {}) {
   const { createRuntime } = require('./ports');
   const { RecordStore } = require('./record-store');
   const outputs = require('./output-store');
@@ -25,8 +61,12 @@ function assembleManager(opts = {}) {
   const { createWorktreeAdapter } = require('./worktree-adapter');
   const resolver = require('./agent-md-resolver');
 
-  const runnerKind = opts.runnerKind
+  let runnerKind = opts.runnerKind
     || (process.env.ZSUB_RUNNER === 'appserver' ? 'appserver' : 'spawn');
+  if (!opts.runner && !opts.runnerKind) {
+    // 探针门控只对 env 推断的 appserver 生效（显式注入 runner/runnerKind 即接管）
+    runnerKind = await resolveRunnerKind(runnerKind);
+  }
   const rt = createRuntime({ runnerKind, notifyMode: opts.notifyMode });
   const notifier = opts.notifier || rt.createNotifier();
   // 三个端口实例先于两个 manager 构造（SubagentManager 与 WorkflowManager

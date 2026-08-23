@@ -11,7 +11,10 @@
  *   FAKE_MODE         fail-create     session/create 回 -32602 ZodError
  *                     no-terminal     send 应答 accepted 但永不推终态（超时路径）
  *                     permission-probe 启动期多发一个未知反向请求 permission/request
+ *                     send-reject      send 应答 accepted:false（不模拟轮）
  *                     （默认：正常）
+ *   FAKE_TURN_DELAY_MS 模拟一轮的延迟（默认 25ms；调大制造 in-flight 轮，
+ *                     测 resume busy / cancel 中止在飞轮）
  *   FAKE_READ         default           read 可用（主路径）
  *                     read-error        read 报错 → 逼 runner 降级 session/messages
  *                     all-error         read/messages 均报错 → 逼 chunk 聚合（带文本）
@@ -104,8 +107,7 @@ function terminalPush(sessionId) {
 
 /** send 被接受后模拟一轮：stream.chunk（可带文本）→ running → 终态 idle。 */
 function simulateTurn(sessionId) {
-  setTimeout(() => {
-    const s = liveSessions.get(sessionId);
+  setTimeout(() => {    const s = liveSessions.get(sessionId);
     if (!s) return;
     s.amSeq += 1;
     const amId = `am-${s.amSeq}`;
@@ -134,7 +136,7 @@ function simulateTurn(sessionId) {
         : { sessionId, status: 'running' },
     });
     terminalPush(sessionId);
-  }, 25);
+  }, Number(process.env.FAKE_TURN_DELAY_MS) || 25);
 }
 
 function readPayload(sessionId) {
@@ -182,6 +184,9 @@ function handleClientRequest(frame) {
       }
       liveSessions.get(sessionId).lastContent = String(content ?? '');
       log('send', { sessionId, content });
+      if (process.env.FAKE_MODE === 'send-reject') {
+        return reply(id, { accepted: false });
+      }
       reply(id, { accepted: true });
       if (process.env.FAKE_MODE !== 'no-terminal') simulateTurn(sessionId);
       return;

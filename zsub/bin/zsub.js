@@ -99,7 +99,7 @@ function workflowUsage(exitCode = 1) {
     + '                            review-fix-loop / script:<自定义脚本名>\n'
     + '  --task <text>             任务描述（必填，自包含）\n'
     + '  --workdir <path>          工作目录（必填，绝对路径）\n'
-    + '  --model <name>            模型短名（默认 GLM-5.3；可选 GLM-4.7-Flash 等）\n'
+    + '  --model <name>            模型短名（默认 GLM-5.3；仅限 provider 已启用的模型，传错会列出可用清单）\n'
     + '  --max-concurrent <n>      单 workflow 内阶段并发上限（默认 3）\n'
     + '  --timeout-per-phase <ms>  单阶段超时（默认 600000）\n'
     + '  --timeout-ms <ms>         workflow 整体超时（默认 1800000）\n'
@@ -209,7 +209,7 @@ async function runWorkflowCommand(rest) {
     workflowUsage(1);
   }
 
-  const { wfManager } = assembleManager();
+  const { wfManager } = await assembleManager();
   try { wfManager.records.rebuildFromLog(); } catch (e) {
     process.stderr.write(`[zsub] record 重建失败（继续）: ${e && e.message || e}\n`);
   }
@@ -252,7 +252,7 @@ async function main() {
   if (cmd === 'workflow') return runWorkflowCommand(rest);
   const args = parseArgs(rest);
 
-  const { manager } = assembleManager();
+  const { manager } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
   // list/status 看到历史。刻意不走 manager.recover() 的探活段——探活会对
   // 常驻 server 正在管理的 running 任务误标 orphan 落盘（健康任务被标
