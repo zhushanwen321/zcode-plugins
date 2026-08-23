@@ -25,6 +25,9 @@
  * 保留的机制（dynamic-workflow 生产验证，DESIGN-v3 Z9）：
  * - `node <cli> --json --cwd <dir> --mode yolo --prompt <text>` 单轮无头，
  *   stdout 输出单个 JSON：{sessionId, response, usage, ...}。
+ * - `--disallowed-tools <a,b>` 是唯一可用的工具限制 flag（B3 实测）——
+ *   工具 denylist 的硬约束落点；白名单无对应 flag，只能 prompt 软约束
+ *   （见 prompt-builder 工具约束段的分层说明）。
  * - CLI 的 provider 配置固定读 `$HOME/.zcode/cli/config.json`，而 Node 的
  *   os.homedir() 在 POSIX 优先取 $HOME —— 隔离 HOME 即独立 provider。
  * - `--max-turns` / `--allowed-tools` / `--settings` 虽在 help 列出但解析器
@@ -186,6 +189,10 @@ function bootstrapIsolatedHome(home, modelRef) {
  * @param {string} opts.prompt           完整 prompt（resume 轮即消息文本）
  * @param {string} [opts.resumeSessionId] 续聊目标 session（不重建 HOME）
  * @param {number} [opts.timeoutMs]      缺省 config.DEFAULTS.timeoutMs
+ * @param {string[]} [opts.disallowedTools] 工具 denylist（MUST_FIX-3 硬约束）：
+ *        逗号连接进 `--disallowed-tools` flag（B3 实测可用）。空数组/非数组
+ *        不加 flag。白名单（allowlist）无 flag 通道（--allowed-tools 拒收），
+ *        由 prompt-builder 软约束——硬约束只做 denylist。
  * @param {object} [opts.env]            额外 env（HOME 与 ZSUB_NESTED 由本函数强制注入）
  * @returns {Promise<RunResult> & {pid: number|null, cancel(): boolean}}
  *          cancel()：SIGTERM → killGraceMs → SIGKILL，终态 {status:'cancelled'}；
@@ -203,6 +210,12 @@ function runHeadless(opts = {}) {
   const killGraceMs = config.DEFAULTS.killGraceMs;
   const cli = resolveZcodeCli();
   const args = ['--json', '--cwd', cwd, '--mode', 'yolo'];
+  // denylist 硬约束：非空数组才落 flag（防御性过滤——CLI 对空值行为未定义，
+  // 不赌）。逗号连接是 flag 的既定格式（B3 实测）。
+  const disallowed = Array.isArray(opts.disallowedTools)
+    ? opts.disallowedTools.filter((t) => typeof t === 'string' && t.trim() !== '')
+    : [];
+  if (disallowed.length > 0) args.push('--disallowed-tools', disallowed.join(','));
   if (resumeSessionId) args.push('--resume', String(resumeSessionId));
   args.push('--prompt', String(prompt));
 

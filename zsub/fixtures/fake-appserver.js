@@ -16,9 +16,11 @@
  *                     read-error        read 报错 → 逼 runner 降级 session/messages
  *                     all-error         read/messages 均报错 → 逼 chunk 聚合（带文本）
  *                     all-error-nochunk 同上且 chunk 不带文本 → 逼「全文获取失败」
- *   FAKE_STATE_SHAPE  flat（默认，params.status）| nested（params.state.status）
- *                     | real（实测形态：patch.status + turn.terminal 终态 +
- *                       session/event payload.response 全文，2026-08-23 e2e 抓包）
+ *   FAKE_STATE_SHAPE  real（默认——E7 抓包实证形态，主路径单测的保护对象：
+ *                       patch.status + turn.terminal 终态 + session/event
+ *                       payload.response 全文，2026-08-23 e2e 抓包）
+ *                     | flat（params.status——旧假想形态，仅显式兼容用例）
+ *                     | nested（params.state.status——同上）
  *                     —— 验证 interpretEvent 的宽松匹配（A1）与文本兜底链（A3/A4）
  *
  * 反向请求语义：session/create 先发 requestRuntimePreferences 并等 runner 应答，
@@ -28,6 +30,10 @@
 const fs = require('node:fs');
 
 const STATE_FILE = process.env.FAKE_STATE_FILE;
+// S-8：real 是缺省形态（只有显式 flat/nested 才走旧形态分支）——主路径单测
+// 默认保护实证协议，真实形态漂移时立即红
+const SHAPE = process.env.FAKE_STATE_SHAPE;
+const REAL_SHAPE = SHAPE !== 'flat' && SHAPE !== 'nested';
 const EXPECTED_PREFS = {
   nativeSearchEnhancementsEnabled: true,
   memoryEnabled: false,
@@ -72,7 +78,7 @@ if (process.env.FAKE_MODE === 'permission-probe') {
 
 function terminalPush(sessionId) {
   const s = liveSessions.get(sessionId) || { lastContent: '' };
-  if (process.env.FAKE_STATE_SHAPE === 'real') {
+  if (REAL_SHAPE) {
     // 实测形态（e2e 真实抓包 2026-08-23）：轮结束不发 status:idle 的
     // state.updated；权威终态是 turn.terminal + session/event(payload.response
     // 携带最终全文与 usage）
@@ -90,10 +96,9 @@ function terminalPush(sessionId) {
     });
     return;
   }
-  const status = 'idle';
-  const params = process.env.FAKE_STATE_SHAPE === 'nested'
-    ? { sessionId, state: { status } }
-    : { sessionId, status };
+  const params = SHAPE === 'nested'
+    ? { sessionId, state: { status: 'idle' } }
+    : { sessionId, status: 'idle' };
   out({ method: 'state.updated', params });
 }
 
@@ -124,7 +129,7 @@ function simulateTurn(sessionId) {
     // running 帧：real 形态在 patch.status（实测 prompt_started 帧）
     out({
       method: 'state.updated',
-      params: process.env.FAKE_STATE_SHAPE === 'real'
+      params: REAL_SHAPE
         ? { sessionId, patch: { status: 'running' }, reason: 'prompt_started' }
         : { sessionId, status: 'running' },
     });

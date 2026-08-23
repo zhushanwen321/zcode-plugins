@@ -324,7 +324,10 @@ function buildToolHandlers({ manager, nested = false, workflows } = {}) {
     const args = params.arguments || {};
     // ---- 参数校验（照源 executeTool；模型校验例外见文件头注「移植差异」）
     if (!args.task || typeof args.task !== 'string') return errContent('缺少必填参数 task（任务/目标描述）');
-    const workdir = path.resolve(args.workdir || '');
+    // workdir 必须显式传入：path.resolve 缺省值会静默落到进程 cwd（插件目录），
+    // fix 类 workflow 会在错误位置写文件——缺参数直接拒绝优于猜一个目录
+    if (!args.workdir || typeof args.workdir !== 'string') return errContent('缺少必填参数 workdir（工作目录，绝对路径）');
+    const workdir = path.resolve(args.workdir);
     if (!fs.existsSync(workdir) || !fs.statSync(workdir).isDirectory()) {
       return errContent(`workdir 不存在或不是目录: ${workdir}。恢复指引：传 workdir 参数（绝对路径）。`);
     }
@@ -549,9 +552,12 @@ async function main() {
     try {
       const reaper = require('../../lib/reaper');
       const known = manager.list().map((r) => r.subagentId);
+      // sweepStaleOutputs 返回 {stale: [{file, subagentId}]}（报告模式，见
+      // lib/reaper.js 头注）——字段名必须与 reaper 契约一致，写错会让整段
+      // 清扫（含下方 worktree 孤儿）被 catch 吞成死代码
       const staleOut = reaper.sweepStaleOutputs({ knownSubagentIds: known });
-      if (staleOut.orphans.length > 0) {
-        log(`孤儿结果文件 ${staleOut.orphans.length} 个（只报告不删）：${staleOut.orphans.join(', ')}`);
+      if (staleOut.stale.length > 0) {
+        log(`孤儿结果文件 ${staleOut.stale.length} 个（只报告不删）：${staleOut.stale.map((o) => o.file).join(', ')}`);
       }
       const projectDir = process.env.ZCODE_PROJECT_DIR;
       if (projectDir) {

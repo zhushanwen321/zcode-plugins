@@ -5,6 +5,10 @@
  * zcode.cjs。协议行为（必答反向请求、终态推送、read 兜底）由 fake 模拟，
  * fake 侧状态经 FAKE_STATE_FILE 流水文件断言。
  *
+ * S-8：fake 默认 real 形态（E7 抓包实证），主路径测试（start 全流程/并发/
+ * resume/cancel/超时）默认保护真实协议；flat/nested 旧形态只在显式设置的
+ * 兼容用例中运行。
+ *
  * 隔离（同 execution.test.js）：
  * - ZSUB_ZCODE_CLI → fake 脚本
  * - ZSUB_ROOT / HOME → 临时目录
@@ -83,7 +87,8 @@ test('AppServerRunner：方法签名与 ports.js 契约一致 + capabilities', (
   for (const m of ['probe', 'start', 'resume', 'alive', 'capabilities', 'shutdown']) {
     assert.equal(typeof r[m], 'function', `runner.${m}`);
   }
-  assert.deepEqual(r.capabilities(), { kind: 'appserver', steering: 'session-send', coldStartMs: 0 });
+  // INFO-15：steering 与实际暴露面一致（manager 门禁 idle-only + A5 未实测）
+  assert.deepEqual(r.capabilities(), { kind: 'appserver', steering: 'none', coldStartMs: 0 });
 });
 
 test('createFrameDispatcher：响应匹配 / 推送 / 反向请求三路分发 + 坏行容错', () => {
@@ -259,7 +264,7 @@ test('requestRuntimePreferences 应答内容正确性：fake 深比较校验并�
   await runner.shutdown();
 });
 
-test('终态宽松匹配：params.state.status 嵌套形态同样收敛（假设 A1）', async () => {
+test('终态宽松匹配：params.state.status 嵌套形态同样收敛（假设 A1，显式兼容用例）', async () => {
   process.env.FAKE_STATE_SHAPE = 'nested';
   try {
     const { runner } = newRunner();
@@ -273,9 +278,26 @@ test('终态宽松匹配：params.state.status 嵌套形态同样收敛（假设
   }
 });
 
-test('实测协议形态：patch.status + turn.terminal 终态 + payload.response 全文兜底', async () => {
+test('终态宽松匹配：flat 形态（params.status:idle 的 state.updated）同样收敛（显式兼容用例）', async () => {
+  // S-8：real 已是 fake 默认，flat（E7 前的假想形态）保留为显式兼容——
+  // interpretEvent 的宽松匹配对旧/漂移形态仍是防洪堤
+  process.env.FAKE_STATE_SHAPE = 'flat';
+  try {
+    const { runner } = newRunner();
+    const handle = runner.start(baseTaskCtx('flat 终态形态'));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    assert.equal(result.response, 'FAKE_READ:flat 终态形态');
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_STATE_SHAPE;
+  }
+});
+
+test('实测协议形态（默认）：turn.terminal 终态 + payload.response 全文兜底', async () => {
   // e2e 真实抓包回归（2026-08-23）：轮结束不发 status:idle 的 state.updated，
-  // 权威终态是 turn.terminal；read/messages 全废时最终全文来自 session/event
+  // 权威终态是 turn.terminal；read/messages 全废时最终全文来自 session/event。
+  // real 已是 fake 默认，显式设置保持用例自解释（不随默认值漂移）
   process.env.FAKE_STATE_SHAPE = 'real';
   process.env.FAKE_READ = 'all-error'; // 逼开 read/messages 降级，验证 response 帧路径
   try {
@@ -389,7 +411,10 @@ test('read 兜底：session/read 报错 → 降级 session/messages（假设 A4�
   }
 });
 
-test('read/messages 均不可用 → stream.chunk 按文本聚合兜底（假设 A3）', async () => {
+test('read/messages 均不可用 → stream.chunk 按文本聚合兜底（假设 A3；flat 形态）', async () => {
+  // S-8：real 形态下 session/event payload.response 是更优先的兜底（会截住
+  // 聚合链），chunk 聚合只在旧形态（无 payload.response 帧）可达——显式 flat
+  process.env.FAKE_STATE_SHAPE = 'flat';
   process.env.FAKE_READ = 'all-error';
   try {
     const { runner } = newRunner();
@@ -400,11 +425,14 @@ test('read/messages 均不可用 → stream.chunk 按文本聚合兜底（假设
     assert.equal(result.usage, undefined); // read/messages 均失败，无 usage 来源
     await runner.shutdown();
   } finally {
+    delete process.env.FAKE_STATE_SHAPE;
     delete process.env.FAKE_READ;
   }
 });
 
-test('chunk 不带文本且 read/messages 均不可用 → 注明全文获取失败，可 resume', async () => {
+test('chunk 不带文本且 read/messages 均不可用 → 注明全文获取失败，可 resume（flat 形态）', async () => {
+  // 同上：「全文获取失败」链路只在旧形态可达（real 的 payload.response 兜底在前）
+  process.env.FAKE_STATE_SHAPE = 'flat';
   process.env.FAKE_READ = 'all-error-nochunk';
   try {
     const { runner } = newRunner();
@@ -416,6 +444,7 @@ test('chunk 不带文本且 read/messages 均不可用 → 注明全文获取失
     assert.match(result.error, /resume/);
     await runner.shutdown();
   } finally {
+    delete process.env.FAKE_STATE_SHAPE;
     delete process.env.FAKE_READ;
   }
 });

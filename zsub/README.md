@@ -8,7 +8,7 @@
 ## 架构（端口/适配器内核）
 
 ```
-入口层   MCP 双 tool：zsub（五 action）+ run_workflow（5 种编排）+ skill + CLI 薄壳
+入口层   MCP 双 tool：zsub（六 action）+ run_workflow（5 种编排）+ skill + CLI 薄壳
 编排层   SubagentManager（只依赖 lib/ports.js 契约）/ lib/workflow/（确定性管线）
 端口层   RunnerPort        NotifierPort        ModelRouterPort
           ├ SpawnRunner      ├ MailboxNotifier    ├ home-pool（spawn 配套）
@@ -28,19 +28,21 @@
 
 ## 使用
 
-主 agent 调用 `zsub`（五 action）与 `run_workflow`（编排）两个 tool；人类可直接调试：
+主 agent 调用 `zsub`（六 action：start/list/status/cancel/message/close）与 `run_workflow`（编排）两个 tool；人类可直接调试：
 
 ```bash
 node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model GLM-5.3
 node bin/zsub.js list
 node bin/zsub.js status --id sa-xxxx
-node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"
+node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出
 node bin/zsub.js cancel --id sa-xxxx
 
 node bin/zsub.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsub.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
 ```
+
+CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。
 
 ## 从 dynamic-workflow 迁移
 
@@ -63,6 +65,12 @@ node bin/zsub.js workflow --workflow map-reduce --task "..." --workdir <绝对�
 - **完成通知是被动注入**：外部进程不能投递引擎的 task-notification；mailbox 消息在主 agent 下次活动（UserPromptSubmit/PostToolUse/Stop）时注入，idle 期间滞留。这是闭源平台外挂形态的物理上限。需要「完成即唤醒 + goal gate」的简单任务请用原生 `@agent`。
 - **spawn 模式每轮冷启动 ~1-2s**；conversation 密集场景用 appserver runner（启动探针失败自动降级 spawn）。
 - **spawn 模式 running 不可投递**（message 返回 busy）；appserver 模式的 send-while-running 语义待真机探针。
+- **模型路由当前仅支持 `builtin:bigmodel-coding-plan` 单 provider**：agent .md 带其他 provider 的 model 会得到可操作错误（列出可用清单）。多 provider 支持待后续读 v2 config 全量 provider 列表。
+- **tools 白名单是软约束（prompt 段），denylist 才是硬约束**（`--disallowed-tools` flag）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
+- **subagent 与 workflow 的并发池相互独立**（各默认 3）：同时跑 3 个 subagent + 1 个 3 并发 workflow 时最多 6 个 zcode 进程。
+- **并发深度分层当前为预留**：嵌套环境（ZSUB_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
+- **appserver conversation 会话无 idle TTL 回收**：`config.idleConversationTtlMs` 为预留常量，未接线。
+- **mailbox 引擎侧语义**：drain 单次最多 20 条（zsub 用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，zsub 自身投递已用原子写 + 写前自检规避）。
 
 ## 验收手册（真机 GUI，安装后逐项执行）
 

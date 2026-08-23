@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * 执行层测试：driver / model-router / runner-spawn / slots。
+ * 执行层测试：driver / model-router / runner-spawn / slots + manager 取消
+ * 竞态门卫（S-6②，计数 notifier 断言，不依赖 manager.test.js）。
  *
  * 隔离原则：禁止真跑 zcode.cjs、禁止碰真实 ~/.zcode。
  * - ZSUB_ZCODE_CLI → 临时 fake CLI 脚本（读 --prompt/--resume，输出单行 JSON）
@@ -51,9 +52,22 @@ const driver = require('../lib/driver');
 const ModelRouter = require('../lib/model-router');
 const SpawnRunner = require('../lib/runner-spawn');
 const { createSlots } = require('../lib/slots');
+const { SubagentManager } = require('../lib/manager');
+const { RecordStore } = require('../lib/record-store');
+const outputs = require('../lib/output-store');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PLAIN_HOME = path.join(TMP, 'plain-home');
+
+/** 轮询等待条件成立（超时抛错，失败信息可定位）。 */
+async function waitFor(fn, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (fn()) return;
+    if (Date.now() > deadline) throw new Error('waitFor 超时');
+    await sleep(10);
+  }
+}
 
 /** 写入测试用 v2 config（model-router / bootstrap 的数据源）。 */
 function writeV2Config(patch = {}) {
@@ -168,6 +182,45 @@ test('driver 有界收集：头部 4KB + 尾部 64KB，中间丢弃', () => {
   assert.ok(text.startsWith('line-0-'));        // 头部保留
   assert.ok(text.includes('partial-no-newline')); // 尾部保留
   assert.ok(text.includes('已丢弃'));            // 中间丢弃有标记
+});
+
+test('driver.runHeadless：disallowedTools → --disallowed-tools 逗号连接；未传/空数组不加 flag（MUST_FIX-3）', async () => {
+  // 专用 fake CLI：把收到的 argv 逐行写入报告文件（writeFileSync 先于
+  // console.log，close 事件后读文件时序安全）
+  const report = path.join(TMP, 'argv-report.txt');
+  const argCli = path.join(TMP, 'fake-argv-cli.cjs');
+  fs.writeFileSync(argCli, [
+    "'use strict';",
+    'const fs = require("fs");',
+    'fs.writeFileSync(process.env.ARGV_REPORT, process.argv.slice(2).join("\\n"));',
+    'console.log(JSON.stringify({ sessionId: "sess_argv", response: "ok", usage: {} }));',
+    '',
+  ].join('\n'));
+  const savedCli = process.env.ZSUB_ZCODE_CLI;
+  process.env.ARGV_REPORT = report;
+  try {
+    process.env.ZSUB_ZCODE_CLI = argCli;
+    // 非法元素（非字符串）被过滤，合法项保序逗号连接
+    let r = await driver.runHeadless({
+      home: PLAIN_HOME, cwd: TMP, prompt: 'denylist 透传验证',
+      disallowedTools: ['web-search', 'mcp__x__y', null, ''],
+    });
+    assert.equal(r.status, 'closed');
+    let argv = fs.readFileSync(report, 'utf8');
+    assert.ok(argv.includes('--disallowed-tools'));
+    assert.ok(argv.includes('web-search,mcp__x__y'), '逗号连接且非法元素被过滤');
+
+    await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '无 denylist' });
+    argv = fs.readFileSync(report, 'utf8');
+    assert.ok(!argv.includes('--disallowed-tools'), '未传不加 flag');
+
+    await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '空数组', disallowedTools: [] });
+    argv = fs.readFileSync(report, 'utf8');
+    assert.ok(!argv.includes('--disallowed-tools'), '空数组不加 flag');
+  } finally {
+    process.env.ZSUB_ZCODE_CLI = savedCli;
+    delete process.env.ARGV_REPORT;
+  }
 });
 
 // ---------------------------------------------------------- model-router
@@ -403,9 +456,174 @@ test('SpawnRunner：resume 透传 --resume，sessionId 保持，不重建 HOME',
   assert.equal(fs.statSync(poolCfg).mtimeMs, before);
 });
 
-test('SpawnRunner：resume 拒绝非 spawn 句柄 / sessionId 未回填', async () => {
+test('SpawnRunner：resume 拒绝非 spawn 句柄 / sessionId 未回填', () => {
   const runner = new SpawnRunner();
-  await assert.rejects(() => runner.resume({}, 'x'), /spawn/);
-  await assert.rejects(() => runner.resume({ kind: 'spawn', pid: 1 }, 'x'), /sessionId/);
-  await assert.rejects(() => runner.resume({ kind: 'apc', sessionId: 's' }, 'x'), /spawn/);
+  // S-6① 起 resume 是同步返回的普通函数，校验失败同步抛错（对齐 driver.runHeadless）
+  assert.throws(() => runner.resume({}, 'x'), /spawn/);
+  assert.throws(() => runner.resume({ kind: 'spawn', pid: 1 }, 'x'), /sessionId/);
+  assert.throws(() => runner.resume({ kind: 'apc', sessionId: 's' }, 'x'), /spawn/);
+});
+
+// ------------------------------------------- S-6：resume 轮句柄与取消竞态
+
+test('SpawnRunner：resume 暴露 pid/cancel 句柄 + onHandle 回调 + 更新 exec.pid（S-6①③）', async () => {
+  const { runner, handle } = await startFakeRunner();
+  await handle.done; // 首轮完成（无 sleep），exec.sessionId 已回填
+  const firstPid = handle.exec.pid;
+
+  // FAKE_SLEEP_MS 由 resume 子进程在自身启动时读取——首轮已结束才置挂起，
+  // 只影响 resume 轮（本用例只验证句柄与杀进程链，不等自然完成）
+  process.env.FAKE_SLEEP_MS = '600000';
+  try {
+    let notified = null;
+    const run = runner.resume(handle.exec, 'resume 轮句柄验证', { timeoutMs: 15000 }, (h) => { notified = h; });
+    // ① promise 附加句柄（driver.runHeadless 同款模式），调用方无需改 await 接法
+    assert.ok(run.pid > 0);
+    assert.equal(typeof run.cancel, 'function');
+    // ③ exec.pid 已更新为 resume 轮进程（可变引用，同 sessionId 回填模式）——
+    // 轮运行中崩溃恢复探活读到活进程而非首轮死 pid
+    assert.notEqual(run.pid, firstPid);
+    assert.equal(handle.exec.pid, run.pid);
+    assert.equal(runner.alive(handle.exec), true);
+    // ② onHandle 回调同步携带同一句柄（供 manager 在轮运行期注册 cancel）
+    assert.ok(notified, 'onHandle 已同步回调');
+    assert.equal(notified.pid, run.pid);
+    assert.equal(typeof notified.cancel, 'function');
+
+    notified.cancel(); // 经回调句柄杀进程（与 run.cancel 同一链）
+    const r2 = await run;
+    assert.equal(r2.status, 'cancelled');
+    assert.throws(() => process.kill(run.pid, 0), (e) => e.code === 'ESRCH');
+    assert.equal(runner.alive(handle.exec), false);
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test('S-6②：resume 轮 done 迟到时 record 已 cancelled → 通知不补发（计数 notifier）', async () => {
+  // 场景（REVIEW-impl 附录 2 探针复现）：message 启动 resume 轮后 cancel 走
+  // 无句柄路径只终态化 record；迟到的 done 不得再补发「完成」通知
+  fs.rmSync(config.recordsPath(), { force: true }); // 共享事件日志清零（同 manager.test.js 隔离法）
+  const resumeCalls = [];
+  let releaseRound = null;
+  const runner = {
+    capabilities: () => ({ kind: 'fake', steering: 'none', coldStartMs: 0 }),
+    probe: async () => ({ ok: true }),
+    alive: () => false,
+    start() {
+      const exec = { kind: 'fake', pid: 42000, sessionId: undefined };
+      const done = Promise.resolve({
+        status: 'closed', response: '首轮完成', sessionId: 'sess-s6-gate',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      });
+      done.then((r) => { if (r.sessionId) exec.sessionId = r.sessionId; }); // 可变引用回填，对齐 SpawnRunner
+      return { exec, cancel: () => {}, done };
+    },
+    resume(exec, message) {
+      resumeCalls.push({ exec, message });
+      return new Promise((resolve) => { releaseRound = resolve; }); // 挂起至测试放行（模拟迟到 done）
+    },
+  };
+  const notifyCalls = [];
+  const notifier = {
+    capabilities: () => ({ mode: 'mailbox' }),
+    notifyCompletion: async (record, summary) => {
+      notifyCalls.push({ id: record.subagentId, status: record.status, summary });
+      return { delivered: true };
+    },
+  };
+  const records = new RecordStore();
+  const manager = new SubagentManager({
+    runner,
+    modelRouter: {
+      resolve: () => 'fake/default-model',
+      prepareRunEnv: async () => ({ env: { HOME: '/fake/s6-home' } }),
+    },
+    notifier,
+    resolver: { resolve: () => null },
+    records,
+    outputs,
+    slots: createSlots({ limit: 3 }),
+  });
+  const closedRound = { status: 'closed', sessionId: 'sess-s6-gate', usage: { input_tokens: 1, output_tokens: 1 } };
+
+  // ① 首轮：完成 → idle + 通知 1 次（后续断言的对照组）
+  const h = await manager.start({ task: 'S-6 门卫验证任务', slug: 's6-gate', conversation: true }, { cwd: TMP });
+  await waitFor(() => records.get(h.subagentId).status === 'idle');
+  assert.equal(notifyCalls.length, 1);
+
+  // ② 正常续聊轮：完成 → 回 idle + 通知 +1（门卫不得误伤正常完成路径）
+  await manager.message(h.subagentId, '正常第二轮');
+  await waitFor(() => resumeCalls.length === 1);
+  releaseRound({ ...closedRound, response: '正常第二轮完成' });
+  await waitFor(() => records.get(h.subagentId).status === 'idle' && notifyCalls.length === 2);
+  assert.equal(records.get(h.subagentId).rounds, 2);
+
+  // ③ 取消竞态：resume 轮挂起时 cancel（无句柄路径终态化 record）→ 放行迟到 done
+  await manager.message(h.subagentId, '将被取消的一轮');
+  await waitFor(() => resumeCalls.length === 2);
+  const c = await manager.cancel(h.subagentId);
+  assert.equal(c.cancelled, true);
+  assert.equal(records.get(h.subagentId).status, 'cancelled');
+  releaseRound({ ...closedRound, response: '迟到的完成' });
+  await waitFor(() => manager.pending.size === 0); // 轮收尾完成（含通知决策）
+  assert.equal(notifyCalls.length, 2, 'cancel 后迟到的 done 不补发通知');
+  assert.equal(records.get(h.subagentId).status, 'cancelled', '终态不被迟到 done 覆盖');
+  assert.equal(records.get(h.subagentId).rounds, 2, '取消轮不计入完成轮数');
+});
+
+test('S-6① 接线：manager resume 轮句柄入 handles，cancel 杀掉 resume 轮真进程（SpawnRunner + fake CLI）', async () => {
+  writeV2Config();
+  fs.rmSync(config.recordsPath(), { force: true }); // 共享事件日志清零（同 S-6② 隔离法）
+  const notifyCalls = [];
+  const notifier = {
+    capabilities: () => ({ mode: 'mailbox' }),
+    notifyCompletion: async (record, summary) => {
+      notifyCalls.push({ id: record.subagentId, status: record.status, summary });
+      return { delivered: true };
+    },
+  };
+  const router = new ModelRouter();
+  const manager = new SubagentManager({
+    runner: new SpawnRunner(),
+    modelRouter: router,
+    notifier,
+    resolver: { resolve: () => null },
+    records: new RecordStore(),
+    outputs,
+    slots: createSlots({ limit: 3 }),
+  });
+
+  // 首轮（fake CLI 无 sleep）：wait 等到 idle，exec.sessionId 已回填
+  const res = await manager.start(
+    { task: 'resume 句柄接线首轮', slug: 's6-handle', conversation: true, wait: true },
+    { cwd: TMP },
+  );
+  assert.equal(res.status, 'idle', 'conversation 首轮完成落 idle');
+  const rec1 = manager.records.get(res.subagentId);
+  const firstPid = rec1.exec.pid;
+  assert.equal(typeof rec1.exec.sessionId, 'string');
+
+  process.env.FAKE_SLEEP_MS = '600000'; // 只影响之后启动的子进程（resume 轮）
+  try {
+    const m = await manager.message(res.subagentId, '挂起的第二轮');
+    assert.equal(m.status, 'running');
+    // SpawnRunner resume 启动即更新 exec.pid（S-6③ 可变引用）——轮进程已活
+    await waitFor(() => manager.records.get(res.subagentId).exec.pid !== firstPid);
+    const rec2 = manager.records.get(res.subagentId);
+    const resumePid = rec2.exec.pid;
+    assert.notEqual(resumePid, firstPid);
+    process.kill(resumePid, 0); // 不抛 = resume 轮进程在跑
+    assert.ok(manager.handles.has(res.subagentId), 'resume 轮句柄已挂入 handles');
+
+    const c = await manager.cancel(res.subagentId);
+    assert.equal(c.cancelled, true);
+    assert.equal(manager.records.get(res.subagentId).status, 'cancelled');
+    // resume 轮进程已被 SIGTERM 链杀死（不再跑到 timeout）
+    assert.throws(() => process.kill(resumePid, 0), (e) => e.code === 'ESRCH', 'resume 轮进程已死');
+    assert.equal(manager.handles.has(res.subagentId), false, '收尾清理句柄');
+    assert.equal(notifyCalls.length, 1, '首轮 1 封 + cancelled 不补发');
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
 });

@@ -20,7 +20,7 @@ whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构�
 | 需要逐次指定模型（per-start model 路由） | zsub |
 | 需要跨窗口/跨会话查看历史 subagent 记录 | zsub |
 
-## zsub 五 action 速查
+## zsub 六 action 速查（start/list/status/cancel/message/close）
 
 ```
 zsub(action="start", task="<自包含任务描述>", slug="<短名>",

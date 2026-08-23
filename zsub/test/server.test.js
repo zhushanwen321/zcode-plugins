@@ -60,7 +60,7 @@ test('buildToolDefinition：单 tool zsub，description ≤1600 字符，action 
   assert.equal(tool.name, 'zsub');
   assert.ok(tool.description.length > 0);
   assert.ok(tool.description.length <= 1600, `description ${tool.description.length} 字符超限`);
-  // 五 action 一行速查 + 三条纪律 + skill 指针，三要素都在
+  // 六 action 一行速查 + 三条纪律 + skill 指针，三要素都在
   for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close']) {
     assert.ok(tool.description.includes(action), `description 缺 ${action}`);
   }
@@ -334,6 +334,12 @@ test('run_workflow：参数校验错误全部 isError 可操作（缺 task / wor
   assert.equal(noTask.isError, true);
   assert.match(noTask.content[0].text, /task/);
 
+  // workdir 缺失必须显式拒绝（SUGGESTION-9）：不能静默回落进程 cwd，
+  // 否则 fix 类 workflow 会写错目录
+  const noWorkdir = await call({ workflow: 'chain', task: 't' });
+  assert.equal(noWorkdir.isError, true);
+  assert.match(noWorkdir.content[0].text, /缺少必填参数 workdir/);
+
   const badDir = await call({ workflow: 'chain', task: 't', workdir: '/no/such/dir' });
   assert.equal(badDir.isError, true);
   assert.match(badDir.content[0].text, /workdir 不存在或不是目录/);
@@ -514,6 +520,21 @@ test('进程级：正常档 initialize→tools/list 出双 tool，stdin 关闭�
   assert.equal(tl.result.tools.length, 2);
   assert.deepEqual(tl.result.tools.map((t) => t.name), ['zsub', 'run_workflow']);
   assert.match(r.stderr, /record 恢复/); // 启动序列（sweep+recover）日志走 stderr
+  // 启动序列不得有清扫失败（MUST_FIX-1 回归：reaper 接线字段错误曾被 catch 吞掉）
+  assert.ok(!r.stderr.includes('清扫失败'), `启动序列不应有清扫失败: ${r.stderr}`);
+});
+
+test('进程级：启动序列孤儿 outputs 清扫接线正确（MUST_FIX-1 回归）', async () => {
+  // 注入一个 record 索引不认识的孤儿结果文件后启动：reaper 应走报告分支
+  // 而非抛 TypeError 被 catch 吞掉（字段名漂移曾让整段清扫不可达）
+  const outputsDir = path.join(TMP, 'root-normal', 'outputs');
+  fs.mkdirSync(outputsDir, { recursive: true });
+  fs.writeFileSync(path.join(outputsDir, 'sa-ghost.md'), '# 崩溃残留\n');
+  const r = await runServerProc({ nested: false });
+  assert.equal(r.code, 0);
+  assert.match(r.stderr, /孤儿结果文件 1 个（只报告不删）/);
+  assert.match(r.stderr, /sa-ghost\.md/);
+  assert.ok(!r.stderr.includes('清扫失败'), `启动序列不应有清扫失败: ${r.stderr}`);
 });
 
 test('进程级：NESTED 档不注册工具，仍正常应答协议后退出', async () => {

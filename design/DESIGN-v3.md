@@ -273,4 +273,4 @@ registry：`ports.createRuntime({runnerKind, notifyMode, ...})` 按配置组装�
 
 ## 附录：pi 功能复刻对照（v3 口径）
 
-完全复刻：五 action、agent .md、cancel、list 状态树、close、worktree+patch、record 恢复、并发池、防递归、完成通知（mailbox 档）；近似：schema（prompt 契约）、model 路由（HOME 池/per-session）、tools 白名单（prompt 约束 + `--disallowed-tools`）、skills 注入、maxTurns（timeout 兜底）；弱化：message running 投递（spawn busy / apc 待测）；放弃：fork（apc 留探针）、thinkingLevel 路由（apc 下 per-session 可设，spawn 无通道）、TUI 视图、goal 联动（bash 通道预留）、idle 主动唤醒（外挂物理上限）。定位新增：与原生 background agent 的分流指引。
+完全复刻：五 action、agent .md、cancel、list 状态树、close、worktree+patch、record 恢复、并发池、防递归、完成通知（mailbox 档）；近似：schema（prompt 契约）、model 路由（HOME 池/per-session）、tools 白名单（denylist 硬约束 `--disallowed-tools` + 白名单软约束 prompt）、skills 注入、maxTurns（maxTurns→timeoutMs 换算，对齐 pi watchdog）；弱化：message running 投递（spawn busy / apc 待测）；放弃：fork（apc 留探针）、thinkingLevel 路由（apc 下 per-session 可设，spawn 无通道）、TUI 视图、goal 联动（bash 通道预留）、idle 主动唤醒（外挂物理上限）。定位新增：与原生 background agent 的分流指引。

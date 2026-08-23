@@ -2,7 +2,8 @@
 /**
  * SubagentManager —— zsub 编排内核（DESIGN-v3 §3.1 编排层）。
  *
- * 只依赖构造注入的端口实例（ports.js 契约），不 import 任何端口具体实现；
+ * 只依赖构造注入的端口实例（ports.js 契约），不 import 任何 runner/notifier
+ * 具体实现（record-store / config 为声明的固定域层依赖，INFO-14 措辞如实化）；
  * prompt-builder 是纯函数（域层，无平台依赖），直接引入不破坏「决策可换」。
  * 更换执行引擎 / 回流通道 / 入口形态（三个正交决策位）时本文件零改动。
  *
@@ -13,7 +14,7 @@
  *        （mailbox|polling；env 探测在 createRuntime，本层只消费）
  *    ②  resolver.resolve(agent, cwd)            四根 agent .md 发现（D6）
  *    ③  modelRouter.resolve + prepareRunEnv     模型链解析 + 隔离 HOME（D5）
- *        + promptBuilder.buildPrompt            拼装角色/任务/schema/技能（D7）
+ *        + promptBuilder.buildPrompt            拼装角色/工具约束/任务/schema/技能（D7）
  *        + worktree.prepare（可选）             任务 cwd 切到隔离目录（D12）
  *        + records.create                       append-only 事件流（D9）
  *    ④  后台执行体（不 await）：slots.acquire（D11 深度分层）→ created→running
@@ -38,9 +39,17 @@ const crypto = require('node:crypto');
 const config = require('./config');
 const { buildPrompt } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
+const { extractJsonObject } = require('./jsonout');
 
 /** 通知文案里 response 的截断长度：mailbox 消息进上下文，500 字符够判断去向。 */
 const SUMMARY_HEAD_CHARS = 500;
+
+/**
+ * maxTurns → timeoutMs 换算系数（MUST_FIX-3）：对齐 pi watchdog 语义
+ * （每 turn 预算 5 分钟）。zcode 无头 CLI 无 turn 计数通道（--max-turns 拒收），
+ * 只能以总时长近似「轮数上限」——maxTurns × 5min 作为该任务的超时预算。
+ */
+const MS_PER_TURN = 300_000;
 
 /**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
@@ -156,10 +165,15 @@ class SubagentManager {
       runCwd = wt.dir;
     }
     const conversation = params.conversation === true;
+    // timeoutMs 决策链（MUST_FIX-3）：显式 params.timeoutMs > profile.maxTurns
+    // 换算（×5min，对齐 pi watchdog，见 MS_PER_TURN 注释）> 全局默认。
+    // 显式值优先于 agent 约定——调用方带 timeoutMs 即表示覆盖 agent .md。
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
-      : config.DEFAULTS.timeoutMs;
-    this.records.create({
+      : (profile && Number.isFinite(profile.maxTurns) && profile.maxTurns > 0
+        ? profile.maxTurns * MS_PER_TURN
+        : config.DEFAULTS.timeoutMs);
+    const createInit = {
       subagentId,
       slug,
       agent: profile ? profile.name : null,
@@ -173,24 +187,39 @@ class SubagentManager {
       worktreeMeta,          // {dir, branch, mainRepo}：cleanup 参数（适配层消费）
       cwd: ctx.cwd,          // 任务发起目录（诊断 + worktree 兜底定位主仓）
       rounds: 0,
-    });
+    };
+    // schema 是 record 级契约（首轮声明、每轮收尾的提取依据，SUGGESTION-4），
+    // 随事件流持久化——resume 轮与崩溃恢复后仍可提取
+    if (params.schema !== undefined && params.schema !== null && params.schema !== '') {
+      createInit.schema = params.schema;
+    }
+    this.records.create(createInit);
 
-    const taskCtx = { subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation, runEnv };
+    // taskCtx.disallowedTools：runner 层落 --disallowed-tools flag（硬约束）；
+    // 白名单（tools）无 flag 通道，已由 buildPrompt 拼软约束段
+    const taskCtx = {
+      subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation, runEnv,
+      disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
+    };
 
     // ④⑤ 后台执行体不 await（wait=true 除外）
     const p = this._runFirstRound(subagentId, taskCtx);
     if (params.wait === true) {
       const fin = await p;
+      const finRec = fin.record;
       return {
         subagentId,
         slug,
-        status: fin.record ? fin.record.status : 'error',
+        status: finRec ? finRec.status : 'error',
         notify: this._mode,
         result: fin.result && typeof fin.result.response === 'string' ? fin.result.response : '',
         outputFile: fin.outputFile,
         patchFile: fin.patchFile,
-        error: fin.record ? fin.record.error : null,
+        error: finRec ? finRec.error : null,
         usage: fin.result ? fin.result.usage : null,
+        // SUGGESTION-4：schema 提取产物（closed 轮才提取；失败见 schemaParseFailed）
+        structured: finRec && finRec.structured !== undefined ? finRec.structured : undefined,
+        schemaParseFailed: finRec && finRec.schemaParseFailed === true ? true : undefined,
       };
     }
     const handle = { subagentId, slug, status: 'running', notify: this._mode, conversation };
@@ -368,10 +397,13 @@ class SubagentManager {
     return p;
   }
 
-  /** 续聊轮：resume 无 cancel 句柄（端口契约），取消走无句柄直接终态化路径。 */
+  /**
+   * 续聊轮：resume 句柄经 onHandle 挂入 handles（S-6① 接线，取消可杀轮进程，
+   * 同 start 的 pending 句柄管理）；runner 无句柄时维持无句柄路径。
+   */
   _runResumeRound(id, text) {
     const p = this._execRound(id, { kind: 'resume', text })
-      .finally(() => { this.pending.delete(id); });
+      .finally(() => { this.pending.delete(id); this.handles.delete(id); });
     this.pending.set(id, p);
     return p;
   }
@@ -399,7 +431,28 @@ class SubagentManager {
           this.handles.delete(id);
         }
       } else {
-        result = await this.runner.resume(cur.exec, plan.text, { timeoutMs: cur.timeoutMs });
+        // resume 句柄接线（S-6①）：两层取法——①onHandle（SpawnRunner 轮启动
+        // 后同步回调 {pid, cancel}）；②onHandle 未触发时兜底看返回 promise
+        // 自带的 cancel（runner-spawn 的 resume 双取法同款）。挂入 handles
+        // 让 cancel 能杀轮进程（SIGTERM→SIGKILL 链）。AppServerRunner 的
+        // resume 是 async 无句柄（多余参数被忽略、promise 无 cancel 属性）
+        // ——两层都取不到时维持无句柄路径（终态化 record + 注明进程可能残留）。
+        let handleSet = false;
+        const run = this.runner.resume(
+          cur.exec,
+          plan.text,
+          { timeoutMs: cur.timeoutMs },
+          (h) => {
+            if (h && typeof h.cancel === 'function') {
+              handleSet = true;
+              this.handles.set(id, { pid: h.pid, cancel: () => h.cancel() });
+            }
+          },
+        );
+        if (!handleSet && run && typeof run.cancel === 'function' && typeof run.then === 'function') {
+          this.handles.set(id, { pid: run.pid, cancel: () => run.cancel() });
+        }
+        result = await run;
       }
       const record = await this._completeRun(id, result, { conversation: cur.conversation === true });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
@@ -446,6 +499,21 @@ class SubagentManager {
     const closedReason = status === 'closed'
       ? (conversation ? 'round-complete' : 'completed')
       : (status === 'cancelled' ? 'cancelled-by-user' : status);
+
+    // schema 提取（SUGGESTION-4，对照表 #12 兑现）：record 声明了非空 schema 且
+    // 本轮成功（closed）才提取——error/timeout/cancelled 的尾部输出不是模型
+    // 最终回复，提取无意义。成功进 record.structured（与终态原子落盘，同
+    // rounds 的防崩溃中间态理由）；失败落 schemaParseFailed:true——只标记不
+    // 改终态：契约违反是质量问题不是运行故障，全文已在 outputs 供人工/主
+    // agent 兜底解析。
+    const hasSchema = before.schema !== undefined && before.schema !== null && before.schema !== '';
+    let structured = null;
+    let schemaParseFailed = false;
+    if (status === 'closed' && hasSchema && response !== '') {
+      structured = extractJsonObject(response);
+      if (structured === null) schemaParseFailed = true;
+    }
+
     this._transitionOrSkip(id, 'running', to, {
       closedReason,
       error: result ? result.error : undefined,
@@ -461,10 +529,15 @@ class SubagentManager {
       exec: before.exec,
       outputFile,
       patchFile,
+      structured: structured !== null ? structured : undefined,
+      schemaParseFailed: schemaParseFailed ? true : undefined,
     });
 
-    // 完成通知：cancelled 是调用方主动行为（cancel 响应已回），不再通知
-    if (status !== 'cancelled') {
+    // 完成通知：cancelled 是调用方主动行为（cancel 响应已回），不再通知。
+    // 门卫同时看 record 当前终态：cancel 走无句柄路径已把 record 终态化为
+    // cancelled 后，迟到的 done（resume 轮自然完成）不得再补发通知（S-6②）
+    const curNotify = this.records.get(id);
+    if (status !== 'cancelled' && !(curNotify && curNotify.status === 'cancelled')) {
       const final0 = this.records.get(id);
       const summary = this._buildSummary(final0, { ...result, status }, outputFile, patchFile || undefined);
       try {
@@ -506,6 +579,13 @@ class SubagentManager {
       const head = text.slice(0, SUMMARY_HEAD_CHARS);
       const ellipsis = text.length > SUMMARY_HEAD_CHARS ? '…' : '';
       let s = `[subagent 完成] slug=${slug}。结果：${head}${ellipsis}\n全文: ${outputFile}`;
+      // schema 契约回执（SUGGESTION-4）：主 agent 据此决定直接消费 structured
+      // 还是自行解析全文——两种结局都明说，不留给调用方猜测
+      if (record.structured !== undefined && record.structured !== null) {
+        s += `\n已提取结构化输出（status 查询 structured 字段）`;
+      } else if (record.schemaParseFailed === true) {
+        s += `\n注意: 输出未符合 schema 契约（jsonout 提取失败），全文见上方 outputs 路径`;
+      }
       if (patchFile) {
         s += `\n改动 patch: ${patchFile}`;
         s += `\n应用指引: 在主仓库根目录执行 git apply ${patchFile}（先 review 再应用）`;

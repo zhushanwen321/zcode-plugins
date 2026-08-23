@@ -466,3 +466,116 @@ test('close：运行中任务先取消再终态化；worktree 清理被调用', 
   assert.deepEqual(wtCleaned.map((x) => x.dir), [records.get(h.subagentId).worktree]);
   assert.equal(records.get(h.subagentId).status, 'cancelled');
 });
+
+// -------------------------------------------- MUST_FIX-3 / SUGGESTION-4
+
+test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > 全局默认（MUST_FIX-3）', async () => {
+  const capped = {
+    name: 'capped', description: '限轮任务', filePath: '/fake/capped.md', body: '正文',
+    maxTurns: 4, disallowedTools: ['web-search', 'mcp__demo__x'],
+  };
+  const cappedResolver = { resolve: (n) => (n === 'capped' ? capped : null) };
+  const settle = (records, id) =>
+    waitFor(() => ['closed', 'idle'].includes(records.get(id).status));
+
+  // ① 显式 timeoutMs 优先于 maxTurns 换算（调用方声明即覆盖 agent 约定）
+  {
+    const { manager, runner, records } = buildManager({ resolver: cappedResolver });
+    const h = await manager.start({ task: '任务书', slug: 'explicit', agent: 'capped', timeoutMs: 12345 }, ctx());
+    await waitFor(() => runner.startCalls.length === 1);
+    assert.equal(runner.startCalls[0].timeoutMs, 12345);
+    runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-1' });
+    await settle(records, h.subagentId);
+  }
+  // ② 无显式 → maxTurns × 300_000（对齐 pi watchdog：每 turn 预算 5 分钟）
+  {
+    const { manager, runner, records } = buildManager({ resolver: cappedResolver });
+    const h = await manager.start({ task: '任务书', slug: 'turns', agent: 'capped' }, ctx());
+    await waitFor(() => runner.startCalls.length === 1);
+    assert.equal(runner.startCalls[0].timeoutMs, 4 * 300_000);
+    assert.equal(records.get(h.subagentId).timeoutMs, 4 * 300_000); // record 持久化同值
+    runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-2' });
+    await settle(records, h.subagentId);
+  }
+  // ③ 无 profile → 全局默认（config.DEFAULTS.timeoutMs）
+  {
+    const { manager, runner, records } = buildManager();
+    const h = await manager.start({ task: '任务书', slug: 'default' }, ctx());
+    await waitFor(() => runner.startCalls.length === 1);
+    assert.equal(runner.startCalls[0].timeoutMs, 600_000);
+    runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-3' });
+    await settle(records, h.subagentId);
+  }
+});
+
+test('profile.disallowedTools 透传 taskCtx（MUST_FIX-3 硬约束上游）；tools 走 prompt 软约束', async () => {
+  const restricted = {
+    name: 'restricted', description: '', filePath: '/fake/restricted.md', body: '正文',
+    tools: ['read', 'bash'], disallowedTools: ['web-search'],
+  };
+  const { manager, runner, records } = buildManager({
+    resolver: { resolve: (n) => (n === 'restricted' ? restricted : null) },
+  });
+  const h = await manager.start({ task: '任务书', slug: 'denylist', agent: 'restricted' }, ctx());
+  await waitFor(() => runner.startCalls.length === 1);
+  // denylist → taskCtx（runner 层落 --disallowed-tools flag，硬约束）
+  assert.deepEqual(runner.startCalls[0].disallowedTools, ['web-search']);
+  // 白名单无 flag 通道 → prompt 工具约束段（软约束，prompt-builder 两态见 domain.test.js）
+  assert.ok(runner.startCalls[0].prompt.includes('## 工具约束'));
+  assert.ok(runner.startCalls[0].prompt.includes('只允许使用以下工具'));
+  // 无 agent（profile=null）不透传
+  const { manager: m2, runner: r2 } = buildManager();
+  await m2.start({ task: '任务书', slug: 'no-agent' }, ctx());
+  await waitFor(() => r2.startCalls.length === 1);
+  assert.equal(r2.startCalls[0].disallowedTools, undefined);
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-deny-1' });
+  await waitFor(() => ['closed', 'idle'].includes(records.get(h.subagentId).status));
+});
+
+test('schema 提取成功：response 围栏 JSON → record.structured + 通知注明「已提取结构化输出」（SUGGESTION-4）', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  const fenced = '前置说明\n```json\n{"verdict":"pass","issues":[]}\n```\n后置';
+  setTimeout(() => runner.finishAll({ status: 'closed', response: fenced, sessionId: 'sess-schema-1' }), 20);
+  const res = await manager.start(
+    { task: '审查并输出 JSON', slug: 'schema-ok', schema: '输出 {"verdict":"pass|fail"}', wait: true },
+    c,
+  );
+  assert.equal(res.status, 'closed');
+  assert.deepEqual(res.structured, { verdict: 'pass', issues: [] }); // wait 返回值带 structured
+  const rec = records.get(res.subagentId);
+  assert.deepEqual(rec.structured, { verdict: 'pass', issues: [] }); // record 落盘
+  assert.equal(rec.schemaParseFailed, undefined);
+  const env = readEnvelopes(c.targetSessionId).at(-1);
+  assert.ok(env.content.includes('已提取结构化输出'), '通知文案注明提取成功');
+  assert.ok(!env.content.includes('未符合 schema 契约'));
+});
+
+test('schema 提取失败：无 JSON → record.schemaParseFailed + 通知提示契约未符；无 schema 任务不受影响', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '纯文本回答没有 JSON', sessionId: 'sess-schema-2' }), 20);
+  const res = await manager.start(
+    { task: '自由回答', slug: 'schema-bad', schema: { type: 'object' }, wait: true },
+    c,
+  );
+  assert.equal(res.status, 'closed');
+  assert.equal(res.schemaParseFailed, true);
+  const rec = records.get(res.subagentId);
+  assert.equal(rec.schemaParseFailed, true);
+  assert.equal(rec.structured, undefined);
+  const env = readEnvelopes(c.targetSessionId).at(-1);
+  assert.ok(env.content.includes('未符合 schema 契约'), '通知提示契约未符');
+  assert.ok(env.content.includes(rec.outputFile), '全文指针兜底');
+  assert.ok(!env.content.includes('已提取结构化输出'));
+
+  // 对照：无 schema 声明的任务不提取、文案无 schema 回执行
+  const c2 = ctx();
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '直接结论', sessionId: 'sess-schema-3' }), 20);
+  const res2 = await manager.start({ task: '无 schema 任务', slug: 'schema-none', wait: true }, c2);
+  assert.equal(res2.structured, undefined);
+  assert.equal(records.get(res2.subagentId).schemaParseFailed, undefined);
+  const env2 = readEnvelopes(c2.targetSessionId).at(-1);
+  assert.ok(!env2.content.includes('schema 契约'));
+  assert.ok(!env2.content.includes('已提取结构化输出'));
+});

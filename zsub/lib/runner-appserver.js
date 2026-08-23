@@ -474,7 +474,11 @@ class AppServerRunner {
   capabilities() {
     return {
       kind: 'appserver',
-      steering: 'session-send', // 续聊/追加走 session/send（A5：running 投递语义 W3 实测）
+      // INFO-15：声明必须与实际暴露面一致——manager 的 message 门禁是
+      // idle-only，runner 内 A5（running 中 session/send 投递）也未实测，
+      // running 投递从未对外可达，故报 'none'（SpawnRunner 同款正例）。
+      // A5 实测通过、门禁放开后再升回 'session-send'。
+      steering: 'none',
       coldStartMs: 0,           // 长驻进程 + 常驻会话，续聊零冷启动
     };
   }
@@ -627,7 +631,9 @@ class AppServerRunner {
       finish({
         status: 'timeout',
         response: aggregated(),
-        error: `一轮未在 ${timeoutMs}ms 内观察到终态（state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
+        // INFO-16：E7 后权威终态信号是 turn.terminal，state.updated 是兼容信号，
+        // 并列表述避免误导诊断
+        error: `一轮未在 ${timeoutMs}ms 内观察到终态（turn.terminal / state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
       });
       stopBestEffort().then(
         () => {},

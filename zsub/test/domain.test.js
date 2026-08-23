@@ -235,6 +235,41 @@ test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化
   assert.equal(buildPrompt(), '');
 });
 
+test('prompt-builder: 工具约束段——tools 白名单声明「只允许」+ disallowedTools 重申（MUST_FIX-3）', () => {
+  const out = buildPrompt({
+    agentProfile: {
+      name: 'coder',
+      body: '你是编码助手',
+      tools: ['read', 'bash'],
+      disallowedTools: ['web-search'],
+    },
+    task: '写代码',
+  });
+  assert.ok(out.includes('## 工具约束'), '有 tools/disallowedTools 时拼段');
+  assert.ok(out.includes('只允许使用以下工具'), '白名单软约束声明');
+  assert.ok(out.includes('- read') && out.includes('- bash'));
+  assert.ok(out.includes('以下工具已被明确禁用'), 'denylist 在段中重申（双保险）');
+  assert.ok(out.includes('- web-search'));
+  // 段顺序：角色设定 → 工具约束 → 任务（约束贴着角色，先于任务）
+  const order = ['角色设定', '工具约束', '写代码'].map((s) => out.indexOf(s));
+  assert.ok(order[0] < order[1] && order[1] < order[2], '角色 < 工具约束 < 任务');
+});
+
+test('prompt-builder: 工具约束段两态——只有 denylist / 完全无工具字段不拼段', () => {
+  const onlyDeny = buildPrompt({
+    agentProfile: { name: 'a', body: 'b', disallowedTools: ['mcp'] },
+    task: 't',
+  });
+  assert.ok(onlyDeny.includes('## 工具约束'));
+  assert.ok(!onlyDeny.includes('只允许使用以下工具'), '无 tools 不拼白名单部分');
+  assert.ok(onlyDeny.includes('- mcp'));
+
+  const none = buildPrompt({ agentProfile: { name: 'a', body: 'b' }, task: 't' });
+  assert.ok(!none.includes('工具约束'), '无任一工具字段不拼段');
+  const emptyArr = buildPrompt({ agentProfile: { name: 'a', body: 'b', tools: [], disallowedTools: [] }, task: 't' });
+  assert.ok(!emptyArr.includes('工具约束'), '空数组视同未声明');
+});
+
 // ---------------------------------------------------------------------------
 // record-store
 // ---------------------------------------------------------------------------

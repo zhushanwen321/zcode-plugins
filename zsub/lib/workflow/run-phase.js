@@ -32,8 +32,10 @@
 const ModelRouter = require('../model-router');
 const driver = require('../driver');
 
-// 模块级单例：ModelRouter 无解析状态；prepareRunEnv 的 per-home 互斥链挂在
-// 实例内——复用单例让同模型的并发阶段排队走同一条链（防 bootstrap 交错）。
+// INFO-17：prepareRunEnv 的 per-model 互斥链（poolMutex）是模块级 Map
+// （model-router.js），多实例共享同一条链——同模型的并发阶段天然排队走同链
+// （防 bootstrap 交错），不依赖此处是否单例。ModelRouter 本身无解析状态，
+// 模块级单例只为避免各处重复构造。
 const modelRouter = new ModelRouter();
 
 /**
