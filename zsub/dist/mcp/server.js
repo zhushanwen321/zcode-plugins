@@ -1,10 +1,10 @@
 'use strict';
 /**
- * zsub MCP stdio server（决策位③入口：粗粒度单 tool，DESIGN-v3 D2）。
+ * zsub MCP stdio server（决策位③入口：双 tool——zsub 编排 + run_workflow）。
  *
- * 为什么是单 tool 而不是每 action 一个 tool：Z1 实测 MCP tool 的
+ * 为什么粗粒度收敛而不是每 action 一个 tool：Z1 实测 MCP tool 的
  * name+description+inputSchema 全量常驻注入每个 LLM 请求（无按需加载），
- * 细粒度多 tool 的 token 成本线性上涨——所以编排原语收敛为一个 `zsub`
+ * 细粒度多 tool 的 token 成本线性上涨——所以编排原语收敛为 `zsub`
  * tool（action 枚举参数），description 压到 ≤1.5KB，完整用法与分流哲学放
  * skill zsub-orchestration（Z7 渐进式：一行索引常驻，正文按需读）。
  *
@@ -18,22 +18,43 @@
  * 启动序列：NESTED → 只挂协议层；否则 notifier.sweepStaleTmp（mailbox 档）
  * → manager.recover()（record 重建 + 探活）→ 挂 stdin。
  *
- * 多 tool 结构（M3 接线）：tool 注册表形态——buildTools() 出定义数组，
+ * 多 tool 结构（M3 已接线）：tool 注册表形态——buildTools() 出定义数组，
  * buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
  * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
- * 进对应 handler）。第二个 tool run_workflow（dynamic-workflow 移植，5 种
- * workflow）落地时只需在两表各加一项，协议层分发零改动。
+ * 进对应 handler）。两个 tool：zsub（六 action 编排）与 run_workflow
+ * （dynamic-workflow 移植，5 种 workflow，双段 content 返回）。
  *
- * 可测性：纯函数（extractSessionId / buildToolDefinition / buildTools /
- * buildToolHandlers / createFrameDecoder / createServer / createManager）导出
- * 供 node:test；stdio 主循环只在 require.main === module 时启动，require
- * 本模块零副作用。
+ * run_workflow 移植差异（相对源 dist/mcp/server.js，参数校验/分发照源）：
+ * - 模型校验不前置：源在 validateCommon 里 resolveModelRef 一次拿
+ *   modelRef；zsub 的 workflow 入口内部自带 ModelRouter.resolve（单一权威，
+ *   抛可操作错误），server 侧不重复解析——两处各解析一份会漂移。
+ * - workdir 语义照源必填（绝对路径，须存在且为目录）；zsub 现有
+ *   env.cwd 回落链只服务 zsub tool 的 ctx 组装，与 run_workflow 无关。
+ * - 进度上报经 env.emitFrame 通道（源直接 send）：handler 中途产生的
+ *   notifications/progress 帧无法进 handleMessage 的返回值数组，由
+ *   createServer 注入 emitFrame（main 循环 = writeFrame）实时写出。
+ *
+ * 可测性：纯函数（extractSessionId / buildToolDefinition /
+ * buildRunWorkflowToolDefinition / buildTools / buildToolHandlers /
+ * createFrameDecoder / createServer / createManager）导出供 node:test，
+ * workflow 入口经 buildToolHandlers 的 workflows 参数可注入 fake；
+ * stdio 主循环只在 require.main === module 时启动，require 零副作用。
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
 const config = require('../../lib/config');
+const { runChain } = require('../../lib/workflow/chain');
+const { runParallel, DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
+const { runMapReduce } = require('../../lib/workflow/map-reduce');
+const { runScatterGather } = require('../../lib/workflow/scatter-gather');
+const { runReviewFixLoop, DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
+const { buildContentBlocks } = require('../../lib/workflow/report');
+const { PROVIDER_ID } = require('../../lib/model-router');
 
 const SERVER_INFO = { name: 'zsub', version: '0.1.0' };
 const TOOL_NAME = 'zsub';
+const RUN_WORKFLOW_TOOL_NAME = 'run_workflow';
 
 // ---------------------------------------------------------------- 纯函数区
 
@@ -95,12 +116,92 @@ function buildToolDefinition() {
 }
 
 /**
+ * run_workflow tool 定义（dynamic-workflow 移植，M3 接线）。
+ * description/inputSchema 逐字照源 dist/mcp/server.js（源文本身无
+ * "dynamic-workflow" 字样，无需替换）——参数面以源为权威，防止两插件
+ * 行为漂移；默认值文案引用 zsub 自己的常量，值与源一致。
+ */
+function buildRunWorkflowToolDefinition() {
+  return {
+    name: 'run_workflow',
+    description:
+      'Run a deterministic multi-phase workflow by driving headless zcode sessions. ' +
+      'Each phase runs in its own isolated agent session; intermediate conclusions are chained or merged, ' +
+      'so the main conversation keeps only the final report. Returns a human-readable markdown report plus full JSON data. ' +
+      'Workflows: "chain" = analyze -> implement -> summarize pipeline; ' +
+      '"parallel" = multi-perspective parallel review of one target, then aggregate; ' +
+      '"map-reduce" = parallel transform over a KNOWN items array, then reduce; ' +
+      '"scatter-gather" = split a big task into 2-4 subtasks, process in parallel, merge; ' +
+      '"review-fix-loop" = parallel review -> aggregate must-fix -> fix -> re-review until clean (WRITES files). ' +
+      'Use when the task benefits from a fixed multi-agent pipeline with isolated contexts. ' +
+      'NOT for trivial single-file edits or pure Q&A. ' +
+      'WARNING: transform/process/fix phases may modify files under `workdir`; runs can take minutes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflow: {
+          type: 'string',
+          enum: ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop'],
+          description: 'Workflow type, see tool description for each one\'s shape.',
+        },
+        task: {
+          type: 'string',
+          description: 'Task / target description. For map-reduce this is optional context (operation+items carry the work).',
+        },
+        workdir: { type: 'string', description: 'Absolute path of the working directory the phases operate in.' },
+        model: {
+          type: 'string',
+          description: `Model override (${PROVIDER_ID} short name, e.g. GLM-5.3 / GLM-4.7-Flash). Default GLM-5.3.`,
+        },
+        perspectives: {
+          type: 'array', items: { type: 'string' },
+          description: `parallel only. Default [${DEFAULT_PERSPECTIVES.join(', ')}].`,
+        },
+        items: {
+          type: 'array', items: { type: 'string' },
+          description: 'map-reduce only (required). The known items to map over.',
+        },
+        operation: {
+          type: 'string',
+          description: 'map-reduce only (required). What to do with each item.',
+        },
+        subtaskCount: {
+          type: 'integer', minimum: 2, maximum: 4,
+          description: 'scatter-gather only. Hint for how many subtasks to split into.',
+        },
+        reviewTarget: {
+          type: 'string',
+          description: 'review-fix-loop only. What to review (e.g. "git 未提交改动" or specific files). Defaults to uncommitted changes.',
+        },
+        reviewers: {
+          type: 'array', items: { type: 'string' },
+          description: `review-fix-loop only. Review focuses. Default [${DEFAULT_REVIEWERS.join(', ')}].`,
+        },
+        maxRounds: {
+          type: 'integer', minimum: 1, maximum: 10,
+          description: 'review-fix-loop only. Max review-fix rounds. Default 5.',
+        },
+        maxConcurrent: {
+          type: 'integer', minimum: 1, maximum: 6,
+          description: 'Max concurrent phase sessions. Default 3.',
+        },
+        timeoutMsPerPhase: {
+          type: 'number',
+          description: 'Per-phase timeout in milliseconds. Default 600000 (10 min).',
+        },
+      },
+      required: ['workflow', 'task', 'workdir'],
+    },
+  };
+}
+
+/**
  * 本 server 暴露的全量 tool 定义（tools/list 的数据源）。为什么是数组：
- * M3 接线 run_workflow（dynamic-workflow 移植）时在此追加一项即可，
- * tools/list 与分发层零改动。
+ * 注册表形态，追加 tool 只改本函数与 buildToolHandlers，tools/list 与
+ * 分发层零改动。
  */
 function buildTools() {
-  return [buildToolDefinition()];
+  return [buildToolDefinition(), buildRunWorkflowToolDefinition()];
 }
 
 /**
@@ -145,16 +246,26 @@ function createManager(opts = {}) {
 
 /**
  * tool handler 注册表工厂：{ [toolName]: handler(params, env) }。
- * - 为什么是工厂而不是模块级表：handler 闭包持有 manager / nested，
- *   每次 createServer 一份，实例间互不串线。
+ * - 为什么是工厂而不是模块级表：handler 闭包持有 manager / nested /
+ *   workflows，每次 createServer 一份，实例间互不串线。
  * - 为什么 null 原型 + hasOwnProperty 守卫：防止 params.name 撞 Object
  *   原型链属性名（如 "constructor"）被误当 handler 命中——注册表键必须
  *   精确匹配（改造前 `name !== TOOL_NAME` 严格比较的等价行为）。
  * - 嵌套门禁在各自 handler 内而非分发层：拒绝文案按 tool 定制。
- * - M3 接线：run_workflow（dynamic-workflow 移植）在此追加一项即可，
- *   键 = tool 名，值 = handler(params, env)，分发层零改动。
+ * - workflows 参数：workflow 入口注入点（默认真实 lib/workflow 五入口），
+ *   测试传 fake 即可全链路冒烟（fake manager 同款模式）——否则正常分发
+ *   冒烟必须 spawn 真 zcode，成本不可接受。
+ * - env.emitFrame：handler 中途发通知帧（progress）的通道，缺省 no-op
+ *   （直接调用 handler 的测试不需要收集通知帧）。
  */
-function buildToolHandlers({ manager, nested = false } = {}) {
+function buildToolHandlers({ manager, nested = false, workflows } = {}) {
+  const wf = workflows || {
+    chain: runChain,
+    parallel: runParallel,
+    'map-reduce': runMapReduce,
+    'scatter-gather': runScatterGather,
+    'review-fix-loop': runReviewFixLoop,
+  };
   const handlers = Object.create(null);
   handlers[TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
@@ -203,20 +314,112 @@ function buildToolHandlers({ manager, nested = false } = {}) {
       return errContent(String(e && e.message || e));
     }
   };
+  handlers[RUN_WORKFLOW_TOOL_NAME] = async (params, env = {}) => {
+    if (nested) {
+      return errContent(
+        '嵌套调用已拒绝：ZSUB_NESTED=1 环境下不提供 run_workflow（防递归第二重门禁，D10）。'
+        + '恢复指引：这是预期行为，workflow 阶段会话内不要调用 run_workflow。'
+      );
+    }
+    const args = params.arguments || {};
+    // ---- 参数校验（照源 executeTool；模型校验例外见文件头注「移植差异」）
+    if (!args.task || typeof args.task !== 'string') return errContent('缺少必填参数 task（任务/目标描述）');
+    const workdir = path.resolve(args.workdir || '');
+    if (!fs.existsSync(workdir) || !fs.statSync(workdir).isDirectory()) {
+      return errContent(`workdir 不存在或不是目录: ${workdir}。恢复指引：传 workdir 参数（绝对路径）。`);
+    }
+
+    // ---- 进度上报（照源：客户端带 progressToken 才发；经 emitFrame 实时写出）
+    const progressToken = params && params._meta ? params._meta.progressToken : undefined;
+    const emitFrame = env.emitFrame || (() => {});
+    let expected = 1;
+    let done = 0;
+    const notifyProgress = (message) => {
+      if (progressToken === undefined) return;
+      emitFrame({
+        jsonrpc: '2.0', method: 'notifications/progress',
+        params: { progressToken, progress: Math.min(0.99, expected > 0 ? done / expected : 0), message },
+      });
+    };
+    const onPlan = (n) => { expected = Math.max(1, n); };
+    const onPhase = ({ phase, status }) => {
+      if (status === 'done' || status === 'failed' || /^done/.test(status)) done++;
+      notifyProgress(`${phase}: ${status}`);
+    };
+
+    const opts = {
+      task: args.task, workdir, model: args.model,
+      maxConcurrent: args.maxConcurrent || 3,
+      timeoutMsPerPhase: args.timeoutMsPerPhase || 600000,
+      onPhase, onPlan,
+    };
+
+    let result;
+    try {
+      switch (args.workflow) {
+        case 'chain':
+          result = await wf.chain(opts);
+          break;
+        case 'parallel':
+          result = await wf.parallel({ ...opts, perspectives: args.perspectives });
+          break;
+        case 'map-reduce': {
+          if (!Array.isArray(args.items) || !args.items.length) {
+            return errContent('map-reduce 需要非空 items（字符串数组）');
+          }
+          if (!args.operation) return errContent('map-reduce 需要 operation（对每个 item 做什么）');
+          result = await wf['map-reduce']({ ...opts, items: args.items, operation: args.operation });
+          break;
+        }
+        case 'scatter-gather':
+          result = await wf['scatter-gather']({ ...opts, subtaskCount: args.subtaskCount });
+          break;
+        case 'review-fix-loop':
+          result = await wf['review-fix-loop']({
+            ...opts,
+            reviewTarget: args.reviewTarget || 'git 未提交改动',
+            reviewers: args.reviewers,
+            maxRounds: args.maxRounds,
+          });
+          break;
+        default:
+          return errContent(
+            `不支持的工作流类型: ${args.workflow}（支持 chain / parallel / map-reduce / scatter-gather / review-fix-loop）。`
+            + '恢复指引：workflow 必须取 inputSchema 中的枚举值。'
+          );
+      }
+    } catch (e) {
+      // 入口抛错（含 ModelRouter 的模型校验错误）都是可操作错误，原样透传
+      return errContent(`工作流执行失败: ${e && e.message || e}`);
+    }
+
+    if (progressToken !== undefined) {
+      emitFrame({
+        jsonrpc: '2.0', method: 'notifications/progress',
+        params: { progressToken, progress: 1, message: result.ok ? 'completed' : 'failed' },
+      });
+    }
+    // 双段 content（照源 buildContentBlocks）：[0] markdown 人读报告，[1] ```json 机器数据
+    return { content: buildContentBlocks(result), isError: !result.ok };
+  };
   return handlers;
 }
 
 /**
  * 协议处理器（可测）：输入一个 JSON-RPC 消息对象，返回待写出的帧数组。
  * 通知帧（无 id）不产生输出；tools/call 串行排队由调用方（main 循环）保证。
+ * emitFrame：handler 执行中途的通知帧（progress）实时写出通道——这些帧
+ * 无法进本函数的返回值数组（返回时机在 handler 完成后），main 传
+ * writeFrame 即按真实时序推送。
  */
-function createServer({ manager, nested = false, log = () => {} } = {}) {
-  const toolHandlers = buildToolHandlers({ manager, nested });
+function createServer({ manager, nested = false, log = () => {}, emitFrame = () => {}, workflows } = {}) {
+  const toolHandlers = buildToolHandlers({ manager, nested, workflows });
 
   /**
    * 两级分发第一级：按 params.name 查注册表，未命中抛 -32601（协议级
    * 错误，走 JSON-RPC error 帧）；命中则整包交给对应 handler（第二级，
-   * zsub 的 switch(action) 见 buildToolHandlers）。
+   * zsub 的 switch(action) / run_workflow 的 switch(workflow) 见
+   * buildToolHandlers）。
    */
   async function dispatchToolCall(params, env = {}) {
     const name = params && params.name;
@@ -253,7 +456,7 @@ function createServer({ manager, nested = false, log = () => {} } = {}) {
         break;
       case 'tools/call':
         try {
-          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params) });
+          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params, { emitFrame }) });
         } catch (e) {
           if (e instanceof RpcError) {
             frames.push({ jsonrpc: '2.0', id: msg.id, error: { code: e.code, message: e.message } });
@@ -366,7 +569,7 @@ async function main() {
     }
   }
 
-  const server = createServer({ manager, nested: config.NESTED, log });
+  const server = createServer({ manager, nested: config.NESTED, log, emitFrame: writeFrame });
   let queue = Promise.resolve(); // 串行处理：record-store 无跨请求事务，但保持顺序可预测
   const decoder = createFrameDecoder((line) => {
     let msg;
@@ -401,6 +604,7 @@ if (require.main === module) {
 module.exports = {
   extractSessionId,
   buildToolDefinition,
+  buildRunWorkflowToolDefinition,
   buildTools,
   buildToolHandlers,
   createFrameDecoder,

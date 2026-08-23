@@ -178,7 +178,7 @@ test('scatter-gather：拆分出 2 个子任务 → 各自分发处理 → gathe
 
   // 报告条目冒烟
   const md = report.buildMarkdownReport(result);
-  assert.ok(md.includes('# dynamic-workflow · scatter-gather 报告'));
+  assert.ok(md.includes('# zsub · scatter-gather 报告'));
   assert.ok(md.includes('子任务清单（scatter 拆出 2 个）'));
   assert.ok(md.includes('| 4 | gather |'));
 });

@@ -1,7 +1,7 @@
 ---
 name: zsub-orchestration
-description: Use when delegating tasks to background subagents via the zsub tool and deciding between zsub and engine-native background agents. Covers task decomposition, model routing, worktree isolation, completion notification semantics, and the no-polling rule. 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发。
-whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、或需要跨窗口管理 subagent 记录时。
+description: Use when delegating tasks to background subagents via the zsub tool, deciding between zsub and engine-native background agents, or running multi-phase workflows via the run_workflow tool. Covers task decomposition, model routing, worktree isolation, completion notification semantics, the no-polling rule, and workflow selection (chain / parallel / map-reduce / scatter-gather / review-fix-loop). 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发、workflow 编排、run_workflow、多阶段流水线、多视角审查、审查修复循环、map-reduce、scatter-gather。
+whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、需要跨窗口管理 subagent 记录、或需要确定性多阶段编排（无需中途干预）时。
 ---
 
 # zsub 编排指南
@@ -46,3 +46,31 @@ zsub(action="close", subagentId="<id>")                   → 关闭会话并清
 
 - 完成通知（mailbox 注入）含结果摘要；全文在 `~/.zcode/zsub/outputs/<subagentId>.md`。
 - 终态 record 的 error/timeout 字段含失败原因与恢复指引（如调大 timeoutMs、拆小任务）。
+
+## workflow 编排（run_workflow tool）
+
+确定性多阶段管线：每阶段独立无头 session，中间结论自动链接/合并，主会话只收最终报告（markdown + JSON 双段）。带 progressToken 时有阶段级进度通知。
+
+五种 workflow 速查与选择：
+
+| 场景 | workflow | 形态 |
+|------|----------|------|
+| 已知 items 数组逐个处理再归总 | `map-reduce` | items + operation 必填，并行 map → 单 agent reduce |
+| 单一目标多视角审查后聚合 | `parallel` | 默认 security/performance/maintainability，可传 perspectives |
+| 大任务先拆分再并行再合并 | `scatter-gather` | scatter 拆 2-4 份 → 并行 process → gather |
+| 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds 可调 |
+| 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
+
+通用参数：`workflow` / `task` / `workdir`（必填，绝对路径，阶段在其下工作）；`model` / `maxConcurrent`（默认 3）/ `timeoutMsPerPhase`（默认 600000）。运行可达数分钟——启动后等结果，不要轮询。
+
+CLI 等价入口（脚本化/调试）：`node bin/zsub.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`，用法详见 `node bin/zsub.js workflow`。
+
+### 何时用 workflow vs subagent（zsub start）
+
+| 特征 | 选择 |
+|------|------|
+| 固定多阶段管线、阶段间自动串联、无需中途干预 | run_workflow |
+| 已知批量 items 的并行变换 | run_workflow（map-reduce） |
+| 长驻任务、需要续聊追问（conversation）、需要完成通知异步唤醒主会话 | zsub start |
+| 需要 worktree 改动隔离 + patch 回传、schema 结构化输出、agent .md 生态 | zsub start |
+| 琐碎单文件修改、纯问答 | 都不用——直接做 |
