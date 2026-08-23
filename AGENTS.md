@@ -39,6 +39,7 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 # workspace 根（cwd = 仓库 worktree 根）
 node scripts/check-sync.js                        # 版本三件套/包名/零依赖一致性检查
 node scripts/check-pack.js                        # npm 包内容完整性（files 白名单漏文件拦截）
+node scripts/check-release-needed.js              # 改动-发版关联：列出改了但版本未 bump 的插件
 node scripts/release.js <plugin> <patch|minor|major>   # 发版：bump 三处版本 + commit + tag（不 push）
 
 # 插件目录内（cwd = <plugin>/）
@@ -73,7 +74,9 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 
 每个插件同时是一个 npm 包，随 workspace 仓统一发布（**不用 changesets**：本项目零依赖、非
 workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json 状态机更贴合；changesets 适合
-高频多包 monorepo）。
+高频多包 monorepo。其 workspace 依赖闭包能力在本仓无对应形态（插件间零依赖）；「改了该发版」
+检测由 check-release-needed.js 承接——xyz-agent 经验：changesets 的自动版本推算在高价值场景
+反被绕开，保留价值仅在声明文件与 changelog，本项目以更轻形态覆盖）。
 
 - **命名**：npm 包名 = `@zhushanwen/` + 插件目录名；目录名必须 `z-` 前缀（zcode 插件标识），
   如目录 `z-subagent-workflow` → 包 `@zhushanwen/z-subagent-workflow`。check-sync 强制。
@@ -90,6 +93,20 @@ workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json �
   2. 确认后 `git push origin HEAD && git push origin <plugin>@<version>`
   3. `.github/workflows/release-npm.yml` 校验 tag↔版本一致 + check-sync 后
      `npm publish --access public --provenance`
+- **版本 type 判定准则**（release.js 传 patch/minor/major 时的项目概念化标准；发版面由
+  `node scripts/check-release-needed.js` 机械化列出——改了 files 白名单内文件但版本未 bump
+  的插件即待发版）：
+
+  | type | 准则 |
+  |------|------|
+  | major | MCP tool 语义/action 行为不兼容变更、CLI 参数不兼容、数据目录布局（`~/.zcode/<plugin>/`）迁移 |
+  | minor | 新增 MCP tool/action/skill/CLI 子命令、能力扩展（兼容） |
+  | patch | bug 修复、性能优化、内部重构、白名单内文档更新 |
+
+- **多插件操作模式**：每插件独立 package.json + 独立版本 + 独立 tag（`release.js <plugin>` 逐个
+  跑），发版节奏互不绑定；批量发版 = 循环多次 release.js（各自 tag 各自 workflow run，天然隔离）。
+  `shared/` 变更不自动传播——check-release-needed 输出 SHARED_CHANGED 警告，由人确认哪些
+  vendored 它的插件需要重发。
 - **前置条件**：GitHub 仓配 `NPM_TOKEN` secret；首次发布前 scope `@zhushanwen` 的包须
   npm 账号下创建（scoped 公开包每次都要 `--access public`，workflow 已带）。
 - 插件首次接 npm：目录加 package.json（字段照 z-subagent-workflow 抄）→ marketplace.json 登记

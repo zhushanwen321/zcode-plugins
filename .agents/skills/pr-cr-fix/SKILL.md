@@ -20,7 +20,7 @@ static gate → review-fix-loop（多维 review → 聚合 → 修复 → 重审
 |--------|--------------|---------|------|
 | PR/push 阶段 | 阶段 1 开 PR / 阶段 3 推 PR | 阶段 3（review 闭环后一次性 push + 开 PR） | 远端 2026-08-23 绑定（zhushanwen321/zcode-plugins）后补齐；review 前不开 PR（review 中分支还会变） |
 | 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | 无 | 本仓零依赖纯 Node，无对应基础设施；static gate 由 node --test + npm 三件套 gate 承接 |
-| changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack | 本仓发布走 tag 直发（非 changesets）：版本三件套一致性 + 包内容完整性就是发布门禁 |
+| changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack + check-release-needed | 本仓发布走 tag 直发（非 changesets）：三件套一致性 + 包内容 + 改动-发版关联检测（UNDECLARED 等价物） |
 | reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；契约不匹配 = parseFail 按 clean 处理，静默漏审 |
 | agent.md 消费方式 | pi workflow batch1 传 agent 路径 | task 内映射表 + reviewer 自行 Read | 本项目 reviewers 是视角名（非 agent .md 引用），workflow prompt 模板不挂 agent |
 | 审查维度 | 8 维（含 electron-build/extension-api 等） | 5 维（zsw 领域重划） | 本仓是零依赖 Node CLI/MCP server，无 Electron/monorepo |
@@ -105,6 +105,12 @@ node z-subagent-workflow/bin/zsw.js workflow \
 
 重跑阶段 1 static gate 全部命令（单测 + check-sync + check-pack）。
 **Gate-3a**：全绿才进 3b；FAIL 派 worker 修复后从 3a 头部重跑。
+
+**3a.5 发版面提醒（软 gate，AskUserQuestion）**：跑 `node scripts/check-release-needed.js`。
+`UNRELEASED` 非空（改了消费者可见文件但版本未 bump）时问用户：本次发版（记下待发插件，
+合 main 后走 merge skill 阶段 5 / release.js）/ 纯内部改动不发版（PR body 注明）。
+`SHARED_CHANGED` 警告时确认 vendored 插件是否需要重发。不阻塞流程——防 bug fix 静默丢失，
+决策权在用户。
 
 ### 3b — PR title/body 自动生成 + push（需用户授权）+ 建 PR
 
