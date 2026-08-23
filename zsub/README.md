@@ -1,15 +1,17 @@
 # zsub — zcode subagent 编排 + workflow 插件
 
 > 两个 MCP tool：
-> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **`run_workflow`** — 5 种确定性多阶段编排（chain/parallel/map-reduce/scatter-gather/review-fix-loop），自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，zsub 是唯一一套）。
+> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
+> **`run_workflow`** — 确定性多阶段编排（六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 后台化（立即返回 runId，完成自动通知）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，zsub 是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-orchestration`。
 
 ## 架构（端口/适配器内核）
 
 ```
-入口层   MCP 双 tool：zsub（六 action）+ run_workflow（5 种编排）+ skill + CLI 薄壳
-编排层   SubagentManager（只依赖 lib/ports.js 契约）/ lib/workflow/（确定性管线）
+入口层   MCP 双 tool：zsub（七 action）+ run_workflow（六 action）+ skill + CLI 薄壳
+编排层   SubagentManager（subagent 生命周期，只依赖 lib/ports.js 契约）
+         WorkflowManager（workflow run 生命周期，共享 records/outputs/notifier）
+         lib/workflow/（内置 5 种确定性管线）+ workflow-script（自定义脚本四根发现/执行/校验）
 端口层   RunnerPort        NotifierPort        ModelRouterPort
           ├ SpawnRunner      ├ MailboxNotifier    ├ home-pool（spawn 配套）
           └ AppServerRunner  └ PollingNotifier    └ per-session（apc 配套）
@@ -28,7 +30,7 @@
 
 ## 使用
 
-主 agent 调用 `zsub`（六 action：start/list/status/cancel/message/close）与 `run_workflow`（编排）两个 tool；人类可直接调试：
+主 agent 调用 `zsub`（七 action：start/list/status/cancel/message/close/agents）与 `run_workflow`（六 action：run/abort/status/list/scripts/lint）两个 tool；人类可直接调试：
 
 ```bash
 node bin/zsub.js start --task "审查 src/ 的错误处理" --slug review-1 --model GLM-5.3
@@ -36,13 +38,28 @@ node bin/zsub.js list
 node bin/zsub.js status --id sa-xxxx
 node bin/zsub.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出
 node bin/zsub.js cancel --id sa-xxxx
+```
 
+workflow 管理面（MCP `run_workflow` 六 action 的 CLI 等价；record/outputs/通知同源）：
+
+```bash
+# run（--action 缺省；同步等完成 + 报告。异步 runId + 完成通知走 MCP run_workflow）
 node bin/zsub.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsub.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
+node bin/zsub.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # 自定义脚本
+
+# abort / status / list / scripts / lint
+node bin/zsub.js workflow --action list
+node bin/zsub.js workflow --action status --id wf-xxxxxxxx
+node bin/zsub.js workflow --action abort --id wf-xxxxxxxx
+node bin/zsub.js workflow --action scripts          # 内置 5 + 自定义脚本清单
+node bin/zsub.js workflow --action lint --file <脚本路径>
 ```
 
-CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。
+**自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsub/workflows` > `~/.agents/workflows` > `~/.zsub/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
+
+CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` / `run_workflow` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。
 
 ## 从 dynamic-workflow 迁移
 
@@ -67,7 +84,7 @@ CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（�
 - **spawn 模式 running 不可投递**（message 返回 busy）；appserver 模式的 send-while-running 语义待真机探针。
 - **模型路由当前仅支持 `builtin:bigmodel-coding-plan` 单 provider**：agent .md 带其他 provider 的 model 会得到可操作错误（列出可用清单）。多 provider 支持待后续读 v2 config 全量 provider 列表。
 - **tools 白名单是软约束（prompt 段），denylist 才是硬约束**（`--disallowed-tools` flag）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
-- **subagent 与 workflow 的并发池相互独立**（各默认 3）：同时跑 3 个 subagent + 1 个 3 并发 workflow 时最多 6 个 zcode 进程。
+- **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 12 个 zcode 进程。
 - **并发深度分层当前为预留**：嵌套环境（ZSUB_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **appserver conversation 会话无 idle TTL 回收**：`config.idleConversationTtlMs` 为预留常量，未接线。
 - **mailbox 引擎侧语义**：drain 单次最多 20 条（zsub 用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，zsub 自身投递已用原子写 + 写前自检规避）。
@@ -82,4 +99,4 @@ CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（�
 | M4 | worktree | 干净主树 `start(worktree=true, task="在 src/ 新增 hello.ts")` | 主树干净；通知含 patchFile；`git apply --check <patch>` 通过 |
 | M5 | appserver runner | `ZSUB_RUNNER=appserver`（或配置）后 conversation 两轮 | 探针通过则零冷启动续聊；失败自动降级 spawn 且 record.runnerKind 如实标注 |
 
-无头 e2e（H1-H10）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（真实 zcode 无头进程，注意模型 token 消耗）。
+无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）。

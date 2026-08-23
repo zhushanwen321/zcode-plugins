@@ -3,7 +3,7 @@
 /**
  * zsub CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
- *   1. 人类调试与脚本化（不需要 LLM，直接驱动六 action）
+ *   1. 人类调试与脚本化（不需要 LLM，直接驱动七 action + workflow 六面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
  *      CLI 进程被引擎跟踪，完成时触发原生 task-notification（独立 turn
  *      唤醒 + goal gate，Z4/Z6 语义）。这是 TaskNotificationNotifier
@@ -26,17 +26,18 @@
  *   node bin/zsub.js message --id <subagentId> --text "<续聊消息>"（阻塞到本轮完成）
  *   node bin/zsub.js cancel --id <subagentId>
  *   node bin/zsub.js close --id <subagentId>
- *   node bin/zsub.js workflow --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop>
- *        --task "<任务/目标>" --workdir <绝对路径> [options]
- *        （参数面照源 dynamic-workflow/bin CLI；--workflow 子命令不经
- *        manager 组装——workflow 是独立编排通道，与 subagent 生命周期无关）
+ *   node bin/zsub.js workflow [--action <run|abort|status|list|scripts|lint>]
+ *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
+ *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
+ *        （N2-b 起经 WorkflowManager：record / outputs / 完成通知与 MCP
+ *         run_workflow 同源；run 同步等完成——CLI 一次性进程无后台模式，
+ *         异步 runId + 完成通知走 MCP run_workflow tool）
  *
- * 输出：stdout 一律 JSON（人读加 | jq）；workflow 子命令默认输出 markdown
- * 报告 + JSON 两段（--json 只出 JSON）；进度与诊断走 stderr。exit 0 = 命令成功。
+ * 输出：stdout 一律 JSON（人读加 | jq）；workflow run 默认输出 markdown 报告
+ * + run 摘要 JSON 两段（--json 只出 JSON）；进度与诊断走 stderr。exit 0 = 成功。
  */
 
 const path = require('node:path');
-const fs = require('node:fs');
 const { assembleManager } = require('../lib/assemble');
 
 function usage(exitCode = 1) {
@@ -67,25 +68,44 @@ function parseArgs(argv) {
 
 // ------------------------------------------------------ workflow 子命令
 
-const WORKFLOW_NAMES = ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop'];
+/** workflow 六 action（与 MCP run_workflow tool 的 action 枚举同源）。 */
+const WORKFLOW_ACTIONS = ['run', 'abort', 'status', 'list', 'scripts', 'lint'];
+
+/**
+ * scripts action 的内置索引。面向人类 CLI 的中文一句话；LLM 侧权威索引在
+ * dist/mcp/server.js 的 BUILTIN_WORKFLOW_INFO（英文，随 tool description）——
+ * 两个入口受众不同，文案独立维护，名字集合以 lib/workflow-manager 的
+ * defaultWorkflows 为准。
+ */
+const BUILTIN_WORKFLOW_INFO = [
+  { name: 'chain', description: '分析 → 实现 → 总结 三步顺序链' },
+  { name: 'parallel', description: '单目标多视角并行审查后聚合' },
+  { name: 'map-reduce', description: '对已知 items 数组并行变换再归约' },
+  { name: 'scatter-gather', description: '大任务拆 2-4 份并行处理再合并' },
+  { name: 'review-fix-loop', description: '并行审查 → 聚合 must-fix → 修复 → 复审到 clean（会写文件）' },
+];
 
 function workflowUsage(exitCode = 1) {
   process.stderr.write(
-    'zsub workflow：不经 MCP 直接驱动 5 种内置 workflow（测试与脚本化入口，参数面照 dynamic-workflow CLI）\n'
+    'zsub workflow：workflow 编排与管理（经 WorkflowManager，record/outputs/通知与 MCP run_workflow 同源）\n'
     + '\n'
     + '用法:\n'
-    + '  node bin/zsub.js workflow --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop>'
-    + ' --task "<任务/目标>" --workdir <绝对路径> [options]\n'
+    + '  node bin/zsub.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
+    + '  （--action 缺省 = run；管理面 action 与 MCP run_workflow tool 一一对应）\n'
     + '\n'
-    + '通用选项:\n'
-    + '  --task <text>             任务描述（map-reduce 可选，其余必填）\n'
+    + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
+    + '  异步 runId + 完成通知走 MCP run_workflow）:\n'
+    + '  --workflow <名>           chain / parallel / map-reduce / scatter-gather /\n'
+    + '                            review-fix-loop / script:<自定义脚本名>\n'
+    + '  --task <text>             任务描述（必填，自包含）\n'
     + '  --workdir <path>          工作目录（必填，绝对路径）\n'
     + '  --model <name>            模型短名（默认 GLM-5.3；可选 GLM-4.7-Flash 等）\n'
-    + '  --max-concurrent <n>      并发上限（默认 3）\n'
+    + '  --max-concurrent <n>      单 workflow 内阶段并发上限（默认 3）\n'
     + '  --timeout-per-phase <ms>  单阶段超时（默认 600000）\n'
-    + '  --json                    只输出结果 JSON（默认 markdown 报告 + JSON 两段）\n'
+    + '  --timeout-ms <ms>         workflow 整体超时（默认 1800000）\n'
+    + '  --json                    只输出 run 摘要 JSON（默认 markdown 报告 + 摘要两段）\n'
     + '\n'
-    + 'per-workflow 选项:\n'
+    + '  per-workflow 选项:\n'
     + '  --perspectives "a,b,c"    parallel：分析视角（默认 security,performance,maintainability）\n'
     + '  --items <json数组|a,b,c>  map-reduce：待处理条目，如 \'["a","b"]\' 或 a,b,c\n'
     + '  --operation <text>        map-reduce：对每个 item 做什么\n'
@@ -94,7 +114,14 @@ function workflowUsage(exitCode = 1) {
     + '  --reviewers "a,b"         review-fix-loop：审查焦点（默认 correctness,robustness）\n'
     + '  --max-rounds <n>          review-fix-loop：最大轮数（默认 5）\n'
     + '\n'
-    + '进度打 stderr；exit 0 = 成功。zcode CLI 路径可用 ZSUB_ZCODE_CLI 覆盖。\n'
+    + 'abort / status:\n'
+    + '  --id <runId>              wf- 前缀的 run id（list 可查；abort 后状态落 cancelled）\n'
+    + 'list:                       全部 workflow run（精简视图）\n'
+    + 'scripts:                    内置 5 + 自定义脚本清单（四根发现）\n'
+    + 'lint:\n'
+    + '  --file <脚本路径>         校验脚本（node --check 语法 + name/description/run 契约形状）\n'
+    + '\n'
+    + '进度打 stderr；exit 0 = 成功（run 以终态 closed 判定）。zcode CLI 路径可用 ZSUB_ZCODE_CLI 覆盖。\n'
   );
   process.exit(exitCode);
 }
@@ -103,7 +130,7 @@ function csv(v) {
   return typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
 }
 
-/** --items 双形态：源 CLI 的 JSON 数组（'["a","b"]'）优先，逗号分隔（a,b,c）回退。 */
+/** --items 双形态：JSON 数组（'["a","b"]'）优先，逗号分隔（a,b,c）回退。 */
 function parseItems(v) {
   if (typeof v !== 'string' || v.trim() === '') return undefined;
   const s = v.trim();
@@ -115,79 +142,107 @@ function parseItems(v) {
   return s.split(',').map((x) => x.trim()).filter(Boolean);
 }
 
+function requireRunIdArg(args) {
+  if (typeof args.id !== 'string' || args.id.trim() === '') {
+    process.stderr.write('缺少 --id <runId>（wf- 前缀，list 可查）\n');
+    workflowUsage(1);
+  }
+  return args.id;
+}
+
+/** run action：组参 → 同步等完成 → 报告 + 摘要（exit code 按终态）。 */
+async function runWorkflowRun(wfManager, args, cwd) {
+  if (!args.workflow) { process.stderr.write('缺少 --workflow\n'); workflowUsage(1); }
+  if (!args.task) { process.stderr.write('缺少 --task（必填，自包含任务书）\n'); workflowUsage(1); }
+  if (!args.workdir) { process.stderr.write('缺少 --workdir\n'); workflowUsage(1); }
+
+  const params = {
+    workflow: args.workflow, // 内置名或 script:<脚本名>（合法性由 manager 校验）
+    task: args.task,
+    workdir: path.resolve(args.workdir),
+    model: args.model,
+    maxConcurrent: args.maxConcurrent ? Number(args.maxConcurrent) : undefined,
+    timeoutMsPerPhase: args.timeoutPerPhase ? Number(args.timeoutPerPhase) : undefined,
+    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+    // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
+    // start 的 CLI 语义对齐；异步启动走 MCP run_workflow
+    wait: true,
+    // 进度走 stderr（stdout 留给结果）；回调经 record 的 JSON 序列化自然丢弃，不落盘
+    onPhase: ({ phase, status }) => process.stderr.write(`[${new Date().toISOString()}] ${phase}: ${status}\n`),
+  };
+  if (args.perspectives !== undefined) params.perspectives = csv(args.perspectives);
+  if (args.items !== undefined) params.items = parseItems(args.items);
+  if (args.operation !== undefined) params.operation = args.operation;
+  if (args.subtaskCount !== undefined) params.subtaskCount = Number(args.subtaskCount);
+  if (args.reviewTarget !== undefined) params.reviewTarget = args.reviewTarget;
+  if (args.reviewers !== undefined) params.reviewers = csv(args.reviewers);
+  if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
+
+  const fin = await wfManager.start(params, { cwd });
+  const summary = {
+    runId: fin.runId, workflow: fin.workflow, status: fin.status,
+    outputFile: fin.outputFile, error: fin.error === undefined ? null : fin.error,
+  };
+  if (args.json === true) {
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+  } else {
+    process.stdout.write(`\n${'='.repeat(60)}\nmarkdown 报告:\n${'='.repeat(60)}\n`);
+    process.stdout.write(`${fin.report || ''}\n`);
+    process.stdout.write(`\n${'='.repeat(60)}\nrun 摘要:\n${'='.repeat(60)}\n`);
+    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+  }
+  process.exit(fin.status === 'closed' ? 0 : 1);
+}
+
 /**
- * workflow 子命令：独立编排通道，不经 assembleManager（不做 record 探活、
- * 不碰 mailbox）——workflow 每阶段自起隔离 session，与 subagent 生命周期无关。
+ * workflow 子命令：六个 action 统一经 WorkflowManager（N2-b 起 record 化，
+ * 与 MCP run_workflow 同源）。CLI 一次性进程只重建内存索引（同 main 的
+ * subagent 路径：不探活、不落盘），非终态 run 在 CLI 视角显示 lost。
  */
 async function runWorkflowCommand(rest) {
   const args = parseArgs(rest);
   if (args.help === true) workflowUsage(0);
 
-  const name = args.workflow;
-  if (!WORKFLOW_NAMES.includes(name)) {
-    process.stderr.write(`不支持的工作流: ${name || '(未指定)'}，支持: ${WORKFLOW_NAMES.join(' / ')}\n`);
+  const action = typeof args.action === 'string' ? args.action : 'run';
+  if (!WORKFLOW_ACTIONS.includes(action)) {
+    process.stderr.write(`不支持的 --action: ${action || '(未指定)'}，支持: ${WORKFLOW_ACTIONS.join(' / ')}\n`);
     workflowUsage(1);
   }
-  if (name !== 'map-reduce' && !args.task) { process.stderr.write('缺少 --task\n'); workflowUsage(1); }
-  if (!args.workdir) { process.stderr.write('缺少 --workdir\n'); workflowUsage(1); }
-  if (name === 'map-reduce' && !args.operation) { process.stderr.write('map-reduce 缺少 --operation\n'); workflowUsage(1); }
 
-  const workdir = path.resolve(args.workdir);
-  if (!fs.existsSync(workdir) || !fs.statSync(workdir).isDirectory()) {
-    process.stderr.write(`workdir 不存在或不是目录: ${workdir}\n`);
-    process.exit(1);
+  const { wfManager } = assembleManager();
+  try { wfManager.records.rebuildFromLog(); } catch (e) {
+    process.stderr.write(`[zsub] record 重建失败（继续）: ${e && e.message || e}\n`);
   }
+  const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
 
-  // 按需 require：非 workflow 子命令不加载 workflow 模块（CLI 启动保持薄）
-  const { runChain } = require('../lib/workflow/chain');
-  const { runParallel } = require('../lib/workflow/parallel');
-  const { runMapReduce } = require('../lib/workflow/map-reduce');
-  const { runScatterGather } = require('../lib/workflow/scatter-gather');
-  const { runReviewFixLoop } = require('../lib/workflow/review-fix-loop');
-  const { buildMarkdownReport } = require('../lib/workflow/report');
+  if (action === 'run') return runWorkflowRun(wfManager, args, cwd);
 
-  const common = {
-    workdir,
-    model: args.model,
-    maxConcurrent: args.maxConcurrent ? Number(args.maxConcurrent) : 3,
-    timeoutMsPerPhase: args.timeoutPerPhase ? Number(args.timeoutPerPhase) : 600000,
-    // 进度走 stderr（照源 CLI）：stdout 留给最终结果，便于管道消费
-    onPhase: ({ phase, status }) => process.stderr.write(`[${new Date().toISOString()}] ${phase}: ${status}\n`),
-  };
-
-  let result;
-  switch (name) {
-    case 'chain':
-      result = await runChain({ ...common, task: args.task });
+  switch (action) {
+    case 'abort':
+      process.stdout.write(`${JSON.stringify(await wfManager.abort(requireRunIdArg(args)), null, 2)}\n`);
       break;
-    case 'parallel':
-      result = await runParallel({ ...common, task: args.task, perspectives: csv(args.perspectives) });
+    case 'status':
+      process.stdout.write(`${JSON.stringify(wfManager.status(requireRunIdArg(args)), null, 2)}\n`);
       break;
-    case 'map-reduce':
-      result = await runMapReduce({ ...common, task: args.task, items: parseItems(args.items), operation: args.operation });
+    case 'list':
+      process.stdout.write(`${JSON.stringify(wfManager.list(), null, 2)}\n`);
       break;
-    case 'scatter-gather':
-      result = await runScatterGather({ ...common, task: args.task, subtaskCount: args.subtaskCount ? Number(args.subtaskCount) : undefined });
+    case 'scripts':
+      process.stdout.write(`${JSON.stringify({
+        builtin: BUILTIN_WORKFLOW_INFO,
+        scripts: wfManager.listScripts(cwd),
+      }, null, 2)}\n`);
       break;
-    case 'review-fix-loop':
-      result = await runReviewFixLoop({
-        ...common, task: args.task,
-        reviewTarget: args.reviewTarget, reviewers: csv(args.reviewers),
-        maxRounds: args.maxRounds ? Number(args.maxRounds) : undefined,
-      });
+    case 'lint': {
+      if (typeof args.file !== 'string' || args.file.trim() === '') {
+        process.stderr.write('lint 需要 --file <脚本路径>（scripts 可查已发现脚本的 file 字段）\n');
+        workflowUsage(1);
+      }
+      const { lintScript } = require('../lib/workflow-script');
+      process.stdout.write(`${JSON.stringify(await lintScript(path.resolve(args.file)), null, 2)}\n`);
       break;
+    }
   }
-
-  if (args.json === true) {
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  } else {
-    // 照源 CLI：markdown 报告（人读）+ 分隔线 + JSON（机器）两段
-    process.stdout.write(`\n${'='.repeat(60)}\nmarkdown 报告:\n${'='.repeat(60)}\n`);
-    process.stdout.write(buildMarkdownReport(result));
-    process.stdout.write(`\n${'='.repeat(60)}\nJSON 数据:\n${'='.repeat(60)}\n`);
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  }
-  process.exit(result.ok ? 0 : 1);
 }
 
 async function main() {

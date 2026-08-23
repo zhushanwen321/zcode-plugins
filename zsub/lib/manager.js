@@ -234,7 +234,11 @@ class SubagentManager {
 
   /** 精简视图：给主 agent 扫一眼用，全量走 status。 */
   list() {
-    return this.records.list().map((r) => ({
+    return this.records.list()
+      // recordType 过滤：workflow record（wf- 前缀，N2-a 起写入）不经 zsub 面
+      // 露出——双池独立（README 已知边界）；旧 record 无该字段视为 subagent
+      .filter((r) => r.recordType === undefined || r.recordType === 'subagent')
+      .map((r) => ({
       subagentId: r.subagentId,
       slug: r.slug,
       agent: r.agent === undefined ? null : r.agent,

@@ -1,11 +1,12 @@
 'use strict';
 
 /**
- * MCP server 测试（W2-S4 决策位③入口）。
+ * MCP server 测试（W2-S4 决策位③入口；N2-b 起 run_workflow 六 action 面）。
  *
- * 隔离原则：协议层与纯函数用 fake manager 全覆盖；进程级测试 spawn 真实
- * server 进程但 ZSUB_ROOT / ZCODE_MAILBOX_ROOT 指到临时目录——不碰真实
- * ~/.zcode，不跑真 zcode。
+ * 隔离原则：协议层与纯函数用 fake manager / fake wfManager 全覆盖；真实
+ * WorkflowManager 接线用例（校验权威 + 后台冒烟 + abort）注入 fake 内置入口
+ * （不跑真 zcode）；进程级测试 spawn 真实 server 进程但 ZSUB_ROOT /
+ * ZCODE_MAILBOX_ROOT 指到临时目录——不碰真实 ~/.zcode。
  *
  * env 必须在 require server 之前设置：server 传递依赖 config，
  * config 在模块加载期从 env 冻结路径。
@@ -306,34 +307,39 @@ test('buildTools：返回数组形态，含 zsub 与 run_workflow，与单 tool 
   assert.deepEqual(tools[1], server.buildRunWorkflowToolDefinition());
 });
 
-test('buildRunWorkflowToolDefinition：workflow 枚举 5 种、必填三项、无源插件品牌残留', () => {
+test('buildRunWorkflowToolDefinition：action 枚举 6 值、description ≤1000、workflow 自由 string、无源插件品牌残留', () => {
   const tool = server.buildRunWorkflowToolDefinition();
   assert.deepEqual(
-    tool.inputSchema.properties.workflow.enum,
-    ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop'],
+    tool.inputSchema.properties.action.enum,
+    ['run', 'abort', 'status', 'list', 'scripts', 'lint'],
   );
-  assert.deepEqual(tool.inputSchema.required, ['workflow', 'task', 'workdir']);
-  // 品牌统一（M1-a 定案）：zsub 插件不带 dynamic-workflow 字样
-  assert.ok(!tool.description.includes('dynamic-workflow'));
-  assert.ok(!JSON.stringify(tool.inputSchema).includes('dynamic-workflow'));
-  // 源 description 五种 workflow 速查保留（照搬权威参数面）
+  assert.deepEqual(tool.inputSchema.required, ['action']);
+  assert.ok(tool.description.length <= 1000, `description ${tool.description.length} 字符超限`);
+  // workflow 是自由 string（N2-b）：script:<name> 四根动态发现，静态枚举无法收录
+  assert.equal(tool.inputSchema.properties.workflow.enum, undefined);
+  assert.ok(tool.inputSchema.properties.workflow.description.includes('script:'));
+  // 内置 5 名速查 + 后台纪律（runId 即返 + 勿轮询）保留
   for (const wf of ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop']) {
     assert.ok(tool.description.includes(`"${wf}"`), `description 缺 ${wf}`);
   }
+  assert.ok(tool.description.includes('do NOT poll'));
+  // 品牌统一（M1-a 定案）：zsub 插件不带 dynamic-workflow 字样
+  assert.ok(!tool.description.includes('dynamic-workflow'));
+  assert.ok(!JSON.stringify(tool.inputSchema).includes('dynamic-workflow'));
 });
 
 test('dispatchToolCall：两个注册 tool 名可正向分发；未收录名走 -32601（含原型链属性名）', async () => {
   const srv = server.createServer({
     manager: makeFakeManager(),
+    wfManager: makeFakeWfManager(),
     nested: false,
-    workflows: makeFakeWorkflows().impls,
   });
-  // run_workflow 已入表（M3 接线）：正向分发到 handler（此处以缺 task 校验错误证明命中）
+  // run_workflow 已入表（N2-b）：正向分发到 handler（此处以 runId 必填校验错误证明命中）
   const hit = await srv.dispatchToolCall({
-    name: 'run_workflow', arguments: { workflow: 'chain', workdir: TMP },
+    name: 'run_workflow', arguments: { action: 'status' },
   });
   assert.equal(hit.isError, true);
-  assert.match(hit.content[0].text, /task/);
+  assert.match(hit.content[0].text, /runId/);
 
   // 注册表键必须精确匹配：原型链属性名与未收录名不得被误当 handler 命中
   await assert.rejects(
@@ -375,51 +381,228 @@ test('注册表隔离：zsub handler 可脱离 dispatch 单独调用（buildTool
   assert.equal(fake.calls.length, 1); // 仅上面的 start，嵌套档零触达
 });
 
-// ------------------------------------------- run_workflow handler 冒烟（M3）
+// ---------------------------------------- run_workflow 六 action 面（N2-b）
 
-/** fake workflow 入口表：记录调用、驱动 onPlan/onPhase 回调、返回可渲染 result。 */
-function makeFakeWorkflows() {
+/** fake WorkflowManager：记录调用、返回可断言形态（协议层与分发面测试用）。 */
+function makeFakeWfManager() {
   const calls = [];
-  const wrap = (name) => async (opts) => {
-    calls.push({ name, opts });
-    if (opts.onPlan) opts.onPlan(2);
-    if (opts.onPhase) {
-      opts.onPhase({ phase: 'analyze', status: 'running' });
-      opts.onPhase({ phase: 'analyze', status: 'done' });
-    }
-    return {
-      workflow: name, ok: true, task: opts.task, workdir: opts.workdir, model: opts.model || '-',
-      startedAt: '2026-08-23T00:00:00.000Z', finishedAt: '2026-08-23T00:00:05.000Z',
-      phases: [], final: 'fake 结论',
-    };
-  };
   return {
     calls,
-    impls: {
-      chain: wrap('chain'), parallel: wrap('parallel'), 'map-reduce': wrap('map-reduce'),
-      'scatter-gather': wrap('scatter-gather'), 'review-fix-loop': wrap('review-fix-loop'),
+    async start(params, ctx) {
+      calls.push({ action: 'run', params, ctx });
+      return { runId: 'wf-fake1', workflow: params.workflow, status: 'running', notify: 'mailbox' };
+    },
+    async abort(runId) { calls.push({ action: 'abort', runId }); return { runId, status: 'cancelled', aborted: true }; },
+    status(runId) {
+      calls.push({ action: 'status', runId });
+      return { runId, status: 'closed', outputFile: path.join(TMP, 'outputs', `${runId}.md`) };
+    },
+    list() { calls.push({ action: 'list' }); return [{ runId: 'wf-fake1', workflow: 'chain', status: 'closed' }]; },
+    listScripts(cwd) {
+      calls.push({ action: 'scripts', cwd });
+      return [{ name: 'my-wf', description: '测试脚本', file: path.join(TMP, 'my-wf.js'), source: 'workspace-agents' }];
     },
   };
 }
 
-function makeWfServer() {
-  const fw = makeFakeWorkflows();
-  return { fw, srv: server.createServer({ manager: makeFakeManager(), nested: false, workflows: fw.impls }) };
+function makeWfServer(wfManager = makeFakeWfManager()) {
+  return { wfm: wfManager, srv: server.createServer({ manager: makeFakeManager(), wfManager, nested: false }) };
 }
 
-test('run_workflow：参数校验错误全部 isError 可操作（缺 task / workdir 不存在 / 未知 workflow / map-reduce 缺 items）', async () => {
-  const { fw, srv } = makeWfServer();
+test('run_workflow run：action 剥离后透传 start，_meta session + env.cwd 组装 ctx，立即返回句柄', async () => {
+  const { wfm, srv } = makeWfServer();
+  process.env.ZCODE_PROJECT_DIR = '/proj/wf';
+  try {
+    const result = await srv.dispatchToolCall({
+      name: 'run_workflow',
+      arguments: {
+        action: 'run', workflow: 'chain', task: '接线冒烟', workdir: TMP,
+        model: 'GLM-4.7-Flash', maxConcurrent: 2, timeoutMsPerPhase: 12345, wait: false,
+      },
+      _meta: { 'com.zcode/request-context': { session_id: 'sess_wf' } },
+    });
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.runId, 'wf-fake1');
+    assert.equal(payload.status, 'running');
+    assert.equal(wfm.calls.length, 1);
+    // action 不得泄入 start 参数（WorkflowManager 的 workflowParams 只剥
+    // STRIP_PARAM_KEYS，泄漏会污染入口参数与 record）
+    assert.equal(wfm.calls[0].params.action, undefined);
+    assert.equal(wfm.calls[0].params.workflow, 'chain');
+    assert.equal(wfm.calls[0].params.maxConcurrent, 2);
+    assert.equal(wfm.calls[0].ctx.targetSessionId, 'sess_wf');
+    assert.equal(wfm.calls[0].ctx.cwd, '/proj/wf');
+  } finally {
+    delete process.env.ZCODE_PROJECT_DIR;
+  }
+});
+
+test('run_workflow：abort/status/list 分发与 runId 必填校验', async () => {
+  const { wfm, srv } = makeWfServer();
   const call = (args) => srv.dispatchToolCall({ name: 'run_workflow', arguments: args });
+
+  const noId = await call({ action: 'status' });
+  assert.equal(noId.isError, true);
+  assert.match(noId.content[0].text, /runId/);
+
+  const st = await call({ action: 'status', runId: 'wf-1' });
+  assert.equal(JSON.parse(st.content[0].text).outputFile.includes('wf-1'), true);
+  assert.deepEqual(wfm.calls.at(-1), { action: 'status', runId: 'wf-1' });
+
+  const ab = await call({ action: 'abort', runId: 'wf-1' });
+  assert.equal(JSON.parse(ab.content[0].text).aborted, true);
+
+  const ls = await call({ action: 'list' });
+  assert.equal(JSON.parse(ls.content[0].text).length, 1);
+  assert.deepEqual(wfm.calls.at(-1), { action: 'list' });
+});
+
+test('run_workflow scripts：内置 5 + 脚本清单合并，cwd 透传发现层', async () => {
+  const { wfm, srv } = makeWfServer();
+  const result = await srv.dispatchToolCall(
+    { name: 'run_workflow', arguments: { action: 'scripts' } },
+    { cwd: '/proj/scripts-cwd' },
+  );
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0].text);
+  assert.deepEqual(
+    payload.builtin.map((b) => b.name),
+    ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop'],
+  );
+  assert.deepEqual(payload.scripts.map((s) => s.name), ['my-wf']);
+  assert.deepEqual(wfm.calls[0], { action: 'scripts', cwd: '/proj/scripts-cwd' });
+});
+
+test('run_workflow lint：file 必填 + 真实 lintScript 两档校验（好/坏脚本）', async (t) => {
+  const { srv } = makeWfServer();
+  const call = (args) => srv.dispatchToolCall({ name: 'run_workflow', arguments: args });
+
+  const noFile = await call({ action: 'lint' });
+  assert.equal(noFile.isError, true);
+  assert.match(noFile.content[0].text, /file/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-srv-lint-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const good = path.join(dir, 'good.js');
+  fs.writeFileSync(good, "module.exports = { name: 'good', description: 'd', run: async () => 'ok' };");
+  const okRes = JSON.parse((await call({ action: 'lint', file: good })).content[0].text);
+  assert.deepEqual(okRes, { ok: true, errors: [] });
+
+  const bad = path.join(dir, 'bad.js');
+  fs.writeFileSync(bad, "module.exports = { name: 'bad' };\nconst x = ;");
+  const badRes = JSON.parse((await call({ action: 'lint', file: bad })).content[0].text);
+  assert.equal(badRes.ok, false);
+  assert.ok(badRes.errors.some((e) => /语法/.test(e)), JSON.stringify(badRes));
+});
+
+test('run_workflow：bad action / manager 可操作错误透传 / NESTED 拒绝 / wfManager 缺失 -32603', async () => {
+  const { wfm, srv } = makeWfServer();
+  const call = (args) => srv.dispatchToolCall({ name: 'run_workflow', arguments: args });
+
+  const bad = await call({ action: 'explode' });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /不支持的 action/);
+  assert.match(bad.content[0].text, /run \| abort \| status \| list \| scripts \| lint/);
+
+  // wfManager 抛的都是含恢复指引的可操作错误，原样透传
+  const wfm2 = makeFakeWfManager();
+  wfm2.start = async () => {
+    throw new Error('不支持的 workflow "fancy"（内置: chain / parallel / ...）。恢复指引：workflow 必须取内置名或 script:<脚本名>。');
+  };
+  const srv2 = server.createServer({ manager: makeFakeManager(), wfManager: wfm2, nested: false });
+  const err = await srv2.dispatchToolCall({
+    name: 'run_workflow', arguments: { action: 'run', workflow: 'fancy', task: 't', workdir: TMP },
+  });
+  assert.equal(err.isError, true);
+  assert.match(err.content[0].text, /不支持的 workflow/);
+  assert.match(err.content[0].text, /恢复指引/);
+
+  // NESTED 档：拒绝且零触达（防递归第二重对两个 tool 一视同仁）
+  const wfmNested = makeFakeWfManager();
+  const nestedSrv = server.createServer({ manager: makeFakeManager(), wfManager: wfmNested, nested: true });
+  const rejected = await nestedSrv.dispatchToolCall({ name: 'run_workflow', arguments: { action: 'list' } });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
+  assert.equal(wfmNested.calls.length, 0);
+
+  // wfManager 缺失（异常组装防御）：协议级 -32603 而非 TypeError 炸穿
+  const broken = server.createServer({ manager: makeFakeManager(), nested: false });
+  await assert.rejects(
+    broken.dispatchToolCall({ name: 'run_workflow', arguments: { action: 'list' } }),
+    (e) => e.code === -32603 && /workflow 运行时/.test(e.message),
+  );
+  assert.equal(wfm.calls.length, 0); // 上面的 fake 未被触碰
+});
+
+// ----------------------------- 真实 WorkflowManager 接线（校验权威 + 后台冒烟）
+
+/** 造一个与内置入口统一返回结构一致的 ok 结果（buildMarkdownReport 可消费）。 */
+function okWfResult(opts, workflow = 'chain') {
+  const now = new Date().toISOString();
+  return {
+    ok: true, status: 'ok', workflow,
+    task: opts.task, workdir: opts.workdir, model: opts.model || 'fake/model',
+    phases: [{
+      phase: 'analyze', label: '分析', ok: true, sessionId: 'sess_phase',
+      usage: { input_tokens: 1, output_tokens: 2 }, timedOut: false, durationMs: 10,
+      response: '阶段输出',
+    }],
+    final: '冒烟结论',
+    startedAt: now, finishedAt: now,
+  };
+}
+
+/** 挂住直到 signal abort 才返回 aborted 结果（abort 用例的入口形态）。 */
+function hangingUntilAbort(opts) {
+  return new Promise((resolve) => {
+    const finish = () => {
+      const now = new Date().toISOString();
+      resolve({
+        ok: false, status: 'aborted', abortedAtPhase: 'analyze',
+        workflow: 'chain', task: opts.task, workdir: opts.workdir, model: 'fake/model',
+        phases: [], final: null, error: '阶段 analyze（分析）被中止（aborted）',
+        startedAt: now, finishedAt: now,
+      });
+    };
+    if (opts.signal?.aborted) { finish(); return; }
+    opts.signal?.addEventListener('abort', finish, { once: true });
+  });
+}
+
+/** 真实 WorkflowManager + 注入 fake 内置入口（组装形态同 workflow-manager.test.js）。 */
+function buildRealWfManager(workflows) {
+  const { RecordStore } = require('../lib/record-store');
+  const outputs = require('../lib/output-store');
+  const { MailboxNotifier } = require('../lib/notifier-mailbox');
+  const { WorkflowManager } = require('../lib/workflow-manager');
+  return new WorkflowManager({
+    records: new RecordStore(),
+    outputs,
+    notifier: new MailboxNotifier(),
+    workflows,
+  });
+}
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitForAsync(fn, timeoutMs = 5000, stepMs = 20) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('waitForAsync 超时');
+    await sleepMs(stepMs);
+  }
+}
+
+test('run_workflow run：校验权威在 WorkflowManager（缺 task / workdir 不存在 / 未知 workflow / 脚本未发现 → isError 可操作）', async () => {
+  const wfm = buildRealWfManager({ chain: async (opts) => okWfResult(opts) });
+  const srv = server.createServer({ manager: makeFakeManager(), wfManager: wfm, nested: false });
+  const call = (args) => srv.dispatchToolCall({ name: 'run_workflow', arguments: { action: 'run', ...args } });
 
   const noTask = await call({ workflow: 'chain', workdir: TMP });
   assert.equal(noTask.isError, true);
   assert.match(noTask.content[0].text, /task/);
-
-  // workdir 缺失必须显式拒绝（SUGGESTION-9）：不能静默回落进程 cwd，
-  // 否则 fix 类 workflow 会写错目录
-  const noWorkdir = await call({ workflow: 'chain', task: 't' });
-  assert.equal(noWorkdir.isError, true);
-  assert.match(noWorkdir.content[0].text, /缺少必填参数 workdir/);
 
   const badDir = await call({ workflow: 'chain', task: 't', workdir: '/no/such/dir' });
   assert.equal(badDir.isError, true);
@@ -428,122 +611,76 @@ test('run_workflow：参数校验错误全部 isError 可操作（缺 task / wor
 
   const badWf = await call({ workflow: 'fancy', task: 't', workdir: TMP });
   assert.equal(badWf.isError, true);
-  assert.match(badWf.content[0].text, /不支持的工作流类型/);
+  assert.match(badWf.content[0].text, /不支持的 workflow/);
 
-  const noItems = await call({ workflow: 'map-reduce', task: 't', workdir: TMP, operation: 'op' });
-  assert.equal(noItems.isError, true);
-  assert.match(noItems.content[0].text, /items/);
-
-  const noOp = await call({ workflow: 'map-reduce', task: 't', workdir: TMP, items: ['a'] });
-  assert.equal(noOp.isError, true);
-  assert.match(noOp.content[0].text, /operation/);
-
-  assert.equal(fw.calls.length, 0); // 校验失败零触达 workflow 入口
+  const missingScript = await call({ workflow: 'script:nope', task: 't', workdir: TMP });
+  assert.equal(missingScript.isError, true);
+  assert.match(missingScript.content[0].text, /未找到 workflow 脚本/);
 });
 
-test('run_workflow：正常分发到对应入口 + 双段 content（[0] zsub 品牌 markdown、[1] json 围栏）', async () => {
-  const { fw, srv } = makeWfServer();
+test('run_workflow 后台冒烟（真实 WorkflowManager）：run 立即返句柄 → status 轮询至 closed → outputs 落盘双段报告 → list 可见', async () => {
+  // 为什么在单测层而非 e2e：e2e 文件 before() 做真实模型配额窗口探测（窗口
+  // 不开则整个文件失败），fake 冒烟放 e2e 会被真机前置条件绑架；后台执行体
+  // 在 server 进程内，本测试与 e2e 结构同构（createServer + dispatchToolCall）
+  const entryCalls = [];
+  const wfm = buildRealWfManager({ chain: async (opts) => { entryCalls.push(opts); return okWfResult(opts); } });
+  const srv = server.createServer({ manager: makeFakeManager(), wfManager: wfm, nested: false });
+
   const result = await srv.dispatchToolCall({
     name: 'run_workflow',
-    arguments: {
-      workflow: 'chain', task: '接线冒烟', workdir: TMP,
-      model: 'GLM-4.7-Flash', maxConcurrent: 2, timeoutMsPerPhase: 12345,
-    },
+    arguments: { action: 'run', workflow: 'chain', task: '后台冒烟', workdir: TMP },
+    _meta: { 'com.zcode/request-context': { session_id: 'sess_wf_bg' } },
   });
-  assert.equal(result.isError, false); // 照源：isError 字段常驻（!ok），ok 时为 false
-  assert.equal(fw.calls.length, 1);
-  assert.equal(fw.calls[0].name, 'chain');
-  assert.equal(fw.calls[0].opts.task, '接线冒烟');
-  assert.equal(fw.calls[0].opts.workdir, TMP);
-  assert.equal(fw.calls[0].opts.model, 'GLM-4.7-Flash');
-  assert.equal(fw.calls[0].opts.maxConcurrent, 2);
-  assert.equal(fw.calls[0].opts.timeoutMsPerPhase, 12345);
-  assert.equal(typeof fw.calls[0].opts.onPhase, 'function');
-  assert.equal(typeof fw.calls[0].opts.onPlan, 'function');
+  assert.equal(result.isError, undefined);
+  const h = JSON.parse(result.content[0].text);
+  assert.match(h.runId, /^wf-/);
+  assert.equal(h.status, 'running');
 
-  assert.equal(result.content.length, 2); // 双段 content（照源 buildContentBlocks）
-  assert.match(result.content[0].text, /^# zsub · chain 报告/); // 品牌行定案（M1-a）
-  assert.ok(!result.content[0].text.includes('dynamic-workflow'));
-  assert.match(result.content[1].text, /^```json\n/);
-  assert.equal(JSON.parse(result.content[1].text.replace(/^```json\n/, '').replace(/\n```$/, '')).workflow, 'chain');
+  // 轮询走 MCP status action（覆盖分发全链，非直连 manager）
+  const fin = await waitForAsync(async () => {
+    const r = await srv.dispatchToolCall({ name: 'run_workflow', arguments: { action: 'status', runId: h.runId } });
+    const rec = JSON.parse(r.content[0].text);
+    return ['closed', 'error', 'timeout', 'cancelled'].includes(rec.status) ? rec : null;
+  });
+  assert.equal(fin.status, 'closed', `终态: ${fin.error || ''}`);
+  assert.equal(entryCalls.length, 1);
+
+  // outputs 落盘断言：报告 = markdown 品牌头 + ```json 机器段（双段合一文件）
+  assert.ok(fs.existsSync(fin.outputFile), `outputs 未落盘: ${fin.outputFile}`);
+  const text = fs.readFileSync(fin.outputFile, 'utf8');
+  assert.match(text, /^# zsub · chain 报告/);
+  assert.match(text, /```json\n/);
+
+  const listed = JSON.parse((await srv.dispatchToolCall({
+    name: 'run_workflow', arguments: { action: 'list' },
+  })).content[0].text);
+  assert.ok(listed.some((r) => r.runId === h.runId && r.status === 'closed'));
 });
 
-test('run_workflow：per-workflow 参数透传（perspectives/items/subtaskCount/reviewTarget 等）', async () => {
-  const { fw, srv } = makeWfServer();
-  const call = (args) => srv.dispatchToolCall({ name: 'run_workflow', arguments: { task: 't', workdir: TMP, ...args } });
-  const last = () => fw.calls.at(-1);
+test('run_workflow abort（真实 WorkflowManager）：hanging 入口 → abort 落 cancelled，零完成通知', async () => {
+  const wfm = buildRealWfManager({ chain: hangingUntilAbort });
+  const srv = server.createServer({ manager: makeFakeManager(), wfManager: wfm, nested: false });
 
-  await call({ workflow: 'parallel', perspectives: ['sec', 'perf'] });
-  assert.equal(last().name, 'parallel');
-  assert.deepEqual(last().opts.perspectives, ['sec', 'perf']);
+  const h = JSON.parse((await srv.dispatchToolCall({
+    name: 'run_workflow',
+    arguments: { action: 'run', workflow: 'chain', task: '中止冒烟', workdir: TMP },
+    _meta: { 'com.zcode/request-context': { session_id: 'sess_wf_abort' } },
+  })).content[0].text);
+  assert.equal(h.status, 'running');
 
-  await call({ workflow: 'map-reduce', items: ['a', 'b'], operation: 'do-x' });
-  assert.equal(last().name, 'map-reduce');
-  assert.deepEqual(last().opts.items, ['a', 'b']);
-  assert.equal(last().opts.operation, 'do-x');
+  const ab = JSON.parse((await srv.dispatchToolCall({
+    name: 'run_workflow', arguments: { action: 'abort', runId: h.runId },
+  })).content[0].text);
+  assert.equal(ab.aborted, true);
+  assert.equal(ab.status, 'cancelled');
 
-  await call({ workflow: 'scatter-gather', subtaskCount: 3 });
-  assert.equal(last().name, 'scatter-gather');
-  assert.equal(last().opts.subtaskCount, 3);
-
-  await call({ workflow: 'review-fix-loop', reviewTarget: 'src/', reviewers: ['correctness'], maxRounds: 2 });
-  assert.equal(last().name, 'review-fix-loop');
-  assert.equal(last().opts.reviewTarget, 'src/');
-  assert.deepEqual(last().opts.reviewers, ['correctness']);
-  assert.equal(last().opts.maxRounds, 2);
-
-  // reviewTarget 缺省回落「git 未提交改动」（照源默认值）
-  await call({ workflow: 'review-fix-loop' });
-  assert.equal(last().opts.reviewTarget, 'git 未提交改动');
-  assert.equal(fw.calls.length, 5);
-});
-
-test('run_workflow：progressToken 经 env.emitFrame 实时推 progress 通知帧', async () => {
-  const { fw, srv } = makeWfServer();
-  const emitted = [];
-  const result = await srv.dispatchToolCall(
-    {
-      name: 'run_workflow',
-      arguments: { workflow: 'chain', task: 't', workdir: TMP },
-      _meta: { progressToken: 'tok-1' },
-    },
-    { emitFrame: (frame) => emitted.push(frame) },
-  );
-  assert.equal(result.isError, false);
-  // fake 入口驱动 onPlan(2) + onPhase(running/done)：done=1/expected=2 → 0.5
-  assert.ok(emitted.some((f) => f.method === 'notifications/progress'
-    && f.params.progressToken === 'tok-1' && f.params.progress === 0.5));
-  // 终态帧：progress=1 completed
-  assert.ok(emitted.some((f) => f.method === 'notifications/progress'
-    && f.params.progressToken === 'tok-1' && f.params.progress === 1 && f.params.message === 'completed'));
-  // 无 progressToken 时不产生通知帧：emitted 长度不再增长
-  const before = emitted.length;
-  const quiet = await srv.dispatchToolCall({
-    name: 'run_workflow', arguments: { workflow: 'chain', task: 't', workdir: TMP },
-  });
-  assert.equal(quiet.isError, false);
-  assert.equal(emitted.length, before);
-});
-
-test('run_workflow：入口抛错转 isError；NESTED 档拒绝（零触达入口）', async () => {
-  const impls = makeFakeWorkflows().impls;
-  impls.chain = async () => { throw new Error('未知模型 "GLM-9"。恢复指引：改用 GLM-5.3。'); };
-  const srv = server.createServer({ manager: makeFakeManager(), nested: false, workflows: impls });
-  const failed = await srv.dispatchToolCall({
-    name: 'run_workflow', arguments: { workflow: 'chain', task: 't', workdir: TMP },
-  });
-  assert.equal(failed.isError, true);
-  assert.match(failed.content[0].text, /工作流执行失败/);
-  assert.match(failed.content[0].text, /恢复指引/); // 入口可操作错误原样透传
-
-  const fw = makeFakeWorkflows();
-  const nestedSrv = server.createServer({ manager: makeFakeManager(), nested: true, workflows: fw.impls });
-  const rejected = await nestedSrv.dispatchToolCall({
-    name: 'run_workflow', arguments: { workflow: 'chain', task: 't', workdir: TMP },
-  });
-  assert.equal(rejected.isError, true);
-  assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
-  assert.equal(fw.calls.length, 0); // 防递归第二重对两个 tool 一视同仁
+  const fin = JSON.parse((await srv.dispatchToolCall({
+    name: 'run_workflow', arguments: { action: 'status', runId: h.runId },
+  })).content[0].text);
+  assert.equal(fin.status, 'cancelled');
+  // cancelled 不投递完成通知（对齐 subagent cancel 语义）
+  const mailboxDir = path.join(process.env.ZCODE_MAILBOX_ROOT, 'sess_wf_abort', 'unread');
+  assert.ok(!fs.existsSync(mailboxDir) || fs.readdirSync(mailboxDir).length === 0);
 });
 
 // ---------------------------------------------------------- 进程级测试
@@ -601,6 +738,7 @@ test('进程级：正常档 initialize→tools/list 出双 tool，stdin 关闭�
   assert.equal(tl.result.tools.length, 2);
   assert.deepEqual(tl.result.tools.map((t) => t.name), ['zsub', 'run_workflow']);
   assert.match(r.stderr, /record 恢复/); // 启动序列（sweep+recover）日志走 stderr
+  assert.match(r.stderr, /workflow record 恢复/); // N2-b：wfManager.recover 与 subagent recover 并存
   // 启动序列不得有清扫失败（MUST_FIX-1 回归：reaper 接线字段错误曾被 catch 吞掉）
   assert.ok(!r.stderr.includes('清扫失败'), `启动序列不应有清扫失败: ${r.stderr}`);
 });

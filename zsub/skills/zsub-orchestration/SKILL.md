@@ -1,6 +1,6 @@
 ---
 name: zsub-orchestration
-description: Use when delegating tasks to background subagents via the zsub tool, deciding between zsub and engine-native background agents, or running multi-phase workflows via the run_workflow tool. Covers task decomposition, model routing, worktree isolation, completion notification semantics, the no-polling rule, and workflow selection (chain / parallel / map-reduce / scatter-gather / review-fix-loop). 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发、workflow 编排、run_workflow、多阶段流水线、多视角审查、审查修复循环、map-reduce、scatter-gather。
+description: Use when delegating tasks to background subagents via the zsub tool, deciding between zsub and engine-native background agents, or running multi-phase workflows via the run_workflow tool (run/abort/status/list/scripts/lint). Covers task decomposition, model routing, worktree isolation, completion notification semantics, the no-polling rule, and workflow selection (chain / parallel / map-reduce / scatter-gather / review-fix-loop / custom script:<name> via four-root discovery). 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发、workflow 编排、run_workflow、多阶段流水线、多视角审查、审查修复循环、map-reduce、scatter-gather、自定义 workflow 脚本、workflow 脚本。
 whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、需要跨窗口管理 subagent 记录、或需要确定性多阶段编排（无需中途干预）时。
 ---
 
@@ -50,11 +50,21 @@ start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清
 - 完成通知（mailbox 注入）含结果摘要；全文在 `~/.zcode/zsub/outputs/<subagentId>.md`。
 - 终态 record 的 error/timeout 字段含失败原因与恢复指引（如调大 timeoutMs、拆小任务）。
 
-## workflow 编排（run_workflow tool）
+## workflow 编排（run_workflow tool，六 action）
 
-确定性多阶段管线：每阶段独立无头 session，中间结论自动链接/合并，主会话只收最终报告（markdown + JSON 双段）。带 progressToken 时有阶段级进度通知。
+确定性多阶段管线：每阶段独立无头 session，中间结论自动链接/合并，主会话只收最终报告（markdown + JSON 双段，落 `outputs/<runId>.md`）。**run 是后台任务**：立即返回 runId（`wf-` 前缀），完成自动通知本会话——与 zsub start 同一纪律，不要轮询；`wait=true` 同步等终态 + 报告全文（MCP 30s 超时约束，仅测试用）。
 
-五种 workflow 速查与选择：
+```
+run_workflow(action="run", workflow="<名>", task="<自包含任务书>", workdir="<绝对路径>",
+             [model, maxConcurrent, timeoutMsPerPhase, timeoutMs, per-workflow 参数])  → {runId, status:"running", notify}
+run_workflow(action="abort", runId="<id>")     → 中止运行中 run（状态落 cancelled；已完成阶段保留在报告）
+run_workflow(action="status", runId="<id>")    → run 详情 + 报告路径 + 脚本进度留痕（progress）
+run_workflow(action="list")                    → 全部 workflow run
+run_workflow(action="scripts")                 → 内置 5 + 自定义脚本清单（name/description/source/file）
+run_workflow(action="lint", file="<脚本路径>") → 校验脚本（node --check 语法 + name/description/run 契约形状）
+```
+
+内置 5 种速查与选择：
 
 | 场景 | workflow | 形态 |
 |------|----------|------|
@@ -64,9 +74,45 @@ start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清
 | 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds 可调 |
 | 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
 
-通用参数：`workflow` / `task` / `workdir`（必填，绝对路径，阶段在其下工作）；`model` / `maxConcurrent`（默认 3）/ `timeoutMsPerPhase`（默认 600000）。运行可达数分钟——启动后等结果，不要轮询。
+通用参数：run 的 `workflow` / `task` / `workdir` 必填（绝对路径，阶段在其下工作）；`model` / `maxConcurrent`（默认 3）/ `timeoutMsPerPhase`（默认 600000）/ `timeoutMs`（整体超时，默认 1800000）。运行可达数分钟——后台 run 完成自动通知，通知到达前去做别的事。
 
-CLI 等价入口（脚本化/调试）：`node bin/zsub.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`，用法详见 `node bin/zsub.js workflow`。
+### 自定义 workflow 脚本（script:<name>）
+
+内置 5 种之外的编排用脚本扩展，调用形态 `workflow="script:<脚本名>"`。脚本发现四根（同构 agent .md 惯例；同名高优先级胜出，只扫各根顶层 `*.js`）：
+
+```
+<ws>/.agents/workflows/  >  <ws>/.zsub/workflows/
+>  ~/.agents/workflows/  >  ~/.zsub/workflows/
+```
+
+脚本契约（CJS 模块，权威定义在 `lib/workflow-script.js` 头注）：
+
+```js
+'use strict';
+module.exports = {
+  name: 'my-wf',              // 脚本名（建议与文件名一致；lint 校验非空）
+  description: '一句话说明',   // scripts 清单展示用；lint 校验非空
+  run: async (ctx) => {
+    // ctx = { task, cwd(=workdir), model, signal, timeoutMs, params, log, runAgent }
+    ctx.log('进度留痕（action=status 的 progress 可查）');
+    const r = await ctx.runAgent({
+      prompt: '<自包含 prompt：该次 agent 调用的目标/背景/验收标准>',  // 必填
+      cwd: '<可选，缺省 workdir>', model: '<可选>', timeoutMs: 600000,
+    });
+    // r = { ok, sessionId, response, usage, exitCode, timedOut, error?, aborted?, stderrTail }
+    return { markdown: '# 报告正文', json: { machine: 'data' } };  // 或返回字符串（当 markdown）
+  },
+};
+```
+
+要点：
+
+- `ctx.runAgent` 每次调用 = 一个独立 zcode 无头阶段，与内置 workflow 阶段同一执行落点（AbortSignal 契约、超时链、结果形态一致）；模型解析链 per-call model > 脚本级 model > 默认。`params` 是 run 调用时 task/workdir 之外的透传参数。
+- 脚本抛错 = run 落 error 终态（错误含脚本文件路径）；`signal.aborted` 后再调 runAgent 零 spawn。
+- 开发流程：写脚本 → `lint` 校验 → `scripts` 确认被发现 → `run_workflow(action="run", workflow="script:<名>", ...)`。
+- 脚本在 server 进程内执行（fresh require，改动即生效）：不要维护跨 run 的可变全局态；信任前提与「用户主动放进四根目录的代码」一致。
+
+CLI 等价入口（脚本化/调试）：`node bin/zsub.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`（`--action` 缺省 run，同步等完成——CLI 一次性进程无后台模式）；管理面 `node bin/zsub.js workflow --action <abort|status|list|scripts|lint> [--id <runId> | --file <脚本>]`。用法详见 `node bin/zsub.js workflow --help`。
 
 ### 何时用 workflow vs subagent（zsub start）
 
