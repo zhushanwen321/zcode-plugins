@@ -4,7 +4,7 @@
   "description": "Personal zcode desktop plugin marketplace: one plugin per top-level directory, shared libs in shared/, unified docs in docs/. Authoritative on the main branch; on feature branches a referenced plugin directory may not exist yet.",
   "owner": {
     "name": "zhushanwen",
-    "url": "https://github.com/zhushanwen"
+    "url": "https://github.com/zhushanwen321"
   },
   "plugins": [
     {
@@ -18,7 +18,7 @@
       },
       "author": {
         "name": "zhushanwen",
-        "url": "https://github.com/zhushanwen"
+        "url": "https://github.com/zhushanwen321"
       },
       "category": "orchestration",
       "keywords": ["subagent", "workflow", "orchestration", "mcp", "headless"]

@@ -77,9 +77,10 @@ workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json �
 
 - **命名**：npm 包名 = `@zhushanwen/` + 插件目录名；目录名必须 `z-` 前缀（zcode 插件标识），
   如目录 `z-subagent-workflow` → 包 `@zhushanwen/z-subagent-workflow`。check-sync 强制。
-- **package.json 纪律**：只作发布清单（name/version/description/type/bin/files/keywords/
+- **package.json 纪律**：只作发布清单（name/version/description/license/type/bin/files/keywords/
   engines/repository/author），**无 dependencies**；`files` 白名单须含插件运行必需件
   （`.zcode-plugin/plugin.json`、`.mcp.json`、`bin/`、`lib/`、`dist/`、`skills/`），check-pack 拦截漏文件。
+  license 全仓 MIT（LICENSE 在仓库根，随建仓 Initial commit 引入），插件只声明字段不复制文件。
 - **版本三处同步**（同一插件的三个发布面）：`<plugin>/package.json` ↔
   `<plugin>/.zcode-plugin/plugin.json` ↔ 根 `marketplace.json` 条目。**bump 只用
   `node scripts/release.js <plugin> <patch|minor|major>`**（一次改三处 + commit + tag），
@@ -96,7 +97,9 @@ workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json �
 
 ## Git 规范（bare repo worktree 模式）
 
-- `origin` = 本地 `.bare`，工作区根不是 git repo；每 worktree 一分支，分支名 `feat-zcode-<插件>-<主题>`。
+- `origin` = GitHub 远端 `zhushanwen321/zcode-plugins`（2026-08 绑定；历史沿革：早期仅本地 `.bare`，
+  绑定远端时以 merge `--allow-unrelated-histories` 吸收了建仓 Initial commit 带来的根 LICENSE）；
+  工作区根不是 git repo（git 目录在 `.bare/`），每 worktree 一分支，分支名 `feat-zcode-<插件>-<主题>`。
 - **新分支/worktree 必须用户明确授权**（全局规则 17）；merge 用 `--no-ff` 保留分支历史。
 - commit 英文 conventional 风格（scope 用插件缩写，如 `feat(zsw): ...`）；完成即提交，禁留脏工作区。
 - **pre-commit hook**（`.githooks/pre-commit`，秒级静态门禁，检查**暂存内容**而非工作区）：

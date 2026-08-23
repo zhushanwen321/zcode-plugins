@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
   "type": "commonjs",
+  "license": "MIT",
   "bin": {
     "zsw": "bin/zsw.js"
   },
@@ -30,8 +31,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zhushanwen/zcode-plugin-workspace.git",
+    "url": "git+https://github.com/zhushanwen321/zcode-plugins.git",
     "directory": "z-subagent-workflow"
   },
-  "author": "zhushanwen (https://github.com/zhushanwen)"
+  "author": "zhushanwen (https://github.com/zhushanwen321)"
 }

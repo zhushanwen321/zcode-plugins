@@ -50,7 +50,8 @@ stdout 是 JSON-RPC 通道，人读输出一律 stderr + 落盘 `~/.zcode/<plugi
 
 ## Git 规范
 
-- bare repo + worktree 模式：`origin` = 本地 `.bare`，工作区根不是 git repo。
+- bare repo + worktree 模式：git 目录在 `.bare/`，`origin` = GitHub `zhushanwen321/zcode-plugins`，
+  工作区根不是 git repo。
 - 分支命名 `feat-zcode-<插件>-<主题>`；**新分支/worktree 必须用户明确授权**（全局规则）。
 - commit 英文 conventional：`feat(zsub): ...` / `fix(zsub): ...` / `docs: ...`。
 - merge 回 main 用 `--no-ff`；合入时同步 `marketplace.json` 条目与 README 插件表。
