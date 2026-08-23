@@ -1,0 +1,63 @@
+#!/bin/bash
+# pre-commit：秒级静态门禁（不打断心流的重量级检查放 CI）。
+#
+# 检查对象是【暂存内容】（git show :file）而非工作区文件——部分暂存场景下
+# 工作区可能有未暂存的中间态，只有暂存内容才是真正要进库的东西。
+#
+# 三个门禁（全部可操作、零误报定位）：
+#   1. 暂存 .js  -> node --check 语法校验（语法错误的库进 git 会破坏 CI 与安装者）
+#   2. 暂存 .json -> JSON.parse 校验（package.json/marketplace.json 手改最易坏）
+#   3. 版本三件套任一暂存 -> scripts/check-sync.js 全量一致性（版本漂移拦截在提交时）
+#
+# 测试不在此跑：全量 270 项含真实模型 e2e 约 3.5 分钟，pre-commit 必须秒级；
+# 测试由 CI（push/PR）与本机「完成即提交前的验证」纪律覆盖。
+
+set -uo pipefail
+
+# bash 3.2（macOS 自带）无 mapfile；用换行分隔的字符串数组
+FILES=$(git diff --cached --name-only --diff-filter=ACMR | grep -v '^deleted' || true)
+JS_FILES=$(echo "$FILES" | grep '\.js$' || true)
+JSON_FILES=$(echo "$FILES" | grep '\.json$' || true)
+
+fail=0
+
+# 门禁 1：JS 语法（暂存内容写临时 .js 再 --check：node --check 拒绝非 .js 扩展名，
+# 而 macOS mktemp -t 会追加随机后缀，故临时文件必须自命名在 mktemp -d 目录里）
+if [ -n "$JS_FILES" ]; then
+    TMPDIR_JS=$(mktemp -d)
+    TMP="$TMPDIR_JS/check.js"
+    trap 'rm -rf "$TMPDIR_JS"' EXIT
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        if ! git show ":$f" > "$TMP" 2>/dev/null; then continue; fi
+        if ! node --check "$TMP"; then
+            echo "pre-commit: $f 暂存内容语法错误（上面是 node --check 输出）" >&2
+            fail=1
+        fi
+    done <<< "$JS_FILES"
+fi
+
+# 门禁 2：JSON 有效性（stdin 传入暂存内容）
+if [ -n "$JSON_FILES" ]; then
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        if ! git show ":$f" | node -e '
+            const fs = require("fs");
+            try { JSON.parse(fs.readFileSync(0, "utf8")); }
+            catch (err) { console.error(err.message); process.exit(1); }
+        '; then
+            echo "pre-commit: $f 暂存内容不是合法 JSON" >&2
+            fail=1
+        fi
+    done <<< "$JSON_FILES"
+fi
+
+# 门禁 3：版本三件套（package.json / plugin.json / marketplace.json）任一暂存时全量校验
+if echo "$FILES" | grep -qE '(^|/)(package\.json|plugin\.json)$|^marketplace\.json$'; then
+    if ! node "$(git rev-parse --show-toplevel)/scripts/check-sync.js"; then
+        echo "pre-commit: 版本/命名一致性检查未过（上面列出具体违规与修复方向）" >&2
+        fail=1
+    fi
+fi
+
+exit $fail

@@ -1,0 +1,64 @@
+name: CI
+
+# 插件工作区持续集成。
+#
+# 覆盖三个层面（对应本地三道防线中的 CI 部分）：
+#   1. 全仓一致性：check-sync（版本三件套 / 包名规范 / 零依赖红线）
+#   2. 插件单测：node --test，排除 e2e（e2e 需真实 zcode 凭据 + 真实模型，
+#      在 CI 无凭据必挂且烧 token；真机 e2e 按 README 验收手册本地跑）
+#   3. npm 包内容：check-pack（files 白名单漏文件在发布前拦截）
+#
+# 插件发现规则与 scripts/check-sync.js 一致：一级目录含 package.json 即插件包。
+
+on:
+  push:
+    branches: [main, 'feat-**']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test & Pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Discover plugin packages
+        id: plugins
+        run: |
+          PLUGINS=""
+          for d in */; do
+            d="${d%/}"
+            [ -f "$d/package.json" ] && PLUGINS="$PLUGINS $d"
+          done
+          echo "list=${PLUGINS# }" >> "$GITHUB_OUTPUT"
+          echo "Plugins:${PLUGINS:- (none)}"
+
+      - name: Check version/name consistency
+        run: node scripts/check-sync.js
+
+      - name: Run unit tests (e2e excluded)
+        run: |
+          status=0
+          for plugin in ${{ steps.plugins.outputs.list }}; do
+            echo "::group::tests: $plugin"
+            ( cd "$plugin" \
+              && find test -name '*.test.js' ! -name 'e2e.test.js' -print0 \
+              | xargs -0 --no-run-if-empty node --test ) || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+      - name: Check npm pack contents
+        run: node scripts/check-pack.js
