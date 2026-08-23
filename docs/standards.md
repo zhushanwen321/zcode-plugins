@@ -5,8 +5,9 @@
 
 ## 技术栈约束
 
-- **plain Node CJS，零 npm 依赖优先**。现有插件（zsub、dynamic-workflow）均无 package.json，
-  inline 加载与 marketplace 副本两种形态下都零安装成本。引入依赖前必须评估：①marketplace 副本
+- **plain Node CJS，零 npm 依赖优先**。插件 package.json 仅作 npm 发布清单（name/version/
+  files/bin 等），**不得声明 dependencies**（`scripts/check-sync.js` 强制）。inline 加载与
+  marketplace 副本两种形态下都零安装成本。引入依赖前必须评估：①marketplace 副本
   是否含 node_modules（不含 → 依赖须 bundle 进 dist）；②是否破坏「无构建链安装」。确需引入时
   package.json 必须声明 `packageManager` 字段（全局 lock 纪律）。
 - **源码 `lib/`（CJS .js）+ 打包入口 `dist/mcp/server.js` + CLI 薄壳 `bin/`**。MCP server 是插件
@@ -60,6 +61,14 @@ stdout 是 JSON-RPC 通道，人读输出一律 stderr + 落盘 `~/.zcode/<plugi
 
 ## 版本与发布
 
-- 插件版本从 `0.1.0` 起，语义化；manifest `version` 与 marketplace.json 条目同步更新。
-- 当前分发形态 = 本地 marketplace（目录源）+ inline 注册；远端发布（git/zip 源）待需要时再建，
-  不提前建设。
+- 插件版本从 `0.1.0` 起，语义化；**同一版本号存在于三处**（`<plugin>/package.json` ↔
+  `<plugin>/.zcode-plugin/plugin.json` ↔ 根 `marketplace.json` 条目），bump 只用
+  `node scripts/release.js <plugin> <patch|minor|major>`（一次改三处 + commit + tag，
+  绝不手工单改——pre-commit 与 CI 均拦截漂移）。
+- **npm 发布**：tag `<plugin>@<semver>` 推上远端触发 `.github/workflows/release-npm.yml`
+  （校验 tag↔版本一致 + check-sync 后 `npm publish --access public --provenance`）；
+  完整流程与包命名规范见根 AGENTS.md「npm 发布规范」。
+- **CI**（`.github/workflows/ci.yml`，push/PR 触发）：check-sync 一致性 + 插件单测
+  （排除 e2e——CI 无真实 zcode 凭据，真机 e2e 按插件 README 验收手册本地跑）+
+  check-pack 包内容。
+- 分发形态 = 本地 marketplace（目录源）+ inline 注册 + npm 包（`@zhushanwen/z-*`）三种。

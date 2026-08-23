@@ -1,0 +1,88 @@
+name: Release NPM
+
+# 插件 npm 包发布（tag 触发；与 CI 解耦）。
+#
+# 发布流程（AGENTS.md「npm 发布规范」的权威描述在此 workflow + scripts/release.js）：
+#   1. 本地：node scripts/release.js <plugin> <patch|minor|major>
+#      —— 统一 bump 三处版本（package.json / plugin.json / marketplace.json）+ commit + tag
+#   2. 本地：git push origin HEAD && git push origin '<plugin>@<version>'
+#   3. 本 workflow 由 tag 触发：校验 tag 与 package.json 版本一致后 npm publish
+#
+# 为什么不用 changesets（与 xyz-agent 参考项目的差异）：本项目是零依赖独立插件仓
+# （非 pnpm workspace、每包目录自包含、发布频率低），tag 直发无额外状态文件；
+# changesets 的 pre.json 状态机在高频多包仓才划算。
+#
+# tag 格式：<插件目录名>@<semver>，如 z-subagent-workflow@0.1.1（on.push.tags 的
+# z-* 通配即「所有 z- 前缀插件」）。多插件同仓不共享版本节奏，一 tag 一发布。
+
+on:
+  push:
+    tags:
+      - 'z-*'
+  workflow_dispatch:
+    inputs:
+      plugin:
+        description: 'Plugin directory to publish (e.g. z-subagent-workflow)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # npm publish --provenance（发布产物溯源，npm >= 9.5）
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve plugin and version from ref
+        id: rel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PLUGIN="${{ inputs.plugin }}"
+            VERSION=""
+          else
+            REF="${GITHUB_REF_NAME}"
+            PLUGIN="${REF%@*}"
+            VERSION="${REF#*@}"
+          fi
+          if [ ! -f "$PLUGIN/package.json" ]; then
+            echo "::error::$PLUGIN/package.json 不存在——tag/dispatch 指向的插件目录名有误（见 AGENTS.md npm 发布规范）"
+            exit 1
+          fi
+          echo "plugin=$PLUGIN" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # 全仓一致性门禁（三处版本 + 包名规范 + 零依赖）：发布是最严格的适用场景
+      - name: Check version/name consistency
+        run: node scripts/check-sync.js
+
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          PLUGIN="${{ steps.rel.outputs.plugin }}"
+          TAG_VERSION="${{ steps.rel.outputs.version }}"
+          PKG_VERSION=$(node -p "require('./$PLUGIN/package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag 版本 $TAG_VERSION != $PLUGIN/package.json@$PKG_VERSION——本地须用 scripts/release.js 发版（它保证 tag 与三处版本对齐），手工打 tag 易漂移"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        run: |
+          PLUGIN="${{ steps.rel.outputs.plugin }}"
+          npm publish "$PLUGIN" --access public --provenance
+          echo "## Published \`@zhushanwen/$PLUGIN@$(node -p "require('./$PLUGIN/package.json').version")\`" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,37 @@
+{
+  "name": "@zhushanwen/z-subagent-workflow",
+  "version": "0.1.0",
+  "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
+  "type": "commonjs",
+  "bin": {
+    "zsw": "bin/zsw.js"
+  },
+  "files": [
+    ".zcode-plugin/plugin.json",
+    ".mcp.json",
+    "bin/",
+    "lib/",
+    "dist/",
+    "skills/",
+    "README.md",
+    "CONTEXT.md"
+  ],
+  "keywords": [
+    "zcode",
+    "subagent",
+    "workflow",
+    "orchestration",
+    "mcp",
+    "headless",
+    "background-agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhushanwen/zcode-plugin-workspace.git",
+    "directory": "z-subagent-workflow"
+  },
+  "author": "zhushanwen (https://github.com/zhushanwen)"
+}
