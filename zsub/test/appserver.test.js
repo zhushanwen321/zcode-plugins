@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * AppServerRunner 测试：全部跑 test/fixtures/fake-appserver.js，绝不 spawn 真
+ * AppServerRunner 测试：全部跑 fixtures/fake-appserver.js，绝不 spawn 真
  * zcode.cjs。协议行为（必答反向请求、终态推送、read 兜底）由 fake 模拟，
  * fake 侧状态经 FAKE_STATE_FILE 流水文件断言。
  *
