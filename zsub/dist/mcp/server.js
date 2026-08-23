@@ -420,6 +420,19 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
    * buildToolHandlers）。
    */
   async function dispatchToolCall(params, env = {}) {
+    // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
+    // 常开（一行 jsonl，成本可忽略）；ZSUB_ROOT 隔离的测试环境天然不污染。
+    try {
+      const fs = require('node:fs');
+      const root = require('../../lib/config').zsubRoot();
+      fs.mkdirSync(root, { recursive: true });
+      fs.appendFileSync(require('node:path').join(root, 'meta-debug.jsonl'), JSON.stringify({
+        ts: Date.now(), tool: params && params.name,
+        hasMeta: !!(params && params._meta),
+        meta: params && params._meta,
+        sessionId: extractSessionId(params && params._meta),
+      }) + '\n');
+    } catch { /* 诊断失败不影响服务 */ }
     const name = params && params.name;
     const handler = Object.prototype.hasOwnProperty.call(toolHandlers, name)
       ? toolHandlers[name]
