@@ -21,7 +21,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-apc-'));
 process.env.ZSUB_ROOT = path.join(TMP, 'zsub-root');
 process.env.HOME = path.join(TMP, 'home');
 fs.mkdirSync(process.env.HOME, { recursive: true });
-process.env.ZSUB_ZCODE_CLI = path.join(__dirname, 'fixtures', 'fake-appserver.js');
+process.env.ZSUB_ZCODE_CLI = path.join(__dirname, '..', 'fixtures', 'fake-appserver.js');
 
 // env 隔离完成后才允许 require lib（见文件头注释）
 const AppServerRunner = require('../lib/runner-appserver');
