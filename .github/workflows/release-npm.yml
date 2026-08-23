@@ -82,7 +82,9 @@ jobs:
       - name: Publish to npm
         run: |
           PLUGIN="${{ steps.rel.outputs.plugin }}"
-          npm publish "$PLUGIN" --access public --provenance
+          # ./ 前缀强制目录语义：裸目录名会被 npm 当 registry 包说明符
+          # （首发时 GET /<裸名> 404，run 32634098987 的事故）
+          npm publish "./$PLUGIN" --access public --provenance
           echo "## Published \`@zhushanwen/$PLUGIN@$(node -p "require('./$PLUGIN/package.json').version")\`" >> "$GITHUB_STEP_SUMMARY"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
