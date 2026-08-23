@@ -62,7 +62,7 @@ stdout 是 JSON-RPC 通道，人读输出一律 stderr + 落盘 `~/.zcode/<plugi
 
 ## 版本与发布
 
-- 插件版本从 `0.1.0` 起，语义化；**同一版本号存在于三处**（`<plugin>/package.json` ↔
+- 插件版本从 `0.0.1` 起（首版即用户指定的起始号，2026-08-23 用户决策），语义化；**同一版本号存在于三处**（`<plugin>/package.json` ↔
   `<plugin>/.zcode-plugin/plugin.json` ↔ 根 `marketplace.json` 条目），bump 只用
   `node scripts/release.js <plugin> <patch|minor|major>`（一次改三处 + commit + tag，
   绝不手工单改——pre-commit 与 CI 均拦截漂移）。

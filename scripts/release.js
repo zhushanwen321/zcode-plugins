@@ -24,8 +24,8 @@ const path = require('node:path');
 const ROOT = path.resolve(__dirname, '..');
 const [plugin, bumpType] = process.argv.slice(2);
 
-const usage = '用法: node scripts/release.js <plugin-dir> <patch|minor|major>';
-if (!plugin || !bumpType || !['patch', 'minor', 'major'].includes(bumpType)) {
+const usage = '用法: node scripts/release.js <plugin-dir> <patch|minor|major|current>\n  current = 用三处清单当前版本直接打 tag（首发/补打 tag，不 bump 不产生 commit）';
+if (!plugin || !bumpType || !['patch', 'minor', 'major', 'current'].includes(bumpType)) {
   console.error(`${usage}\n  例: node scripts/release.js z-subagent-workflow patch`);
   process.exit(1);
 }
@@ -58,26 +58,13 @@ const writeJson = (f, obj) => fs.writeFileSync(f, `${JSON.stringify(obj, null, 2
 const pkg = readJson(files.pkg);
 const [major, minor, patch] = pkg.version.split('.').map(Number);
 if ([major, minor, patch].some(Number.isNaN)) die(`当前版本 ${pkg.version} 非标准三段 semver`);
-const next = {
-  patch: `${major}.${minor}.${patch + 1}`,
-  minor: `${major}.${minor + 1}.0`,
-  major: `${major + 1}.0.0`,
-}[bumpType];
-
-// 三处同步 bump（保持键序，2 空格缩进与仓库 JSON 风格一致）
-pkg.version = next;
-writeJson(files.pkg, pkg);
-const manifest = readJson(files.manifest);
-manifest.version = next;
-writeJson(files.manifest, manifest);
-const marketplace = readJson(files.marketplace);
-const entry = marketplace.plugins.find((p) => p.name === plugin);
-if (!entry) die(`marketplace.json 未登记 ${plugin}（先补条目再发版）`);
-entry.version = next;
-writeJson(files.marketplace, marketplace);
-
-// 复核：bump 后仍满足全部一致性规则（防脚本自身写坏）
-execFileSync('node', [path.join(__dirname, 'check-sync.js'), ROOT], { stdio: 'inherit', cwd: ROOT });
+const next = bumpType === 'current'
+  ? pkg.version // 首发：版本已在三处定稿（check-sync 前置已校验一致），直接用
+  : {
+      patch: `${major}.${minor}.${patch + 1}`,
+      minor: `${major}.${minor + 1}.0`,
+      major: `${major + 1}.0.0`,
+    }[bumpType];
 
 // commit scope 用插件缩写（仓库现有 conventional 风格，如 feat(zsw)）。
 // 缩写的 SSOT 是各插件 CONTEXT.md（目录名与缩写无机械映射），此处维护映射，
@@ -85,9 +72,33 @@ execFileSync('node', [path.join(__dirname, 'check-sync.js'), ROOT], { stdio: 'in
 const SCOPES = { 'z-subagent-workflow': 'zsw' };
 const scope = SCOPES[plugin] || plugin.replace(/^z-/, '');
 const tag = `${plugin}@${next}`;
-execFileSync('git', ['add', files.pkg, files.manifest, files.marketplace], { cwd: ROOT });
-execFileSync('git', ['commit', '-m', `release(${scope}): bump ${plugin} to ${next}`], { stdio: 'inherit', cwd: ROOT });
-execFileSync('git', ['tag', '-a', tag, '-m', `${plugin} ${next}`], { cwd: ROOT });
+
+if (bumpType === 'current') {
+  // current：不写文件不 commit（版本已在某次变更 commit 里定稿），
+  // 只校验 tag 未被占用后直接打在 HEAD
+  const existing = execFileSync('git', ['tag', '-l', tag], { cwd: ROOT }).toString();
+  if (existing.trim()) die(`tag ${tag} 已存在（git tag -l 可查）——若该版本已发布，用 patch/minor/major 发下一版`);
+  execFileSync('git', ['tag', '-a', tag, '-m', `${plugin} ${next}`], { cwd: ROOT });
+} else {
+  // 三处同步 bump（保持键序，2 空格缩进与仓库 JSON 风格一致）
+  pkg.version = next;
+  writeJson(files.pkg, pkg);
+  const manifest = readJson(files.manifest);
+  manifest.version = next;
+  writeJson(files.manifest, manifest);
+  const marketplace = readJson(files.marketplace);
+  const entry = marketplace.plugins.find((p) => p.name === plugin);
+  if (!entry) die(`marketplace.json 未登记 ${plugin}（先补条目再发版）`);
+  entry.version = next;
+  writeJson(files.marketplace, marketplace);
+
+  // 复核：bump 后仍满足全部一致性规则（防脚本自身写坏）
+  execFileSync('node', [path.join(__dirname, 'check-sync.js'), ROOT], { stdio: 'inherit', cwd: ROOT });
+
+  execFileSync('git', ['add', files.pkg, files.manifest, files.marketplace], { cwd: ROOT });
+  execFileSync('git', ['commit', '-m', `release(${scope}): bump ${plugin} to ${next}`], { stdio: 'inherit', cwd: ROOT });
+  execFileSync('git', ['tag', '-a', tag, '-m', `${plugin} ${next}`], { cwd: ROOT });
+}
 
 console.log(`
 release: ${plugin} ${next} 已就绪

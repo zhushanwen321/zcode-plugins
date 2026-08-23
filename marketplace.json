@@ -10,7 +10,7 @@
     {
       "name": "z-subagent-workflow",
       "source": "./z-subagent-workflow",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "description": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
       "description_i18n": {
         "en": "Subagent orchestration + deterministic multi-phase workflows for zcode: MCP tools zsub (lifecycle) and zflow (chain/parallel/map-reduce/scatter-gather/review-fix-loop + custom scripts).",
