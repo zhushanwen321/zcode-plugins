@@ -59,7 +59,7 @@ zcode 主 agent 今天用 subagent 只有两条路：GUI `@mention`（同步阻�
 | Z8 | **mailbox 语义**：根 `ZCODE_MAILBOX_ROOT ?? ~/.zcode/mailbox`；envelope 六字段严格校验；drain 挂 UserPromptSubmit/PostToolUse/Stop、单次 ≤20 条、按文件名字典序；**坏文件中断本轮 drain 且永久阻塞排序在后的消息**（无 quarantine）——投递必须 tmp+rename 原子写 | @11067925、@10358509、@11763160（v2 实测复核） |
 | Z9 | 无头 CLI：`--json --cwd --mode --prompt --resume --disallowed-tools` 可用；`--max-turns/--allowed-tools/--settings` 拒收；provider 配置读 `$HOME/.zcode/cli/config.json` → 隔离 HOME = 独立 provider/model；无 `--model` flag | driver.js 生产 + v2 实测（B1-B4 沿用） |
 | Z10 | MCP server（stdio）由引擎 spawn，继承引擎进程全部字符串 env（含 `ZCODE_MESSAGE_ENABLED`/`ZCODE_MAILBOX_ROOT` 的真实值）；plugin server 额外注入 `ZCODE_PLUGIN_ROOT`/`ZCODE_PROJECT_DIR` | @7554700、@7522315 Hvr、@6954960 |
-| Z11 | `zcode app-server`：NDJSON 双向 RPC（GUI 同款协议）。请求/响应/推送/反向请求四帧；`session/create` 支持 model/thoughtLevel/toolAllowlist/toolDenylist/mcpServers/parentSessionId，**必答反向请求 `session/requestRuntimePreferences`（15s 超时）**；`session/subscribe`（deliveryKind 必填）/`send`（字段 content）/`stop`/`close`/`list`（跨进程）；实时流在 `v4/telemetry/event` kind:"stream.chunk"；`session/read` 仅限本进程 active 会话 | handoff v2 实测全通（协议骨架与错误码 -32602/-32004/-32022 已映射） |
+| Z11 | `zcode app-server`：NDJSON 双向 RPC（GUI 同款协议）。请求/响应/推送/反向请求四帧；`session/create` 支持 model/thoughtLevel/toolAllowlist/toolDenylist/mcpServers/parentSessionId，**必答反向请求 `session/requestRuntimePreferences`（15s 超时）**；`session/subscribe`（deliveryKind 必填）/`send`（字段 content）/`stop`/`close`/`list`（跨进程）；实时流在 `v4/telemetry/event` kind:"stream.chunk"；`session/read` 仅限本进程 active 会话。**e2e 实测修正（E7 抓包，2026-08-23）**：①create 应答的 sessionId 在 `result.session.sessionId`（projection.sessionId 恒为 "unknown"，勿用）；②**一轮的权威终态信号是 `v4/telemetry/event {kind:"turn.terminal"}`**——state.updated 只发 `params.patch.status:"running"`，不发 idle；③结果全文在 `session/event payload.response`（含 usage），stream.chunk 只携带 chunkLength 无文本；④create 的 model 参数必须是对象 `{providerId, modelId}`（字符串被 -32602 拒收）；⑤限流（429/1302）与同账户桌面端常驻进程共享配额，呈窗口开关式 | handoff v2 实测全通 + zsub e2e E7 真机抓包修正（已固化进 `lib/runner-appserver.js` 头注） |
 
 **pi 参考系（源码调研）**：
 
@@ -205,6 +205,8 @@ zsub MCP server（长驻）
 | M3 | apc runner 真机 | 探针通过时 conversation 零冷启动；探针失败自动降级 spawn 且 record 标记 |
 
 **实施期门（⛔ 探针未跑，均含降级）**：① GUI host mailbox drain（M1，降级 polling）；② `_meta` 会话上下文在插件 server 路径的实测（Z3 证据在 runtime 主路径，插件 MCP server 场景 W2 冒烟确认，降级：改读 `ZCODE_SESSION_ID` hook 或投全部活跃）；③ AppServerRunner 协议探针（create/close 往返 + 反向请求，失败降级 spawn）。
+
+**探针/验收状态（2026-08-23 收尾更新）**：③已过——真实 app-server 探针 OK，e2e E7 全链路（create→send→turn.terminal→全文获取→续聊）真机通过并按抓包修正三处协议假设（见 Z11）；无头 e2e E1-E8 全绿；MCP stdio 真实握手冒烟通过。①②为真机 GUI 项，随 M1-M2 手册执行。
 
 ---
 
