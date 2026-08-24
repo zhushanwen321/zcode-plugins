@@ -28,6 +28,15 @@
 
 const { TERMINAL_STATUSES } = require('./record-store');
 
+/**
+ * wait 的「完成」集合（R5）：终态 + idle——conversation 任务轮完成是
+ * running→idle（round-complete），DESIGN-v4 §5「本轮完成经 wait 收」要求
+ * idle 即可收；只认终态会让 start --wait --conversation 与 message 后的
+ * wait 永久挂起（idle 无 pending 条目，仅靠轮询兜底空转）。
+ */
+const WAIT_DONE_STATUSES = new Set([...TERMINAL_STATUSES, 'idle']);
+const isWaitDone = (status) => WAIT_DONE_STATUSES.has(status);
+
 /** 轮询兜底间隔：正常路径远小于此（pending promise 事件驱动唤醒）。 */
 const DEFAULT_POLL_FALLBACK_MS = 2000;
 
@@ -95,7 +104,7 @@ function createWaitHandler({ manager, pollFallbackMs = DEFAULT_POLL_FALLBACK_MS 
           + '恢复指引：用 list 可查现有任务 id，确认该 id 存在后重试。'
         );
       }
-      if (TERMINAL_STATUSES.has(st.status)) {
+      if (isWaitDone(st.status)) {
         collected.set(id, { subagentId: id, status: st.status, outputFile: st.outputFile });
       } else {
         waiting.add(id);
@@ -141,7 +150,7 @@ function createWaitHandler({ manager, pollFallbackMs = DEFAULT_POLL_FALLBACK_MS 
         // settle 与终态落盘之间存在极窄窗口，lost 也可经外部 cancel/close 推进）
         for (const id of [...waiting]) {
           const st = manager.status(id);
-          if (TERMINAL_STATUSES.has(st.status)) {
+          if (isWaitDone(st.status)) {
             collected.set(id, { subagentId: id, status: st.status, outputFile: st.outputFile });
             waiting.delete(id);
           }

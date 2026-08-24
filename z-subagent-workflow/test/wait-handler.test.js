@@ -206,3 +206,27 @@ test('工厂校验：manager 缺失 / pollFallbackMs 非法立即抛', () => {
   assert.throws(() => createWaitHandler({}), /manager/);
   assert.throws(() => createWaitHandler({ manager: { status() {}, pending: new Map() }, pollFallbackMs: 0 }), /pollFallbackMs/);
 });
+
+// ------------------------------------------- R5：conversation 轮完成（idle）可收
+
+test('conversation 任务轮完成（running→idle）→ wait 以 idle 收齐，不挂起（R5）', async () => {
+  const { manager, records, pending } = makeFakeManager();
+  records.set('sa-chat', { subagentId: 'sa-chat', status: 'running' });
+  const d = deferred();
+  pending.set('sa-chat', d.promise);
+  const wait = createWaitHandler({ manager, pollFallbackMs: FAST_POLL });
+  const p = wait({ ids: ['sa-chat'] });
+  setTimeout(() => settle(records, pending, 'sa-chat', 'idle', () => d.resolve()), 5);
+  const out = await p;
+  assert.equal(out.partial, undefined);
+  assert.deepEqual(out.results, [{ subagentId: 'sa-chat', status: 'idle', outputFile: '/fake/outputs/sa-chat.md' }]);
+});
+
+test('初始即 idle 的 conversation 任务 → wait 立即收齐（无需等待/轮询）', async () => {
+  const { manager, records } = makeFakeManager();
+  records.set('sa-idle', { subagentId: 'sa-idle', status: 'idle' });
+  const wait = createWaitHandler({ manager });
+  const out = await wait({ ids: ['sa-idle'] });
+  assert.equal(out.partial, undefined);
+  assert.equal(out.results[0].status, 'idle');
+});

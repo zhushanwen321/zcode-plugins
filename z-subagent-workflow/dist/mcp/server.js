@@ -347,7 +347,9 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
           if (typeof args.text !== 'string' || args.text.trim() === '') {
             return errContent('message 需要 text（非空字符串，续聊消息内容）。');
           }
-          return okContent(manager.message(id, args.text));
+          // 必须 await：manager.message 是 async，不 await 会把 Promise 序列化
+          // 成 '{}'——socket/CLI 面拿不到 round/notify 句柄（R4）
+          return okContent(await manager.message(id, args.text));
         }
         case 'close':
           return okContent(await manager.close(requireSubagentId(args)));
@@ -759,6 +761,22 @@ async function main() {
         // 适配成 socket 帧 (req, meta) 形态并解包 content（见适配器头注）
         handlers: buildDaemonHandlers(server.toolHandlers),
         log,
+        // 接管时重跑 recover（DESIGN-v4 §6.3 D3）：standby 的内存索引缺旧
+        // daemon 后建的 record，不重建则 status/wait/list 全部「不存在」
+        onTakeover: async () => {
+          try {
+            const rec = await manager.recover();
+            log(`接管后 record 恢复：重建 ${rec.rebuild.records} 条，死进程 ${rec.dead.length} 条标 lost，孤儿 ${rec.orphan.length} 条待 cancel`);
+          } catch (e) {
+            log(`接管后 recover 失败（继续服务，record 功能可能受限）: ${e && e.message || e}`);
+          }
+          try {
+            const rec = await wfManager.recover();
+            log(`接管后 workflow record 恢复：非终态 ${rec.lost.length} 条标 lost（执行体随旧 daemon 消亡）`);
+          } catch (e) {
+            log(`接管后 wfManager recover 失败: ${e && e.message || e}`);
+          }
+        },
       });
       // 竞选事件（接管/退避/看门狗）由 daemon-socket 内部经同一 log 通道输出。
       // standby 的 M1 语义：manager 已照常初始化（上方 recover 跑过）——

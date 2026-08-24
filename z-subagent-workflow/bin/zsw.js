@@ -39,8 +39,9 @@
  *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
  *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
  *
- * wait exit code（MF4）：partial（等待超时未全终态）→ 2；results 任一条为
- * 失败终态（cancelled/error/timeout/lost）→ 1；全 closed → 0。
+ * wait exit code（MF4）：partial（等待超时未全完成）→ 2；results 任一条为
+ * 失败终态（cancelled/error/timeout/lost）→ 1；全完成 → 0（closed，或
+ * conversation 任务的 idle——本轮完成即可收，完成集合见 lib/wait-handler.js）。
  *
  * daemon 模式（DESIGN-v4 D5/D7，默认形态）：经 unix socket thin client 连
  * 常驻 daemon（sock 默认 ~/.zcode/zsw/daemon.sock，ZSW_SOCK 可覆盖）：
@@ -458,8 +459,8 @@ async function runDaemonWaitCore(ids, timeoutMs) {
   const resp = await callDaemon({ tool: 'zsub', params });
   if (!resp.ok) exitWithDaemonResponse(resp);
   process.stdout.write(`${JSON.stringify(resp.result, null, 2)}\n`);
-  // exit code（MF4）：partial（等待超时未全终态）→ 2 优先；否则 results 任一
-  // 条目为失败终态 → 1；全 closed → 0。runDaemonStartWait 复用本核心自动生效。
+  // exit code（MF4）：partial（等待超时未全完成）→ 2 优先；否则 results 任一
+  // 条目为失败终态 → 1；全完成 → 0（closed 或 conversation 的 idle）。runDaemonStartWait 复用本核心自动生效。
   const result = resp.result;
   if (result && result.partial === true) process.exit(2);
   const entries = Array.isArray(result && result.results) ? result.results : [];

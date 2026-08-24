@@ -843,3 +843,20 @@ test('进程级：NESTED 档不注册工具，仍正常应答协议后退出', a
   assert.deepEqual(tl.result.tools, []);
   assert.match(r.stderr, /ZSW_NESTED/);
 });
+
+// ------------------------------------------------ R4：async manager.message
+
+test('handler 直调：manager.message 为 async → 返回完整句柄而非 "{}"', async () => {
+  const fake = makeFakeManager();
+  // 真 manager.message 是 async（lib/manager.js）；同步 fake 会掩蔽未 await 的
+  // 回归——此处强制 async，断言 round/notify 经 await 到达调用方
+  fake.message = async (id, text) => {
+    await new Promise((r) => setTimeout(r, 5));
+    return { subagentId: id, status: 'running', round: 2, notify: 'none' };
+  };
+  const srv = server.createServer({ manager: fake, nested: false });
+  const result = await callHandler(srv, 'zsub', { action: 'message', subagentId: 'sa-1', text: '追问' });
+  assert.equal(result.isError, undefined);
+  const parsed = JSON.parse(result.content[0].text);
+  assert.deepEqual(parsed, { subagentId: 'sa-1', status: 'running', round: 2, notify: 'none' });
+});

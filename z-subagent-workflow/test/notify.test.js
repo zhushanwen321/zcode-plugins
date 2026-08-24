@@ -180,7 +180,9 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   assert.deepStrictEqual(listAllFiles(root), [], '零文件写入');
 
   const g = p.pollingGuidance('sa-poll');
-  assert.ok(g.includes('node bin/zsw.js status --id sa-poll'), '含具体 CLI status 查询示例');
+  // R6：CLI 指引必须是绝对路径形态（ZCODE_PLUGIN_ROOT 或模块相对回退拼接）——
+  // 主 agent cwd 是项目目录，裸 node bin/zsw.js 照抄执行会 ENOENT
+  assert.ok(/node \S*bin\/zsw\.js status --id sa-poll/.test(g), '含可照抄执行的 CLI status 查询示例（绝对路径）');
   assert.ok(g.includes('closed'), '说明完成后 status 变 closed');
   assert.ok(g.includes('outputs'), '说明 result 落 outputs 路径');
   // 0.2.0 文案修复（DESIGN-v4 §3.1）：指引在 start（wait=false）时刻随 handle
@@ -191,5 +193,5 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   assert.ok(g.includes('3-10 分钟'), '给时间预期，防无预期轮询');
   // 1.0.0 文案口径（M1 CLI 默认翻转）：等待姿势 = CLI start --wait（默认连
   // daemon）配 Bash run_in_background，触发引擎原生通知——不再是 --daemon flag
-  assert.ok(g.includes('node bin/zsw.js start --wait'), '指向 CLI start --wait 等待姿势（1.0.0+）');
+  assert.ok(/node \S*bin\/zsw\.js start --wait/.test(g), '指向 CLI start --wait 等待姿势（1.0.0+，绝对路径）');
 });

@@ -99,6 +99,10 @@ class SubagentManager {
     this.handles = new Map();
     /** subagentId -> 执行体 promise：cancel 时等终态落盘，避免返回早于 record。 */
     this.pending = new Map();
+    /** subagentId -> 操作串行链（R2）：message/cancel/close 同 id 并发到达时按
+     *  到达序串行执行——daemon socket 面的 handler 并行分发（对照 MCP 面的
+     *  tools/call 串行队列），check-then-act 跨 await 段的交错不再可能。 */
+    this._locks = new Map();
     this._mode = this.notifier.capabilities().mode;
   }
 
@@ -266,10 +270,29 @@ class SubagentManager {
   // ------------------------------------------------------------- message
 
   /**
+   * 同 id 操作串行化（R2）：fn 排在 id 现有链尾执行；链尾吞掉前驱 rejection
+   * （失败不堵后续操作），链空时自清。返回 fn 自身的 promise（rejection 透传
+   * 给调用方）。不同 id 互不阻塞。
+   */
+  _withLock(id, fn) {
+    const prev = this._locks.get(id) || Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => {});
+    this._locks.set(id, tail);
+    tail.then(() => { if (this._locks.get(id) === tail) this._locks.delete(id); });
+    return run;
+  }
+
+  /**
    * 向 conversation 任务投递续聊消息（仅 idle 可投递，busy 语义对齐 spawn 单轮）。
    * 不等待本轮完成（与 start 后台语义一致），完成后再通知。
+   * 同 id 并发安全经 _withLock（R2）。
    */
   async message(id, text) {
+    return this._withLock(id, () => this._messageLocked(id, text));
+  }
+
+  async _messageLocked(id, text) {
     const rec = this._mustGet(id);
     if (rec.conversation !== true) {
       throw new Error(
@@ -305,6 +328,10 @@ class SubagentManager {
   // ------------------------------------------------------- cancel / close
 
   async cancel(id) {
+    return this._withLock(id, () => this._cancelCore(id));
+  }
+
+  async _cancelCore(id) {
     const rec = this._mustGet(id);
     if (TERMINAL_STATUSES.has(rec.status)) {
       return { subagentId: id, status: rec.status, cancelled: false, note: '已是终态，无需取消' };
@@ -331,10 +358,14 @@ class SubagentManager {
   }
 
   async close(id) {
+    return this._withLock(id, () => this._closeLocked(id));
+  }
+
+  async _closeLocked(id) {
     let rec = this._mustGet(id);
     if (!TERMINAL_STATUSES.has(rec.status)) {
       if (this.handles.has(id)) {
-        await this.cancel(id); // 运行中：借取消链杀进程 + 终态落盘
+        await this._cancelCore(id); // 运行中：借取消链杀进程 + 终态落盘（同锁内直调，避免重入自等）
       } else {
         const note = rec.status === 'lost'
           ? 'closed（句柄丢失，进程可能残留）'

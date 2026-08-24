@@ -753,3 +753,44 @@ test('排队期 cancel：槽位占满时取消 → 零 spawn 直接终态化', a
   await manager.pending.get(h.subagentId);
   assert.equal(records.get(h.subagentId).status, 'cancelled');
 });
+
+// ---------------------------------------------- R2：同 id 操作串行化（_withLock）
+
+test('同 id 操作串行化：close 的 await 窗口内并发 message 不越序，record 不被再起轮', async () => {
+  const c = ctx();
+  const worktree = {
+    async prepare() { return { dir: '/fake/wt', branch: 'zsub/x', mainRepo: '/fake' }; },
+    async collectPatch() { return null; },
+    cleanup: () => new Promise((r) => setTimeout(r, 30)), // 拉长 close 的 await 窗口
+  };
+  const { manager, runner, records } = buildManager({ worktree });
+  // conversation + worktree 任务，首轮完成后停在 idle 且带 worktree 字段
+  const h = await manager.start({ task: '对话任务书', slug: 'serial-demo', conversation: true, worktree: true }, c);
+  await waitFor(() => runner.startCalls.length === 1);
+  runner.finishAll({ status: 'closed', response: '首轮', sessionId: 'sess-serial-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'idle');
+
+  const closeP = manager.close(h.subagentId); // 先进入：idle→closed 后卡在 cleanup await
+  await sleep(5);
+  await assert.rejects(() => manager.message(h.subagentId, '迟到的消息'), /仅 idle 可投递|不是 conversation/);
+  await closeP;
+  const rec = records.get(h.subagentId);
+  assert.equal(rec.status, 'closed', '终态 closed，未被迟到的 message 再起轮');
+  assert.equal(runner.resumeCalls.length, 0, '迟到 message 未产生 resume 轮');
+});
+
+test('_withLock：同 id 排队按到达序执行，链空自清，不同 id 并行', async () => {
+  const { manager } = buildManager();
+  const order = [];
+  let gate;
+  const gated = new Promise((r) => { gate = r; });
+  const a = manager._withLock('sa-lock', async () => { order.push('a-start'); await gated; order.push('a-end'); });
+  const b = manager._withLock('sa-lock', async () => { order.push('b'); });
+  const c2 = manager._withLock('sa-other', async () => { order.push('c'); });
+  await sleep(10);
+  assert.deepEqual(order, ['a-start', 'c'], '同 id 的 b 排队等待，不同 id 的 c 并行');
+  gate();
+  await Promise.all([a, b, c2]);
+  assert.deepEqual(order, ['a-start', 'c', 'a-end', 'b'], 'a 完成后 b 才执行');
+  assert.equal(manager._locks.size, 0, '链空自清');
+});

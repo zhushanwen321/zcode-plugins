@@ -31,7 +31,7 @@ node bin/zsw.js status --id <id>              → 单条详情 + 结果路径
 node bin/zsw.js message --id <id> --text "<追问>"  → 续聊一轮（仅 conversation 且 idle；投递即回，完成经 wait 收）
 node bin/zsw.js cancel --id <id>              → 取消（SIGTERM→SIGKILL）
 node bin/zsw.js close --id <id>               → 关闭会话并清理 worktree
-node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]  → 聚合等待到终态（partial → exit 2）
+node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]  → 聚合等待到完成（终态，或 conversation 的 idle 本轮完成；partial → exit 2）
 node bin/zsw.js agents                        → 可用 agent .md 清单（name/description/when/file/source，四根发现）
 node bin/zsw.js models                        → 可用模型清单（短名/上下文窗口/推理档位/默认标记）
 ```
@@ -48,7 +48,7 @@ start 前不确定有哪些 agent 可用时，先 `node bin/zsw.js agents` 查�
 # 派发 + 等待一步到位（--wait 是 start+wait 的 sugar）
 node bin/zsw.js start --wait --task "<自包含任务书>" --slug <短名>
 
-# 异步派发后聚合等待（多 id 全部终态才返回；--timeout-ms 到点回 partial，exit 2）
+# 异步派发后聚合等待（多 id 全部完成才返回——终态或 conversation 的 idle；--timeout-ms 到点回 partial，exit 2）
 node bin/zsw.js start --task "..." --slug a    # 前台，立即返回 subagentId
 node bin/zsw.js wait --id sa-xxxx --id sa-yyyy  # run_in_background=true
 

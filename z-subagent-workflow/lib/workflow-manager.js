@@ -580,7 +580,7 @@ class WorkflowManager {
     if (rec.recordType !== RECORD_TYPE) {
       throw new Error(
         `"${runId}" 不是 workflow record（recordType=${JSON.stringify(rec.recordType) ?? 'undefined'}）。`
-        + '恢复指引：subagent 任务请用 CLI 查询：node bin/zsw.js status --id <subagentId>。'
+        + `恢复指引：subagent 任务请用 CLI 查询：node ${path.join(process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..'), 'bin', 'zsw.js')} status --id <subagentId>。`
       );
     }
     return rec;

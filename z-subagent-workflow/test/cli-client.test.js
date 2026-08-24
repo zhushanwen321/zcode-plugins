@@ -207,3 +207,27 @@ test('defaultSockPath：ZSW_SOCK 覆盖 > ~/.zcode/zsw/daemon.sock', () => {
     else process.env.ZSW_SOCK = prev;
   }
 });
+
+// ------------------------------------------- R1：多字节 UTF-8 chunk 边界切开
+
+test('响应帧含中文且被 chunk 边界切开多字节序列 → 仍完整解出（Buffer 累积解码）', async () => {
+  const resp = Buffer.from(`${JSON.stringify({ id: 1, ok: true, result: { note: '任务「审查」完成：中文结果' } })}\n`);
+  // 第一个 >= 0x80 的字节后切开：必落在多字节 UTF-8 序列内或其边界
+  let split = -1;
+  for (let i = 0; i < resp.length; i++) {
+    if (resp[i] >= 0x80) { split = i + 1; break; }
+  }
+  const d = await new Promise((resolve) => {
+    const server = net.createServer((conn) => {
+      conn.on('data', () => {
+        conn.write(resp.subarray(0, split));
+        setTimeout(() => conn.write(resp.subarray(split)), 20); // 分两个 data 事件
+      });
+    });
+    server.listen(tmpSock('utf8split'), () => resolve({ server, sockPath: server.address() }));
+  });
+  const r = await callDaemon({ sockPath: d.sockPath, tool: 'zsub', params: { action: 'status' } });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.result, { note: '任务「审查」完成：中文结果' });
+  d.server.close();
+});

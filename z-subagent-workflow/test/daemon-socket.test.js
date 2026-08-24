@@ -444,3 +444,33 @@ test('看门狗连接不发帧：daemon 无错误日志、正常服务不受干�
   const errors = logs.filter((m) => /错误|异常|坏帧|终止/.test(m));
   assert.deepStrictEqual(errors, [], `两侧均不应有错误日志: ${errors}`);
 });
+
+// ------------------------------------------------- R3：接管回调（onTakeover）
+
+test('看门狗接管成为 daemon 时触发 onTakeover；首竞选不触发', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const takeovers = [];
+  const daemon = await startDaemon({
+    sockPath, handlers: { zsub: async () => ({ who: 'old' }) }, log: () => {},
+    onTakeover: () => { takeovers.push('old-should-not-fire'); },
+  });
+  t.after(() => daemon.stop());
+  assert.strictEqual(daemon.role, 'daemon');
+  assert.deepStrictEqual(takeovers, [], '首竞选成为 daemon 不触发 onTakeover');
+
+  const standby = await startDaemon({
+    sockPath, handlers: { zsub: async () => ({ who: 'new' }) }, log: () => {},
+    onTakeover: () => { takeovers.push('new'); },
+  });
+  t.after(() => standby.stop());
+  assert.strictEqual(standby.role, 'standby');
+
+  await daemon.stop(); // 看门狗 close → standby 接管
+  await waitUntil(() => canConnect(sockPath), { timeoutMs: 4000 });
+  await waitUntil(() => takeovers.length === 1, { timeoutMs: 4000 });
+  assert.deepStrictEqual(takeovers, ['new'], '仅接管者触发 onTakeover');
+
+  // 接管后仍正常服务
+  const frames = await rpc(sockPath, [{ id: 1, tool: 'zsub', params: {} }]);
+  assert.strictEqual(frames[0].result.who, 'new');
+});

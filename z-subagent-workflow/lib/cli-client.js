@@ -36,20 +36,25 @@ function defaultSockPath() {
 }
 
 /**
- * 从累积 buffer 中解出首个响应帧。宽容点（防御 daemon 侧不规范写出，不
+ * 从累积 Buffer 中解出首个响应帧。宽容点（防御 daemon 侧不规范写出，不
  * 改变协议本身）：跳过空行/纯空白行/非 JSON 行/无布尔 ok 字段的 JSON 行。
  * 返回 {resp} 或 null（帧未到齐，等下一段 data / close 兜底）。
+ *
+ * 累积必须按 Buffer、行完整后才 toString（与 daemon 侧 createFrameDecoder
+ * 同款语义）：多字节 UTF-8 序列（中文任务结果/错误消息）被 chunk 边界切开
+ * 时，逐 chunk toString 会产生替换字符，整行 JSON.parse 失败、帧被当坏行
+ * 跳过——任务成功却报「连接中断」。
  */
 function extractResponseFrame(buffer) {
   let start = 0;
   for (;;) {
-    const nl = buffer.indexOf('\n', start);
-    const line = buffer.slice(start, nl === -1 ? undefined : nl).trim();
+    const nl = buffer.indexOf(0x0a, start);
+    const line = buffer.subarray(start, nl === -1 ? undefined : nl).toString('utf8').trim();
     if (line !== '') {
       try {
         const obj = JSON.parse(line);
         if (obj && typeof obj === 'object' && typeof obj.ok === 'boolean') return { resp: obj };
-      } catch { /* 半截帧：等下一段 data */ }
+      } catch { /* 半截帧或坏行：等下一段 data / 跳过 */ }
     }
     if (nl === -1) return null;
     start = nl + 1;
@@ -82,7 +87,7 @@ async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}
 
   return new Promise((resolve, reject) => {
     const socket = net.connect(sock);
-    let buffer = '';
+    let buffer = Buffer.alloc(0);
     let settled = false;
 
     const connectTimer = setTimeout(() => {
@@ -121,7 +126,7 @@ async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}
       settle(() => reject(err));
     });
     socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
       const frame = extractResponseFrame(buffer);
       if (!frame) return; // 半截帧：等下一段 data
       settle(() => resolve(toResult(frame.resp)));

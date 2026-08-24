@@ -121,6 +121,11 @@ function installExitHooks() {
  * @param {string} opts.sockPath unix socket 路径（lock 固定为 sockPath + '.lock'）
  * @param {Record<string, (req: {tool: string, params: object, cwd?: string}, meta: {signal: AbortSignal}) => Promise<any>>} [opts.handlers]
  *        tool 名 → handler 表；本层只管传输，业务语义由调用方注入
+ * @param {() => Promise<void>} [opts.onTakeover]
+ *        standby 经看门狗接管成为 daemon 后回调（DESIGN-v4 §6.3 D3：接管时
+ *        跑 recover——record 重建 + 探活）。仅接管路径触发，首竞选成为
+ *        daemon 不触发（调用方启动序列自己跑过 recover）。抛错只记日志，
+ *        不回滚 daemon 身份。
  * @param {(msg: string) => void} [opts.log] 人读日志（缺省 stderr）
  * @returns {Promise<{role: 'daemon'|'standby', stop: () => Promise<void>}>}
  *          role 是首竞选快照；standby 事后接管成 daemon 时 role 字段不回填
@@ -132,6 +137,7 @@ function startDaemon(opts) {
   }
   const sockPath = opts.sockPath;
   const handlers = opts.handlers || {};
+  const onTakeover = typeof opts.onTakeover === 'function' ? opts.onTakeover : null;
   const log = opts.log || defaultLog;
   const lockPath = `${sockPath}.lock`;
 
@@ -142,6 +148,7 @@ function startDaemon(opts) {
   let watchdogConnected = false;
   let retryTimer = null;
   let pendingListen = null;
+  let wasStandby = false; // 经 standby→看门狗→竞选 的接管路径（区别于首竞选）
   const conns = new Set(); // 活跃连接（stop 时主动断开，加速 server.close 收尾）
 
   let resolveReady;
@@ -238,6 +245,7 @@ function startDaemon(opts) {
 
   function becomeStandby(attempt) {
     if (state === 'stopped') return;
+    wasStandby = true; // 后续竞选成功即为接管（onTakeover 依据）
     const sock = net.connect(sockPath);
     sock.unref();
     watchdog = sock;
@@ -351,7 +359,7 @@ function startDaemon(opts) {
     lockHeld = true;
     pendingListen = becomeDaemon();
     pendingListen.then(
-      () => {
+      async () => {
         pendingListen = null;
         if (state === 'stopped') {
           // stop() 抢在 listen 完成前：立刻拆掉迟到的 server，否则 socket 文件会复活
@@ -360,6 +368,17 @@ function startDaemon(opts) {
         }
         state = 'daemon';
         log(`daemon 就绪：listen ${sockPath}（pid ${process.pid}）`);
+        // 接管路径（D3）：本实例之前是 standby，内存索引缺旧 daemon 后建的
+        // record——回调调用方重跑 recover（record 重建 + 探活）。listen 已在
+        // 服务但 recover 完成前的请求走旧索引，窄窗口内「不存在」由调用方
+        // CLI 重试语义兜底（等价于 daemon 刚启动未就绪）。
+        if (wasStandby && onTakeover) {
+          try {
+            await onTakeover();
+          } catch (e) {
+            log(`接管 onTakeover 失败（继续服务，record 功能可能受限）: ${e && e.message || e}`);
+          }
+        }
         finishReady('daemon');
       },
       (err) => {
