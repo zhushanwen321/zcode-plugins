@@ -10,7 +10,7 @@
     {
       "name": "z-subagent-workflow",
       "source": "./z-subagent-workflow",
-      "version": "0.0.1",
+      "version": "1.0.0",
       "description": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (default daemon thin client; the MCP tool face is offline since 1.0.0): background subagent lifecycle with worktree isolation, schema outputs, conversation follow-ups, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom script:<name> extension. Completion wakeup rides engine-native task-notification (CLI blocking command + Bash run_in_background), no polling.",
       "description_i18n": {
         "en": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (default daemon thin client; the MCP tool face is offline since 1.0.0): background subagent lifecycle with worktree isolation, schema outputs, conversation follow-ups, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom script:<name> extension. Completion wakeup rides engine-native task-notification (CLI blocking command + Bash run_in_background), no polling.",
@@ -21,7 +21,13 @@
         "url": "https://github.com/zhushanwen321"
       },
       "category": "orchestration",
-      "keywords": ["subagent", "workflow", "orchestration", "mcp", "headless"]
+      "keywords": [
+        "subagent",
+        "workflow",
+        "orchestration",
+        "mcp",
+        "headless"
+      ]
     }
   ]
 }
