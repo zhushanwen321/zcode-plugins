@@ -7,8 +7,8 @@
  * a) wait action 经 socket 协议往返（buildDaemonHandlers 适配 + MCP handler
  *    的 case 'wait' + lib/wait-handler lazy 创建，fake manager 的 status/pending
  *    受控）；
- * b) ZSW_TOOLS_DISABLED 工具面开关（动态读 env——与 ZSW_ROOT 的模块冻结
- *    时序不同，开关可进程内切换）；
+ * b) MCP 工具面终态（1.0.0 起 D1）：tools/list 恒空、tools/call 恒拒绝指向
+ *    CLI（原 ZSW_TOOLS_DISABLED 灰度开关已随 M1 删除，终态内置无开关）；
  * c) 竞选集成：两个 startDaemon 实例接 MCP handler 表，一 daemon 一 standby，
  *    daemon stop 后 standby 事件驱动接管，新 daemon 的 handlers 服务正常；
  * d) zsub inputSchema 的 wait 契约防漂移。
@@ -205,47 +205,23 @@ test('socket 面 wait：ids 非法（空数组 / 非字符串）→ ok:false 可
   }
 });
 
-// ------------------------------------------------ b) ZSW_TOOLS_DISABLED 开关
+// ------------------------------------------------ b) MCP 工具面终态（1.0.0 起 D1）
 
-test('ZSW_TOOLS_DISABLED=1：tools/list 空注册、tools/call 可操作拒绝（指向 CLI --daemon）', async () => {
-  const srv = server.createServer({ manager: makeFakeManager(), nested: false });
-  process.env.ZSW_TOOLS_DISABLED = '1';
-  try {
+test('MCP 工具面终态：tools/list 恒空、tools/call 恒拒绝指向 CLI（正常档与 NESTED 档同形）', async () => {
+  // 1.0.0 起 D1 终态内置（原 ZSW_TOOLS_DISABLED 灰度开关已删，无 env 可翻）：
+  // 正常档与嵌套档在 MCP 面无行为差异，均恒空注册 + 恒给「走 CLI」指引
+  for (const nested of [false, true]) {
+    const srv = server.createServer({ manager: makeFakeManager(), nested });
     const tl = await srv.handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.deepEqual(tl[0].result.tools, []);
+    assert.deepEqual(tl[0].result.tools, [], `nested=${nested} tools/list 应恒空`);
 
     const call = await srv.handleMessage({
       jsonrpc: '2.0', id: 2, method: 'tools/call',
       params: { name: 'zsub', arguments: { action: 'list' } },
     });
-    assert.equal(call[0].result.isError, true);
-    assert.match(call[0].result.content[0].text, /工具面已禁用（ZSW_TOOLS_DISABLED=1）/);
-    assert.match(call[0].result.content[0].text, /--daemon/);
-    assert.match(call[0].result.content[0].text, /bin\/zsw\.js/);
-  } finally {
-    delete process.env.ZSW_TOOLS_DISABLED;
-  }
-
-  // 动态读 env（与 ZSW_ROOT 的模块冻结时序刻意不同）：同一 server 实例，
-  // 开关关闭后 tools 面恢复——运维开关进程内切换即时生效
-  const tl2 = await srv.handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
-  assert.deepEqual(tl2[0].result.tools.map((tool) => tool.name), ['zsub', 'zflow']);
-});
-
-test('NESTED 优先于 ZSW_TOOLS_DISABLED：嵌套档拒绝文案不被开关遮蔽', async () => {
-  const srv = server.createServer({ manager: makeFakeManager(), nested: true });
-  process.env.ZSW_TOOLS_DISABLED = '1';
-  try {
-    const tl = await srv.handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.deepEqual(tl[0].result.tools, []);
-    const call = await srv.handleMessage({
-      jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'zsub', arguments: { action: 'list' } },
-    });
-    assert.equal(call[0].result.isError, true);
-    assert.match(call[0].result.content[0].text, /嵌套调用已拒绝/);
-  } finally {
-    delete process.env.ZSW_TOOLS_DISABLED;
+    assert.equal(call[0].result.isError, true, `nested=${nested} tools/call 应恒拒绝`);
+    assert.match(call[0].result.content[0].text, /工具面已下线/);
+    assert.match(call[0].result.content[0].text, /bin\/zsw\.js/); // 恢复指引指向 CLI 出口
   }
 });
 

@@ -2,7 +2,7 @@
 /**
  * zsw CLI thin client 的 daemon 通信层（DESIGN-v4 D2/D5，M0 = 0.2.0）。
  *
- * 职责：CLI（bin/zsw.js --daemon）与常驻 daemon 之间的单请求单响应
+ * 职责：CLI（bin/zsw.js 默认形态）与常驻 daemon 之间的单请求单响应
  * NDJSON 帧往返。请求 `{id, tool, params}\n`，响应 `{id, ok:true, result}
  * | {id, ok:false, error:{code,message}}\n`。
  *
@@ -61,7 +61,7 @@ function toResult(resp) {
  * - 成功（含业务失败 ok:false）→ resolve {ok, result?, error?}——ok:false 是
  *   daemon 的正常应答而非传输层异常，exit code 由调用方判定。
  * - connect 失败（ECONNREFUSED/ENOENT）→ throw 可操作错误（DESIGN-v4 §5.2
- *   第 1 行口径；M0 无 --local flag，本地执行 = 不加 --daemon）。
+ *   第 1 行口径；本地执行 = 显式 --local）。
  * - 连接中断未收到响应帧 → throw 可操作错误（§5.2 第 3 行：wait 挂起期间
  *   daemon 随宿主会话死亡的恢复指引）。
  */
@@ -91,7 +91,10 @@ async function callDaemon({ sockPath, tool, params, connectTimeoutMs } = {}) {
       fn();
     };
 
-    socket.on('connect', () => socket.write(request));
+    // connect 超时只覆盖 TCP connect 阶段：连上即清——wait 类挂起请求的总
+    // 时长无上限（由 --timeout-ms 的 partial 语义在 daemon 侧控制），connect
+    // 后的异常断连由 close/error 分支处理（§5.2 第 3 行）
+    socket.on('connect', () => { clearTimeout(connectTimer); socket.write(request); });
     socket.on('error', (err) => {
       // 三种 errno 都是「daemon 不在场/sock 路径形态损坏」：文件不存在
       // （ENOENT）、监听者已死但文件残留（ECONNREFUSED，daemon 异常死亡）、
@@ -101,7 +104,7 @@ async function callDaemon({ sockPath, tool, params, connectTimeoutMs } = {}) {
           `daemon 未运行（connect ${sock} 失败：${err.code}）。`
           + '恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；'
           + '仍失败则在任一 zcode 会话确认插件已启用；'
-          + '或去掉 --daemon 走本地执行（一次性进程语义，无续聊/限流）。',
+          + '或加 --local 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。',
         )));
         return;
       }

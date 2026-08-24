@@ -189,5 +189,7 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   assert.ok(g.includes('已启动'), 'start 时刻口径：已启动');
   assert.ok(!g.includes('已完成'), '不得出现「已完成」（旧文案 bug）');
   assert.ok(g.includes('3-10 分钟'), '给时间预期，防无预期轮询');
-  assert.ok(g.includes('--daemon --wait'), '指向 CLI daemon 等待姿势（0.2.0+）');
+  // 1.0.0 文案口径（M1 CLI 默认翻转）：等待姿势 = CLI start --wait（默认连
+  // daemon）配 Bash run_in_background，触发引擎原生通知——不再是 --daemon flag
+  assert.ok(g.includes('node bin/zsw.js start --wait'), '指向 CLI start --wait 等待姿势（1.0.0+）');
 });

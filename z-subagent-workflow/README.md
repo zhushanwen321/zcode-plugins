@@ -1,8 +1,8 @@
 # z-subagent-workflow — zcode subagent 编排 + workflow 插件
 
-> 两个 MCP tool：
-> **`zsub`** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **`zflow`** — 确定性多阶段编排（六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 后台化（立即返回 runId，完成自动通知）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
+> 两条能力线，1.0.0 起统一走 CLI（`node bin/zsw.js`，默认连常驻 daemon thin client；MCP 工具面已下线——tools/list 恒空、tools/call 指引走 CLI）：
+> **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
+> **zflow** — 确定性多阶段编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 同步阻塞出报告（配 Bash run_in_background 即完成原生唤醒）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
@@ -41,10 +41,10 @@
 主 agent 调用 `zsub`（八 action：start/list/status/cancel/message/close/agents/models）与 `zflow`（六 action：run/abort/status/list/scripts/lint）两个 tool；人类可直接调试：
 
 ```bash
-node bin/zsw.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 可用模型查 MCP zsub(action="models")
+node bin/zsw.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 传未知模型名会在报错中列出可用清单
 node bin/zsw.js list
 node bin/zsw.js status --id sa-xxxx
-node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 阻塞到本轮完成再退出
+node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   # 投递即回，完成经 wait 收（--local 下才阻塞到本轮完成）
 node bin/zsw.js cancel --id sa-xxxx
 ```
 
@@ -67,15 +67,15 @@ node bin/zsw.js workflow --action lint --file <脚本路径>
 
 **自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsw/workflows` > `~/.agents/workflows` > `~/.zsw/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
 
-不加 `--daemon` 时 CLI 是一次性进程（本地执行模式）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` / `zflow` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。0.2.0 起另有 daemon 模式（见下节）。
+`--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动与完成通知走默认 daemon 模式（见下节）。
 
-## daemon 模式（0.2.0+，CLI thin client）
+## CLI 默认形态：daemon thin client（1.0.0 起）
 
-子命令加 `--daemon` 走常驻 daemon（unix socket thin client；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --daemon --wait` 为 start+wait sugar；新增 `wait` 子命令：`zsw wait --daemon --id a [--id b ...] [--timeout-ms n]`，等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
+1.0.0 起 CLI 默认即常驻 daemon thin client（不加任何 flag；unix socket；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --wait` 为 start+wait sugar；`wait` 子命令：`zsw wait --id a [--id b ...] [--timeout-ms n]`（无 `--local` 形态——本地一次性进程没有可挂起的等待方），等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
 
-agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start --daemon --wait …` 或 `zsw wait --daemon --id …`——CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 task-notification 唤醒会话（idle 也唤醒），不依赖 mailbox env、无需 sleep 轮询。
+agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start --wait …` 或 `zsw wait --id …`——CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 task-notification 唤醒会话（idle 也唤醒），不依赖 mailbox env、无需 sleep 轮询。
 
-生命周期：daemon 由启用插件的 zcode 会话自动拉起（MCP server 进程竞选，无额外安装步骤），挂靠任一会话的插件进程——**所有会话关闭则 daemon 退场**，其持有执行体的任务终止（record 已落盘，由下一次接管实例 recover 探活标记 orphan/dead，不产生静默僵尸）。daemon 不在场时 CLI 报错并给恢复指引（稍候重试，其他实例接管需 1-2s；在任一 zcode 会话确认插件已启用；或去掉 `--daemon` 走本地执行）。`zsw workflow` 子命令无 daemon 形态，仍是一次性同步执行。
+生命周期：daemon 由启用插件的 zcode 会话自动拉起（MCP server 进程竞选，无额外安装步骤），挂靠任一会话的插件进程——**所有会话关闭则 daemon 退场**，其持有执行体的任务终止（record 已落盘，由下一次接管实例 recover 探活标记 orphan/dead，不产生静默僵尸）。daemon 不在场时 CLI 报错并给恢复指引（稍候重试，其他实例接管需 1-2s；在任一 zcode 会话确认插件已启用；或加 `--local` 走本地一次性执行——调试后门：无续聊/限流，CLI 退出即丢执行体）。`zsw workflow` 子命令无 daemon 路径，仍是一次性同步执行。
 
 ## 从 dynamic-workflow 迁移
 
@@ -97,7 +97,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 ## 已知边界（如实声明）
 
-- **MCP 面完成通知是被动注入**：外部进程不能投递引擎的 task-notification；mailbox 消息在主 agent 下次活动（UserPromptSubmit/PostToolUse/Stop）时注入，idle 期间滞留——这是 MCP 面通知的物理上限。0.2.0 起 CLI daemon 模式（`wait` / `start --daemon --wait` 配 Bash `run_in_background`）借引擎原生 background 通知获得「完成即唤醒（含 idle）」。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
+- **mailbox 完成通知是被动注入**：外部进程不能投递引擎的 task-notification；mailbox 消息在主 agent 下次活动（UserPromptSubmit/PostToolUse/Stop）时注入，idle 期间滞留——这是 mailbox 通知的物理上限（MCP 工具面已下线不影响本通道：daemon 仍经 mailbox 投递完成通知）。1.0.0 起 CLI 默认即 daemon 模式（`wait` / `start --wait` 配 Bash `run_in_background`）借引擎原生 background 通知获得「完成即唤醒（含 idle）」。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
 - **spawn 模式每轮冷启动 ~1-2s**；conversation 密集场景用 appserver runner（启动探针失败自动降级 spawn）。
 - **spawn 模式 running 不可投递**（message 返回 busy）；appserver 模式的 send-while-running 语义待真机探针。
 - **模型路由当前仅支持 `builtin:bigmodel-coding-plan` 单 provider**：agent .md 带其他 provider 的 model 会得到可操作错误（列出可用清单）。多 provider 支持待后续读 v2 config 全量 provider 列表。
@@ -111,10 +111,10 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 | # | 场景 | 步骤 | 通过标准 |
 |---|------|------|----------|
-| M1 | mailbox 注入 | 启用 env 重启 → 主会话让 LLM `zsub(action="start", task="数一下 README 有多少行", wait=false)`，随后让主 agent 做别的事 1-2 轮 | 后续轮次上下文出现 `[subagent 完成]`，模型主动转达结果 |
-| M2 | 多窗口定向 | 两个窗口开不同项目，窗口 A start(bg)，窗口 B 做 1-2 次 tool 调用 | 完成通知出现在 A 的会话，B 不出现 |
-| M3 | 降级 | 关闭 env 重启，同样 start(bg) | 返回含轮询指引；list 能拿到终态；全程无 mailbox 写入 |
-| M4 | worktree | 干净主树 `start(worktree=true, task="在 src/ 新增 hello.ts")` | 主树干净；通知含 patchFile；`git apply --check <patch>` 通过 |
+| M1 | 原生唤醒 | GUI 会话让 agent 用 Bash `run_in_background=true` 跑 `node bin/zsw.js start --wait --task "数一下 README 有多少行" --slug count`，随后让 agent 结束 turn | 会话被 `<task-notification>` 自动唤醒（无需用户发言），agent 读取结果并转达 |
+| M2 | 跨会话可见 | 窗口 A start（异步），窗口 B `node bin/zsw.js list` / `status --id` | B 能看到 A 派的任务与状态（record 同盘共享） |
+| M3 | 降级 | 关闭 mailbox env，同样 start（异步） | 返回含轮询指引（时间预期 + CLI 等待姿势）；status 能拿到终态 |
+| M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt` 后 wait | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
 | M5 | appserver runner | `ZSW_RUNNER=appserver`（或配置）后 conversation 两轮 | 探针通过则零冷启动续聊；失败自动降级 spawn 且 record.runnerKind 如实标注 |
 
 无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）。

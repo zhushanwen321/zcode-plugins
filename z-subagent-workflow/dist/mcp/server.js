@@ -18,11 +18,14 @@
  * 启动序列：NESTED → 只挂协议层；否则 notifier.sweepStaleTmp（mailbox 档）
  * → manager.recover()（record 重建 + 探活）→ startDaemon（unix socket 控制面，
  * DESIGN-v4 D2/D3：锁文件竞选，daemon 独占 socket 服务角色，standby 挂看门狗
- * 等接管）→ 挂 stdin。M0 过渡形态：standby 的 manager 照常初始化、MCP 工具
- * 面照常服务（设计 D3 终态 1.0 才是空转 + 零工具）。
+ * 等接管）→ 挂 stdin。standby 的 manager 照常初始化（M1 起工具面已恒空，
+ * standby 与 daemon 在 MCP 面无行为差异；manager 保留供本实例成为 daemon 后
+ * 服务 socket 面）。
  *
- * tools 开关（D1 的 1.0 终态留的过渡阀）：ZSW_TOOLS_DISABLED=1 时 tools/list
- * 返回空、tools/call 给可操作拒绝（指向 CLI --daemon）。NESTED 门禁优先。
+ * tools 面已下线（DESIGN-v4 §6.1 D1 终态，1.0.0 起内置）：tools/list 恒空
+ * （零上下文注入）、tools/call 恒给「走 CLI」指引。zsub/zflow 的全部能力经
+ * socket 控制面 + CLI（bin/zsw.js，默认 thin client）提供。buildTools/
+ * buildToolHandlers 保留：后者是 socket 分发的数据源，前者供定义级单测。
  *
  * 多 tool 结构（M3 接线，N2-b 改造）：tool 注册表形态——buildTools() 出定义
  * 数组，buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
@@ -508,20 +511,16 @@ function unwrapContentResult(wrapped) {
  * emitFrame：handler 执行中途的通知帧（progress）实时写出通道——这些帧
  * 无法进本函数的返回值数组（返回时机在 handler 完成后），main 传
  * writeFrame 即按真实时序推送。
- * toolsDisabled：ZSW_TOOLS_DISABLED=1 的注入位（null = 每次调用时动态读
- * env，与 config.NESTED 的模块加载期冻结刻意不同——这是运维开关，进程
- * 内可切换，测试无需 spawn 子进程）。嵌套门禁优先于本开关（NESTED 是
- * 进程身份，语义更强）。
+ * toolsDisabled：已废弃的注入位，1.0.0 起工具面恒空（终态内置，原
+ * ZSW_TOOLS_DISABLED 灰度开关删除——自用单用户场景无灰度对象）。参数保留
+ * 仅为兼容旧签名，任何值都不改变行为。
  */
-function createServer({ manager, wfManager, nested = false, toolsDisabled = null, log = () => {}, emitFrame = () => {} } = {}) {
+function createServer({ manager, wfManager, nested = false, log = () => {}, emitFrame = () => {} } = {}) {
   const toolHandlers = buildToolHandlers({ manager, wfManager, nested });
-  const toolsOff = () => (toolsDisabled === null
-    ? process.env.ZSW_TOOLS_DISABLED === '1'
-    : toolsDisabled === true);
 
-  /** tools 面禁用时的可操作拒绝（D1 终态的过渡阀，指向 CLI --daemon 出口）。 */
-  const toolsDisabledMessage = () => '工具面已禁用（ZSW_TOOLS_DISABLED=1）。'
-    + `恢复指引：用 CLI \`node ${process.env.ZCODE_PLUGIN_ROOT || '<ZCODE_PLUGIN_ROOT>'}/bin/zsw.js <cmd> --daemon\`（socket 控制面不受本开关影响）。`;
+  /** 工具面下线的可操作拒绝（D1 终态）：指向 CLI 出口（socket 面不受影响）。 */
+  const toolsDisabledMessage = () => 'zsub/zflow 工具面已下线（1.0.0 起，agent 交互全走 CLI）。'
+    + `恢复指引：用 Bash 工具跑 \`node ${process.env.ZCODE_PLUGIN_ROOT || '<ZCODE_PLUGIN_ROOT>'}/bin/zsw.js <cmd>\`（默认连接 daemon；等待用 wait 子命令，配 run_in_background 获完成通知）。`;
 
   /**
    * 两级分发第一级：按 params.name 查注册表，未命中抛 -32601（协议级
@@ -529,7 +528,7 @@ function createServer({ manager, wfManager, nested = false, toolsDisabled = null
    * zsub 的 switch(action) / zflow 的 switch(workflow) 见
    * buildToolHandlers）。
    */
-  async function dispatchToolCall(params, env = {}) {
+  async function dispatchToolCall(params) {
     // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
     // 常开（一行 jsonl，成本可忽略）；ZSW_ROOT 隔离的测试环境天然不污染。
     try {
@@ -543,19 +542,9 @@ function createServer({ manager, wfManager, nested = false, toolsDisabled = null
         sessionId: extractSessionId(params && params._meta),
       }) + '\n');
     } catch { /* 诊断失败不影响服务 */ }
-    // 工具面禁用 gate（NESTED 优先：嵌套拒绝文案在 handler 内，语义更强，
-    // 不被本开关遮蔽——嵌套环境里开关值无关紧要，反正都拒绝）
-    if (!nested && toolsOff()) {
-      return errContent(toolsDisabledMessage());
-    }
-    const name = params && params.name;
-    const handler = Object.prototype.hasOwnProperty.call(toolHandlers, name)
-      ? toolHandlers[name]
-      : undefined;
-    if (!handler) {
-      throw new RpcError(-32601, `Unknown tool: ${name}`);
-    }
-    return handler(params, env);
+    // 工具面恒拒绝（1.0.0 终态，D1：agent 交互全走 CLI；嵌套环境同文案——
+    // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）
+    return errContent(toolsDisabledMessage());
   }
 
   async function handleMessage(msg) {
@@ -577,13 +566,13 @@ function createServer({ manager, wfManager, nested = false, toolsDisabled = null
         });
         break;
       case 'tools/list':
-        // 防递归第二重：嵌套环境不注册工具；ZSW_TOOLS_DISABLED=1 同样空注册
-        // （D1 的 1.0 终态「tools/list 恒空」的过渡阀）
-        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: nested || toolsOff() ? [] : buildTools() } });
+        // 1.0.0 终态（D1）：恒空注册——agent 交互面全走 CLI，零上下文注入。
+        // （防递归第二重的历史语义由恒空天然覆盖）
+        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });
         break;
       case 'tools/call':
         try {
-          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params, { emitFrame }) });
+          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params) });
         } catch (e) {
           if (e instanceof RpcError) {
             frames.push({ jsonrpc: '2.0', id: msg.id, error: { code: e.code, message: e.message } });
@@ -760,14 +749,14 @@ async function main() {
         log,
       });
       // 竞选事件（接管/退避/看门狗）由 daemon-socket 内部经同一 log 通道输出。
-      // standby 的 M0 语义：manager 已照常初始化（上方 recover 跑过）、MCP
-      // 工具面照常服务，仅 socket 服务角色由 daemon 独占——设计 D3「空转 +
-      // 零工具」是 1.0 终态，本阶段 standby 保持完整功能（过渡形态）
+      // standby 的 M1 语义：manager 已照常初始化（上方 recover 跑过）——
+      // 工具面恒空（1.0.0 起），standby 与 daemon 在 MCP 面无行为差异；
+      // manager 保留供本实例看门狗接管成为 daemon 后服务 socket 面
       log(`daemon 竞选完成：role=${daemon.role}（pid=${process.pid}，sock=${sockPath}）`);
     } catch (e) {
-      // M0 过渡形态：MCP 工具面是主面，socket 面挂了不拒绝启动——CLI --daemon
-      // 调用方会拿到 connect 失败的可操作指引（cli-client 的错误文案）
-      log(`daemon socket 启动失败（MCP 工具面不受影响，CLI --daemon 暂不可用）: ${e && e.message || e}`);
+      // MCP 协议层是进程存活锚点（引擎 spawn/kill），socket 面挂了不拒绝
+      // 启动——CLI 调用方会拿到 connect 失败的可操作指引（cli-client 文案）
+      log(`daemon socket 启动失败（CLI 暂不可用）: ${e && e.message || e}`);
       daemon = null;
     }
   }

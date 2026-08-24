@@ -6,7 +6,7 @@
  * 为什么独立文件而不是扩展 test/e2e.test.js：
  * - 现有 e2e 是「测试进程内组 manager」形态；本文件全部场景是「真实 daemon
  *   进程（spawn dist/mcp/server.js，走 main 启动序列的锁竞选）+ CLI 子进程
- *   （bin/zsw.js --daemon thin client）」的多进程形态，基建（spawn/就绪探测/
+ *   （bin/zsw.jsthin client）」的多进程形态，基建（spawn/就绪探测/
  *   场景级 kill 收尾）完全不同；
  * - 场景级隔离（每场景独立 ZSW_ROOT + ZSW_SOCK 临时目录）：daemon 的
  *   lock/sock 与 records 事件流天然按场景分域，互不污染（现有 e2e 共享一个
@@ -15,8 +15,8 @@
  *
  * 场景 ↔ DESIGN-v4 §8 验收表映射（「机制版」= daemon 竞选与 CLI 走真实代码
  * 路径；agent 行为选择不在 e2e 范围——A1/A3 的 idle 唤醒段留 GUI 人工）：
- * - A7  嵌套拒绝：ZSW_NESTED=1 下 CLI --daemon 立即 exit 1 + 可操作文案（零模型）
- * - A1 前半（wait 半程）：start --daemon --wait 阻塞到完成退出，stdout JSON
+ * - A7  嵌套拒绝：ZSW_NESTED=1 下 CLI立即 exit 1 + 可操作文案（零模型）
+ * - A1 前半（wait 半程）：start--wait 阻塞到完成退出，stdout JSON
  *   含 subagentId/status/outputFile——这正是未来配 run_in_background 后
  *   task-notification 携带的内容，链路正确性在此验证
  * - A2 机制版：异步 start ×2 立即回句柄 + 聚合 wait 保序回两条终态
@@ -269,20 +269,20 @@ after(() => {
 
 // ------------------------------------------------------------------ A7（零模型）
 
-test('A7 嵌套拒绝：ZSW_NESTED=1 下 CLI --daemon 立即 exit 1 + 可操作文案，daemon 不受影响', async (t) => {
+test('A7 嵌套拒绝：ZSW_NESTED=1 下 CLI立即 exit 1 + 可操作文案，daemon 不受影响', async (t) => {
   const sc = newScenario(t, 'a7');
   const srv = spawnMcpServer(sc, 'a7');
   assert.equal(await srv.role, 'daemon', `首实例必须竞选成 daemon: ${srv.stderr().slice(-300)}`);
 
   // 嵌套门禁在 runDaemonCommand 入口第一道闸——先于任何 socket 交互
-  const denied = await runCli(sc, ['list', '--daemon'], { envExtra: { ZSW_NESTED: '1' } });
+  const denied = await runCli(sc, ['list'], { envExtra: { ZSW_NESTED: '1' } });
   assert.equal(denied.code, 1, `exit 应为 1，实际 ${denied.code}（stderr: ${denied.stderr}）`);
   assert.match(denied.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1）/);
   assert.match(denied.stderr, /恢复指引/);
   assert.equal(denied.stdout, '', '拒绝路径不产生业务输出');
 
   // 同一 daemon 不受影响：非嵌套 CLI 正常服务（空库 list = []）
-  const okRun = await runCli(sc, ['list', '--daemon']);
+  const okRun = await runCli(sc, ['list']);
   assert.equal(okRun.code, 0, `stderr: ${okRun.stderr}`);
   assert.deepEqual(jsonOf(okRun, 'list'), []);
 
@@ -295,7 +295,7 @@ test('A7 嵌套拒绝：ZSW_NESTED=1 下 CLI --daemon 立即 exit 1 + 可操作�
 
 // ------------------------------------------------------------------ A1 前半（wait 半程）
 
-test('A1 前半 wait 半程：start --daemon --wait 阻塞到完成退出，stdout JSON 含 subagentId/status/outputFile', async (t) => {
+test('A1 前半 wait 半程：start--wait 阻塞到完成退出，stdout JSON 含 subagentId/status/outputFile', async (t) => {
   if (!(await requireModel(t))) return;
   const sc = newScenario(t, 'a1w');
   const srv = spawnMcpServer(sc, 'a1w');
@@ -306,7 +306,7 @@ test('A1 前半 wait 半程：start --daemon --wait 阻塞到完成退出，stdo
   for (let attempt = 0; ; attempt++) {
     CALLS.starts += 1;
     const r = await runCli(sc, [
-      'start', '--daemon', '--wait',
+      'start', '--wait',
       '--task', `回复：${PASS}。不要做任何其他事。`,
       '--slug', `a1w-${attempt}`,
       '--model', MODEL,
@@ -321,7 +321,7 @@ test('A1 前半 wait 半程：start --daemon --wait 阻塞到完成退出，stdo
     if (entry.status === 'closed') { final = entry; break; }
 
     // 未 closed：拉 status 看原因；限流类瞬时失败按既有 e2e 纪律退避重试
-    const diag = await runCli(sc, ['status', '--daemon', '--id', entry.subagentId]);
+    const diag = await runCli(sc, ['status', '--id', entry.subagentId]);
     const rec = jsonOf(diag, 'status');
     if (!isTransient(rec.error, entry.status) || attempt >= RETRY_MAX) {
       assert.fail(`任务未 closed（status=${entry.status}）: ${rec.error || JSON.stringify(rec).slice(0, 300)}`);
@@ -359,7 +359,7 @@ test('A2 机制版：异步 start ×2 立即回句柄，聚合 wait 保序回两
       CALLS.starts += 1;
       const t0 = Date.now();
       const r = await runCli(sc, [
-        'start', '--daemon',
+        'start',
         '--task', `回复：${pass}。不要做任何其他事。`,
         '--slug', `a2-${attempt}-${suffix}`,
         '--model', MODEL,
@@ -376,7 +376,7 @@ test('A2 机制版：异步 start ×2 立即回句柄，聚合 wait 保序回两
     ids = starts;
 
     // 聚合 wait：单 CLI 进程阻塞到两任务全终态（这正是配 run_in_background 的形态）
-    const w = await runCli(sc, ['wait', '--daemon', '--id', ids[0], '--id', ids[1]], { timeoutMs: CALL_MS + 120_000 });
+    const w = await runCli(sc, ['wait', '--id', ids[0], '--id', ids[1]], { timeoutMs: CALL_MS + 120_000 });
     assert.ok(w.code === 0 || w.code === 2, `wait CLI exit=${w.code} stderr=${w.stderr.slice(0, 300)}`);
     const parsed = jsonOf(w, 'wait');
     if (parsed.results && parsed.results.length === 2 && parsed.results.every((e) => e.status === 'closed')) {
@@ -416,7 +416,7 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
   for (let i = 0; i < 3; i++) {
     CALLS.starts += 1;
     const r = await runCli(sc, [
-      'start', '--daemon', '--task', LONG_TASK,
+      'start', '--task', LONG_TASK,
       '--slug', `a4-long-${i}`, '--model', MODEL, '--timeout-ms', '120000',
     ]);
     assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -427,7 +427,7 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
   // 等三个都真正 running（槽位占用成立是「第 4 个排队」的前提；长任务不会完成，
   // 计数到百万远超本场景窗口）
   await waitFor(async () => {
-    const l = await runCli(sc, ['list', '--daemon']);
+    const l = await runCli(sc, ['list']);
     if (l.code !== 0) return null;
     const arr = jsonOf(l, 'list');
     return longIds.every((id) => arr.some((x) => x.subagentId === id && x.status === 'running')) ? true : null;
@@ -436,7 +436,7 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
   // 第 4 个：句柄立即返回（running 语义），record 停在 created（排队，进程未启动）
   const t0 = Date.now();
   const q = await runCli(sc, [
-    'start', '--daemon', '--task', '回复：排队。不要做任何其他事。',
+    'start', '--task', '回复：排队。不要做任何其他事。',
     '--slug', 'a4-queued', '--model', MODEL, '--timeout-ms', '120000',
   ]);
   const startMs = Date.now() - t0;
@@ -446,14 +446,14 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
   assert.equal(qh.status, 'running', 'start 句柄语义仍是 running（异步启动，D3/A4 口径）');
   assert.ok(startMs < 15_000, `slots 满时 start 句柄应立即返回，实际 ${startMs}ms`);
 
-  const s = await runCli(sc, ['status', '--daemon', '--id', queuedId]);
+  const s = await runCli(sc, ['status', '--id', queuedId]);
   assert.equal(s.code, 0, `stderr: ${s.stderr}`);
   const rec = jsonOf(s, 'queued status');
   assert.equal(rec.status, 'created', `slots 满时 record 应处 created（排队语义），实际 ${rec.status}`);
 
   // 清场：排队者先 cancel（无进程、零模型成本），再逐个 cancel 运行中长任务
   for (const id of [queuedId, ...longIds]) {
-    const c = await runCli(sc, ['cancel', '--daemon', '--id', id], { timeoutMs: 30_000 });
+    const c = await runCli(sc, ['cancel', '--id', id], { timeoutMs: 30_000 });
     assert.equal(c.code, 0, `cancel ${id} stderr: ${c.stderr}`);
     const cr = jsonOf(c, `cancel ${id}`);
     assert.equal(cr.cancelled, true);
@@ -474,7 +474,7 @@ test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管
   // daemon A 持一个长任务（victim）
   CALLS.starts += 1;
   const r = await runCli(sc, [
-    'start', '--daemon', '--task', '从 1 逐个数到 1000000，不要停',
+    'start', '--task', '从 1 逐个数到 1000000，不要停',
     '--slug', 'a5-victim', '--model', MODEL, '--timeout-ms', '120000',
   ]);
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -483,7 +483,7 @@ test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管
 
   // 等 victim 真正 running 且 exec.pid 落 record——standby 启动探活依赖 exec
   const victim = await waitFor(async () => {
-    const s = await runCli(sc, ['status', '--daemon', '--id', victimId]);
+    const s = await runCli(sc, ['status', '--id', victimId]);
     if (s.code !== 0) return null;
     const rec = jsonOf(s, 'status');
     return rec.status === 'running' && rec.exec && Number.isInteger(rec.exec.pid) ? rec : null;
@@ -506,7 +506,7 @@ test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管
     && fs.readFileSync(sc.lockPath, 'utf8') === String(b.child.pid), 5_000, 100);
 
   // 接管实例的 status：victim 标 lost + orphan + 重发指引（无静默僵尸）
-  const s2 = await runCli(sc, ['status', '--daemon', '--id', victimId]);
+  const s2 = await runCli(sc, ['status', '--id', victimId]);
   assert.equal(s2.code, 0, `接管后 status 失败: ${s2.stderr}`);
   const rec2 = jsonOf(s2, 'status after takeover');
   assert.equal(rec2.status, 'lost', `接管后应为 lost，实际 ${rec2.status}`);

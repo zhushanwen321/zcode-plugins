@@ -181,9 +181,9 @@ class PollingNotifier {
     const outputFile = path.join(outputsDir(), `${subagentId}.md`);
     return [
       `zsub 后台任务 ${subagentId} 已启动（典型运行 3-10 分钟），mailbox 通知通道未启用，结果不会自动回流本会话。`,
-      `建议姿势：先做别的任务或结束当前轮次，稍后做一次性状态查询：zsub(action="status", subagentId="${subagentId}")——任务完成后 status 会变为 closed。`,
+      `建议姿势：先做别的任务或结束当前轮次，稍后做一次性状态查询：node bin/zsw.js status --id ${subagentId}——任务完成后 status 会变为 closed。`,
       `读取结果：closed 后 result 全文落在 outputs 文件（默认 ${outputFile}，status 返回中带该路径），用 Read 工具读取即可。`,
-      '需要等待完成时，优先用 CLI daemon 模式：node bin/zsw.js start --daemon --wait --task "..." --slug <短名> 配 Bash run_in_background=true（插件 ≥0.2.0），完成触发引擎原生通知唤醒会话；勿 sleep 轮询。',
+      '需要等待完成时，用 CLI：node bin/zsw.js start --wait --task "..." --slug <短名> 配 Bash run_in_background=true，完成触发引擎原生通知唤醒会话；勿 sleep 轮询。',
     ].join('\n');
   }
 }

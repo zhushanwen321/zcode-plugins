@@ -51,6 +51,7 @@
 | 时间 | 决策 | 详文 |
 |------|------|------|
 | 2026-08 · 0.2.0（M0） | daemon 化第一步：MCP server 进程竞选单例 daemon（sock 同目录锁文件 `O_EXCL` 原子裁决 + 看门狗接管），unix socket 控制面（`daemon.sock`，`ZSW_SOCK` 可覆盖）；CLI 加 `--daemon`（thin client，默认仍本地执行）与 `wait` 子命令（daemon 侧内存挂起、零轮询、partial exit 2）；推荐等待姿势 = `Bash(run_in_background=true)` + `zsw start --daemon --wait` / `zsw wait --daemon --id`（借引擎原生 background 通知，完成即唤醒含 idle）。MCP 双 tool 面行为不变（双面并存） | [design/DESIGN-v4.md](../design/DESIGN-v4.md)（§6 D1-D7 决策、§9 M0/M1 版本台阶） |
+| 2026-08 · 1.0.0（M1） | M1 终态：MCP 工具面恒下线（tools/list 恒空、tools/call 恒拒绝并指引走 CLI——agent 交互全走 CLI，`zsub`/`zflow` 保留为语义层名）；CLI 默认翻转为 daemon thin client（不加 flag 即 daemon），本地一次性执行改为显式 `--local` 调试后门（无续聊/限流，CLI 退出即丢执行体），原 daemon flag 删除；`ZSW_TOOLS_DISABLED` 灰度开关删除（自用单用户无灰度对象，默认翻转与工具摘除两项 breaking 在 1.0.0 一个 major 一次到位） | [design/DESIGN-v4.md](../design/DESIGN-v4.md)（§6 D1/D5/D7 决策、§9 M1 版本台阶） |
 
 ## 自查清单（提交前）
 

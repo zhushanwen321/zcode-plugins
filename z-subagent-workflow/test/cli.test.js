@@ -68,27 +68,44 @@ test('start 缺 --task / --slug → usage + exit 1', async () => {
 });
 
 test('start --no-wait → 显式拒绝 + exit 1', async () => {
-  const r = await run(['start', '--task', 'x', '--slug', 'y', '--no-wait']);
+  const r = await run(['start', '--local', '--task', 'x', '--slug', 'y', '--no-wait']);
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--no-wait 已移除/);
 });
 
 test('status/cancel 不存在的 id → exit 1，错误含恢复指引', async () => {
-  const s = await run(['status', '--id', 'sa-nope']);
+  const s = await run(['status', '--local', '--id', 'sa-nope']);
   assert.equal(s.code, 1);
   assert.match(s.stderr, /sa-nope" 不存在/);
   assert.match(s.stderr, /list/);
-  const c = await run(['cancel', '--id', 'sa-nope']);
+  const c = await run(['cancel', '--local', '--id', 'sa-nope']);
   assert.equal(c.code, 1);
   assert.match(c.stderr, /不存在/);
 });
 
 // --------------------------------------------------------------------- list
 
-test('list → exit 0，stdout 为 JSON 数组', async () => {
-  const r = await run(['list']);
+test('list --local → exit 0，stdout 为 JSON 数组', async () => {
+  const r = await run(['list', '--local']);
   assert.equal(r.code, 0);
   assert.deepEqual(JSON.parse(r.stdout), []);
+});
+
+// ----------------------------------------------- 默认 daemon 形态（1.0.0 起翻转）
+
+test('默认 daemon 形态：daemon 未运行 → exit 1 + 可操作恢复指引（不静默降级 --local）', async () => {
+  // 隔离 ZSW_SOCK 指向不存在路径：connect ENOENT 走 §5.2 第 1 行口径
+  const r = await run(['list'], { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /daemon 未运行/);
+  assert.match(r.stderr, /恢复指引/);
+  assert.match(r.stderr, /--local/);
+});
+
+test('wait --local → 显式拒绝（wait 无本地模式）+ exit 1', async () => {
+  const r = await run(['wait', '--local', '--id', 'x']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /wait 无本地模式/);
 });
 
 // ------------------------------------------------------------------ workflow

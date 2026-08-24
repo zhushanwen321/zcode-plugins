@@ -10,41 +10,38 @@
  *      （NotifierPort 预留第三实现）的天然入口，启用后 mailbox 的
  *      「下次活动才注入」边界在此通道不复存在。
  *
- * 与 MCP 入口的差异（如实声明；指本地一次性执行模式，即不加 --daemon 的
- * 默认形态）：CLI 是一次性进程，start 与 message 一律
- * 阻塞到本轮完成再退出——进程退出即丢失后台执行体（轮死、record 卡
- * running、outputs/通知永不产生），且无常驻组件会接管 CLI 启动的任务
- * （server 的 recover 只在启动时跑，只会把 running 标成孤儿，不会收尾）。
- * 异步启动与完成通知请走 MCP zsub tool 或 --daemon（见下）；bash
- * run_in_background 场景直接让 CLI 阻塞到完成即可——阻塞到完成正是该场景
- * 想要的语义（完成即通知）。
+ * 与 --local 模式的差异（如实声明；--local = 本地一次性执行，调试后门）：
+ * --local 下 CLI 是一次性进程，start 与 message 一律阻塞到本轮完成再退出——
+ * 进程退出即丢失后台执行体（轮死、record 卡 running、outputs/通知永不产生），
+ * 且无常驻组件会接管 --local 启动的任务（server 的 recover 只在启动时跑，
+ * 只会把 running 标成孤儿，不会收尾）。日常用法（默认，即 daemon 模式）执行体
+ * 由 daemon 持有；bash run_in_background 等待场景用 wait/start --wait——
+ * CLI 阻塞进程成为引擎进程内 background task，完成即原生通知。
  *
- * 用法：
+ * 用法（1.0.0 起：默认 = daemon thin client；--local 显式本地执行）：
  *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
- *        [--conversation] [--timeout-ms <n>] [--target-session <sess_id>]
+ *        [--conversation] [--timeout-ms <n>] [--wait]
+ *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
+ *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
+ *         partial 结果，exit 2）
  *   node bin/zsw.js list
  *   node bin/zsw.js status --id <subagentId>
- *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（阻塞到本轮完成）
+ *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（投递即回，完成经 wait 收）
  *   node bin/zsw.js cancel --id <subagentId>
  *   node bin/zsw.js close --id <subagentId>
  *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>]
  *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
- *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
- *        （N2-b 起经 WorkflowManager：record / outputs / 完成通知与 MCP
- *         zflow 同源；run 同步等完成——CLI 一次性进程无后台模式，
- *         异步 runId + 完成通知走 MCP zflow tool）
- *   node bin/zsw.js wait --daemon --id <id> [--id <id2> ...] [--timeout-ms <n>]
- *        （0.2.0 新增：等待由 daemon 内存挂起到终态，零轮询；--daemon 必带
- *         ——本地一次性进程没有可挂起的等待方，本地 start 本身就阻塞到完成；
- *         --timeout-ms 到点返回 partial 结果，exit 2）
+ *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run；
+ *        仍为本地同步形态——workflow 面暂无 daemon 路径）
+ *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
  *
- * 0.2.0（DESIGN-v4 M0）起子命令可加 --daemon 走常驻 daemon（unix socket
- * thin client，sock 默认 ~/.zcode/zsw/daemon.sock，ZSW_SOCK 可覆盖）：
+ * daemon 模式（DESIGN-v4 D5/D7，默认形态）：经 unix socket thin client 连
+ * 常驻 daemon（sock 默认 ~/.zcode/zsw/daemon.sock，ZSW_SOCK 可覆盖）：
  * start/list/status/message/cancel/close 组 zsub action params 后单请求单
  * 响应往返；执行体由 daemon 持有（CLI 退出不丢），start 默认异步启动，
- * --wait 为 sugar（start 成功后自动追发 wait 透传终态，D4）。不加
- * --daemon 保持本地一次性执行语义（存量用法无感，D7）。
+ * --wait 为 sugar（start 成功后自动追发 wait 透传终态，D4）。daemon 不在
+ * 场时报错给恢复指引（§5.2），不静默降级 --local（防语义漂移）。
  *
  * 输出：stdout 一律 JSON（人读加 | jq）；workflow run 默认输出 markdown 报告
  * + run 摘要 JSON 两段（--json 只出 JSON）；进度与诊断走 stderr。exit 0 = 成功。
@@ -62,10 +59,13 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js status --id sa-xxxx\n'
     + '  node bin/zsw.js message --id sa-xxxx --text "补充重点"\n'
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
-    + '  node bin/zsw.js list --daemon               # 走常驻 daemon（socket thin client，0.2.0 起）\n'
-    + '  node bin/zsw.js start --daemon --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
-    + '  node bin/zsw.js wait --daemon --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
+    + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
+    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
+    + '  node bin/zsw.js models                        # 可用模型清单（路由决策前查）\n'
+    + '  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
+    + '  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
     + '                                                   # daemon 侧挂起等待；部分完成 exit 2\n'
+    + '  node bin/zsw.js list --local                  # 本地一次性执行（调试后门）\n'
   );
   process.exit(exitCode);
 }
@@ -263,13 +263,13 @@ async function runWorkflowCommand(rest) {
   }
 }
 
-// ------------------------------------------------- daemon thin client（M0，0.2.0）
+// ------------------------------------------- daemon thin client（1.0.0 起默认形态）
 
 /**
- * --daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
+ * daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
  * lib/cli-client 的 callDaemon 单请求单响应往返（帧协议 D2）。执行体由
- * daemon 持有，CLI 退出不丢——start 默认异步启动（与本地模式的强制阻塞
- * 不同，这正是 daemon 模式的价值）。
+ * daemon 持有，CLI 退出不丢——start 默认异步启动（与 --local 模式的强制
+ * 阻塞不同，这正是 daemon 模式的价值）。
  */
 async function runDaemonCommand(cmd, args, rest) {
   if (process.env.ZSW_NESTED === '1') {
@@ -308,6 +308,14 @@ async function runDaemonCommand(cmd, args, rest) {
     }
     case 'list':
       params = { action: 'list' };
+      break;
+    case 'agents':
+      // 四根 agent .md 发现（start 前不确定 agent 名时先查，M1 起 CLI 唯一入口）
+      params = { action: 'agents' };
+      break;
+    case 'models':
+      // 模型路由清单（provider 已启用的模型 + 上下文窗口/推理档位）
+      params = { action: 'models' };
       break;
     case 'status':
       params = { action: 'status', subagentId: args.id };
@@ -403,19 +411,20 @@ async function main() {
   if (cmd === 'workflow') return runWorkflowCommand(rest);
   const args = parseArgs(rest);
 
-  // 0.2.0（M0）：--daemon = socket thin client，默认仍本地一次性执行
-  // （DESIGN-v4 D5/D7）。wait 只有 daemon 形态——本地一次性进程没有可
-  // 挂起的等待方（start 本身就阻塞到本轮完成）。
-  if (cmd === 'wait' && args.daemon !== true) {
+  // 1.0.0（M1，DESIGN-v4 D5/D7）：默认 = daemon thin client；
+  // --local = 显式本地一次性执行（人类调试/无引擎环境）。
+  // wait 无 --local 形态——本地一次性进程没有可挂起的等待方
+  // （start 本身就阻塞到本轮完成）。
+  if (cmd === 'wait' && args.local === true) {
     process.stderr.write(
-      '[zsw] wait 需要 --daemon：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
+      '[zsw] wait 无本地模式：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
       + '本地一次性进程没有可挂起的等待方。'
-      + '恢复指引：zsw wait --daemon --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
-      + '本地模式（不加 --daemon）start 本身阻塞到本轮完成，无需 wait。\n'
+      + '恢复指引：zsw wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
+      + '本地模式 start 本身阻塞到本轮完成，无需 wait。\n'
     );
     process.exit(1);
   }
-  if (args.daemon === true) return runDaemonCommand(cmd, args, rest);
+  if (args.local !== true) return runDaemonCommand(cmd, args, rest);
 
   const { manager } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
