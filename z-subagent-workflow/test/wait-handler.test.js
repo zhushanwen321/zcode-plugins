@@ -230,3 +230,26 @@ test('初始即 idle 的 conversation 任务 → wait 立即收齐（无需等�
   assert.equal(out.partial, undefined);
   assert.equal(out.results[0].status, 'idle');
 });
+
+// ------------------------------------------- R2：recover 判定 dead/orphan 的 lost 立即收编
+
+test('R2：dead/orphan 判定的 lost 立即收编（无 timeout 不永久挂起），普通 lost 仍等待', async () => {
+  const { manager, records } = makeFakeManager();
+  records.set('sa-dead', {
+    subagentId: 'sa-dead', status: 'lost', dead: true,
+    lostReason: '进程已死（探活失败）：server 停机期间退出……建议重新 start',
+  });
+  records.set('sa-orph', { subagentId: 'sa-orph', status: 'lost', orphan: true });
+  records.set('sa-lost', { subagentId: 'sa-lost', status: 'lost' }); // 无判定：仍走轮询
+  const wait = createWaitHandler({ manager, pollFallbackMs: FAST_POLL });
+  // 无 timeoutMs：若 dead/orphan 不收编会无限挂起（本测试即回归闸）
+  const out = await wait({ ids: ['sa-dead', 'sa-orph', 'sa-lost'], timeoutMs: 50 });
+  assert.equal(out.partial, true);
+  assert.deepEqual(
+    out.results.map((r) => ({ id: r.subagentId, status: r.status })),
+    [{ id: 'sa-dead', status: 'lost' }, { id: 'sa-orph', status: 'lost' }],
+    'dead/orphan lost 立即收编，调用方拿到 lost 状态与 lostReason 指引',
+  );
+  assert.deepEqual(out.pending, [{ subagentId: 'sa-lost', status: 'lost' }],
+    '无判定标记的 lost 仍等待外部推进（原语义不变）');
+});

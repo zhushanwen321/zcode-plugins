@@ -474,3 +474,34 @@ test('看门狗接管成为 daemon 时触发 onTakeover；首竞选不触发', a
   const frames = await rpc(sockPath, [{ id: 1, tool: 'zsub', params: {} }]);
   assert.strictEqual(frames[0].result.who, 'new');
 });
+
+// ------------------------------------------------- R1：接管前持有者探活重验
+
+test('R1：看门狗触发时锁持有者 pid 存活 → 不 sweep 残留（防多 standby 竞态双 daemon）', async (t) => {
+  const { sockPath, lockPath } = tmpSock(t);
+  // 伪「先到 standby 已上位的新持有者」：活子进程持有 lock，但无 listener
+  // （standby 看门狗 connect 不可达 → 退避 3 次 → 探活 pid 在世 → 必须跳过 sweep）
+  const holder = spawn('sleep', ['30'], { stdio: 'ignore' });
+  t.after(() => holder.kill());
+  fs.writeFileSync(lockPath, String(holder.pid));
+
+  const ready = startDaemon({
+    sockPath, handlers: { zsub: async () => ({ who: 'takeover' }) }, log: () => {},
+  });
+  // 退避 3×200ms 后探活：持有者存活 → lock 不被误删（ready 不 resolve——
+  // 无 daemon 可连，实例停留在 standby 重试环；handle 全 unref 不阻退出）
+  await new Promise((r) => setTimeout(r, 1500));
+  assert.ok(fs.existsSync(lockPath), '持有者存活时 lock 不被后到 standby 误删');
+
+  // 持有者死亡 → 下一轮探活 dead → sweep + 重竞选 → 接管成 daemon
+  holder.kill('SIGKILL');
+  await holder;
+  const d = await Promise.race([
+    ready, new Promise((_, rej) => setTimeout(() => rej(new Error('接管超时')), 6000)),
+  ]);
+  t.after(() => d.stop());
+  assert.strictEqual(d.role, 'daemon');
+  assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), String(process.pid), '接管者持新 lock');
+  const frames = await rpc(sockPath, [{ id: 1, tool: 'zsub', params: {} }]);
+  assert.deepStrictEqual(frames[0].result, { who: 'takeover' });
+});

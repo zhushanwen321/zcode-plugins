@@ -332,6 +332,9 @@ class WorkflowManager {
       // rebuildFromLog 已把非终态标 lost（内存标记）；这里补持久化说明
       lost.push(rec.subagentId);
       this.records.update(rec.subagentId, {
+        // dead 标记：wait 收敛依据（R2）——workflow 执行体随 server 进程消亡，
+        // 永无外部推进，wait 据此立即收编防无 timeout 挂死
+        dead: true,
         lostReason: 'workflow 执行体在 server 进程内，重启即死（无进程可探活），结果未落盘。建议核对产出后重跑',
       });
     }

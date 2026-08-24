@@ -35,7 +35,13 @@ const { TERMINAL_STATUSES } = require('./record-store');
  * wait 永久挂起（idle 无 pending 条目，仅靠轮询兜底空转）。
  */
 const WAIT_DONE_STATUSES = new Set([...TERMINAL_STATUSES, 'idle']);
-const isWaitDone = (status) => WAIT_DONE_STATUSES.has(status);
+// 带 recover 判定的 lost 立即收编（R2）：dead=true（探活已死，执行体消亡，
+// 永无外部推进）或 orphan=true（进程活着但句柄丢失，结果永无法回流）——
+// 继续等只会无 timeout 永久挂起；收编让调用方拿到 lost 状态与 lostReason
+// 指引自行决定重发。无判定标记的 lost（rebuild 已标但 recover 尚未探完）
+// 仍走轮询：recover 探活完成后标记到位，下一回合（≤pollFallbackMs）收敛。
+const isWaitDone = (st) => WAIT_DONE_STATUSES.has(st.status)
+  || (st.status === 'lost' && (st.dead === true || st.orphan === true));
 
 /** 轮询兜底间隔：正常路径远小于此（pending promise 事件驱动唤醒）。 */
 const DEFAULT_POLL_FALLBACK_MS = 2000;
@@ -104,7 +110,7 @@ function createWaitHandler({ manager, pollFallbackMs = DEFAULT_POLL_FALLBACK_MS 
           + '恢复指引：用 list 可查现有任务 id，确认该 id 存在后重试。'
         );
       }
-      if (isWaitDone(st.status)) {
+      if (isWaitDone(st)) {
         collected.set(id, { subagentId: id, status: st.status, outputFile: st.outputFile });
       } else {
         waiting.add(id);
@@ -150,7 +156,7 @@ function createWaitHandler({ manager, pollFallbackMs = DEFAULT_POLL_FALLBACK_MS 
         // settle 与终态落盘之间存在极窄窗口，lost 也可经外部 cancel/close 推进）
         for (const id of [...waiting]) {
           const st = manager.status(id);
-          if (isWaitDone(st.status)) {
+          if (isWaitDone(st)) {
             collected.set(id, { subagentId: id, status: st.status, outputFile: st.outputFile });
             waiting.delete(id);
           }

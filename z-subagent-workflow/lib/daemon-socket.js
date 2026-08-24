@@ -37,8 +37,9 @@
  * 退出卫生（D3 第 3 段）：SIGTERM/SIGINT/exit → daemon 先 unlink sock+lock
  * 再退出；standby 直接退出（绝不动 daemon 的文件）。stop() 是同款清理的
  * 用户态入口（幂等），供测试与正常关停复用。lock/sock 的 unlink 只发生在
- * 两处——看门狗判定持有者已死、自己是持有者的退出卫生；竞选路径上绝不
- * 无凭据清他人文件（§7 要点 1「残留清理边界」）。
+ * 两处——看门狗判定持有者已死（判定含 pid 探活重验，见 probeLockHolder：
+ * 防 R1 多 standby 竞态误删新上位者的文件）、自己是持有者的退出卫生；
+ * 竞选路径上绝不无凭据清他人文件（§7 要点 1「残留清理边界」）。
  *
  * 进程生命周期：本模块创建的所有 handle（server/连接/看门狗/重试 timer）
  * 一律 unref——生命周期由宿主（MCP stdin / 引擎 kill）决定，传输层不偷偷
@@ -181,6 +182,26 @@ function startDaemon(opts) {
     }
   }
 
+  /** 接管前探活锁持有者（R1）：读 lock 内 pid 做 kill(pid,0)。
+   *  返回 'alive'（持有者进程在世，新 daemon 已上位）/ 'dead'（pid 已死，残留可清）
+   *  / 'gone'（lock 已不存在，他人已 sweep+重竞选）/ 'unreadable'（按残留处理）。 */
+  function probeLockHolder() {
+    let pidStr;
+    try {
+      pidStr = fs.readFileSync(lockPath, 'utf8').trim();
+    } catch (e) {
+      return e.code === 'ENOENT' ? 'gone' : 'unreadable';
+    }
+    if (!/^\d+$/.test(pidStr)) return 'unreadable';
+    try {
+      process.kill(Number(pidStr), 0);
+      return 'alive';
+    } catch (e) {
+      // EPERM = 进程存在但属他人（同机跨用户），按存活处理，宁可不接管
+      return e.code === 'EPERM' ? 'alive' : 'dead';
+    }
+  }
+
   /** 原子拿锁：成功（已写入 pid）返回 true；他人持有返回 false；其余错误抛出。 */
   function tryAcquireLock() {
     let fd;
@@ -275,8 +296,22 @@ function startDaemon(opts) {
       const why = watchdogConnected
         ? '看门狗触发：对端连接关闭，daemon 已死亡'
         : `daemon socket ${WATCHDOG_RETRIES} 次退避后仍不可达，判定持有者死亡或未完成启动`;
-      log(`${why}，清残留后重竞选`);
-      sweepFiles(why);
+      // 接管前重验当前持有者（R1）：多 standby 同时被同一 daemon 死亡唤醒时，
+      // 后到者的无凭据 sweep 会删掉先到者刚上位的新 lock+sock，O_EXCL 裁决被
+      // 击穿成双 daemon。死锁 pid 探活通过（kill(pid,0)）= 新持有者已就位，
+      // 绝不 sweep，直接回 elect（O_EXCL 必 EEXIST → 重新 standby）。
+      const holder = probeLockHolder();
+      if (holder !== 'alive' && holder !== 'gone') {
+        // 二次确认：缩小 probe→unlink 窗口内新持有者上位的残余竞态
+        if (probeLockHolder() !== 'alive') {
+          log(`${why}，清残留后重竞选`);
+          sweepFiles(why);
+        } else {
+          log('看门狗触发但锁持有者已更换且存活（他实例已接管），不清残留，回 standby');
+        }
+      } else {
+        log('看门狗触发时锁已被他人清理/接管，跳过 sweep，直接重竞选');
+      }
       elect();
     });
   }

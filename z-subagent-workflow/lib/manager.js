@@ -429,7 +429,11 @@ class SubagentManager {
         });
       } else {
         dead.push(rec.subagentId);
+        // dead 标记是 wait 的收敛依据（R2）：探活已死的 lost 永无外部推进，
+        // wait-handler 据此立即收编，防无 timeout 挂死。内存字段，不落盘
+        // 语义与 lost 相同（重启后 rebuild 重探活，幂等）。
         this.records.update(rec.subagentId, {
+          dead: true,
           lostReason: '进程已死（探活失败）：server 停机期间退出，终态未落盘，结果可能不完整。建议重新 start',
         });
       }
