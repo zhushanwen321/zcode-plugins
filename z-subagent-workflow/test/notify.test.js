@@ -180,7 +180,7 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   assert.deepStrictEqual(listAllFiles(root), [], '零文件写入');
 
   const g = p.pollingGuidance('sa-poll');
-  assert.ok(g.includes('zsub(action="status", subagentId="sa-poll")'), '含具体 action 示例');
+  assert.ok(g.includes('node bin/zsw.js status --id sa-poll'), '含具体 CLI status 查询示例');
   assert.ok(g.includes('closed'), '说明完成后 status 变 closed');
   assert.ok(g.includes('outputs'), '说明 result 落 outputs 路径');
   // 0.2.0 文案修复（DESIGN-v4 §3.1）：指引在 start（wait=false）时刻随 handle
