@@ -11,7 +11,7 @@
 | 层 | token | 适用场合 |
 |----|-------|---------|
 | **全名** | `z-subagent-workflow` | 人读的插件标识：marketplace.json 的 name/source、插件目录名、`.zcode-plugin/plugin.json` 的 name、`.mcp.json` 的 server key、文档标题、git 分支名（`feat-zcode-subagent-workflow-*`） |
-| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
+| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_SOCK`、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
 | **tool 名** | `zsub` / `zflow` | 仅 MCP tool 语义层：`zsub` = subagent 生命周期（七 action），`zflow` = workflow 管理面（六 action）。skill 名 `zsub-zflow-orchestration` 由两者组合。CLI/文档中提到「MCP zsub tool」「zflow 的 run action」用这些名 |
 
 ## 判定规则
@@ -30,6 +30,8 @@
 ~/.zcode/zsw/
 ├── records.jsonl                 append-only record 事件流（subagent + workflow 共享）
 ├── outputs/<id>.md               结果全文（worktree 任务另有 <id>.patch）
+├── daemon.sock                   daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
+├── daemon.sock.lock              daemon 竞选锁文件（sockPath + '.lock'，O_EXCL 原子裁决）
 ├── wt-<subagentId>/              worktree 隔离目录（listOrphans 按前缀认领）
 ├── home-<provider>-<modelShort>/ spawn per-model 隔离 HOME 池
 └── home-appserver/               appserver runner 单一隔离 HOME
@@ -43,6 +45,12 @@
 - 引擎 env：`ZCODE_MESSAGE_ENABLED`（宿主引擎 mailbox 开关）、`ZCODE_MAILBOX_ROOT`
 - 引擎 v2 config：`~/.zcode/v2/config.json`（provider/模型清单）
 - zcode CLI：`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`（`ZSW_ZCODE_CLI` 可覆盖）
+
+## 设计决策索引（架构演进决策，详细论证以 design 文档为准）
+
+| 时间 | 决策 | 详文 |
+|------|------|------|
+| 2026-08 · 0.2.0（M0） | daemon 化第一步：MCP server 进程竞选单例 daemon（sock 同目录锁文件 `O_EXCL` 原子裁决 + 看门狗接管），unix socket 控制面（`daemon.sock`，`ZSW_SOCK` 可覆盖）；CLI 加 `--daemon`（thin client，默认仍本地执行）与 `wait` 子命令（daemon 侧内存挂起、零轮询、partial exit 2）；推荐等待姿势 = `Bash(run_in_background=true)` + `zsw start --daemon --wait` / `zsw wait --daemon --id`（借引擎原生 background 通知，完成即唤醒含 idle）。MCP 双 tool 面行为不变（双面并存） | [design/DESIGN-v4.md](../design/DESIGN-v4.md)（§6 D1-D7 决策、§9 M0/M1 版本台阶） |
 
 ## 自查清单（提交前）
 

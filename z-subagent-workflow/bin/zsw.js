@@ -10,12 +10,14 @@
  *      （NotifierPort 预留第三实现）的天然入口，启用后 mailbox 的
  *      「下次活动才注入」边界在此通道不复存在。
  *
- * 与 MCP 入口的差异（如实声明）：CLI 是一次性进程，start 与 message 一律
+ * 与 MCP 入口的差异（如实声明；指本地一次性执行模式，即不加 --daemon 的
+ * 默认形态）：CLI 是一次性进程，start 与 message 一律
  * 阻塞到本轮完成再退出——进程退出即丢失后台执行体（轮死、record 卡
  * running、outputs/通知永不产生），且无常驻组件会接管 CLI 启动的任务
  * （server 的 recover 只在启动时跑，只会把 running 标成孤儿，不会收尾）。
- * 异步启动与完成通知请走 MCP zsub tool；bash run_in_background 场景直接
- * 让 CLI 阻塞到完成即可——阻塞到完成正是该场景想要的语义（完成即通知）。
+ * 异步启动与完成通知请走 MCP zsub tool 或 --daemon（见下）；bash
+ * run_in_background 场景直接让 CLI 阻塞到完成即可——阻塞到完成正是该场景
+ * 想要的语义（完成即通知）。
  *
  * 用法：
  *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
@@ -32,6 +34,17 @@
  *        （N2-b 起经 WorkflowManager：record / outputs / 完成通知与 MCP
  *         zflow 同源；run 同步等完成——CLI 一次性进程无后台模式，
  *         异步 runId + 完成通知走 MCP zflow tool）
+ *   node bin/zsw.js wait --daemon --id <id> [--id <id2> ...] [--timeout-ms <n>]
+ *        （0.2.0 新增：等待由 daemon 内存挂起到终态，零轮询；--daemon 必带
+ *         ——本地一次性进程没有可挂起的等待方，本地 start 本身就阻塞到完成；
+ *         --timeout-ms 到点返回 partial 结果，exit 2）
+ *
+ * 0.2.0（DESIGN-v4 M0）起子命令可加 --daemon 走常驻 daemon（unix socket
+ * thin client，sock 默认 ~/.zcode/zsw/daemon.sock，ZSW_SOCK 可覆盖）：
+ * start/list/status/message/cancel/close 组 zsub action params 后单请求单
+ * 响应往返；执行体由 daemon 持有（CLI 退出不丢），start 默认异步启动，
+ * --wait 为 sugar（start 成功后自动追发 wait 透传终态，D4）。不加
+ * --daemon 保持本地一次性执行语义（存量用法无感，D7）。
  *
  * 输出：stdout 一律 JSON（人读加 | jq）；workflow run 默认输出 markdown 报告
  * + run 摘要 JSON 两段（--json 只出 JSON）；进度与诊断走 stderr。exit 0 = 成功。
@@ -39,6 +52,7 @@
 
 const path = require('node:path');
 const { assembleManager } = require('../lib/assemble');
+const { callDaemon } = require('../lib/cli-client');
 
 function usage(exitCode = 1) {
   process.stderr.write(
@@ -48,6 +62,10 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js status --id sa-xxxx\n'
     + '  node bin/zsw.js message --id sa-xxxx --text "补充重点"\n'
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
+    + '  node bin/zsw.js list --daemon               # 走常驻 daemon（socket thin client，0.2.0 起）\n'
+    + '  node bin/zsw.js start --daemon --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
+    + '  node bin/zsw.js wait --daemon --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
+    + '                                                   # daemon 侧挂起等待；部分完成 exit 2\n'
   );
   process.exit(exitCode);
 }
@@ -245,12 +263,159 @@ async function runWorkflowCommand(rest) {
   }
 }
 
+// ------------------------------------------------- daemon thin client（M0，0.2.0）
+
+/**
+ * --daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
+ * lib/cli-client 的 callDaemon 单请求单响应往返（帧协议 D2）。执行体由
+ * daemon 持有，CLI 退出不丢——start 默认异步启动（与本地模式的强制阻塞
+ * 不同，这正是 daemon 模式的价值）。
+ */
+async function runDaemonCommand(cmd, args, rest) {
+  if (process.env.ZSW_NESTED === '1') {
+    // 防递归边界从 MCP 工具面平移到 CLI 面（DESIGN-v4 §7 要点 4）
+    process.stderr.write(
+      '嵌套环境禁止编排（防递归，ZSW_NESTED=1）。'
+      + '恢复指引：subagent 会话内不要编排，由主会话派发。\n'
+    );
+    process.exit(1);
+  }
+
+  if (cmd === 'wait') return runDaemonWait(args, rest);
+
+  let params;
+  switch (cmd) {
+    case 'start': {
+      if (!args.task || !args.slug) usage();
+      let schema = args.schema;
+      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
+        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径（与本地模式同款解析）
+      }
+      // wait 刻意不传：执行体由 daemon 持有，CLI 退出不丢——异步启动是安全
+      // 默认；--wait 由 runDaemonStartWait 的 sugar 处理（不透传给 daemon）
+      params = {
+        action: 'start',
+        task: args.task,
+        slug: args.slug,
+        agent: args.agent,
+        model: args.model,
+        schema,
+        worktree: args.worktree === true,
+        conversation: args.conversation === true,
+        timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+      };
+      break;
+    }
+    case 'list':
+      params = { action: 'list' };
+      break;
+    case 'status':
+      params = { action: 'status', subagentId: args.id };
+      break;
+    case 'message':
+      params = { action: 'message', subagentId: args.id, text: args.text };
+      break;
+    case 'cancel':
+      params = { action: 'cancel', subagentId: args.id };
+      break;
+    case 'close':
+      params = { action: 'close', subagentId: args.id };
+      break;
+    default:
+      process.stderr.write(`未知子命令: ${cmd}\n`);
+      usage();
+  }
+
+  if (cmd === 'start' && args.wait === true) return runDaemonStartWait(params);
+
+  exitWithDaemonResponse(await callDaemon({ tool: 'zsub', params }));
+}
+
+/** 统一出口：ok:true 打印 result exit 0；ok:false 打印 error 到 stderr exit 1。 */
+function exitWithDaemonResponse(resp) {
+  if (resp.ok) {
+    process.stdout.write(`${JSON.stringify(resp.result, null, 2)}\n`);
+    process.exit(0);
+  }
+  process.stderr.write(`[zsw] daemon 错误: ${daemonErrorMessage(resp.error)}\n`);
+  process.exit(1);
+}
+
+/** error 帧字段（{code,message} 对象）的可读化；异常形态兜底 JSON 序列化。 */
+function daemonErrorMessage(error) {
+  if (error && typeof error === 'object') {
+    const msg = error.message || JSON.stringify(error);
+    return error.code !== undefined ? `${msg}（code: ${error.code}）` : msg;
+  }
+  return String(error);
+}
+
+/** start --wait sugar（DESIGN-v4 D4）：start 成功拿 subagentId 后自动追发 wait，透传打印终态。 */
+async function runDaemonStartWait(startParams) {
+  const start = await callDaemon({ tool: 'zsub', params: startParams });
+  if (!start.ok) exitWithDaemonResponse(start);
+  const id = start.result && start.result.subagentId;
+  if (typeof id !== 'string' || id === '') {
+    // 无 id 的 start 响应（异常形态）：打印响应本身即终态，无从追发
+    process.stdout.write(`${JSON.stringify(start.result, null, 2)}\n`);
+    process.exit(0);
+  }
+  // wait 不带 timeoutMs：等待无上限，任务自身的执行超时已由 start 的
+  // timeoutMs 控制（两个 timeout 语义不同，见 DESIGN-v4 D4）
+  await runDaemonWaitCore([id], undefined);
+}
+
+/** wait 子命令：--id 可重复（多 id 聚合等待）；--timeout-ms 到点回 partial，exit 2。 */
+async function runDaemonWait(args, rest) {
+  const ids = collectIds(rest);
+  if (ids.length === 0) {
+    process.stderr.write('wait 需要 --id <subagentId>（可重复：--id a --id b）\n');
+    usage();
+  }
+  await runDaemonWaitCore(ids, args.timeoutMs ? Number(args.timeoutMs) : undefined);
+}
+
+async function runDaemonWaitCore(ids, timeoutMs) {
+  const params = { action: 'wait', ids };
+  if (timeoutMs !== undefined) params.timeoutMs = timeoutMs;
+  const resp = await callDaemon({ tool: 'zsub', params });
+  if (!resp.ok) exitWithDaemonResponse(resp);
+  process.stdout.write(`${JSON.stringify(resp.result, null, 2)}\n`);
+  process.exit(resp.result && resp.result.partial === true ? 2 : 0);
+}
+
+/** parseArgs 对重复 flag 只留末值，wait 的多 --id 手工收集原始 argv（其余 flag 解析不受影响）。 */
+function collectIds(rest) {
+  const ids = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--id' && rest[i + 1] !== undefined && !rest[i + 1].startsWith('--')) {
+      ids.push(rest[i + 1]);
+      i++;
+    }
+  }
+  return ids;
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）
   if (cmd === 'workflow') return runWorkflowCommand(rest);
   const args = parseArgs(rest);
+
+  // 0.2.0（M0）：--daemon = socket thin client，默认仍本地一次性执行
+  // （DESIGN-v4 D5/D7）。wait 只有 daemon 形态——本地一次性进程没有可
+  // 挂起的等待方（start 本身就阻塞到本轮完成）。
+  if (cmd === 'wait' && args.daemon !== true) {
+    process.stderr.write(
+      '[zsw] wait 需要 --daemon：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
+      + '本地一次性进程没有可挂起的等待方。'
+      + '恢复指引：zsw wait --daemon --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
+      + '本地模式（不加 --daemon）start 本身阻塞到本轮完成，无需 wait。\n'
+    );
+    process.exit(1);
+  }
+  if (args.daemon === true) return runDaemonCommand(cmd, args, rest);
 
   const { manager } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让

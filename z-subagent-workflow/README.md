@@ -67,7 +67,15 @@ node bin/zsw.js workflow --action lint --file <脚本路径>
 
 **自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsw/workflows` > `~/.agents/workflows` > `~/.zsw/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
 
-CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` / `zflow` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。
+不加 `--daemon` 时 CLI 是一次性进程（本地执行模式）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running；异步启动与完成通知走 MCP `zsub` / `zflow` tool）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。0.2.0 起另有 daemon 模式（见下节）。
+
+## daemon 模式（0.2.0+，CLI thin client）
+
+子命令加 `--daemon` 走常驻 daemon（unix socket thin client；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --daemon --wait` 为 start+wait sugar；新增 `wait` 子命令：`zsw wait --daemon --id a [--id b ...] [--timeout-ms n]`，等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
+
+agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start --daemon --wait …` 或 `zsw wait --daemon --id …`——CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 task-notification 唤醒会话（idle 也唤醒），不依赖 mailbox env、无需 sleep 轮询。
+
+生命周期：daemon 由启用插件的 zcode 会话自动拉起（MCP server 进程竞选，无额外安装步骤），挂靠任一会话的插件进程——**所有会话关闭则 daemon 退场**，其持有执行体的任务终止（record 已落盘，由下一次接管实例 recover 探活标记 orphan/dead，不产生静默僵尸）。daemon 不在场时 CLI 报错并给恢复指引（稍候重试，其他实例接管需 1-2s；在任一 zcode 会话确认插件已启用；或去掉 `--daemon` 走本地执行）。`zsw workflow` 子命令无 daemon 形态，仍是一次性同步执行。
 
 ## 从 dynamic-workflow 迁移
 
@@ -81,13 +89,15 @@ CLI 是一次性进程：start/message 一律阻塞到本轮完成再退出（�
 ~/.zcode/zsw/
 ├── records.jsonl        append-only 事件流（崩溃后重放恢复）
 ├── outputs/             结果全文 + patch
+├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
+├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
 ├── home-<model>/        per-model 隔离 HOME（spawn runner 模型路由）
 └── wt-<id>/             worktree 隔离目录（任务期存在）
 ```
 
 ## 已知边界（如实声明）
 
-- **完成通知是被动注入**：外部进程不能投递引擎的 task-notification；mailbox 消息在主 agent 下次活动（UserPromptSubmit/PostToolUse/Stop）时注入，idle 期间滞留。这是闭源平台外挂形态的物理上限。需要「完成即唤醒 + goal gate」的简单任务请用原生 `@agent`。
+- **MCP 面完成通知是被动注入**：外部进程不能投递引擎的 task-notification；mailbox 消息在主 agent 下次活动（UserPromptSubmit/PostToolUse/Stop）时注入，idle 期间滞留——这是 MCP 面通知的物理上限。0.2.0 起 CLI daemon 模式（`wait` / `start --daemon --wait` 配 Bash `run_in_background`）借引擎原生 background 通知获得「完成即唤醒（含 idle）」。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
 - **spawn 模式每轮冷启动 ~1-2s**；conversation 密集场景用 appserver runner（启动探针失败自动降级 spawn）。
 - **spawn 模式 running 不可投递**（message 返回 busy）；appserver 模式的 send-while-running 语义待真机探针。
 - **模型路由当前仅支持 `builtin:bigmodel-coding-plan` 单 provider**：agent .md 带其他 provider 的 model 会得到可操作错误（列出可用清单）。多 provider 支持待后续读 v2 config 全量 provider 列表。

@@ -37,10 +37,34 @@ zsub(action="models")                                     → 可用模型清单
 
 start 前不确定有哪些 agent 可用时，先 `zsub(action="agents")` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
 
+## daemon 等待模式（CLI，插件 ≥0.2.0）——首选等待姿势
+
+`bin/zsw.js` 子命令加 `--daemon` 走常驻 daemon（unix socket thin client，sock 默认 `~/.zcode/zsw/daemon.sock`，`ZSW_SOCK` 可覆盖）：执行体由 daemon 持有（CLI 退出不丢），`start` 默认异步启动。**需要等待完成时，这是 0.2.0 起的首选姿势**——用 Bash 工具 `run_in_background=true` 包裹 CLI：
+
+```bash
+# 派发 + 等待一步到位（--wait 是 start+wait 的 sugar）
+node bin/zsw.js start --daemon --wait --task "<自包含任务书>" --slug <短名>
+
+# 异步派发后聚合等待（多 id 全部终态才返回；--timeout-ms 到点回 partial，exit 2）
+node bin/zsw.js start --daemon --task "..." --slug a    # 前台，立即返回 subagentId
+node bin/zsw.js wait --daemon --id sa-xxxx --id sa-yyyy  # run_in_background=true
+
+# 管理面加 --daemon 即走 daemon（list/status/message/cancel/close 同构）
+node bin/zsw.js list --daemon
+```
+
+- **为什么配 `run_in_background=true`**：CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 `<task-notification>` 唤醒会话（idle 会话也唤醒）——这是唯一可靠的完成唤醒通道，勿用 `sleep N && status` 轮询替代。
+- `wait` 必须带 `--daemon`（本地一次性进程没有可挂起的等待方）；等待在 daemon 侧内存挂起，零轮询。
+- 失败恢复（按 CLI 实际报错文案）：
+  - **daemon 不在场**：报 `daemon 未运行（connect ~/.zcode/zsw/daemon.sock 失败：<errno>）`。按报错内指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或去掉 `--daemon` 走本地执行（一次性进程语义，无续聊/限流）。
+  - **wait 期间 daemon 随宿主会话死亡**：报 `daemon 连接中断，未收到响应帧`（任务执行体随 daemon 终止）——任务状态稍后用 status 查询（record 由接管实例 recover 落盘），必要时重新派发。
+- daemon 挂靠任一会话的插件进程：会话全关则 daemon 退场，其持有执行体的任务终止（record 已落盘，接管实例探活标记，不产生静默僵尸）。
+- 不加 `--daemon` 保持本地一次性执行语义（start/message 阻塞到本轮完成；存量用法无感）。MCP `zsub`/`zflow` tool 面行为不变（双面并存）；`zsw workflow` 子命令无 daemon 形态。
+
 ## 核心纪律
 
 1. **task 必须自包含**：子任务看不到主会话上下文。把必要背景（文件路径、行号、验收标准）内联进 task，不要写"如前所述"。
-2. **禁止轮询**：`wait=false` 启动后不要反复调 list/status 等结果。mailbox 模式下完成通知会自动注入；polling 模式下按 start 返回里的指引做一次性查询。通知到达前去做别的事，或结束当前轮次。
+2. **禁止轮询**：`wait=false` 启动后不要反复调 list/status 等结果，不要发明 `sleep N && status` 循环。等待姿势按入口选：CLI daemon 面（≥0.2.0，首选）按「daemon 等待模式」节用 `Bash(run_in_background=true)` 等待，完成通知自动唤醒；MCP 面保持既有姿势——mailbox 模式下完成通知自动注入，polling 模式下任务典型运行 3-10 分钟，先做别的或结束当前轮次，稍后按 start 返回里的指引做一次性 status 查询。
 3. **通知即确认**：收到 `[subagent 完成]` 消息后直接处理结果，不要再调 status"二次确认"。
 4. **并发克制**：默认上限 3。嵌套 subagent 深度越深可用并发越少（自动分层），不要试图绕过。
 5. **模型路由（环境无关）**：档位原则——重量任务（设计/架构/深度调研/复杂修复）不传 model，跟随默认主模型；简单任务（探索/计数/格式转换/测试）显式传轻量模型（`model="<轻量模型短名>"`）降成本。可用模型集随 v2 config 变化，不要凭记忆硬编码名字——路由决策前先 `zsub(action="models")` 查当前清单（短名/上下文窗口/推理档位/默认标记）；传未知模型名也会在报错中收到可用清单，按清单重传即可。

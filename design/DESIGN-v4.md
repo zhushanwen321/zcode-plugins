@@ -329,3 +329,10 @@ M0 与 M1 之间设观察期：真机用 0.2.0 的 `--daemon` 路径跑日常任
 
 - v1：初稿（daemon + socket + thin CLI 架构，M0/M1 两阶段）。待对抗式审查。
 - v2：对抗式审查修订（3 must-fix + 8 suggestions 全采纳）——D3 重写为「锁文件竞选 + 看门狗接管」（修复空转实例无死亡感知与 bind/unlink 竞态）；D7 重排版本台阶（CLI 默认翻转挪 1.0.0，0.2.0 纯增量）；上下文口径修正为全量 5.5KB；F4 证据等级修正（代码路径已验/日常形态入 V2）；G3 显式声明并发定义域 per-session→global 及 ZSW_MAX_CONCURRENT 覆盖；A1 产物化 + 与 V3 绑定；A4 状态机口径修正（record created=排队）；A5 改为不新开会话的看门狗验收；D2 补 ctx 约定、D6 补 socket 面无 mailbox 定向声明、D5 证据对象修正（cli.test.js）、退出卫生与 kill 粒度入 V4。
+- v3（M0 实现细化补记，0.2.0 已落地）：
+  - lock 命名细化为 `sockPath + '.lock'`（设计原文「sock 同目录 daemon.lock」——实现按 sock 绑定命名，天然支持 ZSW_SOCK 多测试域隔离）。
+  - **standby 的 M0 过渡语义**：manager 照常初始化、MCP 工具面照常服务（D3 的「空转不初始化 manager」是 1.0 摘工具后的终态）。边界：M0 期间 MCP 面任务（各实例独立槽位）与 daemon socket 面任务（daemon 槽位）并存，总并发上限 = 实例数×3 + 3；1.0 摘工具后收敛为全局 3（G3 声明的语义）。standby 实例启动序列的 recover 探活会把 daemon 正在跑的任务标注 orphan（多实例既有行为，任务照跑不受影响；daemon 死后该标注转为准确语义）。
+  - `ZSW_TOOLS_DISABLED=1` 先行开关落地（tools/list 空 + tools/call 可操作拒绝 + socket 面不受影响），作为 V2 真机验证与 1.0 行为的灰度入口；动态读 env（进程内可切换）。
+  - wait 经 zsub action 面暴露（inputSchema action enum + description 速查行，而非独立 tool），CLI `zsw wait --daemon --id a [--id b] [--timeout-ms n]`（partial → exit 2）；`start --daemon --wait` sugar 落地。
+  - e2e 落地（test/e2e-daemon.test.js）：A7/wait 半程/A2/A4/A5 机制版实跑通过（0 skip）；A4 取「created 排队态 + 句柄立即返回」断言（FIFO 转 running 尾巴因时序成本未自动化）；A5 的 orphan 标记依赖 standby 启动时序的 recover 探活（M0 接管者不重跑 recover），「接管后新 start」未自动化（省模型调用，机制已被其余场景覆盖）；CI 以 `e2e*.test.js` 模式排除（无凭据环境模型场景 skip 不红）。
+  - sockPath 单一来源：`lib/cli-client.js` 导出 `defaultSockPath()`（ZSW_SOCK 覆盖 > `~/.zcode/zsw/daemon.sock`），server 接线与 CLI 共用。

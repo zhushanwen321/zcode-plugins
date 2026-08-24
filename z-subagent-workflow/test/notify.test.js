@@ -183,4 +183,11 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   assert.ok(g.includes('zsub(action="status", subagentId="sa-poll")'), '含具体 action 示例');
   assert.ok(g.includes('closed'), '说明完成后 status 变 closed');
   assert.ok(g.includes('outputs'), '说明 result 落 outputs 路径');
+  // 0.2.0 文案修复（DESIGN-v4 §3.1）：指引在 start（wait=false）时刻随 handle
+  // 返回，任务刚启动——锁「已启动」口径 + 时间预期 + daemon 等待指引，
+  // 防回归到「已完成」误导文案（诱发立刻查 status + sleep 轮询）
+  assert.ok(g.includes('已启动'), 'start 时刻口径：已启动');
+  assert.ok(!g.includes('已完成'), '不得出现「已完成」（旧文案 bug）');
+  assert.ok(g.includes('3-10 分钟'), '给时间预期，防无预期轮询');
+  assert.ok(g.includes('--daemon --wait'), '指向 CLI daemon 等待姿势（0.2.0+）');
 });

@@ -61,14 +61,14 @@ test('buildToolDefinition：单 tool zsub，description ≤1250 字符，action 
   assert.equal(tool.name, 'zsub');
   assert.ok(tool.description.length > 0);
   assert.ok(tool.description.length <= 1250, `description ${tool.description.length} 字符超限`);
-  // 八 action 一行速查 + 三条纪律 + skill 指针，三要素都在
-  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models']) {
+  // 九 action 一行速查（M0 起 +wait）+ 三条纪律 + skill 指针，三要素都在
+  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait']) {
     assert.ok(tool.description.includes(action), `description 缺 ${action}`);
   }
   assert.ok(tool.description.includes('zsub-zflow-orchestration'));
   assert.deepEqual(
     tool.inputSchema.properties.action.enum,
-    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models'],
+    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait'],
   );
   assert.deepEqual(tool.inputSchema.required, ['action']);
 });
