@@ -20,11 +20,17 @@
  * listen 完」的启动窗口（正常是毫秒级），避免误清活锁；3 次退避仍不可达才
  * 判定持有者死亡或从未完成启动，清残留重竞选。
  *
- * 帧协议（D2，NDJSON）：
- *   请求 {id, tool:"zsub"|"zflow", params:{...}}
+ * 帧协议（D2，NDJSON；MF7 扩展 cwd 字段）：
+ *   请求 {id, tool:"zsub"|"zflow", params:{...}, cwd?}
+ *     cwd：string，可选——调用方进程目录。多 worktree 下 agent 发现 / worktree
+ *     定位依赖发起方 cwd（daemon 宿主 cwd 会用错目录），故随帧传导。传输层
+ *     仅做类型守卫：非 string 忽略（req.cwd = undefined），存在性校验留给
+ *     handler 层（workdir/resolver 已有，协议层不重复）。
  *   响应 {id, ok:true, result} | {id, ok:false, error:{message}}
- *   帧编解码是纯函数导出——CLI thin client（bin/zsw.js）复用同一实现，协议
- *   单点维护。每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
+ *   帧编解码是纯函数导出；CLI thin client（lib/cli-client.js）不复用它——
+ *   自带一份最小编解码（S8 收敛定论：两份最小实现并存、语义兼容，帧语法
+ *   变更须两文件同步改），帧协议契约以 cli-client.js 头注为权威（互指维护）。
+ *   每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
  *   挂起 handler 据此取消等待（不影响任务执行体）；handler throw 统一映射为
  *   ok:false 帧。本层只管传输，zsub/zflow 语义由调用方注入的 handler 表定义。
  *
@@ -113,7 +119,7 @@ function installExitHooks() {
  *
  * @param {object} opts
  * @param {string} opts.sockPath unix socket 路径（lock 固定为 sockPath + '.lock'）
- * @param {Record<string, (req: {tool: string, params: object}, meta: {signal: AbortSignal}) => Promise<any>>} [opts.handlers]
+ * @param {Record<string, (req: {tool: string, params: object, cwd?: string}, meta: {signal: AbortSignal}) => Promise<any>>} [opts.handlers]
  *        tool 名 → handler 表；本层只管传输，业务语义由调用方注入
  * @param {(msg: string) => void} [opts.log] 人读日志（缺省 stderr）
  * @returns {Promise<{role: 'daemon'|'standby', stop: () => Promise<void>}>}
@@ -311,7 +317,13 @@ function startDaemon(opts) {
       };
     } else {
       try {
-        const result = await handlers[frame.tool]({ tool: frame.tool, params: frame.params }, { signal });
+        // req.cwd 类型守卫在本层（MF7 帧协议契约）：仅非空 string 透传，其余
+        // undefined——消费方（buildDaemonHandlers → toolHandler env.cwd）无需再防
+        const result = await handlers[frame.tool]({
+          tool: frame.tool,
+          params: frame.params,
+          cwd: typeof frame.cwd === 'string' && frame.cwd !== '' ? frame.cwd : undefined,
+        }, { signal });
         resp = { id, ok: true, result: result === undefined ? null : result };
       } catch (err) {
         resp = { id, ok: false, error: { message: err && err.message ? String(err.message) : String(err) } };

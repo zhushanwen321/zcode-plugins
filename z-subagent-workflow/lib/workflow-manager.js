@@ -207,6 +207,7 @@ class WorkflowManager {
     }
 
     const runId = `wf-${crypto.randomUUID().slice(0, 8)}`;
+    const targetSessionId = typeof ctx.targetSessionId === 'string' ? ctx.targetSessionId : null;
     this.records.create({
       subagentId: runId, // record-store 主键字段名（跨 type 统一）；值带 wf- 前缀
       recordType: RECORD_TYPE,
@@ -214,7 +215,7 @@ class WorkflowManager {
       task,
       workdir,
       model: typeof params.model === 'string' ? params.model : null,
-      targetSessionId: typeof ctx.targetSessionId === 'string' ? ctx.targetSessionId : null,
+      targetSessionId,
       notifyMode: this._mode,
       timeoutMs,
       cwd: ctx.cwd,
@@ -235,7 +236,12 @@ class WorkflowManager {
         error: fin.record && fin.record.error !== undefined ? fin.record.error : null,
       };
     }
-    const handle = { runId, workflow, status: 'running', notify: this._mode };
+    const handle = {
+      runId, workflow, status: 'running',
+      // MF6 延伸（同 SubagentManager）：按实际回流通道而非组装档位——socket/CLI
+      // 面恒无 targetSessionId，mailbox 档写 'mailbox' 会误导「会自动回流」
+      notify: this._notifyLabel(targetSessionId),
+    };
     if (this._mode === 'polling') {
       // polling 档结果不会自动回流（Z5 物理上限），必须当场给轮询指引
       handle.guidance = [
@@ -578,6 +584,21 @@ class WorkflowManager {
       );
     }
     return rec;
+  }
+
+  /**
+   * 句柄 notify 字段（MF6 延伸，与 SubagentManager._notifyLabel 同构）：
+   * 按实际回流通道而非组装档位输出。mailbox 档但无 targetSessionId
+   * （socket/CLI 面恒无——CLI 驱动的 run 不经 MCP 会话，ctx 的
+   * targetSessionId 为 null）时完成通知必 delivered:false，写 'none'
+   * （无回流通道，等待走 CLI wait / run_in_background 原生通知）——写
+   * 'mailbox' 会误导「会自动回流」。polling 档无通道语义差异，恒
+   * 'polling'（guidance 已附轮询指引）。mailbox + 有 target（MCP 面遗留：
+   * 工具面 1.0.0 起恒拒不可达，但保持逻辑完备）仍 'mailbox'。
+   */
+  _notifyLabel(targetSessionId) {
+    if (this._mode !== 'mailbox') return this._mode;
+    return typeof targetSessionId === 'string' && targetSessionId !== '' ? 'mailbox' : 'none';
   }
 }
 

@@ -128,14 +128,17 @@ test('workflow run 缺必填参数 → exit 1 + workflow usage', async () => {
   assert.match(c.stderr, /缺少 --workdir/);
 });
 
-test('workflow --action list → exit 0，JSON 含内置 workflow 名', async () => {
-  const r = await run(['workflow', '--action', 'list']);
+// MF1 起 abort/status/list/scripts 管理面默认经 daemon（daemon 形态覆盖见
+// cli-workflow-daemon.test.js），本地断言走 --local；run/lint 恒本地。
+
+test('workflow --action list --local → exit 0，JSON 含内置 workflow 名', async () => {
+  const r = await run(['workflow', '--action', 'list', '--local']);
   assert.equal(r.code, 0);
   assert.ok(Array.isArray(JSON.parse(r.stdout)));
 });
 
-test('workflow --action scripts → exit 0，含 builtin 清单', async () => {
-  const r = await run(['workflow', '--action', 'scripts']);
+test('workflow --action scripts --local → exit 0，含 builtin 清单', async () => {
+  const r = await run(['workflow', '--action', 'scripts', '--local']);
   assert.equal(r.code, 0);
   const j = JSON.parse(r.stdout);
   assert.ok(Array.isArray(j.builtin) && j.builtin.length >= 5);

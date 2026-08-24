@@ -30,7 +30,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 const { RecordStore } = require('../lib/record-store');
 const outputs = require('../lib/output-store');
 const { recordsPath } = require('../lib/config');
-const { MailboxNotifier } = require('../lib/notifier-mailbox');
+const { MailboxNotifier, PollingNotifier } = require('../lib/notifier-mailbox');
 const {
   WorkflowManager, WORKFLOW_MAX_CONCURRENT, DEFAULT_WORKFLOW_TIMEOUT_MS,
 } = require('../lib/workflow-manager');
@@ -144,7 +144,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + 报告双段
   assert.match(h.runId, /^wf-/);
   assert.equal(h.workflow, 'chain');
   assert.equal(h.status, 'running');
-  assert.equal(h.notify, 'mailbox');
+  assert.equal(h.notify, 'mailbox'); // mailbox+target 档（MCP 面遗留形态）才有回流
   assert.equal(h.guidance, undefined); // mailbox 档无轮询指引
 
   const rec = await waitFor(() => {
@@ -176,6 +176,42 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + 报告双段
   assert.equal(entryCalls[0].workdir, TMP);
   assert.equal(entryCalls[0].model, 'GLM-5.3');
   assert.ok(entryCalls[0].signal instanceof AbortSignal);
+});
+
+test('notify 三态（MF6 延伸）：mailbox 无 target=none（socket/CLI 面）；mailbox+target=mailbox；polling 恒 polling', async () => {
+  const wf = { chain: async (opts) => okResult(opts) };
+  // ① mailbox 档 + 无 targetSessionId（CLI/socket 驱动恒无）：句柄不得写
+  // 'mailbox' 误导「会自动回流」（notifyCompletion 必 delivered:false）
+  const m1 = buildManager({ workflows: wf });
+  const noTarget = await m1.manager.start(
+    { workflow: 'chain', task: '无回流通道任务书', workdir: TMP },
+    { cwd: TMP },
+  );
+  assert.equal(noTarget.notify, 'none');
+  assert.equal(noTarget.guidance, undefined, 'none 档不是 polling，无轮询指引');
+  assert.equal(m1.records.get(noTarget.runId).targetSessionId, null);
+
+  // ② mailbox 档 + 有 target（MCP 面遗留形态）：保持 'mailbox'
+  const withTarget = await m1.manager.start(
+    { workflow: 'chain', task: '有回流通道任务书', workdir: TMP },
+    ctx(),
+  );
+  assert.equal(withTarget.notify, 'mailbox');
+
+  // ③ polling 档：有无 target 均 'polling'（档位即通道，guidance 兜底）
+  const m2 = buildManager({ workflows: wf, notifier: new PollingNotifier() });
+  const pollNoTarget = await m2.manager.start(
+    { workflow: 'chain', task: '轮询无target任务书', workdir: TMP },
+    { cwd: TMP },
+  );
+  assert.equal(pollNoTarget.notify, 'polling');
+  assert.ok(typeof pollNoTarget.guidance === 'string', 'polling 档必附轮询指引');
+
+  // 收尾：等三个 run 全部落终态（fake 入口立即完成，容忍通知收尾时序）
+  await waitFor(() => {
+    const st = (m) => m.records.list().filter((r) => r.recordType === 'workflow').every((r) => r.status !== 'running');
+    return st(m1) && st(m2);
+  });
 });
 
 test('start(wait=true)：阻塞到终态，返回报告全文（与落盘文件一致）', async () => {

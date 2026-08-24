@@ -48,7 +48,7 @@ after(() => {
 
 // ------------------------------------------------------------ 协议往返（验收 a）
 
-test('协议往返：请求帧 {id,tool,params}，响应 ok:true → resolve {ok,result}', async () => {
+test('协议往返：请求帧 {id,tool,params,cwd}，响应 ok:true → resolve {ok,result}', async () => {
   let seen = null;
   const d = await startFakeDaemon((req) => {
     seen = req;
@@ -63,6 +63,29 @@ test('协议往返：请求帧 {id,tool,params}，响应 ok:true → resolve {ok
   assert.deepEqual(seen.params, { action: 'list' });
   assert.ok(Number.isInteger(seen.id));
   d.server.close();
+});
+
+// ------------------------------------------------------- 帧cwd 缺省与覆盖（MF7）
+
+test('请求帧 cwd：缺省 = CLI 侧 process.cwd()；显式传入可覆盖；非 string 回落缺省', async () => {
+  // 逐 case 各起一个假 daemon（startFakeDaemon 的闭包 seen 一次一测）
+  for (const [cwdArg, expect] of [
+    [undefined, process.cwd()],
+    ['/tmp/zsw-wt-override', '/tmp/zsw-wt-override'],
+    ['', process.cwd()],       // 空串 = 视为缺省
+    [123, process.cwd()],      // 非 string = 视为缺省（daemon 侧仅接受 string）
+  ]) {
+    let seen = null;
+    const d = await startFakeDaemon((req) => {
+      seen = req;
+      return frame({ id: req.id, ok: true, result: {} });
+    });
+    const r = await callDaemon({ sockPath: d.sockPath, tool: 'zsub', params: { action: 'list' }, cwd: cwdArg });
+    assert.equal(r.ok, true);
+    assert.equal(seen.cwd, expect, `cwd=${JSON.stringify(cwdArg)} 应帧传导 ${expect}`);
+    assert.equal(typeof seen.cwd, 'string', '帧 cwd 恒为 string（协议契约）');
+    d.server.close();
+  }
 });
 
 test('ok:false 帧 → 正常 resolve {ok:false,error}（业务失败不是传输层异常）', async () => {

@@ -276,3 +276,64 @@ test('zsub inputSchema：action enum 含 wait，ids 参数在 schema 内（防�
   // description 速查行同步（enum 与速查漂移会让模型知道 enum 却不知道用法）
   assert.match(tool.description, /- wait：/);
 });
+
+// ------------------------------------------------ e) 帧cwd 传导（MF7）
+
+test('buildDaemonHandlers：req.cwd（非空 string）透传为 handler env.cwd → ctx.cwd；缺失/非 string 走既有回落链', async () => {
+  const seen = [];
+  // 最小 fake manager：仅 start 捕获 ctx（handler 内 env.cwd || ZCODE_PROJECT_DIR || process.cwd() 链的落点）
+  const fake = {
+    async start(params, ctx) { seen.push(ctx.cwd); return { subagentId: 'sa-x', status: 'running' }; },
+    list() { return []; },
+  };
+  const handlers = server.buildToolHandlers({ manager: fake, nested: false });
+  const daemonHandlers = server.buildDaemonHandlers(handlers);
+
+  const prevProjDir = process.env.ZCODE_PROJECT_DIR;
+  try {
+    delete process.env.ZCODE_PROJECT_DIR;
+    // 帧带非空 string cwd → env.cwd → ctx.cwd 原样到达（多 worktree 定位锚点）
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' }, cwd: '/tmp/zsw-wt-a' });
+    // 帧缺失 cwd → env.cwd undefined → 回落 process.cwd()（daemon 宿主目录）
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' } });
+    // 帧带非 string cwd（传输层已拦，适配层再守卫一次）→ 同缺失
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' }, cwd: 42 });
+    // 空串同忽略
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' }, cwd: '' });
+    assert.deepEqual(seen, ['/tmp/zsw-wt-a', process.cwd(), process.cwd(), process.cwd()]);
+
+    // 既有链的中间优先级仍在：帧无 cwd 但 ZCODE_PROJECT_DIR 存在 → 取后者
+    process.env.ZCODE_PROJECT_DIR = '/tmp/zsw-projdir';
+    seen.length = 0;
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' } });
+    // 帧 cwd 优先于 ZCODE_PROJECT_DIR（发起方目录 > daemon 宿主项目目录）
+    await daemonHandlers.zsub({ tool: 'zsub', params: { action: 'start', task: 't', slug: 's' }, cwd: '/tmp/zsw-wt-b' });
+    assert.deepEqual(seen, ['/tmp/zsw-projdir', '/tmp/zsw-wt-b']);
+  } finally {
+    if (prevProjDir === undefined) delete process.env.ZCODE_PROJECT_DIR;
+    else process.env.ZCODE_PROJECT_DIR = prevProjDir;
+  }
+});
+
+test('socket 面端到端：帧 cwd 经 buildDaemonHandlers 到达 manager.start 的 ctx（完整接线链）', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const seen = [];
+  const fake = {
+    async start(params, ctx) { seen.push(ctx.cwd); return { subagentId: 'sa-e2e', status: 'running' }; },
+    list() { return []; },
+  };
+  const srv = server.createServer({ manager: fake, nested: false });
+  const handle = await startDaemon({
+    sockPath,
+    handlers: server.buildDaemonHandlers(srv.toolHandlers),
+    log: () => {},
+  });
+  t.after(() => handle.stop());
+
+  const frame = await rpc(sockPath, {
+    id: 1, tool: 'zsub', params: { action: 'start', task: '任务书', slug: 'cwd-e2e' }, cwd: '/tmp/zsw-wt-socket',
+  });
+  assert.equal(frame.ok, true, `start 不应失败: ${JSON.stringify(frame.error)}`);
+  assert.equal(frame.result.subagentId, 'sa-e2e');
+  assert.deepEqual(seen, ['/tmp/zsw-wt-socket'], '帧 cwd 经 daemon-socket 类型守卫 + 适配器透传，完整到达 manager ctx');
+});

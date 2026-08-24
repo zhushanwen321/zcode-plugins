@@ -67,7 +67,9 @@ const workflowScript = require('../../lib/workflow-script');
 const { DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
 const { DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
 
-const SERVER_INFO = { name: 'zsw', version: '0.1.0' }; // MCP server 标识用插件缩写；TOOL_NAME 是 tool 语义名，两者不同源
+// S5：版本与 package.json 同源（require 缓存 + 发版流程统一 bump，防止
+// SERVER_INFO 手抄漂移——修复前 0.1.0 vs 实际 0.0.1 已然漂移）
+const SERVER_INFO = { name: 'zsw', version: require('../../package.json').version }; // MCP server 标识用插件缩写；TOOL_NAME 是 tool 语义名，两者不同源
 const TOOL_NAME = 'zsub';
 const RUN_WORKFLOW_TOOL_NAME = 'zflow';
 
@@ -461,10 +463,15 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
  * daemon socket 面适配器（DESIGN-v4 D2 / §7：M0 接线）。
  *
  * 形态转换两端：
- * - 入参：socket 帧 {tool, params} 的 params 是业务参数本体（CLI bin/zsw.js
- *   组的 {action, ...}），而 MCP handler 吃 tools/call 的 {arguments, _meta}
- *   形态——这里包一层 {arguments: params}。_meta 刻意不带：socket 面无会话
- *   定向语义（D6），ctx.targetSessionId 恒 undefined，mailbox 侧自然降级。
+ * - 入参：socket 帧 {tool, params, cwd?} 的 params 是业务参数本体（CLI
+ *   bin/zsw.js 组的 {action, ...}），而 MCP handler 吃 tools/call 的
+ *   {arguments, _meta} 形态——这里包一层 {arguments: params}。_meta 刻意
+ *   不带：socket 面无会话定向语义（D6），ctx.targetSessionId 恒 undefined，
+ *   mailbox 侧自然降级。
+ *   req.cwd（MF7 帧协议扩展，daemon-socket 传输层已做 string 类型守卫）
+ *   非空 string 时透传为 handler 第二参 env.cwd——handler 内既有
+ *   `env.cwd || ZCODE_PROJECT_DIR || process.cwd()` 链自然取到发起方目录
+ *   （多 worktree 下 agent 发现 / worktree 定位不再落到 daemon 宿主 cwd）。
  * - 出参：MCP handler 返回 okContent/errContent 包装，socket 帧的 result
  *   必须是业务对象——CLI 直接消费业务字段（如 wait 的 partial 决定 exit
  *   code、start 的 subagentId 供 --wait sugar 追发），content 包装对 CLI
@@ -479,7 +486,12 @@ function buildDaemonHandlers(toolHandlers) {
     table[name] = async (req, meta = {}) => {
       const wrapped = await toolHandlers[name](
         { arguments: req && req.params },
-        { signal: meta.signal },
+        {
+          signal: meta.signal,
+          // 非空 string 才透传（帧协议安全边界：cwd 不校验存在性——handler 层
+          // workdir/resolver 已有存在性校验——但 daemon 侧仅接受 string 类型）
+          cwd: typeof req.cwd === 'string' && req.cwd !== '' ? req.cwd : undefined,
+        },
       );
       return unwrapContentResult(wrapped);
     };

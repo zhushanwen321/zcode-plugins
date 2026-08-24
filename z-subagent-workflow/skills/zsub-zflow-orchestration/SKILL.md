@@ -62,12 +62,12 @@ node bin/zsw.js list
   - **daemon 不在场**：报 `daemon 未运行（connect ~/.zcode/zsw/daemon.sock 失败：<errno>）`。按报错内指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或加 `--local` 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。
   - **wait 期间 daemon 随宿主会话死亡**：报 `daemon 连接中断，未收到响应帧`（任务执行体随 daemon 终止）——任务状态稍后用 status 查询（record 由接管实例 recover 落盘），必要时重新派发。
 - daemon 挂靠任一会话的插件进程：会话全关则 daemon 退场，其持有执行体的任务终止（record 已落盘，接管实例探活标记，不产生静默僵尸）。
-- `--local` 显式走本地一次性执行（调试后门：start/message 阻塞到本轮完成，无续聊/限流，CLI 退出即丢执行体）；`zsw workflow` 子命令仍为本地同步形态（无 daemon 路径）。
+- `--local` 显式走本地一次性执行（调试后门：start/message 阻塞到本轮完成，无续聊/限流，CLI 退出即丢执行体）；`zsw workflow` 的 run/lint 恒本地（见 workflow 节），abort/status/list/scripts 管理面默认同走 daemon。
 
 ## 核心纪律
 
 1. **task 必须自包含**：子任务看不到主会话上下文。把必要背景（文件路径、行号、验收标准）内联进 task，不要写"如前所述"。
-2. **禁止轮询**：异步启动后不要反复查 list/status 等结果，不要发明 `sleep N && status` 循环。等待姿势按入口选：CLI（默认 daemon，首选）按「CLI 模式（默认，1.0.0 起）」节用 `Bash(run_in_background=true)` 等待，完成通知自动唤醒；mailbox 通知通道启用时异步任务的完成通知自动注入，未启用时任务典型运行 3-10 分钟，先做别的或结束当前轮次，稍后做一次性 status 查询（`node bin/zsw.js status --id <id>`）。
+2. **禁止轮询**：异步启动后不要反复查 list/status 等结果，不要发明 `sleep N && status` 循环。完成唤醒走「CLI 模式（默认，1.0.0 起）」节姿势：`Bash(run_in_background=true)` 包裹 `zsw wait` / `zsw start --wait`，完成即引擎原生 task-notification 自动唤醒（不依赖 mailbox——那是 MCP 工具面时代的 legacy 投递通道，CLI/daemon 面恒无投递目标）。未包裹等待就结束 turn 的任务典型运行 3-10 分钟，先做别的，稍后做一次性 status 查询（`node bin/zsw.js status --id <id>`）。
 3. **通知即确认**：收到 `[subagent 完成]` 消息后直接处理结果，不要再调 status"二次确认"。
 4. **并发克制**：默认上限 3。嵌套 subagent 深度越深可用并发越少（自动分层），不要试图绕过。
 5. **模型路由（环境无关）**：档位原则——重量任务（设计/架构/深度调研/复杂修复）不传 model，跟随默认主模型；简单任务（探索/计数/格式转换/测试）显式传轻量模型（`--model <轻量模型短名>`）降成本。可用模型集随 v2 config 变化，不要凭记忆硬编码名字——路由决策前先 `node bin/zsw.js models` 查当前清单（短名/上下文窗口/推理档位/默认标记）；传未知模型名也会在报错中收到可用清单，按清单重传即可。
@@ -81,18 +81,20 @@ node bin/zsw.js list
 
 ## 结果去向
 
-- 完成通知（mailbox 注入）含结果摘要；全文在 `~/.zcode/zsw/outputs/<subagentId>.md`。
+- 完成唤醒走 `zsw wait` / `zsw start --wait` + `run_in_background`（CLI 阻塞进程退出即引擎原生 task-notification）；全文在 `~/.zcode/zsw/outputs/<subagentId>.md`。
 - 终态 record 的 error/timeout 字段含失败原因与恢复指引（如调大 timeoutMs、拆小任务）。
 
 ## workflow 编排（zsw workflow 子命令，六 action）
 
-确定性多阶段管线：每阶段独立无头 session，中间结论自动链接/合并，主会话只收最终报告（markdown + JSON 双段，落 `outputs/<runId>.md`）。**run 是同步阻塞命令**（跑到终态才退出，报告打 stdout）——需要「派发后做别的、完成唤醒」时，用 Bash `run_in_background=true` 包裹整条命令，CLI 退出即引擎原生通知（与 zsub wait 同一纪律，不要轮询）。
+确定性多阶段管线：每阶段独立无头 session，中间结论自动链接/合并，主会话只收最终报告（markdown + JSON 双段，落 `outputs/<runId>.md`）。**run 是同步阻塞命令且恒本地执行**（执行体 = CLI 进程，跑到终态才退出，报告打 stdout）——需要「派发后做别的、完成唤醒」时，用 Bash `run_in_background=true` 包裹整条命令，CLI 退出即引擎原生通知（与 zsub wait 同一纪律，不要轮询）。
+
+管理面边界（abort 语义）：abort/status/list/scripts 默认走 daemon——跨进程 record 一致，abort 经 daemon 侧句柄真停 daemon 持有的 run（signal 中止，已完成阶段保留在报告）。run/lint 恒本地：**abort 对本地 run 只终态化 record、不停执行体**——取消本地 run（bg bash 形态）用引擎 TaskStop 终止该 bash 任务，再（必要时经 daemon）补 abort 收尾 record。
 
 ```
 node bin/zsw.js workflow --workflow <名> --task "<自包含任务书>" --workdir <绝对路径>
      [--model <短名>] [--max-concurrent <n>] [--timeout-per-phase <ms>] [--timeout-ms <ms>] [--json]
      [per-workflow 参数]                                  → 同步跑完出报告 + run 摘要（exit 0 = closed）
-node bin/zsw.js workflow --action abort  --id <runId>     → 中止运行中 run（状态落 cancelled；已完成阶段保留在报告）
+node bin/zsw.js workflow --action abort  --id <runId>     → 中止运行中 run（经 daemon 句柄真停；本地 run 只终态化 record，见「管理面边界」）
 node bin/zsw.js workflow --action status  --id <runId>    → run 详情 + 报告路径 + 脚本进度留痕（progress）
 node bin/zsw.js workflow --action list                    → 全部 workflow run
 node bin/zsw.js workflow --action scripts                 → 内置 5 + 自定义脚本清单（name/description/source/file）
@@ -147,7 +149,7 @@ module.exports = {
 - 开发流程：写脚本 → `lint` 校验 → `scripts` 确认被发现 → `node bin/zsw.js workflow --workflow script:<名> --task ... --workdir ...`。
 - 脚本在 server 进程内执行（fresh require，改动即生效）：不要维护跨 run 的可变全局态；信任前提与「用户主动放进四根目录的代码」一致。
 
-CLI 等价入口（脚本化/调试）：`node bin/zsw.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`（`--action` 缺省 run，同步等完成——CLI 一次性进程无后台模式）；管理面 `node bin/zsw.js workflow --action <abort|status|list|scripts|lint> [--id <runId> | --file <脚本>]`。用法详见 `node bin/zsw.js workflow --help`。
+CLI 入口（agent 与人类同款）：`node bin/zsw.js workflow --workflow <名> --task "..." --workdir <绝对路径> [--json]`（`--action` 缺省 run，本地同步执行到终态——「后台」用 Bash `run_in_background` 包裹即原生唤醒）；管理面 `node bin/zsw.js workflow --action <abort|status|list|scripts|lint> [--id <runId> | --file <脚本>]`（abort/status/list/scripts 默认经 daemon，lint 恒本地）。用法详见 `node bin/zsw.js workflow --help`。
 
 ### 何时用 workflow vs subagent（zsub start）
 

@@ -128,6 +128,8 @@ test('协议层：initialize 回 serverInfo 与 protocolVersion', async () => {
   assert.equal(frames.length, 1);
   assert.equal(frames[0].id, 1);
   assert.equal(frames[0].result.serverInfo.name, 'zsw'); // server 标识 = 插件缩写（CONTEXT.md）；tool 名 zsub/zflow 是另一层
+  // S5：版本与 package.json 同源（防 SERVER_INFO 手抄漂移——修复前 0.1.0 已漂移）
+  assert.equal(frames[0].result.serverInfo.version, require('../package.json').version);
   assert.equal(frames[0].result.protocolVersion, '2025-03-26');
   assert.deepEqual(frames[0].result.capabilities, { tools: {} });
 });

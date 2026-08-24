@@ -12,14 +12,14 @@
 |----|-------|---------|
 | **全名** | `z-subagent-workflow` | 人读的插件标识：marketplace.json 的 name/source、插件目录名、`.zcode-plugin/plugin.json` 的 name、`.mcp.json` 的 server key、文档标题、git 分支名（`feat-zcode-subagent-workflow-*`） |
 | **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_SOCK`、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
-| **tool 名** | `zsub` / `zflow` | 仅 MCP tool 语义层：`zsub` = subagent 生命周期（七 action），`zflow` = workflow 管理面（六 action）。skill 名 `zsub-zflow-orchestration` 由两者组合。CLI/文档中提到「MCP zsub tool」「zflow 的 run action」用这些名 |
+| **tool 名** | `zsub` / `zflow` | 语义层名（1.0.0 起 MCP 工具面下线，无实际 tool，叙事沿用）：`zsub` = subagent 生命周期（九 action：start/list/status/cancel/message/close/wait/agents/models），`zflow` = workflow 管理面（六 action：run/abort/status/list/scripts/lint）。skill 名 `zsub-zflow-orchestration` 由两者组合。CLI/文档中提到「zsub 面」「zflow 的 run action」用这些名 |
 
 ## 判定规则
 
 一个 token 要出现在新场合时，先问**指代什么**：
 
 1. 指代**插件整体**（安装单元）→ 人读场合用全名；机器读场合（env/路径/命令）用 `zsw`。
-2. 指代**某个 MCP tool** → 只能用 `zsub` 或 `zflow`，且与该 tool 的 action 语义一致。
+2. 指代 **zsub/zflow 语义面**（action 语境；1.0.0 起无实际 MCP tool）→ 只能用 `zsub` 或 `zflow`，且与该面的 action 语义一致。
 3. 指代**数据/运行时产物** → `zsw`（数据根下）或语义前缀（record id：`sa-` subagent / `wf-` workflow run；worktree 目录 `wt-<id>`；home 池 `home-<provider>-<model>`）。
 
 禁止混用：`zsub` 不再作为插件总品牌（旧用法）；`zsw` 不用于 tool 名；数据目录不出现 `zsub` 字样。

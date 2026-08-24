@@ -494,6 +494,79 @@ test('status/list：精简视图与全量查询；polling 档附轮询指引', a
   assert.throws(() => mPoll.status('sa-none'), /不存在/); // status 同步方法
 });
 
+test('notify 三态（MF6）：mailbox 无 target=none（socket/CLI 面）；mailbox+target=mailbox；polling 恒 polling', async () => {
+  // ① mailbox 档 + 无 targetSessionId（socket/CLI 面恒无——D6）：句柄不得写
+  // 'mailbox' 误导「会自动回流」（notifyCompletion 必 delivered:false）
+  const m1 = buildManager();
+  const noTarget = await m1.manager.start({ task: '无回流通道任务书', slug: 'no-target' }, { cwd: TMP });
+  assert.equal(noTarget.notify, 'none');
+  assert.equal(noTarget.guidance, undefined, 'none 档不是 polling，无轮询指引');
+  // record 侧如实：targetSessionId=null（句柄语义与 record 落盘一致）
+  assert.equal(m1.records.get(noTarget.subagentId).targetSessionId, null);
+
+  // ② mailbox 档 + 有 target（MCP 面遗留形态）：保持 'mailbox'
+  const withTarget = await m1.manager.start({ task: '有回流通道任务书', slug: 'has-target' }, ctx());
+  assert.equal(withTarget.notify, 'mailbox');
+
+  // ③ polling 档：有无 target 均 'polling'（档位即通道，guidance 兜底）
+  const m2 = buildManager({ notifier: new PollingNotifier() });
+  const pollNoTarget = await m2.manager.start({ task: '轮询无target任务书', slug: 'poll-no-target' }, { cwd: TMP });
+  assert.equal(pollNoTarget.notify, 'polling');
+  const pollWithTarget = await m2.manager.start({ task: '轮询有target任务书', slug: 'poll-has-target' }, { targetSessionId: 'sess_pt', cwd: TMP });
+  assert.equal(pollWithTarget.notify, 'polling');
+
+  // 收尾：等四个任务的 runner.start 全部就位再统一 finish（finishAll 只
+  // finish 已注册的 waiter，早于 start 调用会落空、任务悬在 created/running）
+  await waitFor(() => m1.runner.startCalls.length === 2 && m2.runner.startCalls.length === 2);
+  m1.runner.finishAll({ status: 'closed', response: 'done' });
+  m2.runner.finishAll({ status: 'closed', response: 'done' });
+  await waitFor(() => m1.records.get(noTarget.subagentId).status === 'closed'
+    && m1.records.get(withTarget.subagentId).status === 'closed'
+    && m2.records.get(pollNoTarget.subagentId).status === 'closed'
+    && m2.records.get(pollWithTarget.subagentId).status === 'closed');
+});
+
+test('notify 三态（MF6）：wait=true 路径与 message 续聊句柄同款语义', async () => {
+  const { manager, runner, records } = buildManager();
+
+  // wait=true + 无 target → 'none'（结果已同步在手，字段语义仍如实标通道）。
+  // FakeRunner 的 done 挂起：先拿 promise、触 finish、再 await（直接 await 会永久挂起）
+  const finP = manager.start({ task: '同步等待任务书', slug: 'wait-sync', wait: true }, { cwd: TMP });
+  await waitFor(() => runner.startCalls.length === 1);
+  runner.finishAll({ status: 'closed', response: '同步结果' });
+  const fin = await finP;
+  assert.equal(fin.status, 'closed');
+  assert.equal(fin.notify, 'none');
+
+  // message 续聊：句柄 notify 取 record 的 targetSessionId（create 时落盘）
+  const noT = await manager.start(
+    { task: '无target对话任务书', slug: 'chat-no-target', conversation: true },
+    { cwd: TMP },
+  );
+  await waitFor(() => runner.startCalls.length === 2);
+  runner.finishAll({ status: 'closed', response: '首轮回答' });
+  await waitFor(() => {
+    const r = records.get(noT.subagentId);
+    return r && r.status === 'idle' ? r : null;
+  });
+  const msgNoT = await manager.message(noT.subagentId, '追问');
+  assert.equal(msgNoT.notify, 'none', '无 target 的 conversation 任务，续聊句柄同款 none');
+
+  const c = ctx();
+  const hasT = await manager.start(
+    { task: '有target对话任务书', slug: 'chat-has-target', conversation: true },
+    c,
+  );
+  await waitFor(() => runner.startCalls.length === 3);
+  runner.finishAll({ status: 'closed', response: '首轮回答' });
+  await waitFor(() => {
+    const r = records.get(hasT.subagentId);
+    return r && r.status === 'idle' ? r : null;
+  });
+  const msgHasT = await manager.message(hasT.subagentId, '追问');
+  assert.equal(msgHasT.notify, 'mailbox');
+});
+
 test('close：运行中任务先取消再终态化；worktree 清理被调用', async () => {
   const c = ctx();
   const wtCleaned = [];

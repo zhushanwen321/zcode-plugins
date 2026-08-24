@@ -211,7 +211,7 @@ class SubagentManager {
         subagentId,
         slug,
         status: finRec ? finRec.status : 'error',
-        notify: this._mode,
+        notify: this._notifyLabel(ctx.targetSessionId), // MF6：同 wait=false 句柄语义
         result: fin.result && typeof fin.result.response === 'string' ? fin.result.response : '',
         outputFile: fin.outputFile,
         patchFile: fin.patchFile,
@@ -225,7 +225,11 @@ class SubagentManager {
     // wait=false 后台路径：执行体失败已落 record（error 终态），挂 no-op catch
     // 防 unhandledRejection 击穿 server 进程（同 message() 续聊轮处理）
     p.catch(() => {});
-    const handle = { subagentId, slug, status: 'running', notify: this._mode, conversation };
+    const handle = {
+      subagentId, slug, status: 'running',
+      notify: this._notifyLabel(ctx.targetSessionId), // MF6：按实际回流通道而非组装档位
+      conversation,
+    };
     // polling 档结果不会自动回流（Z5 物理上限），必须当场给轮询指引
     if (this._mode === 'polling' && typeof this.notifier.pollingGuidance === 'function') {
       handle.guidance = this.notifier.pollingGuidance(subagentId);
@@ -293,7 +297,9 @@ class SubagentManager {
     const round = (rec.rounds || 0) + 1;
     const p = this._runResumeRound(id, text);
     p.catch(() => {}); // 错误已落 record（error 终态），后台路径不产生 unhandledRejection
-    return { subagentId: id, status: 'running', round, notify: this._mode };
+    // notify 语义同 start 句柄（MF6）：targetSessionId 取 record（create 时已随
+    // ctx 落盘，null = 无回流通道）——续聊轮与首轮句柄不漂移
+    return { subagentId: id, status: 'running', round, notify: this._notifyLabel(rec.targetSessionId) };
   }
 
   // ------------------------------------------------------- cancel / close
@@ -611,6 +617,20 @@ class SubagentManager {
       + `恢复指引: 修正任务描述或调大 timeoutMs 后重新 start；输出尾部与诊断已存 ${outputFile}`;
     if (patchFile) s += `\n改动 patch（可能不完整）: ${patchFile}`;
     return s;
+  }
+
+  /**
+   * 句柄 notify 字段（MF6 语义修正）：按「实际回流通道」而非组装档位输出。
+   * mailbox 档但无 targetSessionId（socket/CLI 面恒无——D6 无会话定向，ctx
+   * 落进 record 的 targetSessionId 为 null）时完成通知必 delivered:false，
+   * 写 'none'（无回流通道，等待走 CLI wait）——写 'mailbox' 会误导「会自动
+   * 回流」。polling 档无通道语义差异，恒 'polling'（guidance 已附轮询指引）。
+   * mailbox + 有 target（MCP 面遗留：工具面 1.0.0 起恒拒不可达，但保持逻辑
+   * 完备）仍 'mailbox'。
+   */
+  _notifyLabel(targetSessionId) {
+    if (this._mode !== 'mailbox') return this._mode;
+    return typeof targetSessionId === 'string' && targetSessionId !== '' ? 'mailbox' : 'none';
   }
 
   _mustGet(id) {

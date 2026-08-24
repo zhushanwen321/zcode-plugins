@@ -191,6 +191,36 @@ test('createFrameDecoder：多字节 UTF-8 被字节级切分仍正确解码（�
 
 // ------------------------------------------------------ 竞选与协议往返
 
+test('帧 cwd 传导（MF7）：请求帧含非空 string cwd 时 handler req.cwd 收到；缺失/非 string/空串 → undefined', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const seen = [];
+  const d = await startDaemon({
+    sockPath,
+    handlers: {
+      zsub: async (req) => { seen.push(req.cwd); return { ok: 1 }; },
+    },
+    log: () => {},
+  });
+  t.after(() => d.stop());
+
+  // 缺失 / 合法 string / 非 string（数字、对象）/ 空串：类型守卫在传输层
+  const frames = await rpc(sockPath, [
+    { id: 1, tool: 'zsub', params: {} },
+    { id: 2, tool: 'zsub', params: {}, cwd: '/tmp/wt-multi-a' },
+    { id: 3, tool: 'zsub', params: {}, cwd: 42 },
+    { id: 4, tool: 'zsub', params: {}, cwd: { path: '/tmp/x' } },
+    { id: 5, tool: 'zsub', params: {}, cwd: '' },
+  ]);
+  for (const f of frames) assert.strictEqual(f.ok, true);
+  assert.deepStrictEqual(seen, [
+    undefined,              // 帧不带 cwd
+    '/tmp/wt-multi-a',      // 非 string 之外的合法形态原样到达
+    undefined,              // 数字：忽略
+    undefined,              // 对象：忽略
+    undefined,              // 空串：忽略（daemon 侧仅接受非空 string）
+  ], 'req.cwd 仅在非空 string 时透传，其余一律 undefined');
+});
+
 test('单实例竞选成 daemon：lock 写 pid、socket 0600、正常帧/throw 帧/unknown tool 往返，stop 后无残留', async (t) => {
   const { sockPath, lockPath } = tmpSock(t);
   const calls = [];

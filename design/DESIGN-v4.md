@@ -1,5 +1,7 @@
 # zsw v1.0 daemon 化设计：socket 控制面 + CLI thin client，统一 push 唤醒
 
+> **⚠ 正文版本说明（S4）**：正文 §6.7 D7 与 §9 仍为 v2 的「0.2.0 双面 → 1.0.0 摘工具」两阶段表述；实际落地路径已变更——**用户决策跳过 0.2.0 观察期直接实施 M1 终态，且删除灰度开关**（见文末附录 v4/v5，以其为准）。正文其余章节的机制描述与实现一致（个别样例字段以附录 v5 勘误为准）。
+
 > **一句话结论**：把 zsw 的 MCP server 从「daemon 职责 + 工具暴露」的耦合体改造成 **zero-tool daemon（引擎托管生命周期）+ unix socket 控制面 + CLI thin client**，agent 交互面全收敛到 Bash 工具——等待场景借引擎原生 background bash 通知获得 idle push 唤醒，同时消除两个 MCP tool 定义（name+description+inputSchema 全量注入，实测约 5.5KB，其中 description 约 2.0KB）的常驻上下文注入。
 
 ## 开篇（SCQA）
@@ -127,7 +129,8 @@ agent: Bash(run_in_background=true, "zsw start --wait --task ... --slug ...")
 ```
 [agent 调 Bash 工具，前台同步]
 $ node <pluginRoot>/bin/zsw.js start --task "审查 lib/manager.js 的错误处理…" --slug review-mgr
-{"subagentId":"sa-a1b2","status":"running","notify":"daemon","hint":"等待用: zsw wait --id sa-a1b2 (建议 run_in_background)"}
+{"subagentId":"sa-a1b2","status":"running","notify":"none","conversation":false}
+（notify 三态见附录 v5 MF6：none = 无回流通道，等待走 wait）
 
 [agent 调 Bash 工具，前台同步，同上第二个任务]
 $ node <pluginRoot>/bin/zsw.js start --task "审查 lib/workflow/…" --slug review-wf
@@ -154,7 +157,7 @@ $ node <pluginRoot>/bin/zsw.js wait --id sa-a1b2 --id sa-c3d4
  ~/.zcode/zsw/outputs/sa-a1b2.md 与 sa-c3d4.md，汇总审查发现，继续工作]
 ```
 
-异步不等待的用法保持现状语义：`zsw start` 立即回 id，agent 之后随时 `zsw status --id …` / `zsw list`；conversation 续聊 `zsw message --id … --text "…"`（阻塞本轮，可同样配 background）。
+异步不等待的用法保持现状语义：`zsw start` 立即回 id，agent 之后随时 `zsw status --id …` / `zsw list`；conversation 续聊 `zsw message --id … --text "…"`（**投递即回**，本轮完成经 `wait` 收——v5 勘误：原「阻塞本轮」为本地模式语义，daemon 形态执行体由 daemon 持有，CLI 退出不丢）。
 
 ### 5.2 失败路径（带恢复指引）
 
@@ -337,3 +340,12 @@ M0 与 M1 之间设观察期：真机用 0.2.0 的 `--daemon` 路径跑日常任
   - e2e 落地（test/e2e-daemon.test.js）：A7/wait 半程/A2/A4/A5 机制版实跑通过（0 skip）；A4 取「created 排队态 + 句柄立即返回」断言（FIFO 转 running 尾巴因时序成本未自动化）；A5 的 orphan 标记依赖 standby 启动时序的 recover 探活（M0 接管者不重跑 recover），「接管后新 start」未自动化（省模型调用，机制已被其余场景覆盖）；CI 以 `e2e*.test.js` 模式排除（无凭据环境模型场景 skip 不红）。
   - sockPath 单一来源：`lib/cli-client.js` 导出 `defaultSockPath()`（ZSW_SOCK 覆盖 > `~/.zcode/zsw/daemon.sock`），server 接线与 CLI 共用。
 - v4（M1 提前实施，用户决策）：0.2.0 双面观察期取消，M1 终态直接内置——MCP 工具面恒下线（tools/list 恒 `[]`、tools/call 恒给走-CLI 指引）、CLI 默认翻转 daemon thin client（`--local` 为本地一次性执行调试后门、原 `--daemon` flag 删除）、`ZSW_TOOLS_DISABLED` 灰度开关删除（自用单用户场景无灰度对象，MF3 版本台阶的保护动机不成立，两项 breaking 合并于 1.0.0 一个 major）。CLI 补 `agents`/`models` 子命令（MCP 面下线后的能力等价入口，handler 表同源分发）。修复 cli-client 连接超时定时器 bug（connect 成功后未清除，被误用作总超时——wait 挂起 >5s 必被误杀，e2e 慢模型下暴露）。README 验收手册按 M1 重写（M2「mailbox 多窗口定向」场景随 `_meta` 通道下线而移除，改为 record 跨会话可见）。两项 breaking 未发版（版本仍 0.0.1，发 1.0.0 待用户指令走 release.js major）。
+- v5（对抗式审查修复轮，7 must-fix + 8 suggestion 全采纳）：
+  - **MF1（zflow 面终态决策，此前设计缺口）**：`zsw workflow` 的 abort/status/list/scripts 四管理面默认走 daemon socket（跨进程 record 一致，abort 经 daemon 句柄真停 daemon 侧 run）；**run 与 lint 恒本地同步**（run 执行体 = CLI 进程，配 run_in_background 即原生通知——不自建 daemon 异步形态，等待语义统一收敛到「CLI 阻塞进程 = 引擎 background task」这一条链路）。边界如实声明：abort 对本地 run 只终态化 record 不停执行体，取消本地 run（bg bash 形态）用引擎 TaskStop。
+  - **MF2**：`zsw workflow` 子命令补 ZSW_NESTED 拒绝（原在 main 顶部提前分流绕过检查，防递归边界在 zflow 面洞开；全形态前置含 --local）。
+  - **MF4**：wait / start --wait 失败终态（error/timeout/lost/cancelled）exit 1（原仅 partial → 2、失败也 exit 0，通知 summary 的退出码会误导 agent 判成功）；partial 保持 exit 2 优先。
+  - **MF5**：G3 承诺的 `ZSW_MAX_CONCURRENT` env 覆盖落地（config 模块加载期求值，非法值警告回落 3）。
+  - **MF6**：start/message 句柄的 `notify` 字段三态化（mailbox 档 + 有 targetSessionId → 'mailbox'；mailbox 档无 target（socket 面恒如此）→ 'none'；polling → 'polling'）——原 mailbox 档恒写 'mailbox' 对 daemon 任务是「会自动回流」的反向误导。zsub 与 zflow 双 manager 同步修正。§5.1 样例随勘误（notify 取值、message 投递即回）。
+  - **MF7（帧协议扩展）**：请求帧新增可选 `cwd` 字段（`{id, tool, params, cwd?}`）——调用方进程目录，CLI 缺省 process.cwd()；daemon 侧仅接受非空 string，透传 env.cwd，消费链 `帧 cwd > ZCODE_PROJECT_DIR > daemon 宿主 cwd`。修复多 worktree 下 agent 四根发现/worktree 主仓定位用 daemon 宿主目录的数据面错误。协议契约权威定义在 `lib/cli-client.js` 头注。
+  - **S1**：error 帧定为 `{message}`（code 可选保留，CLI 有兜底分支）；**S2**：socket 归属校验桩标注「未实现，跨用户场景前补」；**S3**：D4「零轮询」补 2s 兜底轮询声明（pending/record 漂移窗口防护）；**S5**：SERVER_INFO.version 与 package.json 同源；**S6**：zsub action 计数统一为九；**S8**：帧编解码双实现头注收敛（契约以 cli-client 头注为权威）；INFO：Out-of-scope 段 pollingGuidance「0.2.0 过渡期仍存在」表述修正（M0 已修）。
+  - S7（A1/A6/A8/V2 真机验收回填）：**A8 已实测通过**——GUI 会话默认 permission 下 Bash 跑 `node bin/zsw.js list` 成功 connect 真实 daemon.sock（unix socket 往返 exit 0），沙箱/权限不拦截，V1 疑虑解除；A1/A6/V2 留待用户重启 ZCode（加载 M1 代码）后执行（发 1.0.0 前置条件）。

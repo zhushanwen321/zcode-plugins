@@ -3,14 +3,20 @@
  * zsw CLI thin client 的 daemon 通信层（DESIGN-v4 D2/D5，M0 = 0.2.0）。
  *
  * 职责：CLI（bin/zsw.js 默认形态）与常驻 daemon 之间的单请求单响应
- * NDJSON 帧往返。请求 `{id, tool, params}\n`，响应 `{id, ok:true, result}
+ * NDJSON 帧往返。请求 `{id, tool, params, cwd}\n`，响应 `{id, ok:true, result}
  * | {id, ok:false, error:{code,message}}\n`。
  *
- * 为什么自带一份最小帧编解码而不复用 lib/daemon-socket.js（并行开发中）：
+ * 帧协议契约（与 lib/daemon-socket.js 头注同源维护）：
+ *   cwd  string，可选；调用方进程目录（多 worktree 下 agent 发现 / worktree
+ *       定位依赖发起方 cwd，daemon 宿主 cwd 会用错目录）。缺省 CLI 侧
+ *       process.cwd()；daemon 侧仅接受非空 string，其余忽略（MF7）。
+ *
+ * 为什么自带一份最小帧编解码而不复用 lib/daemon-socket.js（S8 收敛定论）：
  * 那是服务端传输层（listen/accept/锁竞选/看门狗），客户端只需「encode 一行
  * JSON + 按行读到首个含布尔 ok 的合法 JSON 帧」——单请求单响应场景两端帧
- * 语法相同但状态机完全不同。集成阶段若统一收敛到 daemon-socket 的导出，
- * 由主 agent 处理（本文件保持可独立替换的薄层）。
+ * 语法相同但状态机完全不同。集成后两边各留一份最小实现（语义兼容，帧语法
+ * 变更须两文件同步改）；帧协议契约以本头注「帧协议契约」段为权威，
+ * daemon-socket.js 头注互指于此。
  *
  * sockPath 解析收口在这层：ZSW_SOCK 覆盖 > ~/.zcode/zsw/daemon.sock
  * （与 config.js 的既有 env 覆盖模式同款，测试隔离用）。
@@ -58,6 +64,9 @@ function toResult(resp) {
 /**
  * 单请求单响应调用 daemon。
  *
+ * - cwd：请求帧的调用方进程目录（MF7 帧协议扩展）。缺省 process.cwd()——
+ *   CLI 侧不显式传即天然带上；非 string / 空串视为缺省（daemon 侧仅接受
+ *   非空 string，这里提前收口防异常值上帧）。
  * - 成功（含业务失败 ok:false）→ resolve {ok, result?, error?}——ok:false 是
  *   daemon 的正常应答而非传输层异常，exit code 由调用方判定。
  * - connect 失败（ECONNREFUSED/ENOENT）→ throw 可操作错误（DESIGN-v4 §5.2
@@ -65,10 +74,11 @@ function toResult(resp) {
  * - 连接中断未收到响应帧 → throw 可操作错误（§5.2 第 3 行：wait 挂起期间
  *   daemon 随宿主会话死亡的恢复指引）。
  */
-async function callDaemon({ sockPath, tool, params, connectTimeoutMs } = {}) {
+async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}) {
   const sock = sockPath || defaultSockPath();
   const timeout = Number.isFinite(connectTimeoutMs) ? connectTimeoutMs : DEFAULT_CONNECT_TIMEOUT_MS;
-  const request = `${JSON.stringify({ id: 1, tool, params })}\n`;
+  const frameCwd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
+  const request = `${JSON.stringify({ id: 1, tool, params, cwd: frameCwd })}\n`;
 
   return new Promise((resolve, reject) => {
     const socket = net.connect(sock);
