@@ -136,12 +136,16 @@ test('connect 失败（SIGKILL 残留的 sock 文件，ECONNREFUSED）→ 同款
   );
 });
 
-test('connect 失败（sock 路径被普通文件占用，ENOTSOCK）→ 同款可操作文案', async () => {
+test('connect 失败（sock 路径被普通文件占用）→ 同款可操作文案', async () => {
   const plain = path.join(TMP, 'plain.sock');
   fs.writeFileSync(plain, 'x');
+  // errno 平台差异不锁死：macOS connect 普通文件报 ENOTSOCK，Linux 报
+  // ECONNREFUSED——cli-client 对三种 errno 给同款可操作文案，断言验文案
+  // 形态（daemon 未运行 + 恢复指引）即可
   await assert.rejects(
     () => callDaemon({ sockPath: plain, tool: 'zsub', params: { action: 'list' }, connectTimeoutMs: 2000 }),
-    (err) => /daemon 未运行/.test(err.message) && /ENOTSOCK/.test(err.message),
+    (err) => /daemon 未运行/.test(err.message) && /恢复指引/.test(err.message)
+      && /(ENOTSOCK|ECONNREFUSED)/.test(err.message),
   );
 });
 
