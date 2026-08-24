@@ -45,8 +45,9 @@ zcode-plugin-workspace/          # main 分支聚合形态
 ## 快速开始（本地开发）
 
 1. 在插件 worktree 中开发（新 worktree/分支需用户授权，见 AGENTS.md）。
-2. 注册到本机：`~/.zcode/cli/config.json` 的 `plugins.dirs` 追加插件目录绝对路径 +
-   `enabledPlugins` 加 `"<name>@inline": true`，**重启 ZCode**。
+2. 切换到 dev 版（自动卸载同名正式版、防双装，改后**重启 ZCode**）：
+   `bash .agents/skills/dev-link/link-dev.sh <plugin>`；切回正式版用
+   `unlink-dev.sh`，状态与冲突检查用 `status.sh`（详见 `.agents/skills/dev-link/SKILL.md`）。
 3. 验证：主会话问「列出可用 MCP 工具」；或 `zcode plugins list` 看 `<name>@inline [enabled]`。
 4. 详细流程与排错：[docs/extensions/local-dev-guide.md](docs/extensions/local-dev-guide.md)。
 
