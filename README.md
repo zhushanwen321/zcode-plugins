@@ -40,7 +40,7 @@ zcode-plugin-workspace/          # main 分支聚合形态
 
 | 插件 | 能力 | 状态 |
 |------|------|------|
-| `zsub` | 无头 subagent 生命周期管理 + 确定性多阶段 workflow（MCP 双工具 `zsub` / `run_workflow`） | 活跃（吸收了已归档的 dynamic-workflow，见其 README 迁移节） |
+| `zsub` | 无头 subagent 生命周期管理 + 确定性多阶段 workflow，统一走 `zsw` CLI（默认 daemon thin client；MCP 工具面恒空） | 活跃（吸收了已归档的 dynamic-workflow，见其 README 迁移节） |
 
 ## 快速开始（本地开发）
 
