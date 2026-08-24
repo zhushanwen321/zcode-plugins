@@ -54,7 +54,7 @@ jobs:
           for plugin in ${{ steps.plugins.outputs.list }}; do
             echo "::group::tests: $plugin"
             ( cd "$plugin" \
-              && find test -name '*.test.js' ! -name 'e2e.test.js' -print0 \
+              && find test -name '*.test.js' ! -name 'e2e*.test.js' -print0 \
               | xargs -0 --no-run-if-empty node --test ) || status=1
             echo "::endgroup::"
           done

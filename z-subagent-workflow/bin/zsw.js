@@ -3,35 +3,52 @@
 /**
  * zsw CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
- *   1. 人类调试与脚本化（不需要 LLM，直接驱动八 action + workflow 六面）
+ *   1. 人类调试与脚本化（不需要 LLM，直接驱动九 action + workflow 六面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
  *      CLI 进程被引擎跟踪，完成时触发原生 task-notification（独立 turn
  *      唤醒 + goal gate，Z4/Z6 语义）。这是 TaskNotificationNotifier
  *      （NotifierPort 预留第三实现）的天然入口，启用后 mailbox 的
  *      「下次活动才注入」边界在此通道不复存在。
  *
- * 与 MCP 入口的差异（如实声明）：CLI 是一次性进程，start 与 message 一律
- * 阻塞到本轮完成再退出——进程退出即丢失后台执行体（轮死、record 卡
- * running、outputs/通知永不产生），且无常驻组件会接管 CLI 启动的任务
- * （server 的 recover 只在启动时跑，只会把 running 标成孤儿，不会收尾）。
- * 异步启动与完成通知请走 MCP zsub tool；bash run_in_background 场景直接
- * 让 CLI 阻塞到完成即可——阻塞到完成正是该场景想要的语义（完成即通知）。
+ * 与 --local 模式的差异（如实声明；--local = 本地一次性执行，调试后门）：
+ * --local 下 CLI 是一次性进程，start 与 message 一律阻塞到本轮完成再退出——
+ * 进程退出即丢失后台执行体（轮死、record 卡 running、outputs/通知永不产生），
+ * 且无常驻组件会接管 --local 启动的任务（server 的 recover 只在启动时跑，
+ * 只会把 running 标成孤儿，不会收尾）。日常用法（默认，即 daemon 模式）执行体
+ * 由 daemon 持有；bash run_in_background 等待场景用 wait/start --wait——
+ * CLI 阻塞进程成为引擎进程内 background task，完成即原生通知。
  *
- * 用法：
+ * 用法（1.0.0 起：默认 = daemon thin client；--local 显式本地执行）：
  *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
- *        [--conversation] [--timeout-ms <n>] [--target-session <sess_id>]
+ *        [--conversation] [--timeout-ms <n>] [--wait]
+ *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
+ *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
+ *         partial 结果，exit 2）
  *   node bin/zsw.js list
  *   node bin/zsw.js status --id <subagentId>
- *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（阻塞到本轮完成）
+ *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（投递即回，完成经 wait 收）
  *   node bin/zsw.js cancel --id <subagentId>
  *   node bin/zsw.js close --id <subagentId>
  *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>]
  *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
  *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
- *        （N2-b 起经 WorkflowManager：record / outputs / 完成通知与 MCP
- *         zflow 同源；run 同步等完成——CLI 一次性进程无后台模式，
- *         异步 runId + 完成通知走 MCP zflow tool）
+ *        abort/status/list/scripts 管理面默认经 daemon（zflow 同源，MF1）；
+ *        run 恒本地同步形态（执行体 = CLI 进程，bg 包裹即原生通知——设计
+ *        v5 决策，无 daemon 化形态）、lint 恒本地（纯文件校验无状态）；
+ *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
+ *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
+ *
+ * wait exit code（MF4）：partial（等待超时未全完成）→ 2；results 任一条为
+ * 失败终态（cancelled/error/timeout/lost）→ 1；全完成 → 0（closed，或
+ * conversation 任务的 idle——本轮完成即可收，完成集合见 lib/wait-handler.js）。
+ *
+ * daemon 模式（DESIGN-v4 D5/D7，默认形态）：经 unix socket thin client 连
+ * 常驻 daemon（sock 默认 ~/.zcode/zsw/daemon.sock，ZSW_SOCK 可覆盖）：
+ * start/list/status/message/cancel/close 组 zsub action params 后单请求单
+ * 响应往返；执行体由 daemon 持有（CLI 退出不丢），start 默认异步启动，
+ * --wait 为 sugar（start 成功后自动追发 wait 透传终态，D4）。daemon 不在
+ * 场时报错给恢复指引（§5.2），不静默降级 --local（防语义漂移）。
  *
  * 输出：stdout 一律 JSON（人读加 | jq）；workflow run 默认输出 markdown 报告
  * + run 摘要 JSON 两段（--json 只出 JSON）；进度与诊断走 stderr。exit 0 = 成功。
@@ -39,6 +56,8 @@
 
 const path = require('node:path');
 const { assembleManager } = require('../lib/assemble');
+const { callDaemon } = require('../lib/cli-client');
+const { TERMINAL_STATUSES } = require('../lib/record-store');
 
 function usage(exitCode = 1) {
   process.stderr.write(
@@ -48,6 +67,14 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js status --id sa-xxxx\n'
     + '  node bin/zsw.js message --id sa-xxxx --text "补充重点"\n'
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
+    + '  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）\n'
+    + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
+    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
+    + '  node bin/zsw.js models                        # 可用模型清单（路由决策前查）\n'
+    + '  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
+    + '  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
+    + '                                                   # daemon 侧挂起等待；部分完成 exit 2\n'
+    + '  node bin/zsw.js list --local                  # 本地一次性执行（调试后门）\n'
   );
   process.exit(exitCode);
 }
@@ -91,7 +118,9 @@ function workflowUsage(exitCode = 1) {
     + '\n'
     + '用法:\n'
     + '  node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
-    + '  （--action 缺省 = run；管理面 action 与 MCP zflow tool 一一对应）\n'
+    + '  （--action 缺省 = run；abort/status/list/scripts 管理面默认经 daemon\n'
+    + '   thin client（zflow tool 同源）；run/lint 恒本地；--local = 全 action\n'
+    + '   本地一次性执行）\n'
     + '\n'
     + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
     + '  异步 runId + 完成通知走 MCP zflow）:\n'
@@ -114,8 +143,9 @@ function workflowUsage(exitCode = 1) {
     + '  --reviewers "a,b"         review-fix-loop：审查焦点（默认 correctness,robustness）\n'
     + '  --max-rounds <n>          review-fix-loop：最大轮数（默认 5）\n'
     + '\n'
-    + 'abort / status:\n'
-    + '  --id <runId>              wf- 前缀的 run id（list 可查；abort 后状态落 cancelled）\n'
+    + 'abort / status / list / scripts（管理面：默认经 daemon，zflow 同源；--local 本地）:\n'
+    + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
+    + '                            abort 后状态落 cancelled）\n'
     + 'list:                       全部 workflow run（精简视图）\n'
     + 'scripts:                    内置 5 + 自定义脚本清单（四根发现）\n'
     + 'lint:\n'
@@ -195,11 +225,41 @@ async function runWorkflowRun(wfManager, args, cwd) {
 }
 
 /**
- * workflow 子命令：六个 action 统一经 WorkflowManager（N2-b 起 record 化，
- * 与 MCP zflow 同源）。CLI 一次性进程只重建内存索引（同 main 的
+ * workflow 子命令双模式（MF1）：
+ * - abort/status/list/scripts 管理面默认经 daemon thin client（zflow tool
+ *   同源）——record/执行体由常驻 daemon 持有，CLI 不再把非终态 run 误标
+ *   lost；--local 显式走本地（调试后门）。
+ * - run 恒本地同步（执行体 = CLI 进程本身，bash run_in_background 包裹即
+ *   原生通知——设计 v5 决策，无 daemon 化形态）；lint 恒本地（纯文件校验
+ *   无状态）。两者的 --local flag 无行为差异，但 NESTED 检查仍前置（MF2：
+ *   workflow 在 main 顶部提前分流，绕过 runDaemonCommand 的检查，此处补洞；
+ *   --local 同拒——嵌套里本地跑同样递归）。
+ * 本地路径（--local 或 run/lint）：一次性进程只重建内存索引（同 main 的
  * subagent 路径：不探活、不落盘），非终态 run 在 CLI 视角显示 lost。
  */
+/**
+ * 管理面 CLI flag → zflow handler 参数映射（契约对齐 dist/mcp/server.js 的
+ * zflow handler：abort/status 必填 runId（CLI 侧 flag 是 --id）、list/scripts
+ * 无参）。requireRunIdArg 的缺参报错在组帧前发生，daemon/--local 两形态一致。
+ */
+function workflowDaemonParams(action, args) {
+  switch (action) {
+    case 'abort':
+      return { action: 'abort', runId: requireRunIdArg(args) };
+    case 'status':
+      return { action: 'status', runId: requireRunIdArg(args) };
+    case 'list':
+      return { action: 'list' };
+    case 'scripts':
+      return { action: 'scripts' };
+    default:
+      return null; // run/lint：恒本地，不走 daemon
+  }
+}
+
 async function runWorkflowCommand(rest) {
+  // MF2：嵌套拒绝（与 runDaemonCommand 共用 ensureNotNested，防文案漂移）
+  ensureNotNested();
   const args = parseArgs(rest);
   if (args.help === true) workflowUsage(0);
 
@@ -207,6 +267,15 @@ async function runWorkflowCommand(rest) {
   if (!WORKFLOW_ACTIONS.includes(action)) {
     process.stderr.write(`不支持的 --action: ${action || '(未指定)'}，支持: ${WORKFLOW_ACTIONS.join(' / ')}\n`);
     workflowUsage(1);
+  }
+
+  // MF1：管理面 action 无 --local 时经 daemon（单请求单响应；daemon 不在场的
+  // 报错走 callDaemon 既有的可操作文案）。run/lint 落到下方本地路径。
+  if (args.local !== true) {
+    const daemonParams = workflowDaemonParams(action, args);
+    if (daemonParams) {
+      exitWithDaemonResponse(await callDaemon({ tool: 'zflow', params: daemonParams }));
+    }
   }
 
   const { wfManager } = await assembleManager();
@@ -245,12 +314,192 @@ async function runWorkflowCommand(rest) {
   }
 }
 
+// ------------------------------------------- daemon thin client（1.0.0 起默认形态）
+
+/**
+ * 嵌套防递归检查（MF2 抽公共）：runDaemonCommand（zsub 面）与
+ * runWorkflowCommand（workflow 在 main 顶部提前分流，曾绕过此检查——补洞）
+ * 共用同一文案与退出码，防两处漂移。
+ */
+function ensureNotNested() {
+  if (process.env.ZSW_NESTED === '1') {
+    // 防递归边界从 MCP 工具面平移到 CLI 面（DESIGN-v4 §7 要点 4）
+    process.stderr.write(
+      '嵌套环境禁止编排（防递归，ZSW_NESTED=1）。'
+      + '恢复指引：subagent 会话内不要编排，由主会话派发。\n'
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
+ * lib/cli-client 的 callDaemon 单请求单响应往返（帧协议 D2）。执行体由
+ * daemon 持有，CLI 退出不丢——start 默认异步启动（与 --local 模式的强制
+ * 阻塞不同，这正是 daemon 模式的价值）。
+ */
+async function runDaemonCommand(cmd, args, rest) {
+  ensureNotNested();
+
+  if (cmd === 'wait') return runDaemonWait(args, rest);
+
+  let params;
+  switch (cmd) {
+    case 'start': {
+      if (!args.task || !args.slug) usage();
+      let schema = args.schema;
+      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
+        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径（与本地模式同款解析）
+      }
+      // wait 刻意不传：执行体由 daemon 持有，CLI 退出不丢——异步启动是安全
+      // 默认；--wait 由 runDaemonStartWait 的 sugar 处理（不透传给 daemon）
+      params = {
+        action: 'start',
+        task: args.task,
+        slug: args.slug,
+        agent: args.agent,
+        model: args.model,
+        schema,
+        worktree: args.worktree === true,
+        conversation: args.conversation === true,
+        timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+      };
+      break;
+    }
+    case 'list':
+      params = { action: 'list' };
+      break;
+    case 'agents':
+      // 四根 agent .md 发现（start 前不确定 agent 名时先查，M1 起 CLI 唯一入口）
+      params = { action: 'agents' };
+      break;
+    case 'models':
+      // 模型路由清单（provider 已启用的模型 + 上下文窗口/推理档位）
+      params = { action: 'models' };
+      break;
+    case 'status':
+      params = { action: 'status', subagentId: args.id };
+      break;
+    case 'message':
+      params = { action: 'message', subagentId: args.id, text: args.text };
+      break;
+    case 'cancel':
+      params = { action: 'cancel', subagentId: args.id };
+      break;
+    case 'close':
+      params = { action: 'close', subagentId: args.id };
+      break;
+    default:
+      process.stderr.write(`未知子命令: ${cmd}\n`);
+      usage();
+  }
+
+  if (cmd === 'start' && args.wait === true) return runDaemonStartWait(params);
+
+  exitWithDaemonResponse(await callDaemon({ tool: 'zsub', params }));
+}
+
+/** 统一出口：ok:true 打印 result exit 0；ok:false 打印 error 到 stderr exit 1。 */
+function exitWithDaemonResponse(resp) {
+  if (resp.ok) {
+    process.stdout.write(`${JSON.stringify(resp.result, null, 2)}\n`);
+    process.exit(0);
+  }
+  process.stderr.write(`[zsw] daemon 错误: ${daemonErrorMessage(resp.error)}\n`);
+  process.exit(1);
+}
+
+/** error 帧字段（{code,message} 对象）的可读化；异常形态兜底 JSON 序列化。 */
+function daemonErrorMessage(error) {
+  if (error && typeof error === 'object') {
+    const msg = error.message || JSON.stringify(error);
+    return error.code !== undefined ? `${msg}（code: ${error.code}）` : msg;
+  }
+  return String(error);
+}
+
+/** start --wait sugar（DESIGN-v4 D4）：start 成功拿 subagentId 后自动追发 wait，透传打印终态。 */
+async function runDaemonStartWait(startParams) {
+  const start = await callDaemon({ tool: 'zsub', params: startParams });
+  if (!start.ok) exitWithDaemonResponse(start);
+  const id = start.result && start.result.subagentId;
+  if (typeof id !== 'string' || id === '') {
+    // 无 id 的 start 响应（异常形态）：打印响应本身即终态，无从追发
+    process.stdout.write(`${JSON.stringify(start.result, null, 2)}\n`);
+    process.exit(0);
+  }
+  // wait 不带 timeoutMs：等待无上限，任务自身的执行超时已由 start 的
+  // timeoutMs 控制（两个 timeout 语义不同，见 DESIGN-v4 D4）
+  await runDaemonWaitCore([id], undefined);
+}
+
+/** wait 子命令：--id 可重复（多 id 聚合等待）；--timeout-ms 到点回 partial，exit 2。 */
+async function runDaemonWait(args, rest) {
+  const ids = collectIds(rest);
+  if (ids.length === 0) {
+    process.stderr.write('wait 需要 --id <subagentId>（可重复：--id a --id b）\n');
+    usage();
+  }
+  await runDaemonWaitCore(ids, args.timeoutMs ? Number(args.timeoutMs) : undefined);
+}
+
+/**
+ * wait 结果的失败终态集合（MF4）：lib/record-store 的 TERMINAL_STATUSES 去
+ * closed（cancelled/error/timeout）+ lost（lost 不在 TERMINAL_STATUSES——
+ * 正常 daemon wait 只回终态，此处防御异常/未来形态）。cancelled 计失败：
+ * 用户主动取消的等待以非零退出更诚实（结果条目 status=cancelled 可辨别来源）。
+ */
+const WAIT_FAILURE_STATUSES = new Set(
+  [...TERMINAL_STATUSES].filter((s) => s !== 'closed').concat(['lost']),
+);
+
+async function runDaemonWaitCore(ids, timeoutMs) {
+  const params = { action: 'wait', ids };
+  if (timeoutMs !== undefined) params.timeoutMs = timeoutMs;
+  const resp = await callDaemon({ tool: 'zsub', params });
+  if (!resp.ok) exitWithDaemonResponse(resp);
+  process.stdout.write(`${JSON.stringify(resp.result, null, 2)}\n`);
+  // exit code（MF4）：partial（等待超时未全完成）→ 2 优先；否则 results 任一
+  // 条目为失败终态 → 1；全完成 → 0（closed 或 conversation 的 idle）。runDaemonStartWait 复用本核心自动生效。
+  const result = resp.result;
+  if (result && result.partial === true) process.exit(2);
+  const entries = Array.isArray(result && result.results) ? result.results : [];
+  process.exit(entries.some((r) => r && WAIT_FAILURE_STATUSES.has(r.status)) ? 1 : 0);
+}
+
+/** parseArgs 对重复 flag 只留末值，wait 的多 --id 手工收集原始 argv（其余 flag 解析不受影响）。 */
+function collectIds(rest) {
+  const ids = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--id' && rest[i + 1] !== undefined && !rest[i + 1].startsWith('--')) {
+      ids.push(rest[i + 1]);
+      i++;
+    }
+  }
+  return ids;
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）
   if (cmd === 'workflow') return runWorkflowCommand(rest);
   const args = parseArgs(rest);
+
+  // 1.0.0（M1，DESIGN-v4 D5/D7）：默认 = daemon thin client；
+  // --local = 显式本地一次性执行（人类调试/无引擎环境）。
+  // wait 无 --local 形态——本地一次性进程没有可挂起的等待方
+  // （start 本身就阻塞到本轮完成）。
+  if (cmd === 'wait' && args.local === true) {
+    process.stderr.write(
+      '[zsw] wait 无本地模式：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
+      + '本地一次性进程没有可挂起的等待方。'
+      + '恢复指引：zsw wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
+      + '本地模式 start 本身阻塞到本轮完成，无需 wait。\n'
+    );
+    process.exit(1);
+  }
+  if (args.local !== true) return runDaemonCommand(cmd, args, rest);
 
   const { manager } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
@@ -282,7 +531,7 @@ async function main() {
           '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running），'
           + '没有常驻组件会接管 CLI 启动的后台任务。'
           + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
-          + '需要异步启动与完成通知请走 MCP zsub tool。\n'
+          + '需要异步启动与完成通知请去掉 --local 用默认 daemon 模式（zsw start 不带 --local 即异步启动，zsw wait 收结果）。\n'
         );
         process.exit(1);
       }

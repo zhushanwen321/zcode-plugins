@@ -42,6 +42,13 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+/**
+ * zsw CLI 可执行路径（给主 agent 照抄执行，必须绝对可定位——主 agent cwd 是
+ * 项目目录，裸 `node bin/zsw.js` 会 ENOENT）：优先插件根 env，回退模块相对
+ * （npm 包/inline/marketplace 副本三形态下 lib 的上级都是插件根，路径一致）。
+ */
+const ZSW_CLI = path.join(process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..'), 'bin', 'zsw.js');
 const { mailboxRoot, outputsDir } = require('./config');
 
 /** 引擎同款会话 id 校验（zcode.cjs zti）：drain 侧 sessionDir 对目录名强制此格式 */
@@ -171,13 +178,19 @@ class PollingNotifier {
    * 返回给主 agent 的轮询指引：mailbox 未启用（ZCODE_MESSAGE_ENABLED != 1）时
    * 完成通知不可达（外部进程不能投 task-notification，Z5），必须明确告诉主
    * agent 如何把结果拿回来，否则后台任务的结果会静默丢失。
+   *
+   * 该指引在 start（wait=false）时刻随 handle 返回——任务刚启动而非完成。
+   * 旧版第一句「已完成」从完成通知模板复制而来（DESIGN-v4 §3.1 确诊的文案
+   * bug，诱发主 agent 立刻查 status + 发明 sleep 轮询），因此文案必须按
+   * 「已启动待完成」口径写，并给时间预期与 CLI daemon 等待姿势（0.2.0+）。
    */
   pollingGuidance(subagentId) {
     const outputFile = path.join(outputsDir(), `${subagentId}.md`);
     return [
-      `zsub 后台任务 ${subagentId} 已完成，但 mailbox 通知通道未启用，结果不会自动回流本会话。`,
-      `查询状态：zsub(action="status", subagentId="${subagentId}")——任务完成后 status 会变为 closed。`,
+      `zsub 后台任务 ${subagentId} 已启动（典型运行 3-10 分钟），mailbox 通知通道未启用，结果不会自动回流本会话。`,
+      `建议姿势：先做别的任务或结束当前轮次，稍后做一次性状态查询：node ${ZSW_CLI} status --id ${subagentId}——任务完成后 status 会变为 closed。`,
       `读取结果：closed 后 result 全文落在 outputs 文件（默认 ${outputFile}，status 返回中带该路径），用 Read 工具读取即可。`,
+      `需要等待完成时，用 CLI：node ${ZSW_CLI} start --wait --task "..." --slug <短名> 配 Bash run_in_background=true，完成触发引擎原生通知唤醒会话；勿 sleep 轮询。`,
     ].join('\n');
   }
 }

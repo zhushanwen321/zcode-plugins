@@ -2,7 +2,18 @@
 
 > 插件从写完到在 ZCode GUI 里可用，以及出问题怎么查。zsub / dynamic-workflow 的实测流程总结。
 
-## 1. 注册（一次性）
+## 1. 注册（推荐 dev-link skill 一键切换）
+
+dev 版与正式版互斥切换（自动防双装/幂等/带冲突检查），在插件 worktree 内：
+
+```bash
+bash .agents/skills/dev-link/link-dev.sh <plugin>     # 装 dev 版 + 卸载同名正式版
+bash .agents/skills/dev-link/unlink-dev.sh <plugin>   # 移除 dev 版 + 恢复正式版（未发布则跳过）
+bash .agents/skills/dev-link/status.sh                # 状态与冲突检查（双装/悬空/孤儿）
+```
+
+机制与冲突检查矩阵见 `.agents/skills/dev-link/SKILL.md`。以下手工流程是脚本的行为依据
+（脚本 = 自动化的等价操作 + 备份 + 验证闭环），手动改时照此执行：
 
 编辑 `~/.zcode/cli/config.json`（**改前备份**，如 `cp config.json config.json.bak-<plugin>-$(date +%Y%m%d-%H%M%S)`）：
 
@@ -35,6 +46,9 @@
 检查清单组织，排障先读对应那份。
 
 ## 3. 卸载
+
+推荐 `bash .agents/skills/dev-link/unlink-dev.sh <plugin>`（移除 inline + 恢复正式版）。
+手工等价：
 
 1. 删除 config.json `plugins.dirs` / `enabledPlugins` 里对应条目（或从改前备份恢复），重启。
 2. 残留 `~/.zcode/cli/plugins/data/<plugin>@inline/` 空标记目录可留可删（无功能影响）。

@@ -13,6 +13,7 @@
  *   ZCODE_MESSAGE_ENABLED   引擎 mailbox 开关（"1"/"true" 开）——未启用时通知降级 polling
  *   ZCODE_MAILBOX_ROOT      mailbox 根覆盖（默认 ~/.zcode/mailbox）
  *   ZSW_NESTED=1           防递归标记（D10）：本进程若在嵌套环境直接拒绝服务
+ *   ZSW_MAX_CONCURRENT     并发槽位上限覆盖（正整数；非法值忽略并警告，缺省 3）
  */
 
 const fs = require('node:fs');
@@ -51,10 +52,28 @@ function mailboxEnabled() {
   return v === '1' || v === 'true';
 }
 
+/**
+ * ZSW_MAX_CONCURRENT 解析（MF5）：覆盖并发槽位上限（DEFAULTS.maxConcurrent
+ * 的唯一消费点是 assemble 的 createSlots）。正整数生效；非法值忽略并
+ * stderr 警告一次，回落缺省 3。模块加载期求值——require 缓存保证每进程
+ * 只读一次 env、警告只出一次（daemon 是长驻进程，改 env 需重启才生效）。
+ */
+function resolveMaxConcurrent() {
+  const raw = process.env.ZSW_MAX_CONCURRENT;
+  if (raw === undefined || raw === '') return 3;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  process.stderr.write(
+    `[zsub] ZSW_MAX_CONCURRENT=${JSON.stringify(raw)} 非法（需正整数），已忽略，回落缺省 3。`
+    + '恢复指引：设为正整数，如 ZSW_MAX_CONCURRENT=5，然后重启进程生效。\n',
+  );
+  return 3;
+}
+
 const DEFAULTS = {
   timeoutMs: 600_000,      // D14：对齐 driver.js
   killGraceMs: 5_000,      // SIGTERM 后等这么久再 SIGKILL
-  maxConcurrent: 3,        // D11
+  maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
   idleConversationTtlMs: 30 * 60_000, // apc conversation 会话空闲回收
 };
 

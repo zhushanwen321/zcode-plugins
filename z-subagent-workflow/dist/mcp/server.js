@@ -16,13 +16,27 @@
  * 不加载 zsub）；本文件是第二重 = ZSW_NESTED=1 时不注册工具且拒绝 tools/call。
  *
  * 启动序列：NESTED → 只挂协议层；否则 notifier.sweepStaleTmp（mailbox 档）
- * → manager.recover()（record 重建 + 探活）→ 挂 stdin。
+ * → manager.recover()（record 重建 + 探活）→ startDaemon（unix socket 控制面，
+ * DESIGN-v4 D2/D3：锁文件竞选，daemon 独占 socket 服务角色，standby 挂看门狗
+ * 等接管）→ 挂 stdin。standby 的 manager 照常初始化（M1 起工具面已恒空，
+ * standby 与 daemon 在 MCP 面无行为差异；manager 保留供本实例成为 daemon 后
+ * 服务 socket 面）。
+ *
+ * tools 面已下线（DESIGN-v4 §6.1 D1 终态，1.0.0 起内置）：tools/list 恒空
+ * （零上下文注入）、tools/call 恒给「走 CLI」指引。zsub/zflow 的全部能力经
+ * socket 控制面 + CLI（bin/zsw.js，默认 thin client）提供。buildTools/
+ * buildToolHandlers 保留：后者是 socket 分发的数据源，前者供定义级单测。
  *
  * 多 tool 结构（M3 接线，N2-b 改造）：tool 注册表形态——buildTools() 出定义
  * 数组，buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
  * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
- * 进对应 handler）。两个 tool：zsub（八 action 编排）与 zflow
+ * 进对应 handler）。两个 tool：zsub（九 action 编排，M0 起 +wait）与 zflow
  * （六 action：run / abort / status / list / scripts / lint）。
+ *
+ * daemon socket 面（M0 接线）：buildDaemonHandlers() 把 handler 表适配成
+ * daemon-socket 要的 (req:{tool,params}, meta:{signal}) 形态，并解包 MCP
+ * content 包装——CLI 对侧（bin/zsw.js）直接消费业务字段（如 wait 的
+ * partial 决定 exit code），content 包装形态对 CLI 是泄漏。
  *
  * zflow 管理面（N2-b，后台化改造）：
  * - run 经 WorkflowManager（lib/workflow-manager.js）：record 化生命周期
@@ -39,9 +53,10 @@
  *
  * 可测性：纯函数（extractSessionId / buildToolDefinition /
  * buildRunWorkflowToolDefinition / buildTools / buildToolHandlers /
- * createFrameDecoder / createServer / createManager）导出供 node:test，
- * wfManager 经 buildToolHandlers / createServer 参数可注入 fake（manager
- * 同款模式）；stdio 主循环只在 require.main === module 时启动，require 零副作用。
+ * buildDaemonHandlers / createFrameDecoder / createServer / createManager）
+ * 导出供 node:test，wfManager / waitHandler 经 buildToolHandlers /
+ * createServer 参数可注入 fake（manager 同款模式）；stdio 主循环只在
+ * require.main === module 时启动，require 零副作用。
  */
 
 const os = require('node:os');
@@ -52,7 +67,9 @@ const workflowScript = require('../../lib/workflow-script');
 const { DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
 const { DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
 
-const SERVER_INFO = { name: 'zsw', version: '0.1.0' }; // MCP server 标识用插件缩写；TOOL_NAME 是 tool 语义名，两者不同源
+// S5：版本与 package.json 同源（require 缓存 + 发版流程统一 bump，防止
+// SERVER_INFO 手抄漂移——修复前 0.1.0 vs 实际 0.0.1 已然漂移）
+const SERVER_INFO = { name: 'zsw', version: require('../../package.json').version }; // MCP server 标识用插件缩写；TOOL_NAME 是 tool 语义名，两者不同源
 const TOOL_NAME = 'zsub';
 const RUN_WORKFLOW_TOOL_NAME = 'zflow';
 
@@ -87,6 +104,7 @@ function buildToolDefinition() {
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
       + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
       + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。\n'
+      + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
       + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
       + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
       + '完整用法与分流哲学：加载 skill zsub-zflow-orchestration。',
@@ -95,7 +113,7 @@ function buildToolDefinition() {
       properties: {
         action: {
           type: 'string',
-          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models'],
+          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait'],
           description: '要执行的操作',
         },
         task: {
@@ -109,8 +127,9 @@ function buildToolDefinition() {
         worktree: { type: 'boolean', description: 'start 可选。true 时改动落独立 worktree，完成后回传 patch 与 git apply 指引' },
         conversation: { type: 'boolean', description: 'start 可选。true 时首轮完成后进入 idle，可用 message 续聊' },
         wait: { type: 'boolean', description: 'start 可选。true 时同步等待完成并返回结果全文（注意 MCP 30s 超时）' },
-        timeoutMs: { type: 'number', description: 'start 可选。超时毫秒数，默认 600000' },
+        timeoutMs: { type: 'number', description: 'start/wait 可选。start：任务执行超时（默认 600000）；wait：等待上限，到点回 partial' },
         subagentId: { type: 'string', description: 'status/cancel/message/close 必填。start 返回的任务 id' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'wait 必填。要等待的 subagentId 数组（来自 start 返回 / list 查询）' },
         text: { type: 'string', description: 'message 必填。续聊消息文本' },
       },
       required: ['action'],
@@ -283,8 +302,18 @@ function createManager(opts = {}) {
  * - agents action 的 resolver 经 manager.resolver 取（公开端口字段，构造
  *   直存）而非 server 再传一份：assembleManager 组装进 manager 的必然是
  *   同一实例，两份 resolver 会漂移（opts.resolver 注入时尤其如此）。
+ * - waitHandler：wait action 的执行体（lib/wait-handler 工厂）。显式注入
+ *   供测试；缺省 lazy 从 manager 创建（首次 wait 调用时才建——构造期建会
+ *   让没有 pending 端口的 fake manager 在无关 action 上也无谓炸穿）。
+ *   env.signal 透传（daemon socket 面的连接级取消；MCP 面恒 undefined =
+ *   无取消，同步挂到终态或超时）。
  */
-function buildToolHandlers({ manager, wfManager, nested = false } = {}) {
+function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } = {}) {
+  let wait = waitHandler || null;
+  function getWaitHandler() {
+    if (!wait) wait = require('../../lib/wait-handler').createWaitHandler({ manager });
+    return wait;
+  }
   const handlers = Object.create(null);
   handlers[TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
@@ -318,10 +347,16 @@ function buildToolHandlers({ manager, wfManager, nested = false } = {}) {
           if (typeof args.text !== 'string' || args.text.trim() === '') {
             return errContent('message 需要 text（非空字符串，续聊消息内容）。');
           }
-          return okContent(manager.message(id, args.text));
+          // 必须 await：manager.message 是 async，不 await 会把 Promise 序列化
+          // 成 '{}'——socket/CLI 面拿不到 round/notify 句柄（R4）
+          return okContent(await manager.message(id, args.text));
         }
         case 'close':
           return okContent(await manager.close(requireSubagentId(args)));
+        case 'wait':
+          // 语义在 lib/wait-handler（DESIGN-v4 D4：终态立即收、运行中挂
+          // pending promise 事件驱动唤醒、轮询兜底、abort 只取消等待不碰执行体）
+          return okContent(await getWaitHandler()(args, { signal: env.signal }));
         case 'agents': {
           // 按需查询版 agent 索引：pi 的 <available_subagents> 每 turn 常驻
           // 注入在 zcode 平台做不到（进程内 extension API 才有），等价物是
@@ -359,7 +394,7 @@ function buildToolHandlers({ manager, wfManager, nested = false } = {}) {
         }
         default:
           return errContent(
-            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents | models。`
+            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents | models | wait。`
             + '恢复指引：action 必须取 inputSchema 中的枚举值。'
           );
       }
@@ -427,14 +462,79 @@ function buildToolHandlers({ manager, wfManager, nested = false } = {}) {
 }
 
 /**
+ * daemon socket 面适配器（DESIGN-v4 D2 / §7：M0 接线）。
+ *
+ * 形态转换两端：
+ * - 入参：socket 帧 {tool, params, cwd?} 的 params 是业务参数本体（CLI
+ *   bin/zsw.js 组的 {action, ...}），而 MCP handler 吃 tools/call 的
+ *   {arguments, _meta} 形态——这里包一层 {arguments: params}。_meta 刻意
+ *   不带：socket 面无会话定向语义（D6），ctx.targetSessionId 恒 undefined，
+ *   mailbox 侧自然降级。
+ *   req.cwd（MF7 帧协议扩展，daemon-socket 传输层已做 string 类型守卫）
+ *   非空 string 时透传为 handler 第二参 env.cwd——handler 内既有
+ *   `env.cwd || ZCODE_PROJECT_DIR || process.cwd()` 链自然取到发起方目录
+ *   （多 worktree 下 agent 发现 / worktree 定位不再落到 daemon 宿主 cwd）。
+ * - 出参：MCP handler 返回 okContent/errContent 包装，socket 帧的 result
+ *   必须是业务对象——CLI 直接消费业务字段（如 wait 的 partial 决定 exit
+ *   code、start 的 subagentId 供 --wait sugar 追发），content 包装对 CLI
+ *   是泄漏。isError 包装解包为 throw（daemon-socket 统一映射成 ok:false 帧，
+ *   CLI 侧 exit 1 + stderr 打印，与 MCP 面 isError 语义等价）。
+ * - env.signal 原样透传：连接级 AbortSignal（CLI 断连取消挂起的 wait，
+ *   不碰执行体，lib/wait-handler 的 abort 语义）。
+ */
+function buildDaemonHandlers(toolHandlers) {
+  const table = Object.create(null);
+  for (const name of Object.keys(toolHandlers)) {
+    table[name] = async (req, meta = {}) => {
+      const wrapped = await toolHandlers[name](
+        { arguments: req && req.params },
+        {
+          signal: meta.signal,
+          // 非空 string 才透传（帧协议安全边界：cwd 不校验存在性——handler 层
+          // workdir/resolver 已有存在性校验——但 daemon 侧仅接受 string 类型）
+          cwd: typeof req.cwd === 'string' && req.cwd !== '' ? req.cwd : undefined,
+        },
+      );
+      return unwrapContentResult(wrapped);
+    };
+  }
+  return table;
+}
+
+/** MCP content 包装 → socket 帧业务 result（见 buildDaemonHandlers 头注）。 */
+function unwrapContentResult(wrapped) {
+  const text = wrapped && Array.isArray(wrapped.content)
+  && wrapped.content[0] && typeof wrapped.content[0].text === 'string'
+    ? wrapped.content[0].text
+    : '';
+  if (wrapped && wrapped.isError) {
+    throw new Error(text || 'handler 返回未知错误形态（content 包装缺失）');
+  }
+  // okContent 对非 string 值走 JSON.stringify——parse 还原业务对象；string
+  // 值（理论不可达，manager 各 action 都返回对象）parse 失败则原样回退
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
  * 协议处理器（可测）：输入一个 JSON-RPC 消息对象，返回待写出的帧数组。
  * 通知帧（无 id）不产生输出；tools/call 串行排队由调用方（main 循环）保证。
  * emitFrame：handler 执行中途的通知帧（progress）实时写出通道——这些帧
  * 无法进本函数的返回值数组（返回时机在 handler 完成后），main 传
  * writeFrame 即按真实时序推送。
+ * toolsDisabled：已废弃的注入位，1.0.0 起工具面恒空（终态内置，原
+ * ZSW_TOOLS_DISABLED 灰度开关删除——自用单用户场景无灰度对象）。参数保留
+ * 仅为兼容旧签名，任何值都不改变行为。
  */
 function createServer({ manager, wfManager, nested = false, log = () => {}, emitFrame = () => {} } = {}) {
   const toolHandlers = buildToolHandlers({ manager, wfManager, nested });
+
+  /** 工具面下线的可操作拒绝（D1 终态）：指向 CLI 出口（socket 面不受影响）。 */
+  const toolsDisabledMessage = () => 'zsub/zflow 工具面已下线（1.0.0 起，agent 交互全走 CLI）。'
+    + `恢复指引：用 Bash 工具跑 \`node ${process.env.ZCODE_PLUGIN_ROOT || '<ZCODE_PLUGIN_ROOT>'}/bin/zsw.js <cmd>\`（默认连接 daemon；等待用 wait 子命令，配 run_in_background 获完成通知）。`;
 
   /**
    * 两级分发第一级：按 params.name 查注册表，未命中抛 -32601（协议级
@@ -442,7 +542,7 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
    * zsub 的 switch(action) / zflow 的 switch(workflow) 见
    * buildToolHandlers）。
    */
-  async function dispatchToolCall(params, env = {}) {
+  async function dispatchToolCall(params) {
     // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
     // 常开（一行 jsonl，成本可忽略）；ZSW_ROOT 隔离的测试环境天然不污染。
     try {
@@ -456,14 +556,9 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
         sessionId: extractSessionId(params && params._meta),
       }) + '\n');
     } catch { /* 诊断失败不影响服务 */ }
-    const name = params && params.name;
-    const handler = Object.prototype.hasOwnProperty.call(toolHandlers, name)
-      ? toolHandlers[name]
-      : undefined;
-    if (!handler) {
-      throw new RpcError(-32601, `Unknown tool: ${name}`);
-    }
-    return handler(params, env);
+    // 工具面恒拒绝（1.0.0 终态，D1：agent 交互全走 CLI；嵌套环境同文案——
+    // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）
+    return errContent(toolsDisabledMessage());
   }
 
   async function handleMessage(msg) {
@@ -485,12 +580,13 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
         });
         break;
       case 'tools/list':
-        // 防递归第二重：嵌套环境不注册工具
-        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: nested ? [] : buildTools() } });
+        // 1.0.0 终态（D1）：恒空注册——agent 交互面全走 CLI，零上下文注入。
+        // （防递归第二重的历史语义由恒空天然覆盖）
+        frames.push({ jsonrpc: '2.0', id: msg.id, result: { tools: [] } });
         break;
       case 'tools/call':
         try {
-          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params, { emitFrame }) });
+          frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params) });
         } catch (e) {
           if (e instanceof RpcError) {
             frames.push({ jsonrpc: '2.0', id: msg.id, error: { code: e.code, message: e.message } });
@@ -644,6 +740,57 @@ async function main() {
   }
 
   const server = createServer({ manager, wfManager, nested: config.NESTED, log, emitFrame: writeFrame });
+
+  // daemon socket 控制面接线（DESIGN-v4 D2/D3，M0）：非 NESTED 才挂——嵌套
+  // 进程不参与竞选（防递归边界保持在 MCP 工具面语义内，socket 面是服务面）。
+  // sockPath 解析单一来源 = lib/cli-client.js 的 defaultSockPath（ZSW_SOCK 覆盖
+  // > ~/.zcode/zsw/daemon.sock，与 CLI 对侧同一实现，禁止 server 再拼一份——
+  // 两处各拼一份会漂移）。
+  let daemon = null;
+  if (!config.NESTED) {
+    const { startDaemon } = require('../../lib/daemon-socket');
+    const { defaultSockPath } = require('../../lib/cli-client');
+    const sockPath = defaultSockPath();
+    try {
+      // 首次运行 ~/.zcode/zsw 可能不存在：lock 的 O_EXCL 创建与 listen 都要求
+      // 父目录在位（recursive 幂等）
+      require('node:fs').mkdirSync(path.dirname(sockPath), { recursive: true });
+      daemon = await startDaemon({
+        sockPath,
+        // 单份 handler 表（createServer 已建，闭包同 manager/wfManager），
+        // 适配成 socket 帧 (req, meta) 形态并解包 content（见适配器头注）
+        handlers: buildDaemonHandlers(server.toolHandlers),
+        log,
+        // 接管时重跑 recover（DESIGN-v4 §6.3 D3）：standby 的内存索引缺旧
+        // daemon 后建的 record，不重建则 status/wait/list 全部「不存在」
+        onTakeover: async () => {
+          try {
+            const rec = await manager.recover();
+            log(`接管后 record 恢复：重建 ${rec.rebuild.records} 条，死进程 ${rec.dead.length} 条标 lost，孤儿 ${rec.orphan.length} 条待 cancel`);
+          } catch (e) {
+            log(`接管后 recover 失败（继续服务，record 功能可能受限）: ${e && e.message || e}`);
+          }
+          try {
+            const rec = await wfManager.recover();
+            log(`接管后 workflow record 恢复：非终态 ${rec.lost.length} 条标 lost（执行体随旧 daemon 消亡）`);
+          } catch (e) {
+            log(`接管后 wfManager recover 失败: ${e && e.message || e}`);
+          }
+        },
+      });
+      // 竞选事件（接管/退避/看门狗）由 daemon-socket 内部经同一 log 通道输出。
+      // standby 的 M1 语义：manager 已照常初始化（上方 recover 跑过）——
+      // 工具面恒空（1.0.0 起），standby 与 daemon 在 MCP 面无行为差异；
+      // manager 保留供本实例看门狗接管成为 daemon 后服务 socket 面
+      log(`daemon 竞选完成：role=${daemon.role}（pid=${process.pid}，sock=${sockPath}）`);
+    } catch (e) {
+      // MCP 协议层是进程存活锚点（引擎 spawn/kill），socket 面挂了不拒绝
+      // 启动——CLI 调用方会拿到 connect 失败的可操作指引（cli-client 文案）
+      log(`daemon socket 启动失败（CLI 暂不可用）: ${e && e.message || e}`);
+      daemon = null;
+    }
+  }
+
   let queue = Promise.resolve(); // 串行处理：record-store 无跨请求事务，但保持顺序可预测
   const decoder = createFrameDecoder((line) => {
     let msg;
@@ -663,7 +810,12 @@ async function main() {
   process.stdin.on('data', (chunk) => decoder.push(chunk));
   process.stdin.on('end', () => {
     log('stdin closed, server exiting');
-    queue.then(() => process.exit(0));
+    queue.then(async () => {
+      // daemon 退出卫生：stop() 幂等（daemon-socket 头注）；SIGTERM/exit 路径
+      // 另有传输层自己的信号钩子兜底，这里只覆盖 stdin 正常关闭的主路径
+      if (daemon) await daemon.stop();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(0), 60_000).unref(); // 兜底：不等卡死的处理链
   });
 }
@@ -681,6 +833,7 @@ module.exports = {
   buildRunWorkflowToolDefinition,
   buildTools,
   buildToolHandlers,
+  buildDaemonHandlers,
   createFrameDecoder,
   createServer,
   createManager,
