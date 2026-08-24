@@ -16,9 +16,10 @@ static gate → review-fix-loop（多维 review → 聚合 → 修复 → 重审
 + worktree + npm tag 直发管线）裁剪调优。
 
 **zcode / pi 双引擎适配**：本仓可从任一引擎会话驱动，全流程引擎无关——阶段 1/3 是纯
-bash 天然无关；阶段 2 收敛到 zsw CLI 单通道（CLI 引擎无关，zsw 的 reviewer/fix 阶段是
-它自己 spawn 的无头 zcode 执行体，与当前会话引擎解耦）。zsw 已原生支持 review-fix-loop
-workflow，zcode 侧能力与 pi 对齐，无需再走移植脚本或 MCP 工具面。
+bash + 纯 Node 脚本（quality-gate 无依赖、双引擎同构）；阶段 2 收敛到 zsw CLI 单通道
+（CLI 引擎无关，zsw 的 reviewer/fix 阶段是它自己 spawn 的无头 zcode 执行体，与当前会话
+引擎解耦）。zcode/pi 会话均具备 review-fix-loop 执行能力：pi 原生 workflow 虽存在但
+reviewer 契约不兼容（见差异表），**两引擎统一走 zsw CLI**——无分支处理。
 
 ## 与 xyz-agent 版的差异（调优声明）
 
@@ -26,7 +27,7 @@ workflow，zcode 侧能力与 pi 对齐，无需再走移植脚本或 MCP 工具
 |--------|--------------|---------|------|
 | 阶段 2 执行通道 | 路径 1 pi 原生 workflow（batch1 传 agent 路径）/ 路径 2 zflow MCP + `script:pr-review-fix` 移植脚本 / 路径 3 手工兜底 | zsw CLI `workflow --workflow review-fix-loop`（zcode/pi 双引擎统一单通道） | zsw 1.0.0（M1）起 MCP 工具面恒空，CLI 是唯一入口且引擎无关；zsw 已原生内置 review-fix-loop，无需移植脚本；pi 原生版 reviewer 契约不兼容（见下行），禁用 |
 | PR/push 阶段 | 阶段 1 开 PR / 阶段 3 推 PR | 阶段 3（review 闭环后一次性 push + 开 PR） | 远端 2026-08-23 绑定（zhushanwen321/zcode-plugins）后补齐；review 前不开 PR（review 中分支还会变） |
-| 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | 无 | 本仓零依赖纯 Node，无对应基础设施；static gate 由 node --test + npm 三件套 gate 承接 |
+| 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | quality-gate.js（零依赖：单测执行 + 增量覆盖率 ratchet + 新增函数圈复杂度 fail + CRAP warn 靶子） | 零依赖红线：NODE_V8_COVERAGE 原生产物 + V8 函数区间 decision-point 启发式（口径与取舍见脚本头部声明）；不搬死代码/循环依赖/重复检测（需依赖图分析，单插件仓收益不抵成本） |
 | changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack + check-release-needed | 本仓发布走 tag 直发（非 changesets）：三件套一致性 + 包内容 + 改动-发版关联检测（UNDECLARED 等价物） |
 | reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；契约不匹配 = parseFail 按 clean 处理，静默漏审 |
 | agent.md 消费方式 | pi workflow batch1 传 agent 路径 | task 内映射表 + reviewer 自行 Read | 本项目 reviewers 是视角名（非 agent .md 引用），workflow prompt 模板不挂 agent |
@@ -43,19 +44,36 @@ workflow，zcode 侧能力与 pi 对齐，无需再走移植脚本或 MCP 工具
 
 ## 阶段 1：static gate（主 agent 直接跑）
 
-与 CI（ci.yml）同构的本地口径 + npm 管线 gate：
+quality-gate 承接单测执行与三项质量判定（测试执行就是覆盖率的产生过程，合一避免重复跑），加 npm 管线 gate：
 
 ```bash
-# 1. 全量单测，排除 e2e（真机+真实模型，成本高/限流敏感；真机验收按插件 README 手册单独跑）
-cd <repo>/z-subagent-workflow && \
-  find test -name '*.test.js' ! -name 'e2e.test.js' -print0 | xargs -0 node --test
+# 1. quality-gate：单测执行（e2e* 排除，与 ci.yml 同构）+ 增量覆盖率 + 新增函数圈复杂度 + CRAP 靶子
+node .agents/skills/pr-cr-fix/scripts/quality-gate.js --base main
 
 # 2. npm 三件套 gate：版本三处一致 / 包名规范 / 零依赖红线 + 包内容完整
-cd <repo> && node scripts/check-sync.js && node scripts/check-pack.js
+node scripts/check-sync.js && node scripts/check-pack.js
 ```
 
-**Gate-1**（硬 gate）：全绿才进阶段 2。FAIL 按失败用例派 worker 修复后重跑；check-sync 的
-版本漂移禁手工单改文件对齐——见失败恢复表。禁止跳过任何用例。
+quality-gate 判定（exit 0 = pass / 1 = fail / 2 = 工具错误；exit 2 场景——产物缺失、git 异常——绝不静默 pass）：
+
+| 判定 | 语义 | 动作 |
+|------|------|------|
+| 测试失败 | 任一插件单测 FAIL | 按失败用例派 worker 修复后重跑 |
+| 增量覆盖率 < 40%（ratchet 起步值，终态 80） | 新代码没测到 | 按 `.review/quality.json` 的 uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑，上限 3 轮 |
+| 新增函数圈复杂度 > 15 | 结构性超标（fail 只追溯新增函数——新增行占函数 ≥50%；存量函数不追溯原罪，经 CRAP 靶子交 review） | 拆函数后重跑 |
+| CRAP ≥ 30 | warn 靶子，不阻塞 | 进阶段 2 由 test-coverage 审查者消费 |
+
+**Gate-1**（硬 gate）：quality-gate exit 0 且 check-sync/check-pack 绿才进阶段 2。
+check-sync 的版本漂移禁手工单改文件对齐——见失败恢复表。禁止跳过任何用例；调低
+`--min-coverage` / 调高 `--max-complexity` 绕过 = skip 开关等效，禁。
+
+### 产物消费（阶段 2 输入）
+
+`.review/quality.json`（quality-gate 产出，已 gitignore）：`uncoveredFiles`（实测增量覆盖
+缺口，missed 降序）/ `filesWithoutCoverage`（零加载盲区）/ `complexityFail` / `highCrap`
+（CRAP 降序，`kind` 区分 new/modified）——由 review-test-coverage 审查者按其 agent.md
+「输入」节消费（机器定位缺口，reviewer 判定缺口质量与断言强度）；降级路径的手工
+subagent task 同样要求消费。
 
 ## 阶段 2：review-fix-loop（zsw CLI 单通道，zcode / pi 双引擎同构）
 
@@ -121,21 +139,48 @@ zsw CLI 不可用 = zcode CLI 缺失/损坏或 workflow run 报环境错（本�
 subagent 工具，task 结构两引擎等价）手工派 5 个 reviewer（并行 ≤3 分两批），每个 task
 含：workdir 绝对路径 + agent.md 绝对路径（subagent 须复读原文）+ 审查范围 + 输出格式
 （Findings 表格：优先级 | 文件 | 行号 | 类别 | 描述 | 修复方向——降级路径不经 zsw
-解析器，主 agent 直接读报告，无 json 围栏契约要求）。聚合去重后派 worker 修 MUST_FIX，
-修完重审一轮。上限 2 轮。
+解析器，主 agent 直接读报告，无 json 围栏契约要求）+ `.review/quality.json` 存在时
+要求消费（test-coverage 维度）。聚合去重后派 worker 修 MUST_FIX，修完重审一轮。上限 2 轮。
+
+worker 纪律（与 zsw workflow 内置 fixer 的拒绝理由机制对齐）：
+
+- **每条先验证真实性再修**：worker 逐条读代码证实 review 断言；不成立的（误报）在
+  报告列「已验证不成立 + 证据（file:line + 逻辑）」，不盲改
+- **bug 类修复带回归测试**：修前红修后绿——回归测试在旧代码上必须 fail、新代码上
+  pass，证明测试真能抓 bug 而非凑数；测试类问题派独立测试 worker，与修复 worker 分离
+- 修复后跑 quality-gate（阶段 1 命令）确认不回归，再进重审
 
 ## 阶段 3：pre-merge 终验 + push + 开 PR
 
 ### 3a — 终验（review-fix-loop 的 fix 阶段改过代码，Gate-1 读数已过期）
 
-重跑阶段 1 static gate 全部命令（单测 + check-sync + check-pack）。
+重跑阶段 1 全部命令（quality-gate + check-sync + check-pack），并要求干净工作区
+（全部改动已 commit——修复 worker 在途会污染覆盖率读数）。
 **Gate-3a**：全绿才进 3b；FAIL 派 worker 修复后从 3a 头部重跑。
 
-**3a.5 发版面提醒（软 gate，AskUserQuestion）**：跑 `node scripts/check-release-needed.js`。
-`UNRELEASED` 非空（改了消费者可见文件但版本未 bump）时问用户：本次发版（记下待发插件，
-合 main 后走 merge skill 阶段 5 / release.js）/ 纯内部改动不发版（PR body 注明）。
-`SHARED_CHANGED` 警告时确认 vendored 插件是否需要重发。不阻塞流程——防 bug fix 静默丢失，
-决策权在用户。
+**3a.5 发版面自动分类（软 gate，歧义才问）**：跑 `node scripts/check-release-needed.js`。
+主 agent 按 diff + 分支 conventional commits **自动分类**，不弹窗（判断信息全在 diff 里；
+xyz-agent 2026-08-23 [HISTORICAL] 教训：每次弹窗打断执行、多数是噪声）：
+
+- **待发版**（fix→patch / feat→minor / BREAKING→major，多插件逐个记）：PR body 写明
+  「待发版插件 + 建议类型」，实际 bump 在合 main 后走 merge skill 阶段 5 / release.js
+- **不发版**（纯文档/测试/零行为差重构/`test-only`）：PR body 列明「插件 + 跳过原因 + 证据」
+- **歧义**（type 无法从 commits 判定 / `SHARED_CHANGED` 涉及 vendored 传播）：才问用户
+  （zcode AskUserQuestion / pi ask_user，措辞等价）
+
+不阻塞流程——防 bug fix 静默丢失，终判权在 merge 阶段的用户。
+
+**3a.6 真机 e2e 触发判定（CI 与单测双双排除 e2e，此为唯一防线）**：按路径匹配判定
+push 前的 e2e 义务（配额 gate 的 skip 输出 ≠ 验收通过，对齐 e2e-daemon 头部成本纪律；
+历史教训 eef596a：对抗式审查漏网的 6 个 bug 全是 e2e 抓的——单测全绿 ≠ 协议正确）：
+
+| diff 触及（`git diff main...HEAD --name-only`） | e2e 义务 |
+|---|---|
+| `z-subagent-workflow/lib/**` | push 前本地过 e2e.test.js + e2e-daemon.test.js（真机+真实模型，按 README 验收手册）；跑不了（凭据/配额窗口关）→ PR body 明示未跑 + 原因 + 补跑计划 |
+| `z-subagent-workflow/bin/zsw.js`、`dist/` | e2e-daemon.test.js（daemon/CLI 多进程链路） |
+| 仅 `test/`、`docs/`、`skills/`、`.agents/`、workspace `scripts/` | 不触发 |
+
+e2e 义务未履行且 PR body 未声明 = 终验不完整，不得进 3b。
 
 ### 3b — PR title/body 自动生成 + push（需用户授权）+ 建 PR
 
@@ -146,7 +191,9 @@ PR 内容从分支 commits 自动生成（英文，无需用户提供）：
 1. 收集：`git log main..HEAD --format="%s%n%b---"` + `git diff main...HEAD --stat`
 2. title：conventional commit 风格（`feat(zsw): ...`，scope 用插件缩写；多主题取最核心）
 3. body：`## Summary`（改动目的）+ `## Changes`（逐 commit 关键点，合并相关条目）+
-   `## Test plan`（单测 N 项绿 + check-sync/check-pack 结果；注明 e2e 未跑及原因）
+   `## Test plan`（quality-gate 结果：测试通过数 + 增量覆盖率 + CRAP 靶子处置；check-sync/
+   check-pack；e2e 按 3a.6 判定结果——已跑给结论，未跑给原因与补跑计划；3a.5 的
+   待发版/不发版分类）
 
 ```bash
 git push origin HEAD
@@ -206,6 +253,9 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | pi 会话改走 pi 原生 review-fix-loop（batch1 喂本仓 agent .md） | reviewer 契约不匹配（YAML/structured-output vs json 围栏）→ parseFail 按 clean 处理 → 静默漏审；统一走 zsw CLI |
 | agent.md 改双契约混写（json 围栏 + YAML 并存） | 两套解析器都可能取错段，parseFail 风险翻倍 |
 | 风格问题标 major/critical | 聚合器误触发 fix 轮次，浪费 |
+| 调低 `--min-coverage` / 调高 `--max-complexity` 绕过 Gate-1 | 与 `--no-verify` 等效：门禁形同虚设；阈值变更只能随 ratchet 上调（coverage）或显式重构标准讨论后改 |
+| 手工跑 `node --test` 冒充 Gate-1（不经 quality-gate） | 丢了增量覆盖率/复杂度/CRAP 三个判定与 `.review/quality.json` 产物，test-coverage 审查者失去机器靶子 |
+| quality-gate exit 2 当 pass 处理 | 工具错误静默放行 = 假 pass（xyz coverage-gate [HISTORICAL] 同型事故）；必须排查后重跑 |
 | subagent 封装 zsw workflow CLI 调用 | 多一层无增益中转（subagent 内 bash 一样同步等 CLI 退出） |
 | workflow run 后轮询 status 等结果 | run_in_background 完成即原生通知，轮询白耗 |
 | 脏工作区跑审查 | fix 改动与认知外改动混淆 |
@@ -217,7 +267,10 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 
 | 失败 | 动作 |
 |------|------|
-| Gate-1 测试 FAIL | 按失败用例派 worker 修复后重跑 |
+| Gate-1 quality-gate 测试失败 | 按失败用例（TAP 输出）派 worker 修复后重跑 |
+| Gate-1 增量覆盖率 < ratchet 阈值 | 按 `.review/quality.json` uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑（上限 3 轮，超限上报用户） |
+| Gate-1 新增函数圈复杂度 > 15 | 拆函数（抽取子函数/早返回/查表）后重跑；不能用调高 `--max-complexity` 绕过 |
+| Gate-1 quality-gate exit 2 | 工具错误（V8 产物缺失/git 异常/无 test 目录）：按错误信息排查环境后重跑——不当作 pass 也不当作 fail |
 | Gate-1 check-sync 版本漂移 | 禁手改单文件对齐：将要发版 → 用 `scripts/release.js` 统一 bump 三处；不发版 → 以 main 版本为准回退漂移文件 |
 | Gate-1 check-pack 包缺文件 | package.json `files` 白名单补齐后重跑 |
 | workflow run 环境错（zcode CLI 缺失/崩溃） | 读报告 error 字段恢复指引；重跑一次仍败走降级路径（引擎原生 subagent 手工编排） |
@@ -241,7 +294,8 @@ prompt 文本本身，此项尤其相关。
 ├── SKILL.md              # 本文件
 ├── agents/               # 5 个维度 review agent（review-<维度>.md，仅本 skill 内部引用）
 ├── references/           # cot-leakage.md（prompt 文本泄漏审查，触发才 read）
-└── scripts/              # validate-skill-yaml.py（SKILL.md frontmatter 校验，通用）
+├── scripts/              # quality-gate.js（增量质量门禁）/ validate-skill-yaml.py（frontmatter 校验）
+└── test/                 # quality-gate.test.js（纯函数单测，node --test；改动脚本后必跑）
 ```
 
 ---

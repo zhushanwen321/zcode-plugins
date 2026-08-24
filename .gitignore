@@ -21,6 +21,7 @@
 /.superpowers/
 /.zcode/plans/
 /.v3-audit/
+/.review/
 
 # 备份 / 临时后缀兜底
 *.bak

@@ -13,6 +13,17 @@ name: review-test-coverage
 - 测试分层：单测（fake runner/notifier 注入）+ e2e（真机 headless，E1-E8 场景）+ real-shape 冒烟——单测 mock 的协议假设必须与 e2e 验证过的真实协议一致
 - 历史教训（eef596a 提交记录）：对抗式审查发现的 6 个 bug 全是 e2e 抓的——「单测全绿」不等于「协议正确」
 
+## 输入：Gate-1 机器产物（存在时必须消费）
+
+`.review/quality.json`（quality-gate.js 产物，Gate-1 已跑过）：
+
+- `uncoveredFiles`（按 missed 降序）：实测的增量覆盖缺口——清单内文件的新增分支逻辑无测试 → MUST_FIX（major），补测试建议直接引用该文件的 missed/total 数字
+- `filesWithoutCoverage`：未被任何测试加载的分母文件（机器盲区）——定点核查其新增逻辑是否需要测试（新增可执行行全零覆盖 = major）
+- `highCrap`（CRAP ≥ 30，降序）：复杂且覆盖不足的 introduced 函数靶子——**优先逐一核对**其分支是否都有测试（复杂函数的未测分支最可能藏 bug）
+- `complexityFail` 已被 Gate-1 拦截打回（若仍出现说明门禁后新增，major）
+
+这些清单替代「识别可测逻辑 → 全量找对应测试」的开放排查——机器已定位缺口，本 agent 负责缺口的质量判定（该补什么场景、断言强度）。
+
 ## 执行步骤
 
 1. **获取变更范围**：`git diff main...HEAD --stat` + 逐文件读 diff，建立「新增逻辑 → 对应测试」映射。
