@@ -22,6 +22,7 @@ const path = require('node:path');
 
 const ZCODE_CLI = process.env.ZSW_ZCODE_CLI || '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
 const V2_CONFIG_PATH = path.join(os.homedir(), '.zcode', 'v2', 'config.json');
+const CLI_CONFIG_PATH = path.join(os.homedir(), '.zcode', 'cli', 'config.json');
 
 /** 插件数据根（zsw = 插件缩写，与 env 前缀 ZSW_ 同源）。测试可用 ZSW_ROOT 指到临时目录。 */
 function zswRoot() {
@@ -82,6 +83,7 @@ const NESTED = process.env.ZSW_NESTED === '1';
 module.exports = {
   ZCODE_CLI,
   V2_CONFIG_PATH,
+  CLI_CONFIG_PATH,
   zswRoot,
   outputsDir,
   recordsPath,

@@ -190,7 +190,7 @@ function buildRunWorkflowToolDefinition() {
         workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
         model: {
           type: 'string',
-          description: `Model override, exact match: "<provider>/<model>" full name resolves against any configured provider; bare short name resolves against the default provider (${PROVIDER_ID}). Invalid names fail with the list of what is actually configured.`,
+          description: 'Model override, exact match: "<provider>/<model>" full name resolves against any configured provider. Invalid names fail with the list of what is actually configured.',
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },

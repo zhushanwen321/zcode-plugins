@@ -56,8 +56,17 @@ function modelShort(ref) {
   return s.slice(s.lastIndexOf('/') + 1);
 }
 
-/** 默认模型：v2 config 的当前主模型，读不到用 fallback。 */
+/** 默认模型：cli config 的当前主模型，读不到用 fallback。 */
 function defaultModelRef(v2) {
+  // 优先读取 cli config 的 model.main（当前会卷模型）
+  try {
+    const cliConfig = JSON.parse(fs.readFileSync(config.CLI_CONFIG_PATH, 'utf8'));
+    const main = cliConfig?.model?.main;
+    if (typeof main === 'string' && main.trim()) return main.trim();
+  } catch {
+    // cli config 不存在或不可读，忽略
+  }
+  // 回退到 v2 config 的 model.main
   const main = v2?.model?.main;
   return (typeof main === 'string' && main.trim()) ? main.trim() : FALLBACK_DEFAULT_MODEL;
 }
