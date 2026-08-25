@@ -127,7 +127,7 @@ function buildToolDefinition() {
         worktree: { type: 'boolean', description: 'start 可选。true 时改动落独立 worktree，完成后回传 patch 与 git apply 指引' },
         conversation: { type: 'boolean', description: 'start 可选。true 时首轮完成后进入 idle，可用 message 续聊' },
         wait: { type: 'boolean', description: 'start 可选。true 时同步等待完成并返回结果全文（注意 MCP 30s 超时）' },
-        timeoutMs: { type: 'number', description: 'start/wait 可选。start：任务执行超时（默认 600000）；wait：等待上限，到点回 partial' },
+        timeoutMs: { type: 'number', description: 'start/wait 可选。start：任务执行超时（不填则无超时限制）；wait：等待上限，到点回 partial' },
         subagentId: { type: 'string', description: 'status/cancel/message/close 必填。start 返回的任务 id' },
         ids: { type: 'array', items: { type: 'string' }, description: 'wait 必填。要等待的 subagentId 数组（来自 start 返回 / list 查询）' },
         text: { type: 'string', description: 'message 必填。续聊消息文本' },
@@ -190,12 +190,12 @@ function buildRunWorkflowToolDefinition() {
         workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
         model: {
           type: 'string',
-          description: `Model override, exact match: "<provider>/<model>" full name resolves against any configured provider; bare short name resolves against the default provider (${PROVIDER_ID}). Invalid names fail with the list of what is actually configured.`,
+          description: 'Model override, exact match: "<provider>/<model>" full name resolves against any configured provider. Invalid names fail with the list of what is actually configured.',
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },
         wait: { type: 'boolean', description: 'run 可选。true 时同步等完成并返回报告全文（MCP 30s 超时约束，主要给测试用）' },
-        timeoutMs: { type: 'number', description: 'run 可选。workflow 整体超时毫秒数，默认 1800000（30min）' },
+        timeoutMs: { type: 'number', description: 'run 可选。workflow 整体超时毫秒数（不填则无超时限制）' },
         perspectives: {
           type: 'array', items: { type: 'string' },
           description: `parallel only. Default [${DEFAULT_PERSPECTIVES.join(', ')}].`,
@@ -230,7 +230,7 @@ function buildRunWorkflowToolDefinition() {
         },
         timeoutMsPerPhase: {
           type: 'number',
-          description: 'Per-phase timeout in milliseconds. Default 600000 (10 min).',
+          description: 'Per-phase timeout in milliseconds (no timeout if not set).',
         },
       },
       required: ['action'],

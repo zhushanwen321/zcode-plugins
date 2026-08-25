@@ -111,7 +111,7 @@ node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本�
 | 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds 可调 |
 | 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
 
-通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，阶段在其下工作）；`--model`（可用清单先查 `node bin/zsw.js models`——模型集随环境变化，勿硬编码）/ `--max-concurrent`（默认 3）/ `--timeout-per-phase`（默认 600000）/ `--timeout-ms`（整体超时，默认 1800000）。运行可达数分钟——run_in_background 包裹时完成通知自动到达，通知到达前去做别的事。
+通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，阶段在其下工作）；`--model`（可用清单先查 `node bin/zsw.js models`——模型集随环境变化，勿硬编码）/ `--max-concurrent`（默认 3）/ `--timeout-per-phase`（单阶段超时，不设则无超时）/ `--timeout-ms`（整体超时，不设则无超时）。运行可达数分钟——run_in_background 包裹时完成通知自动到达，通知到达前去做别的事。
 
 ### 自定义 workflow 脚本（script:<name>）
 

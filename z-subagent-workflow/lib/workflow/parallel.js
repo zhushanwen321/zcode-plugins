@@ -51,7 +51,7 @@ function isAborted(signal) { return !!signal && signal.aborted === true; }
  * @param {string} opts.workdir
  * @param {string} [opts.model]
  * @param {number} [opts.maxConcurrent=3]
- * @param {number} [opts.timeoutMsPerPhase]
+ * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
  * @param {(e:{phase:string,status:string})=>void} [opts.onPhase]
  *        状态取值 'running'|'done'|'failed'|'aborted'
@@ -59,7 +59,7 @@ function isAborted(signal) { return !!signal && signal.aborted === true; }
  */
 async function runParallel({
   task, perspectives, workdir, model, signal,
-  maxConcurrent = 3, timeoutMsPerPhase = 600000, onPhase, onPlan,
+  maxConcurrent = 3, timeoutMsPerPhase = null, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();

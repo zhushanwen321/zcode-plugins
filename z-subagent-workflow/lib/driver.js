@@ -212,7 +212,7 @@ function bootstrapIsolatedHome(home, modelRef, opts = {}) {
  * @param {string} opts.cwd              运行目录
  * @param {string} opts.prompt           完整 prompt（resume 轮即消息文本）
  * @param {string} [opts.resumeSessionId] 续聊目标 session（不重建 HOME）
- * @param {number} [opts.timeoutMs]      缺省 config.DEFAULTS.timeoutMs
+ * @param {number|null} [opts.timeoutMs]      缺省 config.DEFAULTS.timeoutMs；null/非正数 = 不设超时限制
  * @param {string[]} [opts.disallowedTools] 工具 denylist（MUST_FIX-3 硬约束）：
  *        逗号连接进 `--disallowed-tools` flag（B3 实测可用）。空数组/非数组
  *        不加 flag。白名单（allowlist）无 flag 通道（--allowed-tools 拒收），
@@ -288,10 +288,13 @@ function runHeadless(opts = {}) {
       return;
     }
 
-    timeoutTimer = setTimeout(() => {
-      killReason = killReason || 'timeout';
-      killChain();
-    }, timeoutMs);
+    // timeoutMs 为 null/非正数时不设 timer（setTimeout 强转 null 为 1ms 会立即超时）
+    timeoutTimer = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+      ? setTimeout(() => {
+        killReason = killReason || 'timeout';
+        killChain();
+      }, timeoutMs)
+      : null;
 
     childRef.stdout.on('data', (d) => outBuf.push(String(d)));
     childRef.stderr.on('data', (d) => errBuf.push(String(d)));

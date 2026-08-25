@@ -156,7 +156,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + 报告双段
   assert.equal(rec.closedReason, 'completed');
   assert.equal(rec.phaseCount, 1);
   assert.equal(rec.notified, true);
-  assert.equal(rec.timeoutMs, DEFAULT_WORKFLOW_TIMEOUT_MS); // 缺省整体超时 30min
+  assert.equal(rec.timeoutMs, null); // 缺省无超时限制
 
   // 报告落盘：markdown 人读段 + ```json 机器段（对齐 report.buildContentBlocks）
   const reportText = fs.readFileSync(rec.outputFile, 'utf8');
@@ -369,6 +369,20 @@ test('timeoutMs：整体超时 → abort 执行体 + record timeout + 通知（�
   assert.ok(content.includes(`[workflow 完成] chain runId=${h.runId}。状态: timeout。`));
   assert.ok(content.includes('原因:'));
   assert.ok(fs.existsSync(rec.outputFile)); // aborted 报告落盘（含已完成阶段）
+});
+
+test('不传 timeoutMs：慢 workflow 不被立即超时（回归：setTimeout(cb, null)→1ms abort）', async () => {
+  // 入口耗时 100ms：若缺省超时被强转为 1ms timer，会在入口前就 abort 成 timeout
+  const { manager, records } = buildManager({
+    workflows: { chain: async (opts) => { await sleep(100); return okResult(opts); } },
+  });
+  const h = await manager.start({ workflow: 'chain', task: '慢完成无超时', workdir: TMP }, ctx());
+  const rec = await waitFor(() => {
+    const r = records.get(h.runId);
+    return r && r.status !== 'running' ? r : null;
+  });
+  assert.equal(rec.status, 'closed');
+  assert.equal(rec.closedReason, 'completed');
 });
 
 test('script: 前缀：分发到真实 workflow-script 发现层，报告 = 脚本 markdown + json 围栏', async () => {

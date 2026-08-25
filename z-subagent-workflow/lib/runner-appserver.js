@@ -627,19 +627,23 @@ class AppServerRunner {
     };
     const aggregated = () => this._aggregatedText(sessionId);
     const stopBestEffort = () => conn.request('session/stop', { sessionId }, { timeoutMs: STOP_TIMEOUT_MS });
-    const timer = setTimeout(() => {
-      finish({
-        status: 'timeout',
-        response: aggregated(),
-        // INFO-16：E7 后权威终态信号是 turn.terminal，state.updated 是兼容信号，
-        // 并列表述避免误导诊断
-        error: `一轮未在 ${timeoutMs}ms 内观察到终态（turn.terminal / state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
-      });
-      stopBestEffort().then(
-        () => {},
-        () => { stderrLog('session/stop 失败 → kill app-server 进程兜底'); conn.killChain(); }
-      );
-    }, timeoutMs);
+    // timeoutMs=null（无超时）不建 timer：setTimeout 会把 null 强转为 1ms 立即超时，
+    // 与 driver.js 的 spawn 侧防护同源；turn 依赖终态信号收尾，无超时是安全语义
+    const timer = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+      ? setTimeout(() => {
+        finish({
+          status: 'timeout',
+          response: aggregated(),
+          // INFO-16：E7 后权威终态信号是 turn.terminal，state.updated 是兼容信号，
+          // 并列表述避免误导诊断
+          error: `一轮未在 ${timeoutMs}ms 内观察到终态（turn.terminal / state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
+        });
+        stopBestEffort().then(
+          () => {},
+          () => { stderrLog('session/stop 失败 → kill app-server 进程兜底'); conn.killChain(); }
+        );
+      }, timeoutMs)
+      : null;
     const turn = {
       promise,
       cancel() {

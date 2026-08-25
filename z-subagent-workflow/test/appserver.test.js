@@ -352,6 +352,20 @@ test('超时：fake 不推终态 → status timeout + session/stop 兜底，共�
   }
 });
 
+test('turn 无超时（timeoutMs:null）：终态延迟到达仍 closed（回归：setTimeout(cb,null)→1ms 立即超时）', async () => {
+  // 终态延迟 300ms：若 null 被强转为 1ms timer，会在终态前先判 timeout
+  process.env.FAKE_TURN_DELAY_MS = '300';
+  try {
+    const { runner } = newRunner();
+    const handle = runner.start(baseTaskCtx('慢终态轮', { timeoutMs: null }));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_TURN_DELAY_MS;
+  }
+});
+
 // ----------------------------------------------------------------- resume
 
 test('resume：拒绝非法句柄（kind/sessionId 校验）', async () => {

@@ -86,6 +86,11 @@ function writeV2Config(patch = {}) {
   return cfg;
 }
 
+function writeCliConfig(patch = {}) {
+  fs.mkdirSync(path.dirname(config.CLI_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(config.CLI_CONFIG_PATH, JSON.stringify(patch, null, 2));
+}
+
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
@@ -125,6 +130,26 @@ test('driver.runHeadless：超时 SIGTERM 链，终态 timeout 带 stdout 尾部
     assert.equal(result.status, 'timeout');
     assert.ok(result.response.includes('sleeping before exit'));
     assert.throws(() => process.kill(run.pid, 0), (e) => e.code === 'ESRCH');
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test('driver.runHeadless：不传 timeoutMs（DEFAULTS.timeoutMs=null）不建 timer，慢进程正常 closed（回归 a04db4c）', async () => {
+  process.env.FAKE_SLEEP_MS = '300'; // >1ms：若 null 被强转 1ms timer 会先杀进程成 timeout
+  try {
+    const result = await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '慢退出' });
+    assert.equal(result.status, 'closed');
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test('driver.runHeadless：显式 timeoutMs: null 同样无超时，慢进程正常 closed', async () => {
+  process.env.FAKE_SLEEP_MS = '300';
+  try {
+    const result = await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '慢退出', timeoutMs: null });
+    assert.equal(result.status, 'closed');
   } finally {
     delete process.env.FAKE_SLEEP_MS;
   }
@@ -239,6 +264,26 @@ test('model-router.resolve：默认链读 v2 config 主模型，读不到回退 
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
   writeV2Config({ model: { main: '' } });
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+});
+
+test('model-router.resolve：默认模型优先 cli config 主模型，但仅当可被 v2 清单解析', () => {
+  // cli config 可解析全名 → 采用（当前会卷模型跟随）
+  writeV2Config({ model: { main: 'builtin:bigmodel-coding-plan/GLM-5.3' } });
+  writeCliConfig({ model: { main: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  // cli config 短名可解析 → 按默认 provider 解析采用
+  writeCliConfig({ model: { main: 'GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  // 桌面端内部命名空间（router/…）不可解析 → 回退 v2.main，不抛错（真实事故：2026-08-25 review-fix-loop 入口炸）
+  writeCliConfig({ model: { main: 'router/mimo-v2.5-pro' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+  // cli config 不可解析 + v2.main 空 → 内置 fallback
+  writeV2Config({ model: { main: '' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+  // cli config 半损坏（非法 JSON）→ 静默回退 v2.main，不抛错（同类事故形态：配置异常不炸入口）
+  fs.writeFileSync(config.CLI_CONFIG_PATH, '{oops');
+  writeV2Config({ model: { main: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
 });
 
 test('model-router.resolve：未知模型/未知 provider 抛可操作错误（列清单）', () => {

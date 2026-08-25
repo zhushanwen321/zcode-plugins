@@ -45,9 +45,9 @@
  *   终态已定、不再启动；③无句柄 + running/lost（server 重启后句柄随进程
  *   内存丢失）→ 直接终态化 + note。cancelled 不发完成通知（对齐 subagent
  *   的 cancel 不通知语义）。
- * - timeoutMs：workflow 整体超时（默认 30min，比单阶段默认 10min 长——多
- *   阶段编排链更长）。超时 = abort signal + record 落 'timeout'（区别于
- *   用户 abort 的 'cancelled'）。timer unref：不拖住 server/CLI/测试进程。
+ * - timeoutMs：workflow 整体超时（不传则无超时限制；单阶段超时看各 workflow
+ *   实现的 timeoutMsPerPhase，缺省同为无超时）。超时 = abort signal + record 落
+ *   'timeout'（区别于用户 abort 的 'cancelled'）。timer unref：不拖住 server/CLI/测试进程。
  * - recover：workflow 执行体在 server 进程内（不是子进程），重启即死、无
  *   进程可探活——非终态 record 全部保持 lost（rebuildFromLog 已标）并注明
  *   原因；terminal 照抄。subagent record 本层不碰（SubagentManager.recover
@@ -196,11 +196,12 @@ class WorkflowManager {
 
     // 入口解析先于 record 创建（fail fast：拼错 workflow 名不产生孤儿 record）
     const entry = this._resolveEntry(workflow, ctx.cwd);
-    // 整体超时：显式 params.timeoutMs > 默认 30min。与 per-workflow 的
-    // timeoutMsPerPhase（单阶段预算，随 workflowParams 透传）是两个独立字段
+    // 整体超时：不传则无限制。与 per-workflow 的 timeoutMsPerPhase（单阶段预算，
+    // 随 workflowParams 透传，各 workflow 实现缺省亦为无超时）是两个独立字段
+    // timeoutMs 为 null 或 0 表示无超时限制
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
-      : DEFAULT_WORKFLOW_TIMEOUT_MS;
+      : null;
     const workflowParams = {};
     for (const [k, v] of Object.entries(params)) {
       if (!STRIP_PARAM_KEYS.includes(k) && v !== undefined) workflowParams[k] = v;
@@ -376,8 +377,12 @@ class WorkflowManager {
       this.records.transition(runId, 'created', 'running'); // CAS：抢占执行权
       // 整体超时从执行开始计时（排队耗时不是 workflow 自身的开销）
       let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, plan.timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref(); // 不拖住进程退出
+      // timeoutMs 为 null 时不设置超时
+      let timer = null;
+      if (plan.timeoutMs != null && plan.timeoutMs > 0) {
+        timer = setTimeout(() => { timedOut = true; controller.abort(); }, plan.timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref(); // 不拖住进程退出
+      }
 
       let invocation;
       try {
@@ -393,7 +398,7 @@ class WorkflowManager {
             + '\n```json\n' + JSON.stringify({ ok: false, workflow: plan.workflow, task: plan.task, error: String(err && err.message || err) }, null, 2) + '\n```',
         };
       } finally {
-        clearTimeout(timer);
+        if (timer != null) clearTimeout(timer);
       }
       return await this._finalize(runId, invocation, { timedOut });
     } catch (err) {
