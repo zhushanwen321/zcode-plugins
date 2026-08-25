@@ -5,7 +5,7 @@
     "en": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (default daemon thin client; the MCP tool face is offline since 1.0.0): background subagent lifecycle with worktree isolation, schema outputs, conversation follow-ups, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom script:<name> extension. Completion wakeup rides engine-native task-notification (CLI blocking command + Bash run_in_background), no polling.",
     "zh-CN": "zcode 的 subagent 编排与确定性多阶段 workflow，统一走 zsw CLI（默认 daemon thin client；1.0.0 起 MCP 工具面下线）：后台 subagent 生命周期管理（worktree 隔离、schema 结构化输出、续聊追问、模型路由、四根 agent .md 发现）+ 内置 workflow（chain/parallel/map-reduce/scatter-gather/review-fix-loop）与自定义 script:<名> 脚本扩展。完成唤醒借引擎原生 task-notification（CLI 阻塞命令 + Bash run_in_background），零轮询。"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "zhushanwen",
     "url": "https://github.com/zhushanwen321"
