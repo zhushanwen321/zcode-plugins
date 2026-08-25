@@ -196,8 +196,8 @@ class WorkflowManager {
 
     // 入口解析先于 record 创建（fail fast：拼错 workflow 名不产生孤儿 record）
     const entry = this._resolveEntry(workflow, ctx.cwd);
-    // 整体超时：显式 params.timeoutMs > 默认 30min。与 per-workflow 的
-    // timeoutMsPerPhase（单阶段预算，随 workflowParams 透传）是两个独立字段
+    // 整体超时：不传则无限制。与 per-workflow 的 timeoutMsPerPhase（单阶段预算，
+    // 随 workflowParams 透传，各 workflow 实现缺省亦为无超时）是两个独立字段
     // timeoutMs 为 null 或 0 表示无超时限制
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs

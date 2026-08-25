@@ -371,6 +371,20 @@ test('timeoutMs：整体超时 → abort 执行体 + record timeout + 通知（�
   assert.ok(fs.existsSync(rec.outputFile)); // aborted 报告落盘（含已完成阶段）
 });
 
+test('不传 timeoutMs：慢 workflow 不被立即超时（回归：setTimeout(cb, null)→1ms abort）', async () => {
+  // 入口耗时 100ms：若缺省超时被强转为 1ms timer，会在入口前就 abort 成 timeout
+  const { manager, records } = buildManager({
+    workflows: { chain: async (opts) => { await sleep(100); return okResult(opts); } },
+  });
+  const h = await manager.start({ workflow: 'chain', task: '慢完成无超时', workdir: TMP }, ctx());
+  const rec = await waitFor(() => {
+    const r = records.get(h.runId);
+    return r && r.status !== 'running' ? r : null;
+  });
+  assert.equal(rec.status, 'closed');
+  assert.equal(rec.closedReason, 'completed');
+});
+
 test('script: 前缀：分发到真实 workflow-script 发现层，报告 = 脚本 markdown + json 围栏', async () => {
   // 脚本落 ws 的 .zsub/workflows（ctx.cwd = ws 触发真实四根发现）
   const ws = path.join(TMP, 'ws-script');

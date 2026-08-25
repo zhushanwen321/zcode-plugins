@@ -76,7 +76,7 @@ const PHASES = [
  * @param {string} opts.task 任务描述
  * @param {string} opts.workdir 工作目录
  * @param {string} [opts.model] 模型（短名或全 ref）
- * @param {number} [opts.timeoutMsPerPhase]
+ * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {(e:{phase:string,status:string})=>void} [opts.onPhase]
  *        状态取值 'running'|'done'|'failed'|'aborted'
  * @param {(expected:number)=>void} [opts.onPlan]
@@ -86,7 +86,7 @@ const PHASES = [
  *   status:'ok'|'failed'|'aborted', abortedAtPhase?:string,
  *   startedAt:string, finishedAt:string}>}
  */
-async function runChain({ task, workdir, model, timeoutMsPerPhase = 600000, onPhase, onPlan, signal }) {
+async function runChain({ task, workdir, model, timeoutMsPerPhase = null, onPhase, onPlan, signal }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();
   if (onPlan) onPlan(PHASES.length);

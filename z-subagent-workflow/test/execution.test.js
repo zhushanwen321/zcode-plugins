@@ -135,6 +135,26 @@ test('driver.runHeadless：超时 SIGTERM 链，终态 timeout 带 stdout 尾部
   }
 });
 
+test('driver.runHeadless：不传 timeoutMs（DEFAULTS.timeoutMs=null）不建 timer，慢进程正常 closed（回归 a04db4c）', async () => {
+  process.env.FAKE_SLEEP_MS = '300'; // >1ms：若 null 被强转 1ms timer 会先杀进程成 timeout
+  try {
+    const result = await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '慢退出' });
+    assert.equal(result.status, 'closed');
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
+test('driver.runHeadless：显式 timeoutMs: null 同样无超时，慢进程正常 closed', async () => {
+  process.env.FAKE_SLEEP_MS = '300';
+  try {
+    const result = await driver.runHeadless({ home: PLAIN_HOME, cwd: TMP, prompt: '慢退出', timeoutMs: null });
+    assert.equal(result.status, 'closed');
+  } finally {
+    delete process.env.FAKE_SLEEP_MS;
+  }
+});
+
 test('driver.runHeadless：非零退出码 → error 终态', async () => {
   const saved = process.env.ZSW_ZCODE_CLI;
   process.env.ZSW_ZCODE_CLI = path.join(TMP, 'not-exist.cjs');
