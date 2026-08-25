@@ -86,6 +86,11 @@ function writeV2Config(patch = {}) {
   return cfg;
 }
 
+function writeCliConfig(patch = {}) {
+  fs.mkdirSync(path.dirname(config.CLI_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(config.CLI_CONFIG_PATH, JSON.stringify(patch, null, 2));
+}
+
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
@@ -237,6 +242,22 @@ test('model-router.resolve：短名/全名归一 + requested > agentDefault 优�
 test('model-router.resolve：默认链读 v2 config 主模型，读不到回退 GLM-5.3', () => {
   writeV2Config({ model: { main: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' } });
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  writeV2Config({ model: { main: '' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+});
+
+test('model-router.resolve：默认模型优先 cli config 主模型，但仅当可被 v2 清单解析', () => {
+  // cli config 可解析全名 → 采用（当前会卷模型跟随）
+  writeV2Config({ model: { main: 'builtin:bigmodel-coding-plan/GLM-5.3' } });
+  writeCliConfig({ model: { main: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  // cli config 短名可解析 → 按默认 provider 解析采用
+  writeCliConfig({ model: { main: 'GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
+  // 桌面端内部命名空间（router/…）不可解析 → 回退 v2.main，不抛错（真实事故：2026-08-25 review-fix-loop 入口炸）
+  writeCliConfig({ model: { main: 'router/mimo-v2.5-pro' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+  // cli config 不可解析 + v2.main 空 → 内置 fallback
   writeV2Config({ model: { main: '' } });
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
 });

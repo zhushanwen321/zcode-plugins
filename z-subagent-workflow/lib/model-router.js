@@ -56,13 +56,25 @@ function modelShort(ref) {
   return s.slice(s.lastIndexOf('/') + 1);
 }
 
-/** 默认模型：cli config 的当前主模型，读不到用 fallback。 */
+/** 引用能否被 v2 清单解析：全名查对应 provider、短名查默认 provider，模型须在清单内。 */
+function resolvableInV2(v2, ref) {
+  const provider = ref.includes('/') ? ref.slice(0, ref.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
+  return availableModels(v2, provider).includes(modelShort(ref));
+}
+
+/** 默认模型：cli config 的当前主模型（须可被 v2 清单解析），否则回退 v2 → 内置。 */
 function defaultModelRef(v2) {
-  // 优先读取 cli config 的 model.main（当前会卷模型）
+  // 优先读取 cli config 的 model.main（当前会卷模型）。它是桌面端命名空间
+  // （如内部路由 provider "router/…"），与 v2 config 清单不保证交集——只在
+  // 真可解析时采用，否则诊断后回退：默认值要稳，显式指定才响。
   try {
     const cliConfig = JSON.parse(fs.readFileSync(config.CLI_CONFIG_PATH, 'utf8'));
     const main = cliConfig?.model?.main;
-    if (typeof main === 'string' && main.trim()) return main.trim();
+    if (typeof main === 'string' && main.trim()) {
+      const ref = main.trim();
+      if (resolvableInV2(v2, ref)) return ref;
+      console.error(`[zsub:model-router] cli config 主模型 "${ref}" 无法在 v2 清单解析（非本仓可用 provider/模型），回退 v2/内置默认`);
+    }
   } catch {
     // cli config 不存在或不可读，忽略
   }
