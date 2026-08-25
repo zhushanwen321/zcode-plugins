@@ -30,7 +30,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 // env 隔离完成后才允许 require lib（见文件头注释）
 const { RecordStore } = require('../lib/record-store');
 const outputs = require('../lib/output-store');
-const { recordsPath } = require('../lib/config');
+const { recordsPath, DEFAULTS } = require('../lib/config');
 const { MailboxNotifier, PollingNotifier } = require('../lib/notifier-mailbox');
 const { SubagentManager } = require('../lib/manager');
 
@@ -620,7 +620,7 @@ test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > �
     const { manager, runner, records } = buildManager();
     const h = await manager.start({ task: '任务书', slug: 'default' }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
-    assert.equal(runner.startCalls[0].timeoutMs, 600_000);
+    assert.equal(runner.startCalls[0].timeoutMs, DEFAULTS.timeoutMs); // 全局默认现可为 null（无超时）
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-3' });
     await settle(records, h.subagentId);
   }
