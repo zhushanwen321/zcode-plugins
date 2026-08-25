@@ -156,7 +156,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + 报告双段
   assert.equal(rec.closedReason, 'completed');
   assert.equal(rec.phaseCount, 1);
   assert.equal(rec.notified, true);
-  assert.equal(rec.timeoutMs, DEFAULT_WORKFLOW_TIMEOUT_MS); // 缺省整体超时 30min
+  assert.equal(rec.timeoutMs, null); // 缺省无超时限制
 
   // 报告落盘：markdown 人读段 + ```json 机器段（对齐 report.buildContentBlocks）
   const reportText = fs.readFileSync(rec.outputFile, 'utf8');

@@ -198,9 +198,10 @@ class WorkflowManager {
     const entry = this._resolveEntry(workflow, ctx.cwd);
     // 整体超时：显式 params.timeoutMs > 默认 30min。与 per-workflow 的
     // timeoutMsPerPhase（单阶段预算，随 workflowParams 透传）是两个独立字段
+    // timeoutMs 为 null 或 0 表示无超时限制
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
-      : DEFAULT_WORKFLOW_TIMEOUT_MS;
+      : null;
     const workflowParams = {};
     for (const [k, v] of Object.entries(params)) {
       if (!STRIP_PARAM_KEYS.includes(k) && v !== undefined) workflowParams[k] = v;
@@ -376,8 +377,12 @@ class WorkflowManager {
       this.records.transition(runId, 'created', 'running'); // CAS：抢占执行权
       // 整体超时从执行开始计时（排队耗时不是 workflow 自身的开销）
       let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, plan.timeoutMs);
-      if (typeof timer.unref === 'function') timer.unref(); // 不拖住进程退出
+      // timeoutMs 为 null 时不设置超时
+      let timer = null;
+      if (plan.timeoutMs != null && plan.timeoutMs > 0) {
+        timer = setTimeout(() => { timedOut = true; controller.abort(); }, plan.timeoutMs);
+        if (typeof timer.unref === 'function') timer.unref(); // 不拖住进程退出
+      }
 
       let invocation;
       try {
@@ -393,7 +398,7 @@ class WorkflowManager {
             + '\n```json\n' + JSON.stringify({ ok: false, workflow: plan.workflow, task: plan.task, error: String(err && err.message || err) }, null, 2) + '\n```',
         };
       } finally {
-        clearTimeout(timer);
+        if (timer != null) clearTimeout(timer);
       }
       return await this._finalize(runId, invocation, { timedOut });
     } catch (err) {

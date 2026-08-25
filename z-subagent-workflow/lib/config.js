@@ -71,7 +71,7 @@ function resolveMaxConcurrent() {
 }
 
 const DEFAULTS = {
-  timeoutMs: 600_000,      // D14：对齐 driver.js
+  timeoutMs: null,          // 不设超时限制（用户可按需填写）
   killGraceMs: 5_000,      // SIGTERM 后等这么久再 SIGKILL
   maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
   idleConversationTtlMs: 30 * 60_000, // apc conversation 会话空闲回收
