@@ -45,9 +45,9 @@
  *   终态已定、不再启动；③无句柄 + running/lost（server 重启后句柄随进程
  *   内存丢失）→ 直接终态化 + note。cancelled 不发完成通知（对齐 subagent
  *   的 cancel 不通知语义）。
- * - timeoutMs：workflow 整体超时（默认 30min，比单阶段默认 10min 长——多
- *   阶段编排链更长）。超时 = abort signal + record 落 'timeout'（区别于
- *   用户 abort 的 'cancelled'）。timer unref：不拖住 server/CLI/测试进程。
+ * - timeoutMs：workflow 整体超时（不传则无超时限制；单阶段超时看各 workflow
+ *   实现的 timeoutMsPerPhase，缺省同为无超时）。超时 = abort signal + record 落
+ *   'timeout'（区别于用户 abort 的 'cancelled'）。timer unref：不拖住 server/CLI/测试进程。
  * - recover：workflow 执行体在 server 进程内（不是子进程），重启即死、无
  *   进程可探活——非终态 record 全部保持 lost（rebuildFromLog 已标）并注明
  *   原因；terminal 照抄。subagent record 本层不碰（SubagentManager.recover

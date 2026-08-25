@@ -280,6 +280,10 @@ test('model-router.resolve：默认模型优先 cli config 主模型，但仅当
   // cli config 不可解析 + v2.main 空 → 内置 fallback
   writeV2Config({ model: { main: '' } });
   assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-5.3');
+  // cli config 半损坏（非法 JSON）→ 静默回退 v2.main，不抛错（同类事故形态：配置异常不炸入口）
+  fs.writeFileSync(config.CLI_CONFIG_PATH, '{oops');
+  writeV2Config({ model: { main: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' } });
+  assert.equal(new ModelRouter().resolve(), 'builtin:bigmodel-coding-plan/GLM-4.7-Flash');
 });
 
 test('model-router.resolve：未知模型/未知 provider 抛可操作错误（列清单）', () => {
