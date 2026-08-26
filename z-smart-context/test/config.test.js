@@ -11,6 +11,18 @@ const path = require('node:path');
 
 const { DEFAULTS, normalizeTiers, readConfig } = require('../lib/config');
 
+// 本文件进程内直调 readConfig，坏 JSON 用例会触发 logError 落盘；lib/log 跟随 ZSC_DATA_DIR，
+// 不重定向则每条 warn 都漏写进用户真实 hook.log（第一批集成验证实测）。生产不设该变量。
+const TEST_LOG_DIR = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-config-log-')));
+process.env.ZSC_DATA_DIR = TEST_LOG_DIR;
+process.on('exit', () => {
+  try {
+    fs.rmSync(TEST_LOG_DIR, { recursive: true, force: true });
+  } catch {
+    // 清理失败只留 tmp 垃圾，不影响测试结论
+  }
+});
+
 function makeTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-config-test-'));
 }
