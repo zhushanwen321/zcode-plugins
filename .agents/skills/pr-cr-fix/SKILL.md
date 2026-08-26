@@ -164,6 +164,10 @@ xyz-agent 2026-08-23 [HISTORICAL] 教训：每次弹窗打断执行、多数是�
 
 - **待发版**（fix→patch / feat→minor / BREAKING→major，多插件逐个记）：PR body 写明
   「待发版插件 + 建议类型」，实际 bump 在合 main 后走 merge skill 阶段 5 / release.js
+- **首次发版固定 0.0.1，不询问**：插件从未发布过 npm（无 `<plugin>@<version>` tag）时，
+  首次发版版本一律 0.0.1——release.js 只支持 bump 不支持首 tag，首次发版走「三处版本
+  统一改 0.0.1（check-sync 验证一致）+ 合 main 后手工 tag `<plugin>@0.0.1` 触发发布」，
+  PR body 记录该形态即可，不弹窗询问（2026-08-26 z-tool-finder 首发确立）
 - **不发版**（纯文档/测试/零行为差重构/`test-only`）：PR body 列明「插件 + 跳过原因 + 证据」
 - **歧义**（type 无法从 commits 判定 / `SHARED_CHANGED` 涉及 vendored 传播）：才问用户
   （zcode AskUserQuestion / pi ask_user，措辞等价）

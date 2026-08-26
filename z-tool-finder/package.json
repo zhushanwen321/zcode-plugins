@@ -1,6 +1,6 @@
 {
   "name": "@zhushanwen/z-tool-finder",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Progressive loading for MCP tools in zcode: per-server proxy wrappers (get_tool_details/call_tool), SessionStart auto-takeover + available-custom-tools manifest injection, global tool search. Reversible via tf restore.",
   "type": "commonjs",
   "license": "MIT",

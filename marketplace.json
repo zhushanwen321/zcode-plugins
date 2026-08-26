@@ -32,7 +32,7 @@
     {
       "name": "z-tool-finder",
       "source": "./z-tool-finder",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "description": "Progressive (lazy) loading for MCP tools in zcode: per-server proxy wrappers expose only get_tool_details/call_tool meta tools, a SessionStart hook auto-takes-over user/plugin stdio servers and injects an <available-custom-tools> manifest, and a global search_tools server indexes the catalog. Fully reversible via tf restore.",
       "description_i18n": {
         "en": "Progressive (lazy) loading for MCP tools in zcode: per-server proxy wrappers expose only get_tool_details/call_tool meta tools, a SessionStart hook auto-takes-over user/plugin stdio servers and injects an <available-custom-tools> manifest, and a global search_tools server indexes the catalog. Fully reversible via tf restore.",
