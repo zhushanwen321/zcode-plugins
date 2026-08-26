@@ -71,7 +71,7 @@ archive/硬删无协议通道只能直写 sqlite）。**
 
 关键规则【实测】：
 - `task_id` = 引擎生成 `sess_${crypto.randomUUID()}`（**UUIDv4**）。
-- `workspace_key` = `sha256(workspaceIdentity?.trim() || workspacePath).digest("hex").slice(0,12)`。
+- `workspace_key` = `(workspaceIdentity || "").trim() || workspacePath`（**明文路径字符串**）。⚠️ 勘误：host bundle 内确有 sha256-截12位函数（`getWorkspaceHash`），曾误判为 workspace_key 算法；运行时实测数据（tasks-index 中 workspace_key 为完整路径）与官方 restore 插件写入逻辑双重证明 tasks-index 用明文，hash-12 实际用于 legacy 快照目录名（`~/.zcode/sessions/<hash12>/`）。
 - `project_id`（db.sqlite）= `proj_` + slugify(工作目录).slice(0,80)。
 - provider 必须写 `"glm"`，否则任务被列表过滤（官方 restore 插件注释原话）。
 - 改名互斥保护：tasks-index 侧 `title_overridden=1` 后 host 丢弃引擎自动标题；
@@ -162,6 +162,53 @@ MCP 推荐做法：
 4. **引擎 time_archived 未使用**：若未来 zcode 版本把归档同步进引擎库，方案 A/B 的归档语义要对齐复查。
 5. **沙箱 create 全链路未跑通**：模型物化阶段在无凭据沙箱挂起（疑似等网络重试）；renameSession/
    deleteSession 端到端止步于 envelope 校验与代码级 handler 链。P3 落地前需在有凭据环境补一次真实验证。
+
+## 5. 探针验证结果（2026-08-26 实机全流程）
+
+在真实环境（GUI 运行中 + 真实 GLM 凭据）跑通 list → create → rename → archive → unarchive → delete 全流程，每步经用户在 GUI 实际核对。
+
+### 5.1 验证通过的完整创建配方（GUI 同款语义，唯一可行路径）
+
+```
+1. spawn node zcode.cjs app-server --stdio --surface desktop
+   env 必须带 ANTHROPIC_API_KEY=<key>（从 ~/.zcode/v2/config.json
+   provider['builtin:bigmodel-coding-plan'].options.apiKey 读取；
+   引擎 resolveApiKey 对 anthropic kind 的 env 回退通道，信封注入不可靠）
+2. workspace/upsertModelProvider { workspace:{workspaceKey,workspacePath},
+   provider:{providerId:'builtin:bigmodel-coding-plan', kind:'anthropic',
+             baseURL, models:[{modelId:'GLM-5.3'}]} }   ← 不带 apiKey 字段
+3. v4/command { commandId, clientId, sessionId:null, type:'createSession',
+   payload:{ workspaceId:<路径>, firstInput:{text:<提示词>, attachments:[]},
+             config:{ mode:'build' } }, issuedAt:Date.now() }
+   ← sessionId 从 result.sessionId 取；回合自动开始（delivery:startNow）
+4. 等待完成：轮询引擎库 assistant 的 text part 出现（勿用 session/list 轮询，有竞态）
+5. session/close { sessionId }
+6. 回填 tasks-index 行（restore 插件同款 upsert；meta_json 按 host zod schema hT 全字段：
+   taskId/traceId/title/titleOverridden/workspacePath/createdAt/updatedAt/mode/
+   model/thoughtLevel/provider/status）
+```
+
+### 5.2 关键实证结论（修正/补充 §3 与风险清单）
+
+| # | 结论 | 级别 |
+|---|------|------|
+| 1 | 协议层 `session/create` + `session/send` 是死路：create 只建进程内记录，send 被接受但回合不执行、永不落库。**必须走 v4/command createSession 携带 firstInput** | 【实测】 |
+| 2 | v4 `sendText` 发给未持久化会话报 FOREIGN KEY constraint failed——持久化挂在 v4 网关路径上 | 【实测】 |
+| 3 | apiKey 信封 `{source:'inline'}` 注入后认证失败（401）；env 变量回退可靠。curl 双形态验证 key 本身 x-api-key/Bearer 均有效，问题在引擎侧解析 | 【实测】 |
+| 4 | **侧边栏可见性：分组模式下回填索引行即时生效（无需重启）**；项目模式只渲染当前打开项目的任务（GUI 本身范围语义）。调研风险①解除 | 【实测】 |
+| 5 | 改名双写：侧边栏标题即时更新；会话内标题跟随引擎进程内存态，重启该工作区引擎后才同步（外部进程无法触发 GUI 引擎实例的 titleUpdated 事件） | 【实测】 |
+| 6 | archive/unarchive/delete 直写索引列：查询刷新后生效（重启/搜索触发重查即时）；无 delta 推送是预期边界（外部直写不产生广播） | 【实测】 |
+| 7 | 自动标题管线对探针会话正常工作（turn 后 title_source 变 generated），rename 后置 custom 可永久锁定 | 【实测】 |
+| 8 | task_id 幂等性：v4 createSession 每次生成新 sess_<uuid>；探针调试产生的空会话留在引擎库永不可见（不入索引即不存在于任何 UI） | 【实测】 |
+| 9 | workspace_key 为明文路径字符串（勘误 §2 原 sha256 结论；bundle 内 hash-12 函数实为 legacy 快照目录名用途） | 【实测】 |
+
+### 5.3 更新后的风险清单
+
+- ~~风险① create 后侧边栏实时性~~ 已解除（§5.2 #4）
+- ~~风险⑤ create 全链路未跑通~~ 已解除（§5.1 配方实测）
+- 风险② tasks-index 并发写仍需 BEGIN IMMEDIATE + busy_timeout（探针全程未遇 SQLITE_BUSY，但样本量小）
+- 风险③ 版本升级脆弱性不变；探针脚本可当冒烟用例（已归档 docs/research/session-manager/probe/）
+- 新增边界：rename 的会话内标题同步依赖目标工作区引擎重启；如需强一致可在插件内文档声明或探索 resume+renameSession 协议补写（对 GUI 实例无效，仅自证）
 
 ## 6. 证据索引（快速定位）
 

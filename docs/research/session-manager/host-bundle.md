@@ -40,7 +40,7 @@
 
 ### 2.2 workspace_key 与 task_id 生成规则
 
-- **workspace_key**：`getWorkspaceHash(workspacePath, workspaceIdentity)` = `sha256( identity?.trim() || path ).digest("hex").slice(0,12)`——12 个 hex 字符。写入方与读取方（host/scheduler）实现一致。
+- **workspace_key**：⚠️ 勘误（2026-08-26 探针前复核）：本节原结论 `sha256(identity||path).slice(0,12)` 与运行时数据矛盾——tasks-index 实际存储的 workspace_key 为**明文路径字符串**（如 `/Users/zhushanwen/Code/xyz-agent-workspace/dev-0.9.9`），官方 restore-legacy-sessions 插件也按明文写入。bundle 内的 `getWorkspaceHash`（sha256 截 12）实际服务于 legacy 快照目录名（`~/.zcode/sessions/<hash12>/`）。以官方插件 + 运行时实测为准：`workspace_key = (workspaceIdentity || "").trim() || workspacePath`。
   - 锚点【实测】（H）：`").update(Rhe(e,t)).digest("hex").slice(0,12)`（完整形态 `("sha256").update(Rhe(e,t)).digest("hex").slice(0,12)`，1 处）；scheduler 侧同构函数 `getTasksIndexDatabasePath` 文件内 `gu(...)`
 - **task_id**：格式 `sess_<uuid>`。
   - **引擎侧生成【实测】**（Z）：`function Cl(e){return`sess_${e??crypto.randomUUID()}`}`（1 处）——`crypto.randomUUID()` 是 **UUIDv4**。同文件还有 `turn_${...}`、`evt_${...}` 同构函数。校验正则 `/^sess_[A-Za-z0-9._-]+$/`（Z 内 `sess_[A-Za-z0-9._-]` 2 处）。
