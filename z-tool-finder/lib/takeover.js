@@ -27,6 +27,13 @@ const { DATA_DIR } = require('./paths');
 const SELF_PLUGIN_NAME = 'z-tool-finder';
 const PRESCAN_ENTRIES_FILENAME = 'prescan-entries.json';
 
+// 引擎运行时注入启动参数的插件（静态配置无法还原完整命令）：
+// zcode-cua 的 --permission-broker-socket 由 GUI 动态生成注入（引擎
+// injectZCodeCuaBrokerMcpServers 机制），且受 resolveTrustedOfficialCuaServerNames
+// 特权白名单约束——wrapper 快照启动直接报
+// "plugin launcher requires --permission-broker-socket"（2026-08-26 实证）
+const ENGINE_INJECTED_PLUGINS = new Set(['zcode-cua']);
+
 /**
  * 纯函数：对比扫描结果与 registry，计算本次应接管的 server 集合。
  *
@@ -47,11 +54,17 @@ function computeActions({ home, workspaceRoot, reg, names } = {}) {
 
   const toTakeover = [];
   const taken = [];
+  const takenEntries = [];
   const excluded = [];
   for (const entry of entries) {
     if (entry.pluginName === SELF_PLUGIN_NAME) continue; // 自身跳过
+    if (entry.pluginName && ENGINE_INJECTED_PLUGINS.has(entry.pluginName)) {
+      excluded.push(entry.key); // 引擎注入型：硬边界，不可接管
+      continue;
+    }
     if (reg && reg.servers && reg.servers[entry.key]) {
       taken.push(entry.key); // 已接管，幂等跳过
+      takenEntries.push(entry); // 供 applyTakeover 漂移检测（插件升级/定义变化后刷新 wrapper）
       continue;
     }
     if (excludedList.includes(entry.key)) {
@@ -64,26 +77,70 @@ function computeActions({ home, workspaceRoot, reg, names } = {}) {
     if (explicit && !explicit.has(entry.key)) {
       continue; // 显式模式：只接管点名的 key（各 scope 均可，含 workspace）
     }
-    toTakeover.push({ key: entry.key, scope: entry.scope, config: entry.config });
+    toTakeover.push({ key: entry.key, scope: entry.scope, config: entry.config, pluginRoot: entry.pluginRoot });
   }
-  return { toTakeover, taken, excluded };
+  return { toTakeover, taken, takenEntries, excluded };
+}
+
+function expandServerDef(serverEntry) {
+  const orig = serverEntry.config;
+  const root = serverEntry.pluginRoot || null;
+  const def = {
+    ...orig,
+    command: expandTemplates(orig.command, root),
+    args: Array.isArray(orig.args) ? orig.args.map((a) => expandTemplates(a, root)) : orig.args,
+  };
+  if (orig.env) {
+    def.env = Object.fromEntries(
+      Object.entries(orig.env).map(([k, v]) => [k, expandTemplates(v, root)])
+    );
+  }
+  if (typeof orig.cwd === 'string') def.cwd = expandTemplates(orig.cwd, root);
+  return def;
 }
 
 /**
  * 构造写进 user config mcp.servers[key] 的 wrapper 条目。
  * key 即 scanServers 的归一化 key（user 级裸名 / 插件级 plugin:<p>:<s>，
  * M0 探针实证此覆盖形态有效）。
+ *
+ * 模板展开：插件 server 的 ${ZCODE_PLUGIN_ROOT}/${CLAUDE_PLUGIN_ROOT} 只在
+ * zcode 的插件层展开，wrapper 条目位于 user config 层（官方规则：不展开模板），
+ * 因此写入前替换为接管时刻的插件根绝对路径；插件升级后路径漂移由
+ * applyTakeover 的 taken 刷新逻辑重写。${CLAUDE_PROJECT_DIR} 等会话级变量
+ * 无会话上下文可展开，保留字面量（用到它的 server 极少且默认不启用）。
  */
+function expandTemplates(value, pluginRoot) {
+  if (!pluginRoot || typeof value !== 'string') return value;
+  return value
+    .replace(/\$\{ZCODE_PLUGIN_ROOT\}/g, pluginRoot)
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot);
+}
+
 function buildWrapperEntry(serverEntry, dataDir = DATA_DIR) {
   const launcher = path.join(dataDir, 'launcher', 'proxy-launcher.js');
-  const origArgs = Array.isArray(serverEntry.config.args) ? serverEntry.config.args : [];
-  return {
+  const orig = serverEntry.config;
+  const root = serverEntry.pluginRoot || null;
+  const origArgs = Array.isArray(orig.args) ? orig.args : [];
+  const entry = {
     type: 'stdio',
     command: 'node',
-    args: [launcher, serverEntry.key, '--', ...origArgs],
-    env: serverEntry.config.env ? { ...serverEntry.config.env } : {},
+    args: [
+      launcher,
+      serverEntry.key,
+      '--',
+      expandTemplates(orig.command, root),
+      ...origArgs.map((a) => expandTemplates(a, root)),
+    ],
+    env: orig.env
+      ? Object.fromEntries(Object.entries(orig.env).map(([k, v]) => [k, expandTemplates(v, root)]))
+      : {},
     enabled: true,
   };
+  // timeoutMs/cwd 透传：不保留会让 computer-use 这类长调用退回 30s 默认超时
+  if (typeof orig.timeoutMs === 'number') entry.timeoutMs = orig.timeoutMs;
+  if (typeof orig.cwd === 'string') entry.cwd = expandTemplates(orig.cwd, root);
+  return entry;
 }
 
 // 原子写预扫描任务文件（后台 prescan 进程读它；写坏会被 prescan 进程捕获退出）
@@ -121,17 +178,32 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
 
       let next = reg;
       const newEntries = [];
+      const refreshed = [];
       for (const t of actions.toTakeover) {
         const wrapperEntry = buildWrapperEntry(t, dir);
         next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, wrapperEntry });
         cfg.mcp.servers[t.key] = wrapperEntry;
-        newEntries.push({ key: t.key, config: t.config });
+        // prescan 消费的是可直连的真实定义：模板必须已展开
+        //（prescan 不经 wrapper，拿原始模板 spawn 会因路径无效失败）
+        newEntries.push({ key: t.key, config: expandServerDef(t) });
+      }
+      // 已接管条目漂移检测：插件升级（pluginRoot 变化使模板展开结果变）或原始定义
+      // 变化时，期望 wrapper 条目与 config 现值不一致 → 重写（外部手改 config 也被纠正）
+      for (const t of actions.takenEntries) {
+        const expected = buildWrapperEntry(t, dir);
+        if (JSON.stringify(cfg.mcp.servers[t.key]) === JSON.stringify(expected)) continue;
+        next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, wrapperEntry: expected });
+        cfg.mcp.servers[t.key] = expected;
+        refreshed.push(t.key);
       }
 
-      if (newEntries.length) {
+      if (newEntries.length || refreshed.length) {
         saveUserConfig(cfg, home);
         saveRegistry(dir, next);
-        // 预扫描预算（§7）：不在调用方同步路径内等结果，daemon 化后台执行
+      }
+      // 预扫描预算（§7）：只对新接管条目触发；刷新路径 newEntries 为空，
+      // 覆盖写空 entries 文件会清掉上一轮未消费的任务
+      if (newEntries.length) {
         const entriesFile = writeEntriesFile(dir, newEntries);
         backgroundPrescan(dir, entriesFile);
       }
@@ -139,13 +211,14 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
       return {
         taken: [...newEntries.map((e) => e.key), ...actions.taken],
         newly: newEntries.map((e) => e.key),
+        refreshed,
         skipped: [...actions.excluded],
-        needsRestart: newEntries.length > 0,
+        needsRestart: newEntries.length > 0 || refreshed.length > 0,
       };
     });
   } catch (err) {
     if (degradeOnLock && err instanceof LockHeldError) {
-      return { taken: [], newly: [], skipped: [], needsRestart: false, degraded: 'lock-held' };
+      return { taken: [], newly: [], refreshed: [], skipped: [], needsRestart: false, degraded: 'lock-held' };
     }
     throw err;
   }
@@ -228,6 +301,7 @@ function syncLauncherNow(dataDir = DATA_DIR) {
 
 module.exports = {
   SELF_PLUGIN_NAME,
+  ENGINE_INJECTED_PLUGINS,
   computeActions,
   buildWrapperEntry,
   applyTakeover,

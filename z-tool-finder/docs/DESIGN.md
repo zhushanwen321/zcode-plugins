@@ -186,6 +186,53 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 - **效果**：G2（用户感知的「所有 MCP」即用户级+插件级）且不引入团队协作副作用。
 - 探针：~~⛔ P0-2~~ **✅ 已通过（M0，2026-08-26）**——覆盖机制成立，无需降级路径。
 
+#### 6.5.1 接管覆盖面与不可接管项（2026-08-26 GUI 首验实证）
+
+首次 GUI 验收暴露两个扫描缺口与一组不可接管边界，均已实证定位：
+
+**已修缺口**：
+
+1. `enabledPlugins` 真实形态是对象 `{ "name@marketplace": true }`（zcode 实写），代码按数组
+   `for...of` 遍历导致 hook 每次启动即崩（`TypeError: enabled is not iterable`），接管数恒为 0。
+2. 插件 server 有**两种定义位置**：根 `.mcp.json` 与 `.zcode-plugin/plugin.json` 的 `mcpServers`
+   字段（zcode-cua 的 computer-use 只有后者）。扫描层双读（manifest 优先覆盖同名）。
+   官方 skill（diagnosing-mcp）为权威依据。（扫描层可见 ≠ 可接管——zcode-cua 随后在下述
+   硬边界中被排除，但其他 manifest 形态插件可正常接管。）
+3. 官方 marketplace 插件**默认启用但不写 enabledPlugins**（引擎 `defaultEnabled` 硬编码在
+   zcode.cjs，实证：zcode-cua/browser-use/document-skills/skill-creator/zcode-guide 默认启用，
+   android-emulator/ios-simulator/superpowers/restore-legacy-sessions 默认不启用）。磁盘上唯一
+   可读的「引擎实际加载过」信号是 `~/.zcode/cli/plugins/data/<name>@<marketplace>/` 目录存在。
+   取误报（已停用插件的残留 data 目录导致多接管）不取漏报。
+4. 插件 server 的 `${ZCODE_PLUGIN_ROOT}`/`${CLAUDE_PLUGIN_ROOT}` 模板只在 zcode 插件层展开，
+   wrapper 条目位于 user config 层（官方规则：配置文件不展开模板）——接管时展开为插件根
+   绝对路径；插件升级/定义漂移由 applyTakeover 的 taken 刷新逻辑重写（对比期望 wrapper 与
+   config 现值）。`${CLAUDE_PROJECT_DIR}` 等会话级变量无上下文，保留字面量（用到它的
+   android-emulator 默认不启用）。wrapper 同时透传 `timeoutMs`/`cwd`（computer-use 90s）。
+5. user config 中已是 wrapper 形态的条目再次扫描会递归包裹——扫描层按形态识别跳过
+   （`args = [proxy-launcher.js, key, '--', ...]`），其原始定义只存在于 registry.original。
+
+**不可接管项（引擎内置/运行时注入，记录边界不追）**：
+
+- `node_repl`（zcode.cjs 硬编码，browser-use 的 hostMcpServerNames）、`web_reader`、`4_5v_mcp`
+  等由引擎按模型套餐运行时注入，不落任何配置文件——无配置条目可改写，天然无法接管。
+- **zcode-cua（computer-use）**：server 定义在 plugin.json manifest `mcpServers`，但其完整启动
+  依赖引擎运行时注入的 `--permission-broker-socket`（GUI 动态生成，引擎
+  `injectZCodeCuaBrokerMcpServers` 机制 + `resolveTrustedOfficialCuaServerNames` 特权白名单）。
+  静态 wrapper 快照启动直接报 `plugin launcher requires --permission-broker-socket`
+  （2026-08-26 实证）——代码级硬边界排除（`ENGINE_INJECTED_PLUGINS`），status 可见。
+- 期望接管对象中 http 型插件 server（如 document-skills image_search，`${ZCODE_BASE_URL}`
+  远端）按 D5 排除（仅 stdio）。
+
+**对接管收益的影响（本机实证）**：本机活跃 server 中引擎内置（node_repl/web_reader/4_5v_mcp）、
+特权注入（computer-use）、http 型（image_search）占绝大多数，可接管对象实际仅剩 zsw（其
+1.1.0 工具面本就 offline、0 工具）——**本机 token 压缩收益趋近于零**。ztf 的价值场景是
+「用户自配多个 stdio MCP server」的环境；A2 验收若以本机为样本无法达标，需在有多 server
+环境重测或调整验收口径。
+
+**未覆盖扫描源（低优先 TODO）**：workspace 级 `zcode.json` 变体、仓库根到 cwd 的逐级目录
+读取、user 级 fallback `~/.agents/mcp.json`（仅当 cli/config.json 无 server 时生效，接管后
+user config 必有 wrapper 条目，fallback 自动失效，无实际影响）。
+
 ### 6.6 D6：检索 = 自实现关键词 + BM25
 
 - **采用**：对 catalog 内 `server:tool + when-to-use + description` 建 BM25 索引（内存，规模 <1k 工具毫秒级）。

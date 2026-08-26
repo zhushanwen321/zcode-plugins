@@ -23,7 +23,9 @@ const {
   restoreAll,
   restoreOne,
   syncLauncherNow,
+  ENGINE_INJECTED_PLUGINS,
 } = require('../lib/takeover');
+const { scanServers } = require('../lib/config-io');
 const { renderManifest, renderHookOutput } = require('../lib/inject');
 
 const USAGE = `用法: tf <command> [args]
@@ -100,6 +102,13 @@ function cmdStatus() {
   }
   const excluded = reg.excluded || [];
   process.stderr.write(`excluded: ${excluded.length ? excluded.join(', ') : '(无)'}\n`);
+  // 引擎注入型硬边界（代码级排除，不可配置）：列出避免「为何没接管」疑惑
+  const injected = scanServers({ home: os.homedir(), workspaceRoot: process.cwd() })
+    .filter((e) => e.pluginName && ENGINE_INJECTED_PLUGINS.has(e.pluginName))
+    .map((e) => e.key);
+  if (injected.length) {
+    process.stderr.write(`引擎注入不可接管（硬边界）: ${injected.join(', ')}\n`);
+  }
   process.stderr.write(`catalog server 数: ${Object.keys(cat.servers || {}).length}\n`);
   return 0;
 }
