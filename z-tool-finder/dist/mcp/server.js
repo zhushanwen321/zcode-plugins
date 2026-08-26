@@ -89,11 +89,15 @@ function handleSearch(params) {
   const cat = loadCatalog(DATA_DIR);
   const docs = buildDocs(cat);
   if (!docs.length) {
+    // 两种「空」语义不同：无 server = catalog 真未就绪；有 server 零工具 =
+    // 被接管 server 的工具面本就为空（如 zsw 1.1.0 offline），catalog 是健康的
+    const serverCount = Object.keys(cat.servers || {}).length;
+    const text = serverCount === 0
+      ? 'catalog 未就绪（尚无已索引 server）：可运行 tf catalog refresh 主动扫描，或等待接管后的后台预扫描完成'
+      : '已索引 ' + serverCount + ' 个 server，暂无工具条目（被接管 server 的工具面可能本就为空）；' +
+        '各 server 的 mcp__<server>__get_tool_details 仍可实时发现工具';
     return {
-      content: [{
-        type: 'text',
-        text: 'catalog 未就绪，工具将在首次使用时通过 get_tool_details 实时发现',
-      }],
+      content: [{ type: 'text', text }],
     };
   }
 

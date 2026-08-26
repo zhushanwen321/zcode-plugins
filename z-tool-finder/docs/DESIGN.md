@@ -233,6 +233,30 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 读取、user 级 fallback `~/.agents/mcp.json`（仅当 cli/config.json 无 server 时生效，接管后
 user config 必有 wrapper 条目，fallback 自动失效，无实际影响）。
 
+#### 6.5.2 卸载/禁用无引擎钩子——restore 是唯一还原路径（2026-08-26 zcode.cjs 源码定论）
+
+「能否在插件卸载/禁用时自动还原接管」的引擎源码级排查结论（引擎 bundle
+`/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`，12.5MB，2026-08-23 构建）：
+
+- **hook 事件全集恰好 7 个**：`SessionStart`/`UserPromptSubmit`/`PreToolUse`/`PermissionRequest`/
+  `PostToolUse`/`PostToolUseFailure`/`Stop`。`"SessionStart"` 在 bundle 中全部 6 处出现均为
+  zod 枚举、运行时常量表或 hooks.json 解析白名单（无分发点形态）；全文 grep
+  `PluginUninstall`/`PluginDisable`/`SessionEnd`/`Shutdown` 等零命中。hook runner 按
+  `event === hookEventName` 过滤执行，机制上不存在第八种事件的入口。
+- **卸载路径是纯文件操作**：CLI 确认框 → `uninstallZCodeMarketplacePlugin`（引擎注记名）→
+  底层删除函数（splice installed.json 条目 + `rm -rf` 安装目录与 cache 目录，`removeCache`
+  默认 true）+ 从 config 的 `plugins.enabledPlugins`/`plugins.options` 移除条目。全程零 hook
+  触发、零插件代码执行，且**不写 `mcp.servers`**——接管条目卸载后必然残留。禁用路径
+  （`setZCodePluginEnabled`）同样只写 enabledPlugins 一个布尔值。
+- **inline 形态连卸载链都不经过**：inline 插件不在 installed.json（卸载函数查不到直接返回
+  null），「卸载」= 从 config `plugins.dirs` 删路径，同样无任何触发点。
+- **设计推论**：自动还原在引擎机制上不可能——hook 由插件注册，插件移除后 hook 亦不再
+  执行（鸡生蛋）。唯一还原路径是手动 restore：插件在装时 `tf restore --all`；插件已卸载时
+  数据目录 `launcher/restore.js --all`（零依赖单文件，为此场景设计）。卸载默认删 cache 目录
+  使 proxy-launcher 四级插件解析全部落空，走「插件本体不存在 → exit 1 + stderr 打印 restore
+  指引」降级（D4）——该兜底覆盖的是卸载流程真实会制造的场景。用户文档须写明操作顺序：
+  **先 restore 再禁用/卸载**。
+
 ### 6.6 D6：检索 = 自实现关键词 + BM25
 
 - **采用**：对 catalog 内 `server:tool + when-to-use + description` 建 BM25 索引（内存，规模 <1k 工具毫秒级）。

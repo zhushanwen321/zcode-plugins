@@ -143,5 +143,28 @@ test('catalog 为空：返回友好提示而非报错', async (t) => {
     arguments: { query: 'anything' },
   });
   assert.equal(res.error, undefined);
-  assert.ok(res.result.content[0].text.includes('catalog 未就绪'));
+  assert.ok(res.result.content[0].text.includes('catalog 未就绪'), res.result.content[0].text);
+});
+
+test('catalog 有 server 但零工具：报告索引状态而非误报未就绪', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // zsw 1.1.0 形态：server 在 catalog、tools 为空（工具面 offline）
+  writeCatalog(dir, {
+    'plugin:z-subagent-workflow:z-subagent-workflow': {
+      serverInfo: { name: 'zsw', version: '1.1.0' },
+      tools: [],
+    },
+  });
+  const cli = startServer({ ZTF_DATA_DIR: dir });
+  t.after(() => cli.close());
+  const res = await cli.call('tools/call', {
+    name: 'search_tools',
+    arguments: { query: 'subagent' },
+  });
+  assert.equal(res.error, undefined);
+  const text = res.result.content[0].text;
+  assert.ok(text.includes('已索引 1 个 server'), text);
+  assert.ok(!text.includes('catalog 未就绪'), text);
+  assert.ok(text.includes('get_tool_details'), text);
 });
