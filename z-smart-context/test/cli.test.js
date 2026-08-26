@@ -19,11 +19,17 @@ function makeTmpDir(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
-function runZac(args, { cwd, dataDir }) {
+function runZac(args, { cwd, dataDir, engineConfigPath }) {
+  const env = { ...process.env, ZSC_DATA_DIR: dataDir };
+  if (engineConfigPath !== undefined) {
+    // override 子命令写入的引擎配置文件路径注入口（生产缺省 ~/.zcode/cli/config.json，
+    // 测试必须重定向 tmp，绝不允许单测触达真实路径）
+    env.ZSC_CONFIG_PATH = engineConfigPath;
+  }
   return spawnSync(process.execPath, [ZSC_JS, ...args], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, ZSC_DATA_DIR: dataDir },
+    env,
   });
 }
 
@@ -243,5 +249,162 @@ test('CLI: 会话尚无已完成请求 → exit 0 且 contextTokens 为 null（�
     assert.match(payload.note, /尚无已完成/);
   } finally {
     cleanupFixture(fx);
+  }
+});
+
+// ---- override 子命令（无头场景 spawn 前预备；引擎配置一律重定向 tmp）----
+
+function makeOverrideFixture() {
+  const tmpDataDir = makeTmpDir('zsc-cli-ovr-data-');
+  const tmpCfgDir = makeTmpDir('zsc-cli-ovr-cfg-');
+  return {
+    dataDir: tmpDataDir,
+    engineConfigPath: path.join(tmpCfgDir, 'config.json'),
+    lockPath: path.join(tmpDataDir, 'override-lock.json'),
+    cleanup() {
+      fs.rmSync(tmpDataDir, { recursive: true, force: true });
+      fs.rmSync(tmpCfgDir, { recursive: true, force: true });
+    },
+  };
+}
+
+test('CLI override apply: 缺 --model/--threshold/--owner 分别 exit 2 并指明缺哪个', () => {
+  const fx = makeOverrideFixture();
+  try {
+    for (const args of [
+      ['override', 'apply', '--threshold', '200000', '--owner', 'o'],
+      ['override', 'apply', '--model', 'glm-5.2', '--owner', 'o'],
+      ['override', 'apply', '--model', 'glm-5.2', '--threshold', '200000'],
+    ]) {
+      const r = runZac(args, { cwd: fx.dataDir, dataDir: fx.dataDir, engineConfigPath: fx.engineConfigPath });
+      assert.equal(r.status, 2, `args=${args.join(' ')} 应 exit 2，实得 stderr=${r.stderr}`);
+      assert.match(r.stderr, /缺少 --/, `args=${args.join(' ')}`);
+      assert.match(r.stderr, /用法示例/);
+    }
+    // 非法 threshold 同样 exit 2
+    const rBad = runZac(
+      ['override', 'apply', '--model', 'glm-5.2', '--threshold', 'abc', '--owner', 'o'],
+      { cwd: fx.dataDir, dataDir: fx.dataDir, engineConfigPath: fx.engineConfigPath },
+    );
+    assert.equal(rBad.status, 2);
+    assert.match(rBad.stderr, /有限正数/);
+    assert.equal(fs.existsSync(fx.lockPath), false, '用法错误不得产生任何文件副作用');
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('CLI override revert/status: 未登记时 exit 2 列出现存 owners / status 报空场', () => {
+  const fx = makeOverrideFixture();
+  try {
+    const rRevert = runZac(['override', 'revert', '--owner', 'nobody'], {
+      cwd: fx.dataDir,
+      dataDir: fx.dataDir,
+      engineConfigPath: fx.engineConfigPath,
+    });
+    assert.equal(rRevert.status, 2);
+    assert.match(rRevert.stderr, /没有生效中的 override 登记/);
+
+    const rStatus = runZac(['override', 'status'], {
+      cwd: fx.dataDir,
+      dataDir: fx.dataDir,
+      engineConfigPath: fx.engineConfigPath,
+    });
+    assert.equal(rStatus.status, 0);
+    const s = JSON.parse(rStatus.stdout.trim());
+    assert.equal(s.ok, true);
+    assert.equal(s.lockExists, false);
+    assert.equal(s.residue, false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('CLI override apply→status→revert 全链路：写入 +34000、对账在场、归零还原', () => {
+  const fx = makeOverrideFixture();
+  try {
+    fs.writeFileSync(fx.engineConfigPath, JSON.stringify({ plugins: { dirs: ['/d'] } }));
+    const opts = { cwd: fx.dataDir, dataDir: fx.dataDir, engineConfigPath: fx.engineConfigPath };
+
+    const rApply = runZac(
+      ['override', 'apply', '--model', 'glm-5.2', '--threshold', '200000', '--owner', 'task-a1'],
+      opts,
+    );
+    assert.equal(rApply.error, null);
+    assert.equal(rApply.status, 0, `stderr=${rApply.stderr}`);
+    const applied = JSON.parse(rApply.stdout.trim());
+    assert.equal(applied.ok, true);
+    assert.equal(applied.contextWindow, 234000); // 200000 + 34000（P17 公式）
+
+    // 落盘核验：引擎配置只多 override 叶子；锁含 owner 与 backup
+    const engine = JSON.parse(fs.readFileSync(fx.engineConfigPath, 'utf8'));
+    assert.equal(engine.modelCatalog.overrides['glm-5.2'].contextWindow, 234000);
+    assert.deepEqual(engine.plugins, { dirs: ['/d'] });
+    const lock = JSON.parse(fs.readFileSync(fx.lockPath, 'utf8'));
+    assert.equal(lock._zscManaged, true);
+    assert.deepEqual(lock.backup.hadEntry, false);
+
+    const rStatus = runZac(['override', 'status'], opts);
+    assert.equal(rStatus.status, 0);
+    const s = JSON.parse(rStatus.stdout.trim());
+    assert.equal(s.configHasOverride, true);
+    assert.equal(s.residue, false);
+    assert.deepEqual(s.owners.map((o) => o.ownerId), ['task-a1']);
+
+    const rRevert = runZac(['override', 'revert', '--owner', 'task-a1'], opts);
+    assert.equal(rRevert.status, 0, `stderr=${rRevert.stderr}`);
+    const released = JSON.parse(rRevert.stdout.trim());
+    assert.equal(released.restored, true);
+    // 还原后引擎配置回到初始内容、锁删除
+    assert.deepEqual(JSON.parse(fs.readFileSync(fx.engineConfigPath, 'utf8')), { plugins: { dirs: ['/d'] } });
+    assert.equal(fs.existsSync(fx.lockPath), false);
+
+    const rStatusAfter = runZac(['override', 'status'], opts);
+    const sAfter = JSON.parse(rStatusAfter.stdout.trim());
+    assert.equal(sAfter.lockExists, false);
+    assert.equal(sAfter.configHasOverride, false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('CLI override apply: 引擎配置坏 JSON → exit 1，stderr 给恢复动作，原文字节不动', () => {
+  const fx = makeOverrideFixture();
+  try {
+    fs.writeFileSync(fx.engineConfigPath, '{ broken');
+    const r = runZac(
+      ['override', 'apply', '--model', 'glm-5.2', '--threshold', '200000', '--owner', 'o'],
+      { cwd: fx.dataDir, dataDir: fx.dataDir, engineConfigPath: fx.engineConfigPath },
+    );
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /内部错误/);
+    assert.match(r.stderr, /修复/);
+    assert.match(r.stderr, /排查.*hook\.log/);
+    assert.equal(fs.readFileSync(fx.engineConfigPath, 'utf8'), '{ broken');
+    assert.equal(fs.existsSync(fx.lockPath), false);
+  } finally {
+    fx.cleanup();
+  }
+});
+
+test('CLI override revert: 存活其他 owner 时未知 id exit 2 且列出在役登记；--force 可救援', () => {
+  const fx = makeOverrideFixture();
+  try {
+    const opts = { cwd: fx.dataDir, dataDir: fx.dataDir, engineConfigPath: fx.engineConfigPath };
+    fs.writeFileSync(fx.engineConfigPath, '{}');
+    assert.equal(runZac(['override', 'apply', '--model', 'm', '--threshold', '10000', '--owner', 'alive'], opts).status, 0);
+
+    const rUnknown = runZac(['override', 'revert', '--owner', 'ghost'], opts);
+    assert.equal(rUnknown.status, 2);
+    assert.match(rUnknown.stderr, /alive/);
+    assert.match(rUnknown.stderr, /--force/);
+
+    const rForce = runZac(['override', 'revert', '--owner', 'anyone', '--force'], opts);
+    assert.equal(rForce.status, 0, `stderr=${rForce.stderr}`);
+    assert.equal(JSON.parse(rForce.stdout.trim()).restored, true);
+    assert.equal(fs.existsSync(fx.lockPath), false);
+    assert.deepEqual(JSON.parse(fs.readFileSync(fx.engineConfigPath, 'utf8')), {});
+  } finally {
+    fx.cleanup();
   }
 });

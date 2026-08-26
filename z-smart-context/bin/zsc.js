@@ -16,11 +16,23 @@ const path = require('node:path');
 
 const { openDb, getLatestCompletedUsage, findLatestSessionByDirectory } = require('../lib/db');
 const { readConfig } = require('../lib/config');
-const { isValidSessionId, loadState, intersectFired } = require('../lib/state');
+const {
+  isValidSessionId,
+  loadState,
+  intersectFired,
+} = require('../lib/state');
+const {
+  applyOverride,
+  releaseOverride,
+  statusOverride,
+} = require('../lib/config-override');
 const { logError } = require('../lib/log');
 
 // 数据目录与 hook 侧统一（config/state 同根）；ZSC_DATA_DIR 仅测试隔离用，生产不设置。
 const DATA_DIR = process.env.ZSC_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-smart-context');
+// override 子命令写入的引擎配置文件路径：生产固定 ~/.zcode/cli/config.json；
+// ZSC_CONFIG_PATH 仅测试隔离用（spawn 单测注入 tmp 文件），生产不设置。
+const ENGINE_CONFIG_PATH = process.env.ZSC_CONFIG_PATH || null;
 
 // note 固定文案（设计 §3.1 流二）；会话尚无已完成请求时前置一行成因说明
 const NOTE_LATEST = '--latest 按 cwd 反查当前项目最近活跃会话；可用 --session <id> 显式指定';
@@ -35,17 +47,30 @@ const USAGE = [
   '      {"sessionId":...,"contextTokens":...,"firedTiers":[...],"nextTier":...,"note":"..."}',
   '      默认 --latest：按 cwd 精确匹配反查当前项目最近活跃主会话；',
   '      --session <sessionId> 显式指定会话（id 见提醒文案或会话 UI）。',
+  '  node zsc.js override apply --model <modelId> --threshold <tokens> --owner <id>',
+  '      写入引擎 catalog override，把内建 autoCompact 阈值拉到 --threshold',
+  '      （contextWindow = threshold + 34000）。用于无头 agent spawn 前预备；',
+  '      同一 owner 重复执行幂等。窗口期结束务必 revert（见下）。',
+  '  node zsc.js override revert --owner <id> [--force]',
+  '      注销 owner 引用并还原引擎配置；最后一个 owner 注销时才真正还原。',
+  '      --force 供手工救援：跳过 owners 匹配直接按锁内备份还原（无头进程崩溃后用）。',
+  '      崩溃残留先看 override status 的 residue 字段再决定 revert --force 或人工处理。',
+  '  node zsc.js override status',
+  '      只读输出当前登记（owners/backup）与 config 现场核对结果，排查与人工审查入口。',
   '  node zsc.js --help | -h',
   '      显示本帮助。',
   '',
   'Exit code:',
   '  0  成功（含会话尚无已完成请求的正常态，contextTokens 为 null）',
-  '  1  内部错误（db 打不开/查询失败等；排查 tail ~/.zcode/z-smart-context/log/hook.log）',
-  '  2  用法错误（未知子命令/参数非法/--latest 反查无命中）',
+  '  1  内部错误（db 打不开/查询失败/引擎配置坏 JSON 等；排查 tail ~/.zcode/z-smart-context/log/hook.log）',
+  '  2  用法错误（未知子命令/参数非法/--latest 反查无命中/override 未登记该 owner）',
   '',
   '示例:',
   '  node zsc.js usage',
   '  node zsc.js usage --session sess_1a2b3c',
+  '  node zsc.js override apply --model glm-5.2 --threshold 200000 --owner task-a1',
+  '  node zsc.js override revert --owner task-a1',
+  '  node zsc.js override status',
 ].join('\n');
 
 function writeOut(text) {
@@ -71,37 +96,49 @@ function failUsage(message) {
 }
 
 // 内部错误（exit 1）：错误详情由 logError 落 hook.log，stderr 给一行可操作排查指引
-function failInternal(err) {
+function failInternal(err, source) {
   const message = err && err.message ? err.message : String(err);
-  logError(`[cli] usage 查询失败: ${message}`);
+  logError(`[cli:${source || 'usage'}] ${message}`);
   writeErr(`[z-smart-context] 内部错误: ${message}\n排查: tail ${path.join(DATA_DIR, 'log', 'hook.log')}\n`);
   process.exit(1);
 }
 
+// override 操作错误的 stderr 出口：exit code 由调用方定（业务无命中=2，环境/数据坏=1）
+function failOverride(result, exitCode, source) {
+  if (exitCode === 1) {
+    failInternal({ message: result.message }, source);
+    return;
+  }
+  writeErr(`[z-smart-context] ${result.message}\n用法示例见: node zsc.js --help\n`);
+  process.exit(2);
+}
+
+const VALUE_FLAGS = new Set(['--session', '--model', '--threshold', '--owner']);
+
 function parseArgs(args) {
-  let subcommand = null;
-  let session = null;
+  const flags = {};
+  const positionals = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--help' || arg === '-h') {
       writeOut(`${USAGE}\n`);
       process.exit(0);
     }
-    if (arg === '--session') {
+    if (arg === '--force') {
+      flags.force = true;
+      continue;
+    }
+    if (VALUE_FLAGS.has(arg)) {
       const value = args[i + 1];
-      if (value === undefined || value === '') failUsage('--session 缺少参数值');
-      session = value;
+      if (value === undefined || value === '') failUsage(`${arg} 缺少参数值`);
+      flags[arg.slice(2)] = value;
       i += 1;
       continue;
     }
     if (arg.startsWith('--')) failUsage(`未知参数 "${arg}"`);
-    if (subcommand === null) {
-      subcommand = arg;
-      continue;
-    }
-    failUsage(`多余参数 "${arg}"`);
+    positionals.push(arg);
   }
-  return { subcommand, session };
+  return { positionals, flags };
 }
 
 // nextTier：下一个会触发提醒的档，与 hook 侧 pickTier 同一越档判定（tokens >= tier）。
@@ -159,13 +196,106 @@ function runUsage(session) {
   }
 }
 
+// ---- override 子命令（无头场景 spawn 前预备，设计 §3.1 场景二）----
+//
+// 库函数永不 throw、只返回 {ok,...}；本层只做参数校验（exit 2）、结果分发与 exit code。
+// exit 语义：缺参/未知 owner/无登记 → 2（用法或数据面无命中）；坏 JSON/IO/意外 → 1。
+
+const OVERRIDE_ACTIONS = ['apply', 'revert', 'status'];
+// 这些失败码属「业务数据面无命中」，与 --latest 无命中同类归 2；其余归 1
+const OVERRIDE_USAGE_LEVEL_CODES = new Set(['invalid-args', 'unknown-owner', 'no-lock', 'model-mismatch']);
+
+function overrideRequireFlag(action, flags, name, exampleLine) {
+  const value = flags[name];
+  if (typeof value !== 'string' || value.trim() === '') {
+    failUsage(`override ${action} 缺少 --${name}。${exampleLine}`);
+  }
+  return value;
+}
+
+function runOverride(action, extra, flags) {
+  if (action === null) {
+    failUsage('override 缺少子动作（apply|revert|status）。示例: node zsc.js override status');
+  }
+  if (!OVERRIDE_ACTIONS.includes(action)) {
+    failUsage(`未知 override 子动作 "${action}"（可用: ${OVERRIDE_ACTIONS.join('|')}）`);
+  }
+  if (extra.length > 0) {
+    failUsage(`多余参数 "${extra[0]}"`);
+  }
+
+  if (action === 'apply') {
+    const applyExample = '示例: node zsc.js override apply --model glm-5.2 --threshold 200000 --owner task-a1';
+    const modelId = overrideRequireFlag('apply', flags, 'model', applyExample);
+    const owner = overrideRequireFlag('apply', flags, 'owner', applyExample);
+    if (flags.threshold === undefined || flags.threshold.trim() === '') {
+      failUsage(`override apply 缺少 --threshold。${applyExample}`);
+    }
+    const thresholdTokens = Number(flags.threshold);
+    if (!Number.isFinite(thresholdTokens) || thresholdTokens <= 0) {
+      failUsage(`--threshold 须为有限正数，收到 "${flags.threshold}"`);
+    }
+    const result = applyOverride({
+      modelId,
+      thresholdTokens,
+      ownerId: owner,
+      configPath: ENGINE_CONFIG_PATH || undefined,
+      dataDir: DATA_DIR,
+    });
+    if (!result.ok) {
+      failOverride(result, OVERRIDE_USAGE_LEVEL_CODES.has(result.code) ? 2 : 1, `override apply ${owner}`);
+    }
+    writeOut(`${JSON.stringify(result)}\n`);
+    process.exit(0);
+  }
+
+  if (action === 'revert') {
+    const owner = overrideRequireFlag(
+      'revert',
+      flags,
+      'owner',
+      '示例: node zsc.js override revert --owner task-a1 [--force]',
+    );
+    const result = releaseOverride(owner, {
+      configPath: ENGINE_CONFIG_PATH || undefined,
+      dataDir: DATA_DIR,
+      force: flags.force === true,
+    });
+    if (!result.ok) {
+      failOverride(result, OVERRIDE_USAGE_LEVEL_CODES.has(result.code) ? 2 : 1, `override revert ${owner}`);
+    }
+    writeOut(`${JSON.stringify(result)}\n`);
+    process.exit(0);
+  }
+
+  // status：只读观测，任何可报告的现场状态都是成功观测（residue 与否见字段）
+  const result = statusOverride({
+    configPath: ENGINE_CONFIG_PATH || undefined,
+    dataDir: DATA_DIR,
+  });
+  if (!result.ok) {
+    failOverride(result, 1, 'override status');
+  }
+  writeOut(`${JSON.stringify(result)}\n`);
+  process.exit(0);
+}
+
 function main(argv) {
   const args = argv.slice(2);
   if (args.length === 0) failUsage('缺少子命令');
-  const { subcommand, session } = parseArgs(args);
+  const { positionals, flags } = parseArgs(args);
+  const subcommand = positionals.shift() ?? null;
   if (subcommand === null) failUsage('缺少子命令');
-  if (subcommand !== 'usage') failUsage(`未知子命令 "${subcommand}"`);
-  runUsage(session);
+  if (subcommand === 'usage') {
+    if (positionals.length > 0) failUsage(`多余参数 "${positionals[0]}"`);
+    runUsage(flags.session ?? null);
+    return;
+  }
+  if (subcommand === 'override') {
+    runOverride(positionals.shift() ?? null, positionals, flags);
+    return;
+  }
+  failUsage(`未知子命令 "${subcommand}"`);
 }
 
 try {
