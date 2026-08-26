@@ -159,6 +159,35 @@ test('越档：首轮注入 additionalContext 且 firedTiers 落盘', () => {
 
 // ---- ② 同读数第二轮静默且 fired 不变 ----
 
+// ---- ② 同读数第二轮静默且 fired 不变 ----
+
+test('多档同越：合并文案覆盖全部已越档且各档只提醒一次（真实场景回归：双档只 fire 最小档会让下一轮重复单提）', () => {
+  const ctx = setup();
+  try {
+    writeConfig(ctx);
+    buildFixtureDb(
+      ctx,
+      [{ id: 'sess_multi' }],
+      [{ sessionId: 'sess_multi', inputTokens: 140, cacheReadTokens: 110 }] // 250 同时越 100 与 200 档
+    );
+
+    const first = runHook(ctx, { stdin: stdinOf('sess_multi') });
+    assert.equal(first.status, 0);
+    const text = JSON.parse(first.stdout).additionalContext;
+    assert.ok(text.includes('已越过阈值 100（100、200）'), '文案应合并列出全部已越档');
+
+    // 合并提醒一次性覆盖两档 → 两档都置 fired，第二轮同读数不再有任何注入
+    const state = readState(ctx, 'sess_multi');
+    assert.deepEqual(state.firedTiers, [100, 200]);
+
+    const second = runHook(ctx, { stdin: stdinOf('sess_multi') });
+    assert.equal(second.status, 0);
+    assert.equal(second.stdout, '');
+  } finally {
+    teardown(ctx);
+  }
+});
+
 test('去重：同读数第二轮 stdout 为空且 fired 不变', () => {
   const ctx = setup();
   try {

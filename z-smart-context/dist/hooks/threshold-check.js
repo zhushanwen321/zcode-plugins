@@ -194,12 +194,13 @@ function mainFlow(rawStdin) {
   } else {
     const tier = pickTier(config.tiers, cur, firedEff);
     if (tier !== null) {
-      // 越新档：fired 追加后持久化（存交集+新档，顺带清掉改档残留的失配旧值）
+      const crossedTiers = config.tiers.filter((t) => cur >= t);
+      // fired 记录文案已覆盖的全部已越档（非仅 pickTier 选中档）——多档合并提醒
+      // 一次性告知后，各档都算「已提醒过」，否则下一轮会对文案里已出现的档重复单提
       persistState(stateDir, sessionId, {
-        firedTiers: [...firedEff, tier].sort((a, b) => a - b),
+        firedTiers: [...new Set([...firedEff, ...crossedTiers])].sort((a, b) => a - b),
         lastTokens: cur,
       });
-      const crossedTiers = config.tiers.filter((t) => cur >= t);
       output = tierNotifyText(pluginRoot, sessionId, cur, tier, crossedTiers);
       log(`tier-notify 注入动作 tier=${tier} tokens=${cur} sessionId=${sessionId}`);
     } else {
