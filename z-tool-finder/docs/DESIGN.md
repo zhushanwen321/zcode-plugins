@@ -162,7 +162,7 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 - **被否**：插件 AGENTS.md（zcode 插件无此通道）；UserPromptSubmit 每条注入（token 重复）；skill 描述承载（容量有限且不结构化）。
 - **证据**：官方 superpowers 5.1.0 `hooks/session-start` 即此形态的活先例（`~/.zcode/cli/plugins/cache/zcode-plugins-official/superpowers/5.1.0/hooks/session-start:49-51`，嵌套格式对 Claude Code/zcode 兼容）；diagnosing-hooks/SKILL.md:36 确认 additionalContext 注入契约。
 - **效果**：G1 的「清单常驻」半边；G2 的自动化触发点（同一 hook 顺带执行自动接管）。
-- 探针：⛔ **P0-1** 验证嵌套格式在 zcode 实际生效（输出注入后新会话首条回复可见）。失败降级：改输出顶层 `additionalContext` 字段（browser-use 内嵌 HookJSONOutputSchema 显示两者都在 schema 内）；两者皆失败则本插件不可行，止损。
+- 探针：~~⛔ P0-1~~ **✅ 已通过（M0，2026-08-26，无头真实会话实证）**——嵌套格式生效，无需顶层字段降级。
 
 ### 6.3 D3：meta 工具面（每 wrapper 2 个 + 全局 1 个）
 
@@ -182,9 +182,9 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 
 - **采用**：hook 自动接管两类——① 用户级 `~/.zcode/cli/config.json` 的 server：原位改写 command；② 插件自带 server：**不动 cache 副本**（更新会覆盖、且有完整性标记），改为在用户 config 写同名覆盖条目（user > 插件的覆盖顺序）。workspace 级 server 与一切 SSE/HTTP 类型：不自动接管，仅 `tf takeover <server>` 显式支持。排除清单（registry `excluded`）+ 高频直通白名单（`pinned`，默认空）可配置。
 - **被否**：全自动接管 workspace server——`<repo>/.zcode/config.json` 是版本管理文件，自动改写会污染团队仓库的 PR。
-- **证据**：zcode-configuration-guide「MCP: merge」的覆盖顺序；marketplace 副本 + seed 完整性标记机制。
+- **证据**：zcode-configuration-guide「MCP: merge」的覆盖顺序；marketplace 副本 + seed 完整性标记机制。**探针实证（2026-08-26，`test/probes/PROBE-RESULTS.md`）**：覆盖 key 必须用全命名空间 `plugin:<plugin>:<server>`（裸名无效）；`enabled:false` 禁用原注册有效；`enabled:true` + 替换 command 的接管形态下工具变为 meta 工具且 server 命名空间保持原名（`mcp__plugin_<plugin>_<server>__<tool>`）。
 - **效果**：G2（用户感知的「所有 MCP」即用户级+插件级）且不引入团队协作副作用。
-- 探针：⛔ **P0-2** 验证 user config 同名覆盖条目（enabled:false 或仅 command 重写）能压掉插件自带 server 的注册。失败降级：插件 server 不自动接管，hook 在清单中标注「插件 server 需手动接管或禁用原插件」，核心价值（用户级 server + 未来新增）保留。
+- 探针：~~⛔ P0-2~~ **✅ 已通过（M0，2026-08-26）**——覆盖机制成立，无需降级路径。
 
 ### 6.6 D6：检索 = 自实现关键词 + BM25
 
@@ -264,10 +264,10 @@ z-tool-finder/
 
 ### 8.2 验收场景
 
-前置探针（实施第一天执行，任一失败走对应降级路径并重估设计）：
-- **P0-1**：手工写一个输出嵌套 additionalContext 的 SessionStart hook 注册进临时插件 → 真实 zcode 会话验证注入可见。
-- **P0-2**：user config 写同名覆盖条目压掉某官方插件 server → 重启后该 server 工具消失。
-- **P0-3**：一个 tools/list 只返回 2 个 meta 工具的假 server → zcode 正常连接、无最小工具数假设。
+前置探针（**已于 2026-08-26 全部执行并通过**，方法与四轮记录见 `test/probes/PROBE-RESULTS.md`）：
+- **P0-1** ✅：嵌套 additionalContext 的 SessionStart hook 在真实无头 zcode 会话注入生效，模型能原样引用注入内容。
+- **P0-2** ✅（带修正）：user config 用全命名空间 key `plugin:<plugin>:<server>` 写覆盖条目，`enabled:false` 成功禁用插件 server；`enabled:true` + 替换 command 的接管形态下工具变为 meta 工具且命名空间保持原名。
+- **P0-3** ✅：tools/list 只返回 2 个 meta 工具的 server 正常连接注册，zcode 无最小工具数假设。
 
 | 场景 | 回溯目标 | 真实流程/数据/路径 | 通过标准 |
 |---|---|---|---|
@@ -286,7 +286,7 @@ z-tool-finder/
 
 | 阶段 | 内容 | 交付终态的什么 |
 |---|---|---|
-| M0 | 三连探针 P0-1/2/3 | 消解方案最大不确定性，定降级路径 |
+| M0 | 三连探针 P0-1/2/3 | ~~消解方案最大不确定性，定降级路径~~ **已完成（2026-08-26，全部通过，`test/probes/`）** |
 | M1 | 脚手架 + 主 server（search_tools）+ catalog 只读目录 + 清单注入 hook（手动 takeover 前，纯只读模式） | G1 的清单半边（不接管也可当目录用） |
 | M2 | proxy wrapper + launcher + takeover/restore CLI（手动模式） | G1 全量 + G3 |
 | M3 | hook 自动接管（user+插件级）+ 排除/直通配置 | G2 |
@@ -307,8 +307,8 @@ z-tool-finder/
 
 ## 11. 待验证检查点
 
-1. ⛔ P0-1/2/3 三探针（见 §8 前置）——全部带降级路径，探针失败则对应决策（D2/D5/D1）重估。
-2. zcode 对 hook 输出的消费格式是否同时接受顶层与嵌套 additionalContext（决定 hook 输出最终形态，探针 P0-1 顺带覆盖）。
+1. ~~⛔ P0-1/2/3 三探针~~ **已全部通过（2026-08-26，见 `test/probes/PROBE-RESULTS.md`）**；P0-2 带修正结论：覆盖 key 必须为 `plugin:<plugin>:<server>` 全命名空间形态。设计文档 v1 的降级路径不再需要，保留探针脚本作为 zcode 升级漂移检测的复跑基线。
+2. ~~zcode 对 hook 输出的消费格式是否同时接受顶层与嵌套 additionalContext~~ 已由 P0-1 定案：嵌套格式生效，hook 固定输出嵌套形态（顶层格式兼容性不再需要探测）。
 3. 清单规模上限：>300 工具时的折叠策略（按 server 折叠为「server — when-to-use」一行）是否够用，实施期用构造数据验证。
 4. 插件 server 覆盖条目在插件自身升级（新版本目录出现）后的行为：覆盖条目仍指向旧接管定义是否需要 hook 重新接管（M3 实测）。
 5. marketplace 正式安装形态下 `${ZCODE_PLUGIN_ROOT}` 在 hook 中的展开与 inline 形态差异（local-dev-guide 冒烟流程覆盖）。
@@ -317,3 +317,4 @@ z-tool-finder/
 
 - v1（2026-08-26）：初版。调研依据：市面方案（Anthropic TST / KGT24k / Stacklok / pi Dynamic Tool Loading）、zcode 能力对标（本仓 docs/research/）、superpowers hook 先例。
 - v2（2026-08-26）：按对抗式审查修订——G4 改述为「治理迁移」（披露 per-tool 引擎治理失配，由 wrapper policies 承接）；接管/restore 加单实例锁 + re-read + 记录级合并（并发 last-writer-wins 防护）；G2 改述「至多两次重启 + workspace 仅显式」；A2 口径闭环（清单计入常驻开销）；catalog 预扫描移出 hook 同步路径（后台化 + 实时兜底）；launcher 定版本解析优先级与卸载行为；A1 加并发变体、A4 加真实卸载变体；实施计划补 marketplace/check-sync/release.js 收尾阶段。
+- v3（2026-08-26）：M0 三探针执行完毕全部通过，结果与脚本归档 `test/probes/`；D5 覆盖 key 修正为 `plugin:<plugin>:<server>` 全命名空间形态（裸名无效，run2 实证）。
