@@ -128,3 +128,18 @@ test('removeServer 纯函数：删除目标 key，其余保留；不存在 key �
   assert.ok(!('no-such' in same.servers));
   assert.ok('b' in same.servers);
 });
+
+test('upsertServer/removeServer 保留顶层 excluded（接管/还原写路径不清除用户排除清单）', () => {
+  const reg = {
+    servers: { a: { scope: 'user', original: {}, wrapperEntry: {}, pinned: false, takenOverAt: 't' } },
+    overrides: {},
+    policies: {},
+    excluded: ['legacy-server', 'ci-mcp'],
+  };
+  const up = upsertServer(reg, { key: 'x', scope: 'user', original: {}, wrapperEntry: {} });
+  assert.deepStrictEqual(up.excluded, ['legacy-server', 'ci-mcp'], 'upsert 不丢 excluded');
+  const rm = removeServer(reg, 'a');
+  assert.deepStrictEqual(rm.excluded, ['legacy-server', 'ci-mcp'], 'remove 不丢 excluded');
+  const miss = removeServer(reg, 'no-such');
+  assert.deepStrictEqual(miss.excluded, ['legacy-server', 'ci-mcp'], 'miss 路径不丢 excluded');
+});

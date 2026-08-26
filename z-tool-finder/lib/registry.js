@@ -120,6 +120,12 @@ function saveRegistry(dataDir, reg) {
   fs.renameSync(tmp, file);
 }
 
+// 顶层 excluded（用户排除清单）随写路径透传，勿在重建对象时丢失
+function withExcluded(reg, next) {
+  if (Array.isArray(reg.excluded)) next.excluded = reg.excluded;
+  return next;
+}
+
 // 纯函数：插入/更新一条接管记录，返回新 reg（不 mutate 入参）
 function upsertServer(reg, entry) {
   const prev = (reg.servers && reg.servers[entry.key]) || {};
@@ -139,17 +145,17 @@ function upsertServer(reg, entry) {
     overrides: { ...reg.overrides },
     policies: { ...reg.policies },
   };
-  return next;
+  return withExcluded(reg, next);
 }
 
 // 纯函数：移除一条接管记录，返回新 reg；key 不存在时原样返回（等值新对象）
 function removeServer(reg, key) {
   if (!reg.servers || !(key in reg.servers)) {
-    return { servers: { ...reg.servers }, overrides: { ...reg.overrides }, policies: { ...reg.policies } };
+    return withExcluded(reg, { servers: { ...reg.servers }, overrides: { ...reg.overrides }, policies: { ...reg.policies } });
   }
   const servers = { ...reg.servers };
   delete servers[key];
-  return { servers, overrides: { ...reg.overrides }, policies: { ...reg.policies } };
+  return withExcluded(reg, { servers, overrides: { ...reg.overrides }, policies: { ...reg.policies } });
 }
 
 module.exports = {
