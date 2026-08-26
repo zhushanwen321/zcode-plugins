@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// zac —— z-auto-compact 用量自查 CLI（M4）。数据流：readConfig → openDb(readonly)
+// zsc —— z-smart-context 用量自查 CLI（M4）。数据流：readConfig → openDb(readonly)
 // →（--session 显式 | 默认 --latest：按 cwd 反查最近活跃主会话）→ getLatestCompletedUsage
 // → firedTiers 与当前配置求交 → nextTier 计算 → stdout 单行 JSON（设计 §3.1 流二）。
 //
@@ -19,33 +19,33 @@ const { readConfig } = require('../lib/config');
 const { isValidSessionId, loadState, intersectFired } = require('../lib/state');
 const { logError } = require('../lib/log');
 
-// 数据目录与 hook 侧统一（config/state 同根）；ZAC_DATA_DIR 仅测试隔离用，生产不设置。
-const DATA_DIR = process.env.ZAC_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-auto-compact');
+// 数据目录与 hook 侧统一（config/state 同根）；ZSC_DATA_DIR 仅测试隔离用，生产不设置。
+const DATA_DIR = process.env.ZSC_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-smart-context');
 
 // note 固定文案（设计 §3.1 流二）；会话尚无已完成请求时前置一行成因说明
 const NOTE_LATEST = '--latest 按 cwd 反查当前项目最近活跃会话；可用 --session <id> 显式指定';
 const NOTE_NO_USAGE = '会话尚无已完成的模型请求（首轮进行中属正常态），contextTokens 暂缺';
 
 const USAGE = [
-  'zac - z-auto-compact 上下文用量自查 CLI',
+  'zsc - z-smart-context 上下文用量自查 CLI',
   '',
   '用法:',
-  '  node zac.js usage [--session <sessionId>]',
+  '  node zsc.js usage [--session <sessionId>]',
   '      查询当前会话上下文用量与档位状态，stdout 输出单行 JSON：',
   '      {"sessionId":...,"contextTokens":...,"firedTiers":[...],"nextTier":...,"note":"..."}',
   '      默认 --latest：按 cwd 精确匹配反查当前项目最近活跃主会话；',
   '      --session <sessionId> 显式指定会话（id 见提醒文案或会话 UI）。',
-  '  node zac.js --help | -h',
+  '  node zsc.js --help | -h',
   '      显示本帮助。',
   '',
   'Exit code:',
   '  0  成功（含会话尚无已完成请求的正常态，contextTokens 为 null）',
-  '  1  内部错误（db 打不开/查询失败等；排查 tail ~/.zcode/z-auto-compact/log/hook.log）',
+  '  1  内部错误（db 打不开/查询失败等；排查 tail ~/.zcode/z-smart-context/log/hook.log）',
   '  2  用法错误（未知子命令/参数非法/--latest 反查无命中）',
   '',
   '示例:',
-  '  node zac.js usage',
-  '  node zac.js usage --session sess_1a2b3c',
+  '  node zsc.js usage',
+  '  node zsc.js usage --session sess_1a2b3c',
 ].join('\n');
 
 function writeOut(text) {
@@ -66,7 +66,7 @@ function writeErr(text) {
 
 // 用法错误（exit 2）：报错必附用法示例（§3.4），人读文案、不用 emoji
 function failUsage(message) {
-  writeErr(`[z-auto-compact] ${message}\n用法示例: node zac.js usage --session sess_xxx\n\n${USAGE}\n`);
+  writeErr(`[z-smart-context] ${message}\n用法示例: node zsc.js usage --session sess_xxx\n\n${USAGE}\n`);
   process.exit(2);
 }
 
@@ -74,7 +74,7 @@ function failUsage(message) {
 function failInternal(err) {
   const message = err && err.message ? err.message : String(err);
   logError(`[cli] usage 查询失败: ${message}`);
-  writeErr(`[z-auto-compact] 内部错误: ${message}\n排查: tail ${path.join(DATA_DIR, 'log', 'hook.log')}\n`);
+  writeErr(`[z-smart-context] 内部错误: ${message}\n排查: tail ${path.join(DATA_DIR, 'log', 'hook.log')}\n`);
   process.exit(1);
 }
 
@@ -136,7 +136,7 @@ function runUsage(session) {
       // 默认 --latest：cwd 精确匹配 + parent_id IS NULL 排除子会话（D5）
       const found = findLatestSessionByDirectory(db, process.cwd());
       if (!found) {
-        failUsage('未找到 cwd 匹配的活跃会话。用法：node zac.js usage --session sess_xxx（sessionId 见提醒文案或会话 UI）');
+        failUsage('未找到 cwd 匹配的活跃会话。用法：node zsc.js usage --session sess_xxx（sessionId 见提醒文案或会话 UI）');
       }
       sessionId = found.id;
     }

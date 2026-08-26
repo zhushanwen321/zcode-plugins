@@ -12,7 +12,7 @@ const path = require('node:path');
 const { DEFAULTS, normalizeTiers, readConfig } = require('../lib/config');
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'zac-config-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-config-test-'));
 }
 
 test('normalizeTiers: 滤除非正数与非 number 值', () => {

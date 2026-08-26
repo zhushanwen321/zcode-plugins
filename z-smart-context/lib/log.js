@@ -1,6 +1,6 @@
 'use strict';
 
-// 插件统一日志：一行时间戳文本追加到 ~/.zcode/z-auto-compact/log/hook.log，并镜像 stderr。
+// 插件统一日志：一行时间戳文本追加到 ~/.zcode/z-smart-context/log/hook.log，并镜像 stderr。
 // 为什么镜像 stderr：hook 进程的 stdout 是 additionalContext 注入契约通道（§2.2），
 // 人读信息只能走 stderr；落盘则是为了会话结束后仍可排查（tail hook.log）。
 
@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const LOG_DIR = path.join(os.homedir(), '.zcode', 'z-auto-compact', 'log');
+const LOG_DIR = path.join(os.homedir(), '.zcode', 'z-smart-context', 'log');
 const LOG_FILE = path.join(LOG_DIR, 'hook.log');
 
 function emit(line) {

@@ -1,21 +1,21 @@
 ---
-name: zac-usage
-description: 查询并解读当前会话的上下文用量（token），决定是否建议用户执行 /compact 压缩。收到 [z-auto-compact] 用量提醒、或长任务中需要自查上下文/token 用量、判断压缩时机与档位状态时使用。触发词：上下文用量、token 用量、context usage、contextTokens、压缩、compact、/compact、用量提醒、越档、自查、firedTiers、nextTier。
+name: zsc-usage
+description: 查询并解读当前会话的上下文用量（token），决定是否建议用户执行 /compact 压缩。收到 [z-smart-context] 用量提醒、或长任务中需要自查上下文/token 用量、判断压缩时机与档位状态时使用。触发词：上下文用量、token 用量、context usage、contextTokens、压缩、compact、/compact、用量提醒、越档、自查、firedTiers、nextTier。
 ---
 
-# zac-usage — 上下文用量自查与压缩引导
+# zsc-usage — 上下文用量自查与压缩引导
 
-收到 [z-auto-compact] 越档提醒后按本文自查读数并决定行动。核心原则：**提醒是数据投递，不是必须执行的指令**。
+收到 [z-smart-context] 越档提醒后按本文自查读数并决定行动。核心原则：**提醒是数据投递，不是必须执行的指令**。
 
 ## 1. 何时自查
 
-- 刚收到 [z-auto-compact] 注入的用量提醒（提醒随本轮请求可见，可先按其数字行动，也可复查最新读数）。
+- 刚收到 [z-smart-context] 注入的用量提醒（提醒随本轮请求可见，可先按其数字行动，也可复查最新读数）。
 - 长任务各阶段主动补盲：自动检测点只在用户提交 prompt 的时刻，单次长 turn 进行中不会有任何检查——建议每个主要阶段完成后自查一次，避免长 turn 中途逼近窗口上限而无感知。
 
 ## 2. 怎么查
 
-- 首选：直接复制运行提醒文案里内联的命令行（形如 `node /abs/path/to/z-auto-compact/bin/zac.js usage`，路径是 hook 运行时生成的真实绝对路径，可直接执行）。
-- 也可显式指定会话：`node <z-auto-compact 插件根>/bin/zac.js usage --session <sessionId>`（sessionId 在提醒文案里）。
+- 首选：直接复制运行提醒文案里内联的命令行（形如 `node /abs/path/to/z-smart-context/bin/zsc.js usage`，路径是 hook 运行时生成的真实绝对路径，可直接执行）。
+- 也可显式指定会话：`node <z-smart-context 插件根>/bin/zsc.js usage --session <sessionId>`（sessionId 在提醒文案里）。
 - agent 的 Bash 环境没有 sessionId 环境变量；默认 `--latest` 按 cwd 反查当前项目最近活跃主会话，在项目目录下直接跑即可，无需显式传 id。
 
 ## 3. 怎么解读（stdout 单行 JSON）

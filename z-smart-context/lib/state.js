@@ -1,6 +1,6 @@
 'use strict';
 
-// 会话级档位状态（D3）：~/.zcode/z-auto-compact/state/<sessionId>.json，
+// 会话级档位状态（D3）：~/.zcode/z-smart-context/state/<sessionId>.json，
 // 内容 {firedTiers: number[], lastTokens: number, updatedAt}。hook 进程随事件结束退出，
 // 去重必须跨进程持久，故一 session 一文件、每次检查原子写。
 // 判档/回落/求交均为纯函数具名导出（可测性约束），IO 只做薄壳。

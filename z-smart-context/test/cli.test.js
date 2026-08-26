@@ -1,6 +1,6 @@
 'use strict';
 
-// bin/zac.js CLI 端到端单测：spawnSync 真实脚本进程，ZAC_DATA_DIR 指向临时目录做隔离；
+// bin/zsc.js CLI 端到端单测：spawnSync 真实脚本进程，ZSC_DATA_DIR 指向临时目录做隔离；
 // db 用 node:sqlite 在临时目录建最小 schema 的 fixture 库（绝不碰生产库）。
 // macOS 上 os.tmpdir() 是 /var/...（真实路径 /private/var/...），子进程 process.cwd() 返回
 // 物理路径，故 cwd 与 session.directory 一律经 realpathSync 归一，保证精确匹配可命中。
@@ -13,17 +13,17 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 
-const ZAC_JS = path.join(__dirname, '..', 'bin', 'zac.js');
+const ZSC_JS = path.join(__dirname, '..', 'bin', 'zsc.js');
 
 function makeTmpDir(prefix) {
   return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 function runZac(args, { cwd, dataDir }) {
-  return spawnSync(process.execPath, [ZAC_JS, ...args], {
+  return spawnSync(process.execPath, [ZSC_JS, ...args], {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, ZAC_DATA_DIR: dataDir },
+    env: { ...process.env, ZSC_DATA_DIR: dataDir },
   });
 }
 
@@ -56,8 +56,8 @@ function createFixtureDb(dbPath) {
 
 // 场景工厂：临时数据目录（config.json 指 fixture 库）+ 临时项目目录（作 cwd 与 directory）
 function makeFixture() {
-  const dataDir = makeTmpDir('zac-cli-data-');
-  const projectDir = makeTmpDir('zac-cli-proj-');
+  const dataDir = makeTmpDir('zsc-cli-data-');
+  const projectDir = makeTmpDir('zsc-cli-proj-');
   const dbPath = path.join(dataDir, 'fixture.sqlite');
   const db = createFixtureDb(dbPath);
   // 不写 tiers → 走默认 [200000, 400000, 600000]
@@ -94,7 +94,7 @@ function insertUsage(
 // ---- 用法面 ----
 
 test('CLI: --help / -h exit 0，含子命令、参数与三个 exit code', () => {
-  const dataDir = makeTmpDir('zac-cli-data-');
+  const dataDir = makeTmpDir('zsc-cli-data-');
   try {
     for (const flag of ['--help', '-h']) {
       const r = runZac([flag], { cwd: dataDir, dataDir });
@@ -111,7 +111,7 @@ test('CLI: --help / -h exit 0，含子命令、参数与三个 exit code', () =>
 });
 
 test('CLI: 无参 exit 2 且 stderr 含用法', () => {
-  const dataDir = makeTmpDir('zac-cli-data-');
+  const dataDir = makeTmpDir('zsc-cli-data-');
   try {
     const r = runZac([], { cwd: dataDir, dataDir });
     assert.equal(r.status, 2);
@@ -123,7 +123,7 @@ test('CLI: 无参 exit 2 且 stderr 含用法', () => {
 });
 
 test('CLI: 未知子命令 exit 2', () => {
-  const dataDir = makeTmpDir('zac-cli-data-');
+  const dataDir = makeTmpDir('zsc-cli-data-');
   try {
     const r = runZac(['frobnicate'], { cwd: dataDir, dataDir });
     assert.equal(r.status, 2);
@@ -135,7 +135,7 @@ test('CLI: 未知子命令 exit 2', () => {
 });
 
 test('CLI: --session 非法格式（路径穿越串）exit 2', () => {
-  const dataDir = makeTmpDir('zac-cli-data-');
+  const dataDir = makeTmpDir('zsc-cli-data-');
   try {
     const r = runZac(['usage', '--session', '../../etc'], { cwd: dataDir, dataDir });
     assert.equal(r.status, 2);

@@ -1,7 +1,7 @@
 'use strict';
 
 // hook 主流程集成测试：node:sqlite 建临时 fixture 库（列集对照设计 §5.2 与 lib/db.js 实际 SQL），
-// ZAC_DATA_DIR + 隔离 HOME 指向临时目录，spawnSync 喂 stdin 跑真实 dist/hooks/threshold-check.js，
+// ZSC_DATA_DIR + 隔离 HOME 指向临时目录，spawnSync 喂 stdin 跑真实 dist/hooks/threshold-check.js，
 // 断言 stdout 契约与 state 落盘。不 mock 任何 lib 模块。
 
 const test = require('node:test');
@@ -17,7 +17,7 @@ const HOOK = path.join(PLUGIN_ROOT, 'dist', 'hooks', 'threshold-check.js');
 const TIERS = [100, 200, 300];
 
 function setup() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zac-hookflow-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-hookflow-'));
   const ctx = {
     root,
     dataDir: path.join(root, 'data'),
@@ -99,11 +99,11 @@ function runHook(ctx, { stdin = '', env = {} }) {
   const childEnv = { ...process.env };
   // 剥离宿主环境可能残留的干扰变量，再叠加用例显式注入的
   delete childEnv.CLAUDE_SESSION_ID;
-  delete childEnv.ZAC_DATA_DIR;
+  delete childEnv.ZSC_DATA_DIR;
   for (const key of Object.keys(childEnv)) {
     if (/_NESTED$/.test(key)) delete childEnv[key];
   }
-  childEnv.ZAC_DATA_DIR = ctx.dataDir;
+  childEnv.ZSC_DATA_DIR = ctx.dataDir;
   // HOME 隔离：lib/log 落盘路径基于 os.homedir()，不隔离会写真实 ~/.zcode
   childEnv.HOME = ctx.homeDir;
   return spawnSync(process.execPath, [HOOK], {
@@ -144,8 +144,8 @@ test('越档：首轮注入 additionalContext 且 firedTiers 落盘', () => {
     const out = JSON.parse(res.stdout);
     assert.deepEqual(Object.keys(out), ['additionalContext']);
     const text = out.additionalContext;
-    assert.match(text, /^\[z-auto-compact\] 上下文用量 150 tokens，已越过阈值 100（100）。/);
-    assert.ok(text.includes('node ' + path.join(PLUGIN_ROOT, 'bin', 'zac.js') + ' usage'), '应内联插件根真实路径');
+    assert.match(text, /^\[z-smart-context\] 上下文用量 150 tokens，已越过阈值 100（100）。/);
+    assert.ok(text.includes('node ' + path.join(PLUGIN_ROOT, 'bin', 'zsc.js') + ' usage'), '应内联插件根真实路径');
     assert.ok(!text.includes('\n'), '注入文案必须单行');
 
     const state = readState(ctx, 'sess_fire1');
@@ -208,7 +208,7 @@ test('回落自愈：读数降到 min(fired)×0.8 以下触发知情注入且 fi
     assert.deepEqual(Object.keys(out), ['additionalContext']);
     assert.match(
       out.additionalContext,
-      /^\[z-auto-compact\] 上下文用量已显著回落（150 → 70），此前很可能发生了压缩或回退。/
+      /^\[z-smart-context\] 上下文用量已显著回落（150 → 70），此前很可能发生了压缩或回退。/
     );
 
     const state = readState(ctx, 'sess_drop');
@@ -290,7 +290,7 @@ test('配置关停（enabled:false）：静默且不产 state', () => {
 test('db 打开失败：exit 0、stdout 空、stderr 留 ERROR 日志', () => {
   const ctx = setup();
   try {
-    writeConfig(ctx, { dbPath: '/nonexistent/zac-hookflow/db.sqlite' });
+    writeConfig(ctx, { dbPath: '/nonexistent/zsc-hookflow/db.sqlite' });
 
     const res = runHook(ctx, { stdin: stdinOf('sess_nodb') });
     assert.equal(res.status, 0);

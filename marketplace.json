@@ -8,13 +8,13 @@
   },
   "plugins": [
     {
-      "name": "z-auto-compact",
-      "source": "./z-auto-compact",
+      "name": "z-smart-context",
+      "source": "./z-smart-context",
       "version": "0.1.0",
-      "description": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders injected via UserPromptSubmit hook (additionalContext), usage self-check CLI (zac.js usage), and compaction guidance skill. Read-only model_usage metrics, zero MCP servers, no context-window residency cost.",
+      "description": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders injected via UserPromptSubmit hook (additionalContext), usage self-check CLI (zsc.js usage), and compaction guidance skill. Read-only model_usage metrics, zero MCP servers, no context-window residency cost.",
       "description_i18n": {
-        "en": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders injected via UserPromptSubmit hook (additionalContext), usage self-check CLI (zac.js usage), and compaction guidance skill. Read-only model_usage metrics, zero MCP servers, no context-window residency cost.",
-        "zh-CN": "让 zcode 内建 auto-compact 对会话内可见：UserPromptSubmit hook 注入 3 档阈值提醒（additionalContext）、zac.js usage 用量自查 CLI、压缩引导 skill。只读 model_usage 计量，零 MCP server，无常驻上下文成本。"
+        "en": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders injected via UserPromptSubmit hook (additionalContext), usage self-check CLI (zsc.js usage), and compaction guidance skill. Read-only model_usage metrics, zero MCP servers, no context-window residency cost.",
+        "zh-CN": "让 zcode 内建 auto-compact 对会话内可见：UserPromptSubmit hook 注入 3 档阈值提醒（additionalContext）、zsc.js usage 用量自查 CLI、压缩引导 skill。只读 model_usage 计量，零 MCP server，无常驻上下文成本。"
       },
       "author": {
         "name": "zhushanwen",

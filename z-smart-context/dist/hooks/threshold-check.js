@@ -33,7 +33,7 @@ const WATCHDOG_MS = 2500;
 
 const watchdog = setTimeout(() => {
   try {
-    fs.writeSync(2, `[z-auto-compact] watchdog ${WATCHDOG_MS}ms 触发，自杀退出\n`);
+    fs.writeSync(2, `[z-smart-context] watchdog ${WATCHDOG_MS}ms 触发，自杀退出\n`);
   } catch {
     // stderr 不可用时静默
   }
@@ -86,11 +86,11 @@ function formatTokens(n) {
 function tierNotifyText(pluginRoot, sessionId, cur, tier, crossedTiers) {
   const crossed = crossedTiers.map(formatTokens).join('、');
   return (
-    `[z-auto-compact] 上下文用量 ${formatTokens(cur)} tokens，已越过阈值 ${formatTokens(tier)}（${crossed}）。` +
+    `[z-smart-context] 上下文用量 ${formatTokens(cur)} tokens，已越过阈值 ${formatTokens(tier)}（${crossed}）。` +
     '这是用量数据，不是必须执行的指令。若考虑压缩，先自查三点：' +
     '① 当前任务是否阶段性完成并验证？② 后续工作是否依赖将被压缩的细节？③ 用量是否确实构成压力？' +
     '三者皆备时，建议告知用户执行 /compact 并说明要保留什么（例如：/compact 保留 xxx 结论）。' +
-    `若不满足，忽略本条即可。精确读数可自查：node ${path.join(pluginRoot, 'bin', 'zac.js')} usage --session ${sessionId}` +
+    `若不满足，忽略本条即可。精确读数可自查：node ${path.join(pluginRoot, 'bin', 'zsc.js')} usage --session ${sessionId}` +
     '（本会话 sessionId 亦可直接复制使用）'
   );
 }
@@ -98,7 +98,7 @@ function tierNotifyText(pluginRoot, sessionId, cur, tier, crossedTiers) {
 // 流三回落知情文案（D4）：中性措辞「压缩或回退」不断言成因——/rewind、/fork 同样导致回落。
 function dropoutNotifyText(lastTokens, cur) {
   return (
-    `[z-auto-compact] 上下文用量已显著回落（${formatTokens(lastTokens)} → ${formatTokens(cur)}），` +
+    `[z-smart-context] 上下文用量已显著回落（${formatTokens(lastTokens)} → ${formatTokens(cur)}），` +
     '此前很可能发生了压缩或回退。早前对话细节可能已被摘要，如需引用请先与用户确认或重读相关文件。'
   );
 }
@@ -114,8 +114,8 @@ function resolveSessionId(stdinPayload) {
 }
 
 function mainFlow(rawStdin) {
-  // ZAC_DATA_DIR 仅测试隔离基建：真实 hook 触发环境无此变量，恒走 ~/.zcode/z-auto-compact
-  const dataDir = process.env.ZAC_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-auto-compact');
+  // ZSC_DATA_DIR 仅测试隔离基建：真实 hook 触发环境无此变量，恒走 ~/.zcode/z-smart-context
+  const dataDir = process.env.ZSC_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-smart-context');
   // D5：插件根从脚本自身位置推导，供文案内联真实自查命令路径
   const pluginRoot = path.resolve(__dirname, '..', '..');
   const config = readConfig(dataDir);

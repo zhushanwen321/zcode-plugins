@@ -21,7 +21,7 @@ const {
 } = require('../lib/state');
 
 function makeTmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'zac-state-test-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-state-test-'));
 }
 
 // ---- isValidSessionId（D3 定案①）----

@@ -3,7 +3,7 @@
 
 /**
  * 无头 e2e：真实 zcode app-server + 真实模型，验证 V1/V2/V3 的数据层证据（设计 §4）。
- * 本地显式触发：ZAC_E2E=1 node test/e2e-headless.test.js
+ * 本地显式触发：ZSC_E2E=1 node test/e2e-headless.test.js
  * （node --test 全量下默认 skip：e2e 烧真实 token，CI 亦排除 e2e*.test.js——双保险门控。）
  *
  * 断言（全部来自落盘数据，非模型复述）：
@@ -20,7 +20,7 @@
  */
 
 const test = require('node:test');
-const skip = !process.env.ZAC_E2E;
+const skip = !process.env.ZSC_E2E;
 
 test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async () => {
   const { spawn } = require('node:child_process');
@@ -32,7 +32,7 @@ test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async
 
   const PLUGIN_ROOT = path.resolve(__dirname, '..');
   const ZCODE_CLI = '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
-  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zac-e2e-'));
+  const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsc-e2e-'));
   const HOME = path.join(TMP, 'home');
   const CWD = path.join(TMP, 'work');
   fs.mkdirSync(path.join(HOME, '.zcode', 'cli'), { recursive: true });
@@ -47,7 +47,7 @@ test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async
     JSON.stringify({
       model: { main: 'builtin:bigmodel-coding-plan/GLM-5.3' },
       provider: { 'builtin:bigmodel-coding-plan': providerEntry },
-      plugins: { dirs: [PLUGIN_ROOT], enabledPlugins: { 'z-auto-compact@inline': true } },
+      plugins: { dirs: [PLUGIN_ROOT], enabledPlugins: { 'z-smart-context@inline': true } },
     }),
   );
 
@@ -99,7 +99,7 @@ test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async
   };
 
   try {
-    const created = await request('session/create', { workspace: { workspacePath: CWD, workspaceKey: 'ws-zac-e2e' }, mode: 'yolo' });
+    const created = await request('session/create', { workspace: { workspacePath: CWD, workspaceKey: 'ws-zsc-e2e' }, mode: 'yolo' });
     const sessionId = created?.sessionId ?? created?.session?.sessionId;
     assert.ok(sessionId, 'no sessionId: ' + JSON.stringify(created).slice(0, 200));
     await request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' });
@@ -132,14 +132,14 @@ test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async
     );
     let tierHit = 0, dropoutHit = 0;
     for (const line of rollout.split('\n')) {
-      if (!line.includes('[z-auto-compact]')) continue;
+      if (!line.includes('[z-smart-context]')) continue;
       let j;
       try { j = JSON.parse(line); } catch { continue; }
       const msgs = j?.request?.messages;
       if (!Array.isArray(msgs)) continue;
       for (const m of msgs) {
         const c = typeof m.content === 'string' ? m.content : '';
-        if (c.includes('[z-auto-compact] 上下文用量')) tierHit++;
+        if (c.includes('[z-smart-context] 上下文用量')) tierHit++;
         if (c.includes('上下文用量已显著回落')) dropoutHit++;
       }
     }
@@ -148,14 +148,14 @@ test('headless e2e: tier-notify inject + dedup + dropout reset', { skip }, async
 
     // 断言 3/4：hook 日志注入动作计数（V2 口径：以此为准，rollout grep 会跨轮重复命中）
     const hookLog = fs.readFileSync(
-      path.join(HOME, '.zcode/z-auto-compact/log/hook.log'), 'utf8',
+      path.join(HOME, '.zcode/z-smart-context/log/hook.log'), 'utf8',
     );
     assert.equal((hookLog.match(/tier-notify 注入动作/g) || []).length, 1, 'tier-notify 恰 1 次（fired 去重）');
     assert.equal((hookLog.match(/dropout-reset 注入动作/g) || []).length, 1, 'dropout-reset 恰 1 次');
 
     // 断言 5：state 终态回落清档 + 引擎日志干净
     const st = JSON.parse(fs.readFileSync(
-      path.join(HOME, '.zcode/z-auto-compact/state', `${sessionId}.json`), 'utf8',
+      path.join(HOME, '.zcode/z-smart-context/state', `${sessionId}.json`), 'utf8',
     ));
     assert.deepEqual(st.firedTiers, [], '回落自愈应清空 firedTiers');
     const logDir = path.join(HOME, '.zcode/cli/log');
