@@ -184,10 +184,8 @@ async function cmdCatalogRefresh() {
 
 /* ---------------- doctor ---------------- */
 
-function cmdDoctor(args) {
-  const key = args[0];
-  const problems = [];
-
+// [1][2] 数据目录脚本存在性（缺失项进 problems）
+function doctorScripts(problems) {
   const launcher = path.join(DATA_DIR, 'launcher', 'proxy-launcher.js');
   const launcherOk = fs.existsSync(launcher);
   process.stderr.write(`[1] launcher 脚本 (${launcher}): ${launcherOk ? 'OK' : '缺失'}\n`);
@@ -196,33 +194,50 @@ function cmdDoctor(args) {
   }
   const restoreScript = path.join(DATA_DIR, 'launcher', 'restore.js');
   process.stderr.write(`[2] restore 兜底脚本: ${fs.existsSync(restoreScript) ? 'OK' : '缺失（可由 hook 自动补齐）'}\n`);
+}
 
-  let reg = null;
+// [3] registry 可读性；不可读时进 problems 并返回 null
+function doctorRegistry(problems) {
   try {
-    reg = loadRegistry(DATA_DIR);
+    const reg = loadRegistry(DATA_DIR);
     process.stderr.write(`[3] registry.json 可读: OK（已接管 ${Object.keys(reg.servers || {}).length}）\n`);
+    return reg;
   } catch (err) {
     problems.push('registry 不可读: ' + err.message + ' → 备份后删除 registry.json 并重新 takeover');
+    return null;
   }
+}
+
+// [4] catalog 可读性
+function doctorCatalog(problems) {
   try {
     const cat = loadCatalog(DATA_DIR);
     process.stderr.write(`[4] catalog.json 可读: OK（server 数 ${Object.keys(cat.servers || {}).length}）\n`);
   } catch (err) {
     problems.push('catalog 不可读: ' + err.message + ' → 运行 tf catalog refresh 重建');
   }
+}
 
-  if (key) {
-    const rec = reg && reg.servers && reg.servers[key];
-    if (!rec) {
-      problems.push(`server "${key}" 不在 registry → 先运行 tf takeover ${key}`);
-    } else {
-      process.stderr.write(`[5] ${key}: scope=${rec.scope} original=${rec.original && rec.original.command}\n`);
-      // original command 存在性只做静态检查（手动 spawn --help 探测可选，避免 doctor 拉起慢进程）
-      const cmd = rec.original && rec.original.command;
-      if (!cmd) problems.push(`${key}: original.command 缺失 → tf restore ${key} 后重新接管`);
-    }
+// [5] 指定 server key 的 registry 记录检查
+function doctorServerKey(key, reg, problems) {
+  const rec = reg && reg.servers && reg.servers[key];
+  if (!rec) {
+    problems.push(`server "${key}" 不在 registry → 先运行 tf takeover ${key}`);
+    return;
   }
+  process.stderr.write(`[5] ${key}: scope=${rec.scope} original=${rec.original && rec.original.command}\n`);
+  // original command 存在性只做静态检查（手动 spawn --help 探测可选，避免 doctor 拉起慢进程）
+  const cmd = rec.original && rec.original.command;
+  if (!cmd) problems.push(`${key}: original.command 缺失 → tf restore ${key} 后重新接管`);
+}
 
+function cmdDoctor(args) {
+  const key = args[0];
+  const problems = [];
+  doctorScripts(problems);
+  const reg = doctorRegistry(problems);
+  doctorCatalog(problems);
+  if (key) doctorServerKey(key, reg, problems);
   process.stderr.write(`日志目录: ${LOGS_DIR}（hook.log 可查注入异常）\n`);
   if (problems.length) {
     process.stderr.write('发现的问题与建议:\n  - ' + problems.join('\n  - ') + '\n');

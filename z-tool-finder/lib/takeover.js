@@ -35,6 +35,26 @@ const PRESCAN_ENTRIES_FILENAME = 'prescan-entries.json';
 const ENGINE_INJECTED_PLUGINS = new Set(['zcode-cua']);
 
 /**
+ * 单条目分类（computeActions 的逐条规则，范围规则见 DESIGN.md D5）：
+ * - self            插件名是 z-tool-finder 自身 → 跳过（接管自己会递归）
+ * - engine-excluded 引擎注入型插件 → 硬边界不可接管，归 excluded
+ * - taken           已在 registry.servers → 幂等跳过（供漂移检测）
+ * - excluded        registry 顶层 excluded 名单 → 跳过
+ * - skip            workspace 未点名 / 显式模式未点名的条目
+ * - takeover        应接管
+ * pinned 不参与分类（只影响 hook 清单渲染）。
+ */
+function classifyEntry(entry, { excludedList, explicit, servers }) {
+  if (entry.pluginName === SELF_PLUGIN_NAME) return 'self';
+  if (entry.pluginName && ENGINE_INJECTED_PLUGINS.has(entry.pluginName)) return 'engine-excluded';
+  if (servers[entry.key]) return 'taken';
+  if (excludedList.includes(entry.key)) return 'excluded';
+  if (entry.scope === 'workspace' && !(explicit && explicit.has(entry.key))) return 'skip';
+  if (explicit && !explicit.has(entry.key)) return 'skip';
+  return 'takeover';
+}
+
+/**
  * 纯函数：对比扫描结果与 registry，计算本次应接管的 server 集合。
  *
  * 范围规则（DESIGN.md D5）：
@@ -50,6 +70,7 @@ const ENGINE_INJECTED_PLUGINS = new Set(['zcode-cua']);
 function computeActions({ home, workspaceRoot, reg, names } = {}) {
   const entries = scanServers({ home, workspaceRoot });
   const excludedList = Array.isArray(reg && reg.excluded) ? reg.excluded : [];
+  const servers = (reg && reg.servers) || {};
   const explicit = Array.isArray(names) ? new Set(names) : null;
 
   const toTakeover = [];
@@ -57,27 +78,20 @@ function computeActions({ home, workspaceRoot, reg, names } = {}) {
   const takenEntries = [];
   const excluded = [];
   for (const entry of entries) {
-    if (entry.pluginName === SELF_PLUGIN_NAME) continue; // 自身跳过
-    if (entry.pluginName && ENGINE_INJECTED_PLUGINS.has(entry.pluginName)) {
-      excluded.push(entry.key); // 引擎注入型：硬边界，不可接管
-      continue;
+    switch (classifyEntry(entry, { excludedList, explicit, servers })) {
+      case 'taken':
+        taken.push(entry.key);
+        takenEntries.push(entry); // 供 applyTakeover 漂移检测（插件升级/定义变化后刷新 wrapper）
+        break;
+      case 'engine-excluded':
+      case 'excluded':
+        excluded.push(entry.key);
+        break;
+      case 'takeover':
+        toTakeover.push({ key: entry.key, scope: entry.scope, config: entry.config, pluginRoot: entry.pluginRoot });
+        break;
+      // 'self' / 'skip'：静默跳过
     }
-    if (reg && reg.servers && reg.servers[entry.key]) {
-      taken.push(entry.key); // 已接管，幂等跳过
-      takenEntries.push(entry); // 供 applyTakeover 漂移检测（插件升级/定义变化后刷新 wrapper）
-      continue;
-    }
-    if (excludedList.includes(entry.key)) {
-      excluded.push(entry.key);
-      continue;
-    }
-    if (entry.scope === 'workspace' && !(explicit && explicit.has(entry.key))) {
-      continue; // workspace 级仅显式接管
-    }
-    if (explicit && !explicit.has(entry.key)) {
-      continue; // 显式模式：只接管点名的 key（各 scope 均可，含 workspace）
-    }
-    toTakeover.push({ key: entry.key, scope: entry.scope, config: entry.config, pluginRoot: entry.pluginRoot });
   }
   return { toTakeover, taken, takenEntries, excluded };
 }

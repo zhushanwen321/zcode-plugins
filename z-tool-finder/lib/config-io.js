@@ -162,33 +162,28 @@ function defaultEnabledCachePlugins(home) {
   return result;
 }
 
-// 扫描三源，返回 [{ key, scope, pluginName, serverName, config }]
-// key 归一化：user/workspace 用裸 server 名；插件源用 `plugin:<plugin>:<server>`
-// （M0 探针实证：用户 config 覆盖插件 server 必须用全命名空间 key，裸名无效）
-function scanServers({ home, workspaceRoot } = {}) {
-  const results = [];
-  const userConfig = loadUserConfig(home);
-
-  // 源 1：user config mcp.servers（wrapper 条目跳过，防递归包裹）
+// 源 1：user config mcp.servers（wrapper 条目跳过，防递归包裹）
+function collectUserServers(userConfig, results) {
   const userServers = (userConfig.mcp && userConfig.mcp.servers) || {};
   for (const [name, config] of Object.entries(userServers)) {
     if (isWrapperEntry(name, config)) continue;
     if (!isEligibleServer(config)) continue;
     results.push({ key: name, scope: 'user', pluginName: null, serverName: name, config, pluginRoot: null });
   }
+}
 
-  // 源 2：workspace config mcp.servers（文件不存在跳过）
-  if (workspaceRoot) {
-    const wsConfig = readJsonFile(path.join(workspaceRoot, '.zcode', 'config.json'));
-    const wsServers = (wsConfig && wsConfig.mcp && wsConfig.mcp.servers) || {};
-    for (const [name, config] of Object.entries(wsServers)) {
-      if (!isEligibleServer(config)) continue;
-      results.push({ key: name, scope: 'workspace', pluginName: null, serverName: name, config, pluginRoot: null });
-    }
+// 源 2：workspace config mcp.servers（文件不存在跳过）
+function collectWorkspaceServers(workspaceRoot, results) {
+  const wsConfig = readJsonFile(path.join(workspaceRoot, '.zcode', 'config.json'));
+  const wsServers = (wsConfig && wsConfig.mcp && wsConfig.mcp.servers) || {};
+  for (const [name, config] of Object.entries(wsServers)) {
+    if (!isEligibleServer(config)) continue;
+    results.push({ key: name, scope: 'workspace', pluginName: null, serverName: name, config, pluginRoot: null });
   }
+}
 
-  // 源 3：插件 server（.mcp.json + manifest mcpServers 双读）
-  // 插件根解析三路合并，优先级 inline dirs > enabledPlugins 点名 cache > 官方默认启用（data 信号）
+// 源 3a：插件根解析三路合并，优先级 inline dirs > enabledPlugins 点名 cache > 官方默认启用（data 信号）
+function resolvePluginRoots(home, userConfig) {
   const pluginRoots = new Map(); // pluginName -> root（inline 优先）
   const inlineDirs = (userConfig.plugins && userConfig.plugins.dirs) || [];
   for (const dir of inlineDirs) {
@@ -209,7 +204,11 @@ function scanServers({ home, workspaceRoot } = {}) {
   for (const [name, root] of defaultEnabledCachePlugins(home)) {
     if (!pluginRoots.has(name)) pluginRoots.set(name, root);
   }
+  return pluginRoots;
+}
 
+// 源 3b：插件 server（.mcp.json + manifest mcpServers 双读）展开为归一化条目
+function collectPluginServers(pluginRoots, results) {
   for (const [pluginName, root] of pluginRoots) {
     const servers = pluginMcpServers(root);
     for (const [name, config] of Object.entries(servers)) {
@@ -224,7 +223,17 @@ function scanServers({ home, workspaceRoot } = {}) {
       });
     }
   }
+}
 
+// 扫描三源，返回 [{ key, scope, pluginName, serverName, config }]
+// key 归一化：user/workspace 用裸 server 名；插件源用 `plugin:<plugin>:<server>`
+// （M0 探针实证：用户 config 覆盖插件 server 必须用全命名空间 key，裸名无效）
+function scanServers({ home, workspaceRoot } = {}) {
+  const results = [];
+  const userConfig = loadUserConfig(home);
+  collectUserServers(userConfig, results);
+  if (workspaceRoot) collectWorkspaceServers(workspaceRoot, results);
+  collectPluginServers(resolvePluginRoots(home, userConfig), results);
   return results;
 }
 
