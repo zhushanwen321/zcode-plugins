@@ -7,8 +7,6 @@ const fs = require('fs');
 const path = require('path');
 
 const LOCK_NAME = 'registry.lock';
-// 与 config-io.js 的 LOCK_STALE_MS 同值；独立声明避免 registry 依赖 config-io（模块各自可独立 require）
-const LOCK_STALE_MS = 30 * 1000;
 
 class LockHeldError extends Error {
   constructor(pid) {
@@ -36,7 +34,9 @@ function isPidAlive(pid) {
   }
 }
 
-// 单实例锁：wx 模式原子创建；已存在时按「PID 存活 → 抛错；死亡或超 30s → stale 强制接管」处理
+// 单实例锁：wx 模式原子创建；已存在时按「PID 存活 → 抛错；死亡/不可读 → stale 强制接管」处理。
+// 不用 mtime 判 stale：存活持有者的临界区可能超任意超时（慢盘/重试重放/SIGSTOP），
+// 按时间强抢会导致两个进程同时持锁，且原持有者 finally 会误删新锁（R1）。
 function withLock(dataDir, fn) {
   const lock = lockPath(dataDir);
   fs.mkdirSync(dataDir, { recursive: true });
@@ -55,10 +55,7 @@ function withLock(dataDir, fn) {
     } catch {
       // 读失败（并发删除窗口）视为不可复用，走 stale 分支重建
     }
-    const stale =
-      Number.isNaN(pid) ||
-      !isPidAlive(pid) ||
-      Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS;
+    const stale = Number.isNaN(pid) || !isPidAlive(pid);
     if (!stale) throw new LockHeldError(pid);
     fs.rmSync(lock, { force: true });
     const fd = fs.openSync(lock, 'wx');

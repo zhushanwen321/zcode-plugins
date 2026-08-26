@@ -177,6 +177,9 @@ function main(argv) {
         .then((c) => {
           client = c;
           log('底层连接建立');
+          // 任何路径建立的连接都要武装空闲回收：tools/call 分支之外，
+          // get_tool_details 的 catalog miss 兜底也会拉起底层连接
+          resetIdleTimer();
           return c;
         })
         .catch((err) => {

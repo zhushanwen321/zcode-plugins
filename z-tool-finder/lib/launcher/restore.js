@@ -13,7 +13,10 @@
  * 随后从 registry 移除该记录，两个文件均原子写。
  *
  * 并发防护：内联实现与 lib/registry.js withLock 同款的 wx 锁协议
- * （PID 存活 + 30s stale 检测），防止与并发 takeover 互相覆盖（last-writer-wins）。
+ * （PID 存活检测），防止与并发 takeover 互相覆盖（last-writer-wins）。
+ * 另：registry 锁不覆盖 zcode 引擎对 config.json 的写——落盘前比对 mtime，
+ * 外部已改则重读重放（记录级 set/del 幂等），连续冲突时放弃本轮并报错，
+ * 与 lib/takeover.js guardedSaveUserConfig 同款防护（R4）。
  */
 'use strict';
 
@@ -24,8 +27,8 @@ const os = require('os');
 const DATA_DIR = process.env.ZTF_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-tool-finder');
 const REGISTRY_PATH = path.join(DATA_DIR, 'registry.json');
 const LOCK_PATH = path.join(DATA_DIR, 'registry.lock');
-const LOCK_STALE_MS = 30 * 1000; // 与 lib/registry.js 同值，独立声明保持零依赖
 const CONFIG_PATH = path.join(os.homedir(), '.zcode', 'cli', 'config.json');
+const USER_CONFIG_MAX_RETRIES = 5;
 
 function readJsonSafe(file) {
   try {
@@ -53,8 +56,9 @@ function isPidAlive(pid) {
   }
 }
 
-// 单实例锁（与 lib/registry.js withLock 同协议）：wx 原子创建；
-// 已存在时「PID 存活且未超 30s → 拒绝执行；否则视为 stale 接管重建」。
+// 单实例锁（与 lib/registry.js 同协议）：wx 原子创建；
+// 已存在时「PID 存活 → 拒绝执行；死亡/不可读 → stale 接管重建」（不用 mtime
+// 判 stale：存活持有者临界区慢于任意超时时按时间强抢会导致双持锁 + 误删新锁）。
 // 返回 release 函数；锁被活跃持有者占用时返回 null。
 function acquireLock() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -73,11 +77,7 @@ function acquireLock() {
     } catch {
       // 读失败（并发删除窗口）走 stale 分支重建
     }
-    const stale =
-      Number.isNaN(pid) ||
-      !isPidAlive(pid) ||
-      Date.now() - fs.statSync(LOCK_PATH).mtimeMs > LOCK_STALE_MS;
-    if (!stale) return null;
+    if (!(Number.isNaN(pid) || !isPidAlive(pid))) return null;
     fs.rmSync(LOCK_PATH, { force: true });
     tryCreate();
   }
@@ -115,27 +115,46 @@ try {
     exitCode = 1;
   } else {
 
-  // 锁内重读 config：与持锁 takeover 的读写串行化，避免基于旧副本整体覆盖
-  const cfg = readJsonSafe(CONFIG_PATH) || {};
-  if (!cfg.mcp || typeof cfg.mcp !== 'object') cfg.mcp = {};
-  if (!cfg.mcp.servers || typeof cfg.mcp.servers !== 'object') cfg.mcp.servers = {};
-
-  for (const key of keys) {
+  // 每个待还原 key 的 mutation（记录级、幂等，可对重读后的 config 重放）
+  const mutations = keys.map((key) => {
     const entry = reg.servers[key];
-    if (entry.scope === 'user') {
-      // user 源：key 即 server 名，original 原位写回
-      cfg.mcp.servers[key] = entry.original;
-    } else {
-      // plugin / workspace 源：接管形态是 user config 里的覆盖条目，删除即还原；
-      // 原始定义仍在插件 .mcp.json / 仓库 workspace config，不能写入 user config
-      delete cfg.mcp.servers[key];
-    }
-    delete reg.servers[key];
-  }
+    if (entry.scope === 'user') return { op: 'set', key, value: entry.original };
+    return { op: 'del', key };
+  });
+  for (const key of keys) delete reg.servers[key];
 
-  writeJsonAtomic(CONFIG_PATH, cfg);
-  writeJsonAtomic(REGISTRY_PATH, reg);
-  process.stderr.write(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${CONFIG_PATH}）\n`);
+  // 锁内重读 config + mtime 外部写防护 + 重试重放（引擎写 config 不走 registry 锁）
+  const statMtimeMs = (file) => {
+    try {
+      return fs.statSync(file).mtimeMs;
+    } catch {
+      return null; // 不存在 = 首次创建，无冲突可言
+    }
+  };
+  let saved = false;
+  for (let i = 0; i < USER_CONFIG_MAX_RETRIES && !saved; i++) {
+    const before = statMtimeMs(CONFIG_PATH);
+    const cfg = readJsonSafe(CONFIG_PATH) || {};
+    if (!cfg.mcp || typeof cfg.mcp !== 'object') cfg.mcp = {};
+    if (!cfg.mcp.servers || typeof cfg.mcp.servers !== 'object') cfg.mcp.servers = {};
+    for (const m of mutations) {
+      if (m.op === 'set') cfg.mcp.servers[m.key] = m.value;
+      else delete cfg.mcp.servers[m.key];
+    }
+    if (statMtimeMs(CONFIG_PATH) !== before) continue; // 引擎在读取后写过：丢弃副本重来
+    writeJsonAtomic(CONFIG_PATH, cfg);
+    saved = true;
+  }
+  if (!saved) {
+    process.stderr.write(
+      `config.json（${CONFIG_PATH}）在读取后被外部进程持续修改，本次跳过改写以免覆盖；` +
+      `操作幂等，请稍后重试\n`
+    );
+    exitCode = 1;
+  } else {
+    writeJsonAtomic(REGISTRY_PATH, reg);
+    process.stderr.write(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${CONFIG_PATH}）\n`);
+  }
   }
   }
 } finally {

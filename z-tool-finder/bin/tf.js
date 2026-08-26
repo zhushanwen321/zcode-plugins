@@ -126,6 +126,19 @@ async function cmdTakeover(args) {
     names = undefined; // 自动范围
   } else {
     names = args; // 显式 key（支持 workspace server）
+    // 显式模式校验：点名的 key 既不在扫描结果也不在 registry（用户级 key 接管后
+    // 原始定义被 wrapper 覆盖，只对 registry 可见）即视为不存在/拼错/被禁用，
+    // 报错而非静默成功——与 cmdRestore 对未知 key 的口径一致
+    const known = new Set([
+      ...scanServers({ home: os.homedir(), workspaceRoot: process.cwd() }).map((e) => e.key),
+      ...Object.keys(loadRegistry(DATA_DIR).servers || {}),
+    ]);
+    const unknown = names.filter((k) => !known.has(k));
+    if (unknown.length) {
+      process.stderr.write(`未知 server key: ${unknown.join(', ')}（不存在、拼写错误或 enabled:false）\n`);
+      process.stderr.write(`可用 key 示例: ${[...known].slice(0, 10).join(', ') || '(无)'}\n`);
+      return 1;
+    }
   }
   const result = await applyTakeover({ home: os.homedir(), dataDir: DATA_DIR, names });
   process.stderr.write(`接管: ${result.newly.length ? result.newly.join(', ') : '(无新增)'}\n`);

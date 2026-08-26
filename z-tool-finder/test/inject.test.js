@@ -95,7 +95,8 @@ function runHook(env, cb) {
   execFile(
     process.execPath,
     [path.join(pluginRoot, 'bin', 'tf.js'), 'hook', 'session-start'],
-    { env: { ...process.env, ...env }, timeout: 20000 },
+    // ZSW_NESTED 置空：宿主开发环境常设该标记，泄漏会使 hook 走嵌套空路径
+    { env: { ...process.env, ...env, ZSW_NESTED: '' }, timeout: 20000 },
     cb
   );
 }

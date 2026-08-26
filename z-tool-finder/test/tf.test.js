@@ -35,9 +35,14 @@ function makeEnv() {
 
   const pluginDir = path.join(home, 'plugins', 'p-demo');
   writeJson(path.join(pluginDir, '.zcode-plugin', 'plugin.json'), { name: 'p-demo', version: '0.0.1' });
+  // 插件源用 ${ZCODE_PLUGIN_ROOT} 模板（真实插件形态）：catalog refresh / prescan
+  // 消费 registry.original 时必须按接管时刻的 pluginRoot 展开，否则 spawn ENOENT
   writeJson(path.join(pluginDir, '.mcp.json'), {
-    mcpServers: { demo: { type: 'stdio', command: 'node', args: [ECHO_SERVER] } },
+    mcpServers: { demo: { type: 'stdio', command: 'node', args: ['${ZCODE_PLUGIN_ROOT}/echo-server-fixture.js'] } },
   });
+  // 模板目标：独立于 test/fixtures/echo-server.js 的真实文件（模板展开后被 spawn）
+  fs.mkdirSync(path.join(pluginDir), { recursive: true });
+  fs.copyFileSync(ECHO_SERVER, path.join(pluginDir, 'echo-server-fixture.js'));
 
   const userConfigPath = path.join(home, '.zcode', 'cli', 'config.json');
   writeJson(userConfigPath, {
@@ -45,7 +50,9 @@ function makeEnv() {
     plugins: { dirs: [pluginDir] },
   });
 
-  const env = { ...process.env, HOME: home, ZTF_DATA_DIR: dataDir };
+  // 剥离宿主会话的嵌套标记（本仓 zsw 开发环境常设 ZSW_NESTED，泄漏会使 hook 走空路径）；
+  // 用例显式传 TF_NESTED=1 时可覆盖
+  const env = { ...process.env, ZSW_NESTED: '', TF_NESTED: '', HOME: home, ZTF_DATA_DIR: dataDir };
   return { home, dataDir, env, userConfigPath };
 }
 
@@ -177,6 +184,21 @@ test('takeover <key> 显式模式：只接管点名 key，其余不动', () => {
   assert.strictEqual(cfg.mcp.servers['plugin:p-demo:demo'], undefined);
 });
 
+test('takeover 未知 key：报错 exit 1（不静默成功）', () => {
+  const { env } = makeEnv();
+  const r = tf(['takeover', 'nope'], env);
+  assert.strictEqual(r.status, 1);
+  assert.match(r.stderr, /未知 server key: nope/);
+});
+
+test('takeover <key> 重复执行：已接管 key 不误报未知（registry 兜底可见）', () => {
+  const { env } = makeEnv();
+  tf(['takeover', 'alpha'], env);
+  const r = tf(['takeover', 'alpha'], env);
+  assert.strictEqual(r.status, 0);
+  assert.match(r.stderr, /接管: \(无新增\)/);
+});
+
 test('takeover --all 重复执行：报告已在接管中，不重复包裹', () => {
   const { env, userConfigPath } = makeEnv();
   tf(['takeover', '--all'], env);
@@ -210,7 +232,7 @@ test('catalog refresh：无接管时提示无需刷新，exit 0', () => {
   assert.match(r.stderr, /无已接管 server/);
 });
 
-test('catalog refresh：真实扫描已接管 server 并落盘工具清单', () => {
+test('catalog refresh：真实扫描已接管 server 并落盘工具清单（插件源模板路径已展开）', () => {
   const { env, dataDir } = makeEnv();
   tf(['takeover', '--all'], env);
   const r = tf(['catalog', 'refresh'], env);
@@ -219,6 +241,13 @@ test('catalog refresh：真实扫描已接管 server 并落盘工具清单', () 
   const cat = readJson(path.join(dataDir, 'catalog.json'));
   const toolNames = cat.servers.alpha.tools.map((t) => t.name).sort();
   assert.deepStrictEqual(toolNames, ['echo', 'ping']);
+  // 插件源 original 是 ${ZCODE_PLUGIN_ROOT} 模板：未按 pluginRoot 展开则 prescan spawn
+  // 必然 failed（旧实现该断言失败，回归 R7/上一轮 catalog refresh 修复）
+  assert.ok(cat.servers['plugin:p-demo:demo'], '插件源 server 应出现在 catalog');
+  assert.deepStrictEqual(
+    cat.servers['plugin:p-demo:demo'].tools.map((t) => t.name).sort(),
+    ['echo', 'ping']
+  );
 });
 
 /* ---------------- doctor ---------------- */

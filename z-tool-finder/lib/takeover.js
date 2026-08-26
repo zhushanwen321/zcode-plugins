@@ -366,6 +366,7 @@ module.exports = {
   computeActions,
   buildWrapperEntry,
   expandServerDef,
+  guardedSaveUserConfig,
   applyTakeover,
   restoreAll,
   restoreOne,

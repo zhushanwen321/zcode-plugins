@@ -56,13 +56,14 @@ test('withLock：死亡 PID 的锁被强制接管', () => {
   assert.ok(!fs.existsSync(path.join(dir, 'registry.lock')));
 });
 
-test('withLock：mtime 超 30s 的 stale 锁被强制接管（即使 PID 存活）', () => {
+test('withLock：mtime 超时的锁若 PID 存活仍拒绝（R1：不按时间强抢存活持有者）', () => {
   const dir = tmpDir();
   const lock = path.join(dir, 'registry.lock');
   fs.writeFileSync(lock, String(process.pid));
   const old = new Date(Date.now() - 31 * 1000);
   fs.utimesSync(lock, old, old);
-  assert.strictEqual(withLock(dir, () => 'stale-ok'), 'stale-ok');
+  assert.throws(() => withLock(dir, () => {}), LockHeldError);
+  assert.ok(fs.existsSync(lock), '存活持有者的锁不得被删');
 });
 
 test('saveRegistry 原子写 + loadRegistry 往返；不存在/损坏时返回空 registry', () => {
