@@ -250,6 +250,48 @@ test('catalog refresh：真实扫描已接管 server 并落盘工具清单（插
   );
 });
 
+test('catalog refresh：prescan 退出前 SIGKILL 忽略 SIGTERM 的 server，不留孤儿进程（R1 回归）', async () => {
+  const { env, dataDir } = makeEnv();
+  const pidFile = path.join(dataDir, 'stub-server.pid');
+  // 直接构造 registry（不经 takeover）：唯一条目指向忽略 SIGTERM 且落盘自身 PID 的 stub，
+  // 迫使 prescan 走 close() 的 SIGTERM→SIGKILL 升级路径
+  writeJson(registryPath(dataDir), {
+    servers: {
+      'orphan-pin': {
+        scope: 'user',
+        original: {
+          type: 'stdio',
+          command: process.execPath,
+          args: [path.join(__dirname, 'fixtures', 'term-ignore-pid-server.js')],
+          env: { ZTF_TEST_PID_FILE: pidFile },
+        },
+      },
+    },
+  });
+
+  const r = tf(['catalog', 'refresh'], env, { timeout: 30000 });
+  assert.strictEqual(r.status, 0);
+  assert.match(r.stderr, /ok: orphan-pin/);
+  // tf 退出后 stub server 必须已死：prescan finally 若不 await client.close()，
+  // main().then(process.exit) 会清掉 SIGKILL 升级定时器，留下忽略 SIGTERM 的孤儿
+  const pid = parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+  assert.ok(Number.isInteger(pid));
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      assert.strictEqual(err.code, 'ESRCH');
+      break; // 进程已消失
+    }
+    if (Date.now() > deadline) {
+      process.kill(pid, 'SIGKILL'); // 兜底清理，避免测试自身留孤儿
+      assert.fail(`stub server (pid ${pid}) 在 tf 退出后仍存活：prescan 未等待 SIGKILL 升级`);
+    }
+    await new Promise((res) => setTimeout(res, 200));
+  }
+});
+
 /* ---------------- doctor ---------------- */
 
 test('doctor：全新数据目录 → launcher 缺失，exit 1 + 修复建议', () => {
