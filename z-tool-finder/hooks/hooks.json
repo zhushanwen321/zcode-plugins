@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/bin/tf.js\" hook session-start",
+            "timeoutMs": 15000
+          }
+        ]
+      }
+    ]
+  }
+}
