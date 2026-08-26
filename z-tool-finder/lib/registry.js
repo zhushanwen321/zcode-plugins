@@ -101,6 +101,8 @@ function upsertServer(reg, entry) {
       [entry.key]: {
         scope: entry.scope,
         original: entry.original,
+        // 插件源接管时刻的插件根：catalog refresh 等消费方展开 ${ZCODE_PLUGIN_ROOT} 模板用
+        pluginRoot: entry.pluginRoot === undefined ? null : entry.pluginRoot,
         wrapperEntry: entry.wrapperEntry,
         pinned: entry.pinned === undefined ? Boolean(prev.pinned) : Boolean(entry.pinned),
         takenOverAt: entry.takenOverAt || new Date().toISOString(),

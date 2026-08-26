@@ -33,6 +33,7 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
   const child = spawn(serverDef.command, serverDef.args || [], {
     env: { ...process.env, ...(serverDef.env || {}) },
     stdio: ['pipe', 'pipe', 'pipe'],
+    ...(typeof serverDef.cwd === 'string' ? { cwd: serverDef.cwd } : {}),
   });
 
   let nextId = 1;

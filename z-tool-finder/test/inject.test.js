@@ -8,7 +8,7 @@ const path = require('path');
 const os = require('os');
 const { execFile } = require('child_process');
 
-const { renderManifest, renderHookOutput, FOLD_THRESHOLD } = require('../lib/inject.js');
+const { renderManifest, renderHookOutput, engineServerName, SEARCH_TOOLS_NAME, FOLD_THRESHOLD } = require('../lib/inject.js');
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix || 'ztf-inj-'));
@@ -39,7 +39,18 @@ test('renderManifest：标签包裹 + 尾部两行指引', () => {
   assert.ok(text.startsWith('<available-custom-tools>'));
   assert.ok(text.endsWith('</available-custom-tools>'));
   assert.ok(text.includes('get_tool_details'));
-  assert.ok(text.includes('mcp__z-tool-finder__search_tools'));
+  assert.ok(text.includes(SEARCH_TOOLS_NAME));
+});
+
+test('engineServerName：注入清单与主 server 的指引命名同源（探针实证形态）', () => {
+  assert.strictEqual(engineServerName('doc'), 'doc');
+  assert.strictEqual(engineServerName('plugin:z-tool-finder:z-tool-finder'), 'plugin_z-tool-finder_z-tool-finder');
+  // FOOTER 指引的 search_tools 全名 = 主 server（插件级源）经 engineServerName 映射的结果
+  assert.strictEqual(
+    SEARCH_TOOLS_NAME,
+    'mcp__' + engineServerName('plugin:z-tool-finder:z-tool-finder') + '__search_tools'
+  );
+  assert.strictEqual(SEARCH_TOOLS_NAME, 'mcp__plugin_z-tool-finder_z-tool-finder__search_tools');
 });
 
 test('renderManifest：pinned 的 server 每行标注未接管', () => {

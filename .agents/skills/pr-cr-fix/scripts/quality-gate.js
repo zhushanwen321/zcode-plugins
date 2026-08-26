@@ -533,4 +533,5 @@ if (require.main === module) main();
 module.exports = {
   parseDiffAddedLines, buildLineIndex, unionRanges, rangesIntersect,
   cleanForComplexity, countDecisions, complexityOf, crapScore,
+  mergeCoverageDir,
 };

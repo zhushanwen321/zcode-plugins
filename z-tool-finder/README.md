@@ -14,7 +14,7 @@ inline 开发形态：
 
 1. 把 `z-tool-finder` 目录绝对路径追加进 `~/.zcode/cli/config.json` 的 `plugins.dirs` 数组 → **重启 ZCode（第 1 次）**。
 2. 会话 1 打开：SessionStart hook 自动扫描并接管用户级与插件自带的 stdio server，会话内注入接管提示（含还原命令与 per-tool 治理失配提示）；catalog 预扫描在后台进行（就绪前 wrapper 走实时兜底）。
-3. **重启 ZCode（第 2 次）**。此后 wrapper 生效：本机实测工具区从 37 个工具变为 3 server × 2 meta 工具 + 1 个全局 `mcp__z-tool-finder__search_tools` = 7 个。
+3. **重启 ZCode（第 2 次）**。此后 wrapper 生效：本机实测工具区从 37 个工具变为 3 server × 2 meta 工具 + 1 个全局 `mcp__plugin_z-tool-finder_z-tool-finder__search_tools` = 7 个。
 
 正式形态走 marketplace 安装（marketplace.json 登记），生效时序相同。
 
@@ -34,7 +34,7 @@ inline 开发形态：
 2. 选中工具后调 `mcp__<server>__get_tool_details(tool)` 获取完整 description + inputSchema + 最小调用示例。
 3. 调 `mcp__<server>__call_tool(tool, args)` 执行——wrapper 按 schema 校验 args，按 registry 策略校验 allow/deny，首次调用懒启动底层原命令并转发。
 
-清单外的模糊需求用全局 `mcp__z-tool-finder__search_tools(query, limit?)` 检索 catalog（关键词 + BM25）兜底。
+清单外的模糊需求用全局 `mcp__plugin_z-tool-finder_z-tool-finder__search_tools(query, limit?)` 检索 catalog（关键词 + BM25）兜底。
 
 ## 配置（`~/.zcode/z-tool-finder/registry.json`）
 

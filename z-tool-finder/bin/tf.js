@@ -23,6 +23,7 @@ const {
   restoreAll,
   restoreOne,
   syncLauncherNow,
+  expandServerDef,
   ENGINE_INJECTED_PLUGINS,
 } = require('../lib/takeover');
 const { scanServers } = require('../lib/config-io');
@@ -166,7 +167,10 @@ async function cmdCatalogRefresh() {
   const reg = loadRegistry(DATA_DIR);
   const entries = Object.entries(reg.servers || {}).map(([key, rec]) => ({
     key,
-    config: rec.original,
+    // registry.original 是原始定义（模板未展开），prescan 直连 spawn 前必须按
+    // 接管时刻的 pluginRoot 展开 ${ZCODE_PLUGIN_ROOT}/${CLAUDE_PLUGIN_ROOT}，
+    // 否则插件源 server 必然 ENOENT（与 applyTakeover 后台预扫描口径一致）
+    config: expandServerDef({ key, config: rec.original, pluginRoot: rec.pluginRoot }),
   }));
   if (entries.length === 0) {
     process.stderr.write('无已接管 server，catalog 无需刷新\n');

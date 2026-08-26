@@ -7,9 +7,27 @@
 // 工具总数超过此阈值时按 server 折叠，防清单 token 失控（§7 截断策略）
 const FOLD_THRESHOLD = 300;
 
+/**
+ * serverKey → 引擎工具命名空间：plugin:<p>:<s> → plugin_<p>_<s>；user 级裸名
+ * （M0 探针实证，DESIGN.md §「关键实证」：引擎对插件级 server 的工具名是
+ * `mcp__plugin_<plugin>_<server>__<tool>`）。server.js 与本文件的指引必须同源，
+ * 统一从这一份实现取。
+ */
+function engineServerName(serverKey) {
+  if (serverKey.startsWith('plugin:')) {
+    const parts = serverKey.split(':'); // ['plugin', p, s]
+    if (parts.length === 3) return 'plugin_' + parts[1] + '_' + parts[2];
+  }
+  return serverKey;
+}
+
+// 自身主 server 的检索工具全名（插件级源，非裸名 z-tool-finder）
+const SEARCH_TOOLS_NAME =
+  'mcp__' + engineServerName('plugin:z-tool-finder:z-tool-finder') + '__search_tools';
+
 const FOOTER_LINES = [
   '- 先调对应 server 的 get_tool_details 获取完整用法，再调 call_tool 执行',
-  '- 清单外需求可用 mcp__z-tool-finder__search_tools 检索',
+  `- 清单外需求可用 ${SEARCH_TOOLS_NAME} 检索`,
 ];
 
 const PINNED_NOTE = '(pinned, 原生工具直调，未接管)';
@@ -82,4 +100,4 @@ function renderHookOutput(manifestText) {
   });
 }
 
-module.exports = { renderManifest, renderHookOutput, FOLD_THRESHOLD };
+module.exports = { renderManifest, renderHookOutput, engineServerName, SEARCH_TOOLS_NAME, FOLD_THRESHOLD };

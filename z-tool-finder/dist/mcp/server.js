@@ -16,6 +16,7 @@ const readline = require('readline');
 const { DATA_DIR, LOGS_DIR } = require('../../lib/paths');
 const { loadCatalog } = require('../../lib/catalog');
 const { buildIndex, search } = require('../../lib/bm25');
+const { engineServerName } = require('../../lib/inject');
 
 // ---------- 日志（stderr + 落盘） ----------
 
@@ -38,15 +39,6 @@ function initLog(logsDir) {
 const log = initLog(LOGS_DIR);
 
 // ---------- 检索 ----------
-
-/** serverKey → 引擎工具命名空间：plugin:<p>:<s> → plugin_<p>_<s>；user 级裸名 */
-function engineServerName(serverKey) {
-  if (serverKey.startsWith('plugin:')) {
-    const parts = serverKey.split(':'); // ['plugin', p, s]
-    if (parts.length === 3) return 'plugin_' + parts[1] + '_' + parts[2];
-  }
-  return serverKey;
-}
 
 /** catalog → BM25 文档集：每工具一条，text = server:tool + whenToUse + description */
 function buildDocs(cat) {

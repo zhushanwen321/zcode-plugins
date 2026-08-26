@@ -103,7 +103,7 @@ GUI 启动 → 扫描 config/插件 .mcp.json → spawn N 个 server 进程 → 
       注意：你原有的 per-tool 级 hook matcher / --disallowed-tools 条目（如 mcp__x__y）将失配，
       per-tool 管控请改用 registry 策略（tf status 查看）」
 3. 重启（第 2 次）。会话 2 起：wrapper 生效，工具区从 37 个工具变为
-   3 server × 2 meta 工具 + 1 个全局 mcp__z-tool-finder__search_tools = 7 个
+   3 server × 2 meta 工具 + 1 个全局 mcp__plugin_z-tool-finder_z-tool-finder__search_tools = 7 个
 ```
 
 agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表的 xlsx」）：
@@ -112,7 +112,7 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 模型看到（hook 注入的清单，常驻，约 600 token）：
 <available-custom-tools>
 以下 MCP 工具按需加载：先调对应 server 的 get_tool_details 获取完整用法，
-再调 call_tool 执行。清单外需求可用 mcp__z-tool-finder__search_tools 检索。
+再调 call_tool 执行。清单外需求可用 mcp__plugin_z-tool-finder_z-tool-finder__search_tools 检索。
 - document-skills:xlsx — 读写 xlsx/xlsm/csv/tsv，电子表格为主输入输出的任务
 - zcode-cua:zoom — 截图局部放大，目标过小时使用
 - ...
@@ -142,7 +142,7 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 
 ### 6.1 D1：wrapper 中间人接管（选定） vs registry 聚合迁移 vs 等官方能力
 
-- **采用**：per-server wrapper——每个被接管 server 条目的 command 重写为 `node ~/.zcode/z-tool-finder/launcher/proxy-launcher.js <server-id> -- <原 command> <原 args…>`，原定义同时完整存入 registry.json。插件另有一个自己的主 server（`mcp__z-tool-finder__search_tools` 全局检索 catalog）。
+- **采用**：per-server wrapper——每个被接管 server 条目的 command 重写为 `node ~/.zcode/z-tool-finder/launcher/proxy-launcher.js <server-id> -- <原 command> <原 args…>`，原定义同时完整存入 registry.json。插件另有一个自己的主 server（`mcp__plugin_z-tool-finder_z-tool-finder__search_tools` 全局检索 catalog）。
 - **被否 1（registry 聚合迁移）**：把 server 定义复制进 registry、原条目禁用、统一由单进程 tool-finder spawn。劣势：server 命名空间坍缩成单一 `z-tool-finder`，连 per-server 的 PreToolUse matcher（如 `mcp__browser-use__.*`）也失效，per-server 治理一并丢失（方案 A 保留 per-server，per-tool 治理两种方案下都需迁移到插件策略层，见 G4 改述）；且失去 zcode 原生 per-server 连接状态可见性。
 - **被否 2（等 zcode 官方 defer_loading / 环境级劫持如 NODE_OPTIONS preload）**：官方无时间表；环境劫持覆盖不全（仅 node 系 command）、影响面失控，属于三个月后会被骂的短期方案。
 - **证据**：市面调研（对话沉淀）——KGT24k/mcp-tool-search 是 registry 形态的同构先例但无 zcode 的 per-server 治理约束；Anthropic TST 证明「清单常驻+详情按需」配方有效（-85% token、选择准确率反升）。

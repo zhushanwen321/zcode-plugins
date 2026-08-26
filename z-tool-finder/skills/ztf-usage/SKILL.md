@@ -15,7 +15,7 @@ description: Use when you need to use an MCP tool listed in the injected <availa
 
 ## 找不到工具
 
-清单外或记不清名字：调 `mcp__z-tool-finder__search_tools(query="关键词", limit?)` 全局检索 catalog（关键词 + BM25），跨所有被接管 server。
+清单外或记不清名字：调 `mcp__plugin_z-tool-finder_z-tool-finder__search_tools(query="关键词", limit?)` 全局检索 catalog（关键词 + BM25），跨所有被接管 server。
 
 ## call_tool 报错解读与恢复
 

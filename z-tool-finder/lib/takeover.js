@@ -23,6 +23,51 @@ const {
 const { backgroundPrescan } = require('./catalog');
 const { DATA_DIR } = require('./paths');
 
+// user config 与 zcode 引擎写进程无共享锁：落盘前比对 mtime，外部已改则
+// 重读重放本批改动（记录级），连续冲突时放弃本轮（下次会话幂等重试）
+const USER_CONFIG_MAX_RETRIES = 5;
+const USER_CONFIG_PATH = path.join('.zcode', 'cli', 'config.json');
+
+function statMtimeMs(file) {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return null; // 不存在 = 首次创建，无冲突可言
+  }
+}
+
+/** mutation：{ op:'set'|'del', key, value? }，只作用于 cfg.mcp.servers */
+function applyServerMutations(cfg, mutations) {
+  if (!cfg.mcp || typeof cfg.mcp !== 'object') cfg.mcp = {};
+  if (!cfg.mcp.servers || typeof cfg.mcp.servers !== 'object') cfg.mcp.servers = {};
+  for (const m of mutations) {
+    if (m.op === 'set') cfg.mcp.servers[m.key] = m.value;
+    else delete cfg.mcp.servers[m.key];
+  }
+  return cfg;
+}
+
+/**
+ * 带外部写检测的 user config 更新：每次重读 → 重放 mutations → 落盘前
+ * 校验 mtime 未变（变了说明引擎在读取后写过 → 丢弃副本重来，保住引擎写入）。
+ * 重试耗尽仍冲突则抛错：hook 侧降级、CLI 侧让用户感知，都不静默回滚引擎配置。
+ */
+function guardedSaveUserConfig(home, mutations, dataDirForLog) {
+  const file = path.join(home, USER_CONFIG_PATH);
+  for (let i = 0; i < USER_CONFIG_MAX_RETRIES; i++) {
+    const before = statMtimeMs(file);
+    const cfg = applyServerMutations(loadUserConfig(home), mutations);
+    if (statMtimeMs(file) === before) {
+      saveUserConfig(cfg, home);
+      return;
+    }
+  }
+  throw new Error(
+    'user config 在读取后被外部进程持续修改（' + file + '），本次跳过改写以免覆盖；' +
+      '操作幂等，可稍后重试' + (dataDirForLog ? '（详情见 ' + dataDirForLog + '）' : '')
+  );
+}
+
 // 自身主 server 的宿主插件名：接管自己会递归（wrapper 之上再套 wrapper）
 const SELF_PLUGIN_NAME = 'z-tool-finder';
 const PRESCAN_ENTRIES_FILENAME = 'prescan-entries.json';
@@ -193,10 +238,11 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
       let next = reg;
       const newEntries = [];
       const refreshed = [];
+      const mutations = [];
       for (const t of actions.toTakeover) {
         const wrapperEntry = buildWrapperEntry(t, dir);
-        next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, wrapperEntry });
-        cfg.mcp.servers[t.key] = wrapperEntry;
+        next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, pluginRoot: t.pluginRoot, wrapperEntry });
+        mutations.push({ op: 'set', key: t.key, value: wrapperEntry });
         // prescan 消费的是可直连的真实定义：模板必须已展开
         //（prescan 不经 wrapper，拿原始模板 spawn 会因路径无效失败）
         newEntries.push({ key: t.key, config: expandServerDef(t) });
@@ -206,13 +252,13 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
       for (const t of actions.takenEntries) {
         const expected = buildWrapperEntry(t, dir);
         if (JSON.stringify(cfg.mcp.servers[t.key]) === JSON.stringify(expected)) continue;
-        next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, wrapperEntry: expected });
-        cfg.mcp.servers[t.key] = expected;
+        next = upsertServer(next, { key: t.key, scope: t.scope, original: t.config, pluginRoot: t.pluginRoot, wrapperEntry: expected });
+        mutations.push({ op: 'set', key: t.key, value: expected });
         refreshed.push(t.key);
       }
 
       if (newEntries.length || refreshed.length) {
-        saveUserConfig(cfg, home);
+        guardedSaveUserConfig(home, mutations, dir);
         saveRegistry(dir, next);
       }
       // 预扫描预算（§7）：只对新接管条目触发；刷新路径 newEntries 为空，
@@ -239,25 +285,23 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
 }
 
 /**
- * 还原一个 server：scope user → user config 恢复 original；
- * scope plugin/workspace → 删除 user config 覆盖条目（原始定义仍在插件/仓库配置里）。
- * 返回还原后的 registry 与 user config（不落盘，由 restoreMany 统一保存）。
+ * 计算还原一个 server 的 config mutation：scope user → 恢复 original；
+ * scope plugin/workspace → 删除覆盖条目（原始定义仍在插件/仓库配置里）。
+ * 返回 {op,key,value?}；无记录或 user config 无 mcp.servers 段时返回 null（归入 missing）。
  */
 function restoreEntry(reg, cfg, key) {
   const rec = reg.servers && reg.servers[key];
-  if (!rec) return false;
-  if (!cfg.mcp || !cfg.mcp.servers) return false;
+  if (!rec) return null;
+  if (!cfg.mcp || !cfg.mcp.servers) return null;
   if (rec.scope === 'user') {
     // user 级 key 即裸 server 名，原位恢复
-    cfg.mcp.servers[key] = rec.original;
-  } else {
-    // plugin/workspace 级：接管是 user config 里的覆盖条目，删除即还原
-    delete cfg.mcp.servers[key];
+    return { op: 'set', key, value: rec.original };
   }
-  return true;
+  // plugin/workspace 级：接管是 user config 里的覆盖条目，删除即还原
+  return { op: 'del', key };
 }
 
-/** restore 公共路径：withLock 内逐 key 还原 + removeServer + 原子落盘 */
+/** restore 公共路径：withLock 内逐 key 还原 + removeServer + 原子落盘（config 带外部写检测） */
 function restoreKeys({ home, dataDir, keys }) {
   const dir = dataDir || DATA_DIR;
   return withLock(dir, () => {
@@ -266,15 +310,18 @@ function restoreKeys({ home, dataDir, keys }) {
     let next = reg;
     const restored = [];
     const missing = [];
+    const mutations = [];
     for (const key of keys) {
-      if (restoreEntry(next, cfg, key)) {
+      const mutation = restoreEntry(next, cfg, key);
+      if (mutation) {
+        mutations.push(mutation);
         next = removeServer(next, key);
         restored.push(key);
       } else {
         missing.push(key); // registry 无记录或 user config 无该段：无法还原，如实报告
       }
     }
-    saveUserConfig(cfg, home);
+    if (mutations.length) guardedSaveUserConfig(home, mutations, dir);
     saveRegistry(dir, next);
     return { restored, missing };
   });
@@ -318,6 +365,7 @@ module.exports = {
   ENGINE_INJECTED_PLUGINS,
   computeActions,
   buildWrapperEntry,
+  expandServerDef,
   applyTakeover,
   restoreAll,
   restoreOne,

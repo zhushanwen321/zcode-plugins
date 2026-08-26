@@ -174,6 +174,12 @@ function makeRestoreFixture() {
         wrapperEntry: { command: 'node', args: ['<launcher>', 'plugin:demo:helper', '--', 'node', '/cache/demo/0.1.0/helper.js'] },
         takenOverAt: '2026-08-26T00:00:00Z',
       },
+      'ws-server': {
+        scope: 'workspace',
+        original: { command: 'node', args: ['/repo/.zcode/ws-server.js'], env: {} },
+        wrapperEntry: { command: 'node', args: ['<launcher>', 'ws-server', '--', 'node', '/repo/.zcode/ws-server.js'] },
+        takenOverAt: '2026-08-26T00:00:00Z',
+      },
     },
     overrides: {},
     policies: {},
@@ -186,6 +192,7 @@ function makeRestoreFixture() {
       servers: {
         'my-user-server': { command: 'node', args: ['~/.zcode/z-tool-finder/launcher/proxy-launcher.js', 'my-user-server', '--', 'node', '/orig/user-server.js'] },
         'plugin:demo:helper': { command: 'node', args: ['~/.zcode/z-tool-finder/launcher/proxy-launcher.js', 'plugin:demo:helper', '--', 'node', '/cache/demo/0.1.0/helper.js'] },
+        'ws-server': { command: 'node', args: ['~/.zcode/z-tool-finder/launcher/proxy-launcher.js', 'ws-server', '--', 'node', '/repo/.zcode/ws-server.js'] },
       },
     },
   };
@@ -213,6 +220,8 @@ test('restore --all：user 条目恢复原文、plugin 条目删除、registry �
   const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   assert.deepEqual(cfg.mcp.servers['my-user-server'], { command: 'node', args: ['/orig/user-server.js'], env: {} });
   assert.ok(!('plugin:demo:helper' in cfg.mcp.servers), 'plugin 覆盖条目应被删除');
+  // workspace 源：删除覆盖条目，不得把 original 写进 user config（原始定义在仓库 workspace config）
+  assert.ok(!('ws-server' in cfg.mcp.servers), 'workspace 覆盖条目应被删除');
 
   const reg = JSON.parse(fs.readFileSync(path.join(dataDir, 'registry.json'), 'utf8'));
   assert.deepEqual(reg.servers, {});
@@ -251,3 +260,117 @@ test('restore：无参数打印用法；未知 key 报错列出现有记录', (t
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /my-user-server/);
 });
+
+test('restore：锁被活跃进程持有时放弃且不动任何文件', (t) => {
+  const { home, dataDir, configPath } = makeRestoreFixture();
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  const regBefore = fs.readFileSync(path.join(dataDir, 'registry.json'), 'utf8');
+  const cfgBefore = fs.readFileSync(configPath, 'utf8');
+  // 活锁：写当前测试进程的 PID（存活且 mtime 新鲜）
+  fs.writeFileSync(path.join(dataDir, 'registry.lock'), String(process.pid));
+  const res = runRestore(home, dataDir, ['--all']);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /锁被其他进程持有/);
+  assert.equal(fs.readFileSync(path.join(dataDir, 'registry.json'), 'utf8'), regBefore);
+  assert.equal(fs.readFileSync(configPath, 'utf8'), cfgBefore);
+  // 锁文件保留（属持锁者），内容未被篡改
+  assert.equal(fs.readFileSync(path.join(dataDir, 'registry.lock'), 'utf8'), String(process.pid));
+});
+
+test('restore：锁标记死亡 PID 时按 stale 接管并完成还原', (t) => {
+  const { home, dataDir } = makeRestoreFixture();
+  t.after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(dataDir, 'registry.lock'), '999999999'); // 不存在的 PID
+  const res = runRestore(home, dataDir, ['--all']);
+  assert.equal(res.status, 0, res.stderr);
+  const reg = JSON.parse(fs.readFileSync(path.join(dataDir, 'registry.json'), 'utf8'));
+  assert.deepEqual(reg.servers, {});
+  assert.ok(!fs.existsSync(path.join(dataDir, 'registry.lock')), '还原后锁应被释放');
+});
+
+// ---------- resolvePluginRoot 候选 3（inline dirs 扫描）与候选 4（cache 最高版本） ----------
+
+// 最小 proxy 本体桩：respond initialize/tools-list，serverInfo.name 带 marker 以识别被选中的根
+function writeStubProxy(root, marker) {
+  const file = path.join(root, 'dist', 'mcp', 'proxy.js');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `'use strict';
+const readline = require('readline');
+const MARKER = ${JSON.stringify(marker)};
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === 'initialize') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'stub-' + MARKER, version: '0.0.0' } } }) + '\\n');
+  } else if (msg.method === 'tools/list') {
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'stub_tool' }] } }) + '\\n');
+  }
+});
+module.exports = { main() {} };
+`);
+}
+
+function copyBareLauncher(dataDir) {
+  fs.mkdirSync(path.join(dataDir, 'launcher'), { recursive: true });
+  fs.copyFileSync(path.join(LAUNCHER_SRC, 'proxy-launcher.js'), path.join(dataDir, 'launcher', 'proxy-launcher.js'));
+}
+
+function writeFakeHomeConfig(home, config) {
+  fs.mkdirSync(path.join(home, '.zcode', 'cli'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.zcode', 'cli', 'config.json'), JSON.stringify(config, null, 2));
+}
+
+test('候选 3：无 launcher.json/env 时扫 inline plugins.dirs 以 plugin.json name 命中', async (t) => {
+  const dataDir = tmpDir('ztf-launcher-test-');
+  const fakeHome = tmpDir('ztf-fake-home-');
+  const fakeRoot = tmpDir('ztf-inline-root-'); // 目录名故意不带 z-tool-finder，验证按 name 匹配
+  t.after(() => {
+    for (const d of [dataDir, fakeHome, fakeRoot]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  copyBareLauncher(dataDir);
+  writeJson(path.join(fakeRoot, '.zcode-plugin', 'plugin.json'), { name: 'z-tool-finder' });
+  writeStubProxy(fakeRoot, 'inline');
+  writeFakeHomeConfig(fakeHome, { plugins: { dirs: [fakeRoot] } });
+
+  const { initRes } = await launcherToolsList(
+    path.join(dataDir, 'launcher', 'proxy-launcher.js'),
+    'echo-test',
+    { ZTF_DATA_DIR: dataDir, HOME: fakeHome } // 无 launcher.json、无 ZTF_PLUGIN_ROOT
+  );
+  assert.equal(initRes.result.serverInfo.name, 'stub-inline');
+});
+
+test('候选 4：inline 候选缺 proxy.js 时降级到 cache 最高版本（1.10.0 > 1.3.0）', async (t) => {
+  const dataDir = tmpDir('ztf-launcher-test-');
+  const fakeHome = tmpDir('ztf-fake-home-');
+  const brokenInline = tmpDir('ztf-broken-inline-');
+  t.after(() => {
+    for (const d of [dataDir, fakeHome, brokenInline]) fs.rmSync(d, { recursive: true, force: true });
+  });
+  copyBareLauncher(dataDir);
+  // inline dirs 有 name 匹配的插件但缺 dist/mcp/proxy.js → 候选 3 存在却无效，须继续降级
+  writeJson(path.join(brokenInline, '.zcode-plugin', 'plugin.json'), { name: 'z-tool-finder' });
+  writeFakeHomeConfig(fakeHome, { plugins: { dirs: [brokenInline] } });
+  const cacheBase = path.join(fakeHome, '.zcode', 'cli', 'plugins', 'cache', 'mkp', 'z-tool-finder');
+  writeStubProxy(path.join(cacheBase, '1.3.0'), '1.3.0');
+  writeStubProxy(path.join(cacheBase, '1.10.0'), '1.10.0');
+
+  const { initRes } = await launcherToolsList(
+    path.join(dataDir, 'launcher', 'proxy-launcher.js'),
+    'echo-test',
+    { ZTF_DATA_DIR: dataDir, HOME: fakeHome }
+  );
+  // 语义化比较（非字典序）：应选 1.10.0
+  assert.equal(initRes.result.serverInfo.name, 'stub-1.10.0');
+});
+
+function writeJson(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+}
