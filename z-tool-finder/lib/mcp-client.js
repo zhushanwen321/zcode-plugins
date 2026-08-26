@@ -103,12 +103,13 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
     failAllPending(new Error(buildErrorMessage(serverDef, 'MCP server 进程提前退出', stderrTail())));
   });
 
-  /** kill + 清理 pending。幂等。 */
+  /** kill + 清理 pending。幂等。pending 必须显式 reject：
+   *  若只清不 reject，in-flight 请求 promise 永不 settle（failAllPending 挂在
+   *  'close' 事件上，此刻 pending 已被清空），调用方只能靠自身超时兜底 */
   const close = () => {
     if (closed) return;
     closed = true;
-    for (const { timer } of pending.values()) clearTimeout(timer);
-    pending.clear();
+    failAllPending(new Error(buildErrorMessage(serverDef, 'client 主动关闭（空闲回收/退出）', stderrTail())));
     child.kill();
   };
 

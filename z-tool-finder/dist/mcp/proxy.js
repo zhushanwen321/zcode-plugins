@@ -19,7 +19,7 @@ const readline = require('readline');
 
 const { DATA_DIR, REGISTRY_PATH, CATALOG_PATH, LOGS_DIR } = require('../../lib/paths');
 const { loadRegistry } = require('../../lib/registry');
-const { loadCatalog, saveCatalog, getTool, upsertServer } = require('../../lib/catalog');
+const { loadCatalog, withCatalogLock, getTool, upsertServer } = require('../../lib/catalog');
 const { connect } = require('../../lib/mcp-client');
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -147,17 +147,24 @@ function main(argv) {
   let client = null;
   let clientPromise = null;
   let idleTimer = null;
+  let inFlightCalls = 0; // 有 in-flight tools/call 时不回收：长调用（computer-use 类）可在 idle 窗口内合法超过 5 分钟
+
+  const reclaimIfIdle = () => {
+    if (!client) return;
+    if (inFlightCalls > 0) {
+      // 调用进行中：推迟到调用结束后 resetIdleTimer 重新计窗
+      log(`空闲到期但有 ${inFlightCalls} 个调用进行中，推迟回收`);
+      return;
+    }
+    log('底层连接空闲 5 分钟，自动回收');
+    client.close();
+    client = null;
+    clientPromise = null;
+  };
 
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      if (client) {
-        log('底层连接空闲 5 分钟，自动回收');
-        client.close();
-        client = null;
-        clientPromise = null;
-      }
-    }, IDLE_TIMEOUT_MS);
+    idleTimer = setTimeout(reclaimIfIdle, IDLE_TIMEOUT_MS);
     idleTimer.unref();
   };
 
@@ -209,10 +216,11 @@ function main(argv) {
     log(`catalog 未命中 ${toolName}，实时 tools/list 兜底`);
     const c = await ensureClient();
     const tools = await c.listTools();
-    cat = loadCatalog(DATA_DIR); // re-read：避免覆盖他进程并发回写的记录
-    upsertServer(cat, serverKey, { serverInfo: c.serverInfo, tools });
-    saveCatalog(DATA_DIR, cat);
-    return getTool(cat, serverKey, toolName);
+    // 锁内重读 + 记录级合并落盘：多个 wrapper 并发 miss 回写时防止互抹对方记录
+    return withCatalogLock(DATA_DIR, (fresh) => {
+      upsertServer(fresh, serverKey, { serverInfo: c.serverInfo, tools });
+      return getTool(fresh, serverKey, toolName);
+    });
   };
 
   // ---------- meta 工具实现 ----------
@@ -349,12 +357,16 @@ function main(argv) {
       resetIdleTimer();
       const name = msg.params && msg.params.name;
       const args = (msg.params && msg.params.arguments) || {};
+      inFlightCalls += 1;
       try {
         if (name === 'get_tool_details') reply(msg.id, await handleGetToolDetails(args));
         else if (name === 'call_tool') reply(msg.id, await handleCallTool(args));
         else replyError(msg.id, -32602, `未知工具: ${name}（仅支持 get_tool_details / call_tool）`);
       } catch (err) {
         reply(msg.id, errorResult(`wrapper 内部错误: ${err.message}`));
+      } finally {
+        inFlightCalls -= 1;
+        resetIdleTimer();
       }
     } else if (msg.id !== undefined) {
       replyError(msg.id, -32601, `method not found: ${msg.method}`);

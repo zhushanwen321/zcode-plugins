@@ -287,12 +287,13 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
 /**
  * 计算还原一个 server 的 config mutation：scope user → 恢复 original；
  * scope plugin/workspace → 删除覆盖条目（原始定义仍在插件/仓库配置里）。
- * 返回 {op,key,value?}；无记录或 user config 无 mcp.servers 段时返回 null（归入 missing）。
+ * 返回 {op,key,value?}；仅 registry 无记录时返回 null（归入 missing）。
+ * user config 缺 mcp.servers 段不算 missing：applyServerMutations 会补建段
+ * （config 被重置/精简后恰是最应 set original 的场景），plugin 级 del 幂等无害。
  */
 function restoreEntry(reg, cfg, key) {
   const rec = reg.servers && reg.servers[key];
   if (!rec) return null;
-  if (!cfg.mcp || !cfg.mcp.servers) return null;
   if (rec.scope === 'user') {
     // user 级 key 即裸 server 名，原位恢复
     return { op: 'set', key, value: rec.original };

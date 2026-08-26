@@ -60,10 +60,10 @@ function isPidAlive(pid) {
 // 已存在时「PID 存活 → 拒绝执行；死亡/不可读 → stale 接管重建」（不用 mtime
 // 判 stale：存活持有者临界区慢于任意超时时按时间强抢会导致双持锁 + 误删新锁）。
 // 返回 release 函数；锁被活跃持有者占用时返回 null。
-function acquireLock() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+function acquireLock(dataDir = DATA_DIR, lockPath = LOCK_PATH) {
+  fs.mkdirSync(dataDir, { recursive: true });
   const tryCreate = () => {
-    const fd = fs.openSync(LOCK_PATH, 'wx');
+    const fd = fs.openSync(lockPath, 'wx');
     fs.writeSync(fd, String(process.pid));
     fs.closeSync(fd);
   };
@@ -73,91 +73,115 @@ function acquireLock() {
     if (err.code !== 'EEXIST') throw err;
     let pid = NaN;
     try {
-      pid = parseInt(fs.readFileSync(LOCK_PATH, 'utf8').trim(), 10);
+      pid = parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10);
     } catch {
       // 读失败（并发删除窗口）走 stale 分支重建
     }
     if (!(Number.isNaN(pid) || !isPidAlive(pid))) return null;
-    fs.rmSync(LOCK_PATH, { force: true });
-    tryCreate();
-  }
-  return () => fs.rmSync(LOCK_PATH, { force: true });
-}
-
-function usage() {
-  process.stderr.write('用法: node restore.js [--all | <serverKey>]\n');
-  process.exit(2);
-}
-
-const target = process.argv[2];
-if (!target) usage();
-
-const release = acquireLock();
-if (!release) {
-  process.stderr.write(
-    `registry 锁被其他进程持有（${LOCK_PATH}，可能有并发接管/还原进行中），本次放弃。请稍后重试；` +
-      `确认无 zcode 会话运行时也可删除该锁文件后重试。\n`
-  );
-  process.exit(1);
-}
-
-let exitCode = 0;
-try {
-  const reg = readJsonSafe(REGISTRY_PATH) || { servers: {} };
-  reg.servers = reg.servers || {};
-  if (!Object.keys(reg.servers).length) {
-    process.stderr.write(`registry 无接管记录（${REGISTRY_PATH}），无需还原\n`);
-  } else {
-  const keys = target === '--all' ? Object.keys(reg.servers) : [target];
-  const unknown = keys.filter((k) => !(k in reg.servers));
-  if (unknown.length) {
-    process.stderr.write(`registry 中不存在: ${unknown.join(', ')}。现有记录: ${Object.keys(reg.servers).join(', ')}\n`);
-    exitCode = 1;
-  } else {
-
-  // 每个待还原 key 的 mutation（记录级、幂等，可对重读后的 config 重放）
-  const mutations = keys.map((key) => {
-    const entry = reg.servers[key];
-    if (entry.scope === 'user') return { op: 'set', key, value: entry.original };
-    return { op: 'del', key };
-  });
-  for (const key of keys) delete reg.servers[key];
-
-  // 锁内重读 config + mtime 外部写防护 + 重试重放（引擎写 config 不走 registry 锁）
-  const statMtimeMs = (file) => {
+    fs.rmSync(lockPath, { force: true });
     try {
-      return fs.statSync(file).mtimeMs;
-    } catch {
-      return null; // 不存在 = 首次创建，无冲突可言
+      tryCreate();
+    } catch (err) {
+      // rm 与 wx 之间被第三进程抢建：不冒裸 EEXIST，按锁被持有降级（本轮放弃）
+      if (err.code !== 'EEXIST') throw err;
+      return null;
     }
-  };
-  let saved = false;
-  for (let i = 0; i < USER_CONFIG_MAX_RETRIES && !saved; i++) {
-    const before = statMtimeMs(CONFIG_PATH);
-    const cfg = readJsonSafe(CONFIG_PATH) || {};
+  }
+  return () => fs.rmSync(lockPath, { force: true });
+}
+
+const statMtimeMs = (file) => {
+  try {
+    return fs.statSync(file).mtimeMs;
+  } catch {
+    return null; // 不存在 = 首次创建，无冲突可言
+  }
+};
+
+/**
+ * 带外部写检测的 config 落盘（与 lib/takeover.js guardedSaveUserConfig 同款）：
+ * 每次重读 → 重放 mutations → 落盘前比对 mtime（外部已改则丢弃副本重来）。
+ * simulateExternalWrite 仅供测试注入并发写（在 mtime 比对前触发，模拟引擎恰在
+ * 读取后写 config）。返回 true=已落盘，false=连续冲突重试耗尽。
+ */
+function guardedConfigSave(configPath, mutations, { maxRetries = USER_CONFIG_MAX_RETRIES, simulateExternalWrite } = {}) {
+  for (let i = 0; i < maxRetries; i++) {
+    const before = statMtimeMs(configPath);
+    const cfg = readJsonSafe(configPath) || {};
     if (!cfg.mcp || typeof cfg.mcp !== 'object') cfg.mcp = {};
     if (!cfg.mcp.servers || typeof cfg.mcp.servers !== 'object') cfg.mcp.servers = {};
     for (const m of mutations) {
       if (m.op === 'set') cfg.mcp.servers[m.key] = m.value;
       else delete cfg.mcp.servers[m.key];
     }
-    if (statMtimeMs(CONFIG_PATH) !== before) continue; // 引擎在读取后写过：丢弃副本重来
-    writeJsonAtomic(CONFIG_PATH, cfg);
-    saved = true;
+    if (simulateExternalWrite) simulateExternalWrite(i);
+    if (statMtimeMs(configPath) !== before) continue; // 引擎在读取后写过：丢弃副本重来
+    writeJsonAtomic(configPath, cfg);
+    return true;
   }
-  if (!saved) {
-    process.stderr.write(
-      `config.json（${CONFIG_PATH}）在读取后被外部进程持续修改，本次跳过改写以免覆盖；` +
-      `操作幂等，请稍后重试\n`
-    );
-    exitCode = 1;
-  } else {
-    writeJsonAtomic(REGISTRY_PATH, reg);
-    process.stderr.write(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${CONFIG_PATH}）\n`);
-  }
-  }
-  }
-} finally {
-  release();
+  return false;
 }
-process.exit(exitCode);
+
+/**
+ * 还原主流程（锁 → registry 读 → mutations → guarded config save → registry 落盘）。
+ * 与脚本入口分离以便测试注入路径与并发写模拟；不 process.exit，返回 { exitCode, messages }。
+ */
+function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, lockPath = LOCK_PATH, configPath = CONFIG_PATH, target, simulateExternalWrite } = {}) {
+  if (!target) return { exitCode: 2, messages: ['用法: node restore.js [--all | <serverKey>]'] };
+  const release = acquireLock(dataDir, lockPath);
+  if (!release) {
+    return {
+      exitCode: 1,
+      messages: [
+        `registry 锁被其他进程持有（${lockPath}，可能有并发接管/还原进行中），本次放弃。请稍后重试；` +
+          `确认无 zcode 会话运行时也可删除该锁文件后重试。`,
+      ],
+    };
+  }
+  let exitCode = 0;
+  const messages = [];
+  try {
+    const reg = readJsonSafe(registryPath) || { servers: {} };
+    reg.servers = reg.servers || {};
+    if (!Object.keys(reg.servers).length) {
+      messages.push(`registry 无接管记录（${registryPath}），无需还原`);
+      return { exitCode, messages };
+    }
+    const keys = target === '--all' ? Object.keys(reg.servers) : [target];
+    const unknown = keys.filter((k) => !(k in reg.servers));
+    if (unknown.length) {
+      messages.push(`registry 中不存在: ${unknown.join(', ')}。现有记录: ${Object.keys(reg.servers).join(', ')}`);
+      return { exitCode: 1, messages };
+    }
+
+    // 每个待还原 key 的 mutation（记录级、幂等，可对重读后的 config 重放）
+    const mutations = keys.map((key) => {
+      const entry = reg.servers[key];
+      if (entry.scope === 'user') return { op: 'set', key, value: entry.original };
+      return { op: 'del', key };
+    });
+    for (const key of keys) delete reg.servers[key];
+
+    const saved = guardedConfigSave(configPath, mutations, { simulateExternalWrite });
+    if (!saved) {
+      messages.push(
+        `config.json（${configPath}）在读取后被外部进程持续修改，本次跳过改写以免覆盖；` +
+          '操作幂等，请稍后重试'
+      );
+      return { exitCode: 1, messages };
+    }
+    writeJsonAtomic(registryPath, reg);
+    messages.push(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${configPath}）`);
+  } finally {
+    release();
+  }
+  return { exitCode, messages };
+}
+
+module.exports = { guardedConfigSave, runRestore, isPidAlive };
+
+if (require.main === module) {
+  const { exitCode, messages } = runRestore({ target: process.argv[2] });
+  for (const m of messages) process.stderr.write(m + '\n');
+  process.exit(exitCode);
+}

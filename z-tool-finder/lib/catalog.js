@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { connect } = require('./mcp-client');
+const { withLock } = require('./registry');
 
 const CATALOG_FILENAME = 'catalog.json';
 const WHEN_TO_USE_MAX = 120;
@@ -43,6 +44,21 @@ function loadCatalog(dataDir) {
   } catch {
     return { servers: {} };
   }
+}
+
+/**
+ * catalog 互斥更新：锁内重读 → 记录级合并 → 落盘。
+ * catalog 有三类并发写者（多个 wrapper 进程的 miss 回写、后台 prescan、CLI refresh），
+ * 原子 rename 只防半截读不防丢失更新（各自基于旧快照整体覆盖写会互抹记录），
+ * 因此统一走此入口，与 registry 同一把锁（catalog 写临界区毫秒级，不与 takeover 长临界区冲突）。
+ */
+function withCatalogLock(dataDir, mutator) {
+  return withLock(dataDir, () => {
+    const cat = loadCatalog(dataDir);
+    const result = mutator(cat);
+    saveCatalog(dataDir, cat);
+    return result;
+  });
 }
 
 /** 原子写：tmp + rename，防写一半进程死导致 catalog 损坏 */
@@ -144,9 +160,12 @@ if (require.main === module) {
   }
   (async () => {
     const spec = JSON.parse(fs.readFileSync(entriesFileArg, 'utf8'));
-    const cat = loadCatalog(dataDirArg);
-    const result = await prescan(cat, spec.entries || [], { timeoutMs: spec.timeoutMs });
-    saveCatalog(dataDirArg, cat);
+    // prescan 耗时可达分钟级，不能在锁内跑：先扫进 scratch，再短临界区合并落盘
+    const scratch = { servers: {} };
+    const result = await prescan(scratch, spec.entries || [], { timeoutMs: spec.timeoutMs });
+    withCatalogLock(dataDirArg, (cat) => {
+      Object.assign(cat.servers, scratch.servers);
+    });
     console.error(`prescan 完成: ok=${result.ok.join(',')} failed=${result.failed.map((f) => f.key).join(',')}`);
   })().catch((err) => {
     console.error('prescan 失败: ' + (err && err.stack ? err.stack : err));
@@ -157,6 +176,7 @@ if (require.main === module) {
 module.exports = {
   loadCatalog,
   saveCatalog,
+  withCatalogLock,
   getTool,
   upsertServer,
   removeServer,

@@ -53,12 +53,12 @@ test('engineServerName：注入清单与主 server 的指引命名同源（探�
   assert.strictEqual(SEARCH_TOOLS_NAME, 'mcp__plugin_z-tool-finder_z-tool-finder__search_tools');
 });
 
-test('renderManifest：pinned 的 server 每行标注未接管', () => {
+test('renderManifest：pinned 的 server 每行带 pinned 标注', () => {
   const cat = makeCat({ 'a': [['t1', 'x'], ['t2', 'y']] });
   const reg = { servers: { a: { pinned: true } } };
   const text = renderManifest({ cat, reg });
-  assert.ok(text.includes('a:t1 — x (pinned, 原生工具直调，未接管)'));
-  assert.ok(text.includes('a:t2 — y (pinned, 原生工具直调，未接管)'));
+  assert.ok(text.includes('a:t1 — x (pinned, 高频推荐)'));
+  assert.ok(text.includes('a:t2 — y (pinned, 高频推荐)'));
 });
 
 test('renderManifest：>300 工具按 server 折叠为一行', () => {

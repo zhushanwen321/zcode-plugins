@@ -30,7 +30,9 @@ const FOOTER_LINES = [
   `- 清单外需求可用 ${SEARCH_TOOLS_NAME} 检索`,
 ];
 
-const PINNED_NOTE = '(pinned, 原生工具直调，未接管)';
+// pinned 只影响清单渲染（标注高频优先选用），server 仍被接管、调用仍走 call_tool——
+// 措辞不能暗示「原生工具直调」，否则模型会去调不存在的 mcp__server__tool 名（契约漂移）
+const PINNED_NOTE = '(pinned, 高频推荐)';
 
 // overrides 键形态 'server:tool' → 文本（D7：when-to-use 覆写优先于 catalog 默认值）
 function resolveWhenToUse(reg, serverKey, tool) {

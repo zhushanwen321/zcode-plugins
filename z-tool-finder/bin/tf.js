@@ -17,7 +17,7 @@ const os = require('os');
 
 const { DATA_DIR, LOGS_DIR } = require('../lib/paths');
 const { loadRegistry } = require('../lib/registry');
-const { loadCatalog, prescan, saveCatalog } = require('../lib/catalog');
+const { loadCatalog, prescan, withCatalogLock } = require('../lib/catalog');
 const {
   applyTakeover,
   restoreAll,
@@ -189,9 +189,11 @@ async function cmdCatalogRefresh() {
     process.stderr.write('无已接管 server，catalog 无需刷新\n');
     return 0;
   }
-  const cat = loadCatalog(DATA_DIR);
-  const result = await prescan(cat, entries, { timeoutMs: 30000 });
-  saveCatalog(DATA_DIR, cat);
+  const scratch = { servers: {} };
+  const result = await prescan(scratch, entries, { timeoutMs: 30000 });
+  withCatalogLock(DATA_DIR, (cat) => {
+    Object.assign(cat.servers, scratch.servers);
+  });
   process.stderr.write(`ok: ${result.ok.join(',') || '(无)'}\n`);
   process.stderr.write(
     `failed: ${result.failed.map((f) => `${f.key} (${f.error})`).join('; ') || '(无)'}\n`

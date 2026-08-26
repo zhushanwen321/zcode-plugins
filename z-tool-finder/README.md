@@ -40,8 +40,8 @@ inline 开发形态：
 
 | 字段 | 作用 |
 |------|------|
-| `servers.<name>.pinned` | 高频直通白名单（默认空）：pinned 工具不进渐进加载，直调原工具名 |
-| `servers.<name>.excluded` | 排除清单：该 server 不被接管 |
+| `servers.<name>.pinned` | 高频白名单标注（默认空）：pinned 的 server 在 hook 清单中带 `(pinned)` 标注提示优先选用。注意：pinned **不改变接管形态**——server 仍被接管、工具仍经 `call_tool` 调用，原生 `mcp__server__tool` 名不可直调 |
+| `excluded`（顶层字符串数组） | 排除清单：数组中的 server key 不被接管（如 `["browser-use", "plugin:foo:bar"]`）。注意是 registry 顶层字段，不是 `servers.<name>` 子字段 |
 | `overrides` | when-to-use 覆写，如 `{"browser-use:xlsx_read": "读 Excel/CSV 数据文件时使用"}`（默认取工具 description 首句） |
 | `policies` | per-tool allow/deny，如 `{"browser-use:execute_js": "deny", "zcode-cua:*": "allow"}`。这是从引擎迁移来的 per-tool 治理承接：接管后引擎侧 per-tool 级管控必然失配（见下节），由 wrapper 在转发前自执行 |
 
