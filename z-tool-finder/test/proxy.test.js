@@ -260,3 +260,47 @@ test('call_tool：底层调用中崩溃 → 可操作错误 + 下次调用自动
   const healed = await rpc.call('call_tool', { tool: 'echo', args: { text: 'again' } });
   assert.equal(healed.result.isError, undefined, JSON.stringify(healed.result));
 });
+
+// 回归：并发调用下的 dead-branch 竞态（679bad1）。
+// 同一连接上并发 crash + echo：进程退出后两个 callTool 同时 reject，
+// 旧实现（catch 里无条件 client.close()）后到的 catch 对已被清空的模块级
+// client 调 close() 抛 TypeError，落到「wrapper 内部错误」兜底；且若并发方
+// 已重连出健康连接，旧实现会误杀它。断言：两个并发调用都得到可操作的
+// 「底层调用中断」错误（非内部错误）、第三次调用重连成功、底层建连恰 2 次
+// （初始 1 次 + 崩溃后重连 1 次，无误杀导致的额外建连）。
+test('call_tool：并发 crash + echo → 双方可操作错误、无误杀、建连恰 2 次', async (t) => {
+  let stderr = '';
+  const dataDir = withDataDir(t, { catalog: CRASH_CATALOG });
+  const rpc = startProxy('crash-test', {
+    env: { ZTF_DATA_DIR: dataDir },
+    server: [process.execPath, CRASH],
+  });
+  t.after(() => rpc.kill());
+  await init(rpc);
+
+  // 1. 建立初始连接（第 1 次建连）
+  const warm = await rpc.call('call_tool', { tool: 'echo', args: { text: 'warm' } });
+  assert.equal(warm.result.isError, undefined, JSON.stringify(warm.result));
+
+  // 2. 并发：一个 crash（杀进程）、一个 echo（共享同一连接，同时 reject）
+  const [crashed, echoed] = await Promise.all([
+    rpc.call('call_tool', { tool: 'crash', args: {} }),
+    rpc.call('call_tool', { tool: 'echo', args: { text: 'concurrent' } }),
+  ]);
+  for (const [label, res] of [['crash', crashed], ['echo', echoed]]) {
+    const text = res.result.content[0].text;
+    assert.match(text, /底层调用中断/, `${label} 应得到可操作的调用中断错误: ${text}`);
+    assert.doesNotMatch(text, /wrapper 内部错误/, `${label} 不应落入内部错误兜底: ${text}`);
+  }
+
+  // 3. 第三次调用经 ensureClient 死连接检测重连（第 2 次建连）并成功
+  const third = await rpc.call('call_tool', { tool: 'echo', args: { text: 'third' } });
+  assert.equal(third.result.isError, undefined, JSON.stringify(third.result));
+
+  // 日志按 logging-conventions 落盘 ZTF_DATA_DIR/logs/proxy-<serverKey>.log（写盘为同步 append）
+  const logText = fs.readFileSync(
+    path.join(dataDir, 'logs', 'proxy-crash-test.log'), 'utf8'
+  );
+  const connectCount = (logText.match(/底层连接建立/g) || []).length;
+  assert.equal(connectCount, 2, `底层建连应恰 2 次（实际 ${connectCount}）:\n${logText}`);
+});
