@@ -145,8 +145,17 @@ test('越档：首轮注入 additionalContext 且 firedTiers 落盘', () => {
     assert.deepEqual(Object.keys(out), ['additionalContext']);
     const text = out.additionalContext;
     assert.match(text, /^\[z-smart-context\] 上下文用量 150 tokens，已越过阈值 100（100）。/);
-    assert.ok(text.includes('node ' + path.join(PLUGIN_ROOT, 'bin', 'zsc.js') + ' usage'), '应内联插件根真实路径');
+    assert.ok(text.includes('node ' + path.join(PLUGIN_ROOT, 'bin', 'zsc.js') + ' usage --session sess_fire1'), '应内联插件根真实路径的精确自查命令');
     assert.ok(!text.includes('\n'), '注入文案必须单行');
+    // v2 文案锚点（D6 面向 agent）：自主工具引导 + v1 合规资产保留 + 旧用户导向表述清除
+    assert.ok(text.includes('zsc_compact'), '应含 agent 自主调用的 zsc_compact 工具引导');
+    assert.ok(text.includes('retention') && text.includes('nextInstruction'), '应说明 zsc_compact 两个入参');
+    assert.ok(text.includes('不是必须执行的指令'), '应保留「数据非指令」合规表述');
+    assert.ok(text.includes('阶段性完成并验证'), '三条件自查①：任务阶段性完成');
+    assert.ok(text.includes('依赖将被压缩的细节'), '三条件自查②：后续依赖');
+    assert.ok(text.includes('构成压力'), '三条件自查③：用量压力');
+    assert.ok(!/建议.{0,4}告知用户执行 \/compact/.test(text), '不得残留 v1 用户导向行动指引');
+    assert.ok(text.includes('告知用户执行 /compact'), '应保留人工兜底出口（环境无法使用 zsc_compact 时）');
 
     const state = readState(ctx, 'sess_fire1');
     assert.deepEqual(state.firedTiers, [100]);
@@ -333,7 +342,7 @@ test('db 打开失败：exit 0、stdout 空、stderr 留 ERROR 日志', () => {
 
 // ---- ⑧ 非法 sessionId：exit 0 且不落任何文件 ----
 
-test('非法 sessionId（路径穿越串）：exit 0、stdout 空、data 目录不新增任何文件', () => {
+test('非法 sessionId（路径穿越串）：exit 0、stdout 空、data 目录不新增任何会话状态文件', () => {
   const ctx = setup();
   try {
     writeConfig(ctx);
@@ -342,8 +351,12 @@ test('非法 sessionId（路径穿越串）：exit 0、stdout 空、data 目录�
     const res = runHook(ctx, { stdin: JSON.stringify({ session_id: '../../etc' }) });
     assert.equal(res.status, 0);
     assert.equal(res.stdout, '');
-    // data 目录只剩测试自己写入的 config.json：无 state 目录、无穿越产物
-    assert.deepEqual(fs.readdirSync(ctx.dataDir).sort(), ['config.json']);
+    // config.json + log/（诊断日志目录）之外不得有任何新增：无 state 目录、无穿越产物。
+    // log/ 是合法诊断通道（log.js 跟随 ZSC_DATA_DIR 重定向），不算会话状态污染。
+    assert.deepEqual(
+      fs.readdirSync(ctx.dataDir).filter((n) => n !== 'log').sort(),
+      ['config.json'],
+    );
   } finally {
     teardown(ctx);
   }

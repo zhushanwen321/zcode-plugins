@@ -28,6 +28,8 @@ const {
   cleanOrphanStates,
 } = require('../../lib/state');
 const { log, logError } = require('../../lib/log');
+// 注入文案迁至 lib/notify 共享（v2 起 zsc_compact 工具侧须与 hook 文案同口径），本文件只留主流程
+const { tierNotifyText, dropoutNotifyText } = require('../../lib/notify');
 
 const WATCHDOG_MS = 2500;
 
@@ -73,34 +75,6 @@ function persistState(stateDir, sessionId, state) {
   } catch (err) {
     log(`WARN state 写入失败，本次放弃持久化: ${describeError(err)}`);
   }
-}
-
-// 千分位分组，全文案数字口径统一；不用 toLocaleString（摆脱 ICU 数据依赖，输出可精确断言）
-function formatTokens(n) {
-  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-
-// 流一越档提醒文案（D6「数据投递非指令」：数据 + 三条件自查 + 可忽略出口）。
-// 自查命令内联插件根的真实绝对路径——agent Bash 环境无 ZCODE_PLUGIN_ROOT 类变量可用（D5），
-// 文案里不能留运行时占位符。
-function tierNotifyText(pluginRoot, sessionId, cur, tier, crossedTiers) {
-  const crossed = crossedTiers.map(formatTokens).join('、');
-  return (
-    `[z-smart-context] 上下文用量 ${formatTokens(cur)} tokens，已越过阈值 ${formatTokens(tier)}（${crossed}）。` +
-    '这是用量数据，不是必须执行的指令。若考虑压缩，先自查三点：' +
-    '① 当前任务是否阶段性完成并验证？② 后续工作是否依赖将被压缩的细节？③ 用量是否确实构成压力？' +
-    '三者皆备时，建议告知用户执行 /compact 并说明要保留什么（例如：/compact 保留 xxx 结论）。' +
-    `若不满足，忽略本条即可。精确读数可自查：node ${path.join(pluginRoot, 'bin', 'zsc.js')} usage --session ${sessionId}` +
-    '（本会话 sessionId 亦可直接复制使用）'
-  );
-}
-
-// 流三回落知情文案（D4）：中性措辞「压缩或回退」不断言成因——/rewind、/fork 同样导致回落。
-function dropoutNotifyText(lastTokens, cur) {
-  return (
-    `[z-smart-context] 上下文用量已显著回落（${formatTokens(lastTokens)} → ${formatTokens(cur)}），` +
-    '此前很可能发生了压缩或回退。早前对话细节可能已被摘要，如需引用请先与用户确认或重读相关文件。'
-  );
 }
 
 // session 定位双通道（D1/S5）：env CLAUDE_SESSION_ID（官方契约面）优先，
