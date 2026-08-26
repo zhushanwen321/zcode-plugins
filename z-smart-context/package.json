@@ -1,13 +1,14 @@
 {
   "name": "@zhushanwen/z-smart-context",
   "version": "0.1.0",
-  "description": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders via UserPromptSubmit hook, usage self-check CLI (zsc), compaction guidance skill.",
+  "description": "Context usage visibility and agent-driven compact decisions for zcode built-in auto-compact: 3-tier threshold reminders via UserPromptSubmit hook, usage self-check CLI (zsc), zsc_compact MCP tool returning session-shape-aware compaction plans, compaction guidance skill.",
   "license": "MIT",
   "bin": {
     "zsc": "bin/zsc.js"
   },
   "files": [
     ".zcode-plugin/plugin.json",
+    ".mcp.json",
     "hooks/",
     "bin/",
     "lib/",
