@@ -267,8 +267,21 @@ function mergeCoverageDir(dir) {
           agg.funcKeys.add(key);
           agg.funcs.push({ name: fn.functionName, range: [r0.startOffset, r0.endOffset] });
         }
-        for (let k = 1; k < fn.ranges.length; k++) {
-          if (fn.ranges[k].count > 0) agg.exec.push([fn.ranges[k].startOffset, fn.ranges[k].endOffset]);
+        // V8 ranges 语义（探针实证）：ranges[0] 是函数整体区间，count>0 即主体已执行；
+        // 后续子区间是计数不同的嵌套块，count===0 的为未执行分支，须从主体剔除。
+        // （原实现只收集 k≥1 且 count>0 的子区间——那是分支间执行次数差异区，
+        //  漏记无差异的执行主体，导致增量覆盖率系统性低估）
+        if (r0.count > 0) {
+          const holes = [];
+          for (let k = 1; k < fn.ranges.length; k++) {
+            if (fn.ranges[k].count === 0) holes.push(fn.ranges[k]);
+          }
+          let cursor = r0.startOffset;
+          for (const h of holes) {
+            if (h.startOffset > cursor) agg.exec.push([cursor, h.startOffset]);
+            if (h.endOffset > cursor) cursor = h.endOffset;
+          }
+          if (r0.endOffset > cursor) agg.exec.push([cursor, r0.endOffset]);
         }
       }
     }
@@ -520,4 +533,5 @@ if (require.main === module) main();
 module.exports = {
   parseDiffAddedLines, buildLineIndex, unionRanges, rangesIntersect,
   cleanForComplexity, countDecisions, complexityOf, crapScore,
+  mergeCoverageDir,
 };
