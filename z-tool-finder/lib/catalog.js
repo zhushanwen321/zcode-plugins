@@ -145,7 +145,9 @@ async function prescan(cat, entries, { timeoutMs = 30000 } = {}) {
     } catch (err) {
       failed.push({ key, error: err.message });
     } finally {
-      if (client) client.close();
+      // 必须 await：close() 内含 SIGTERM→SIGKILL 升级定时器，不 await 会被
+      // 调用方随后的 process.exit 清掉，忽略 SIGTERM 的 server 变孤儿进程
+      if (client) await client.close();
     }
   }
   return { ok, failed };
