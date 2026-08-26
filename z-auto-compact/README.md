@@ -69,7 +69,8 @@ Exit code 语义：
 
 ## 测试与验收
 
-- 单测：插件目录内 `node --test test/*.test.js`（纯函数 + CLI fixture 临时库，不碰生产库）。
+- 单测：插件目录内 `node --test test/*.test.js`（纯函数 + CLI/hook fixture 临时库，不碰生产库；e2e 默认 skip）。
+- 无头 e2e（真实 zcode app-server + 真实模型，隔离 HOME + fixture 越档，一次覆盖 V1/V2/V3 数据层证据）：`ZAC_E2E=1 node test/e2e-headless.test.js`（消耗少量模型 token；zcode 升级后建议重跑，防 hooks 契约漂移）。
 - 真机验收手册（V1-V6 六场景）见仓库根 `.tmp/auto-compact-design.md` §4。
 
 ## 数据目录

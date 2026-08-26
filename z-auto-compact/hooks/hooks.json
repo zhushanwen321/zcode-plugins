@@ -1,6 +1,5 @@
 {
-  "enabled": true,
-  "events": {
+  "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
