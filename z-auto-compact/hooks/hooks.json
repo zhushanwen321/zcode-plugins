@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "events": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/dist/hooks/threshold-check.js\"",
+            "timeoutMs": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

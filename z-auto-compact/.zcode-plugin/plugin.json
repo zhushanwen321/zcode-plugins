@@ -1,0 +1,6 @@
+{
+  "name": "z-auto-compact",
+  "version": "0.1.0",
+  "description": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders via UserPromptSubmit hook, usage self-check CLI, compaction guidance skill.",
+  "hooks": "hooks"
+}

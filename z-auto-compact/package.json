@@ -1,0 +1,35 @@
+{
+  "name": "@zhushanwen/z-auto-compact",
+  "version": "0.1.0",
+  "description": "Context usage visibility for zcode built-in auto-compact: 3-tier threshold reminders via UserPromptSubmit hook, usage self-check CLI (zac), compaction guidance skill.",
+  "license": "MIT",
+  "bin": {
+    "zac": "bin/zac.js"
+  },
+  "files": [
+    ".zcode-plugin/plugin.json",
+    "hooks/",
+    "bin/",
+    "lib/",
+    "dist/",
+    "skills/"
+  ],
+  "keywords": [
+    "zcode",
+    "auto-compact",
+    "context-usage",
+    "token",
+    "threshold",
+    "reminder",
+    "hook"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhushanwen321/zcode-plugins.git",
+    "directory": "z-auto-compact"
+  },
+  "author": "zhushanwen (https://github.com/zhushanwen321)"
+}
