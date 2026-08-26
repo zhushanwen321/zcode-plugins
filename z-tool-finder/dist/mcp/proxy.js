@@ -48,7 +48,7 @@ const META_TOOLS = [
       type: 'object',
       properties: {
         tool: { type: 'string', description: '工具名' },
-        args: { type: 'object', description: '工具参数，须符合该工具 inputSchema' },
+        args: { type: 'object', description: '工具参数，须符合该工具 inputSchema；无参工具可省略' },
       },
       required: ['tool'],
     },
@@ -304,7 +304,8 @@ function main(argv) {
         `工具 ${toolName} 不存在于 server ${serverKey}。实际可用工具: ${describeAvailableTools(loadCatalog(DATA_DIR))}`
       );
     }
-    const validationErrors = validateArgs(meta.inputSchema, args.args);
+    // schema 层 args 未声明必填：undefined/null 规范化为 {}，无参工具可合法省略 args
+    const validationErrors = validateArgs(meta.inputSchema, args.args ?? {});
     if (validationErrors.length) {
       return errorResult(
         `参数校验失败: ${validationErrors.join('; ')}。` +

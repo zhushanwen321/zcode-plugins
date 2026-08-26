@@ -187,6 +187,15 @@ test('call_tool：required 缺失返回校验错误文本', async (t) => {
   assert.match(res.result.content[0].text, /缺少必填参数: text/);
 });
 
+test('call_tool：无 required 工具可省略 args（undefined 规范化为 {}）', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('call_tool', { tool: 'ping' });
+  assert.equal(res.result.isError, undefined, JSON.stringify(res.result));
+});
+
 test('call_tool：合法参数懒启动底层并原样转发结果', async (t) => {
   const dataDir = withDataDir(t, { catalog: { servers: {} } });
   const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
