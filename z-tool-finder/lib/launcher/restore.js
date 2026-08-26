@@ -126,6 +126,30 @@ function guardedConfigSave(configPath, mutations, { maxRetries = USER_CONFIG_MAX
   return false;
 }
 
+// 每个待还原 key 的 mutation（记录级、幂等，可对重读后的 config 重放）：
+// user 级原位恢复 original；plugin/workspace 级删除覆盖条目即还原
+function buildRestoreMutations(reg, keys) {
+  return keys.map((key) => {
+    const entry = reg.servers[key];
+    if (entry.scope === 'user') return { op: 'set', key, value: entry.original };
+    return { op: 'del', key };
+  });
+}
+
+// 失效 catalog 条目（损坏/缺失按空 catalog 处理，delete 幂等无害）
+function invalidateCatalogEntries(catalogPath, keys) {
+  const cat = readJsonSafe(catalogPath);
+  if (!cat || !cat.servers || typeof cat.servers !== 'object') return;
+  let changed = false;
+  for (const key of keys) {
+    if (key in cat.servers) {
+      delete cat.servers[key];
+      changed = true;
+    }
+  }
+  if (changed) writeJsonAtomic(catalogPath, cat);
+}
+
 /**
  * 还原主流程（锁 → registry 读 → mutations → guarded config save → registry 落盘）。
  * 与脚本入口分离以便测试注入路径与并发写模拟；不 process.exit，返回 { exitCode, messages }。
@@ -158,12 +182,7 @@ function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, catalogP
       return { exitCode: 1, messages };
     }
 
-    // 每个待还原 key 的 mutation（记录级、幂等，可对重读后的 config 重放）
-    const mutations = keys.map((key) => {
-      const entry = reg.servers[key];
-      if (entry.scope === 'user') return { op: 'set', key, value: entry.original };
-      return { op: 'del', key };
-    });
+    const mutations = buildRestoreMutations(reg, keys);
     for (const key of keys) delete reg.servers[key];
 
     const saved = guardedConfigSave(configPath, mutations, { simulateExternalWrite });
@@ -175,18 +194,7 @@ function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, catalogP
       return { exitCode: 1, messages };
     }
     writeJsonAtomic(registryPath, reg);
-    // 失效 catalog 条目（损坏/缺失按空 catalog 处理，delete 幂等无害）
-    const cat = readJsonSafe(catalogPath);
-    if (cat && cat.servers && typeof cat.servers === 'object') {
-      let changed = false;
-      for (const key of keys) {
-        if (key in cat.servers) {
-          delete cat.servers[key];
-          changed = true;
-        }
-      }
-      if (changed) writeJsonAtomic(catalogPath, cat);
-    }
+    invalidateCatalogEntries(catalogPath, keys);
     messages.push(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${configPath}）`);
   } finally {
     release();
