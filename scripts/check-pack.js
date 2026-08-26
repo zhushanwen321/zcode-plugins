@@ -8,7 +8,10 @@
  * 的坏包——错误要等到第一个安装者报障才暴露。本脚本对每个插件跑
  * `npm pack --dry-run --json`，断言 zcode 插件的运行必需件都在 tarball 里：
  *   - bin 声明的每个入口（npm 包 CLI 契约）
- *   - .zcode-plugin/plugin.json + .mcp.json（zcode 插件发现契约）
+ *   - .zcode-plugin/plugin.json（zcode 插件发现契约，无条件必需）
+ *   - .mcp.json（仅当插件目录存在该文件时要求入包——零 MCP 插件如
+ *     z-auto-compact 是合法形态，plugin.json 才是发现契约，见
+ *     docs/extensions/development-guide.md「插件解剖」）
  *
  * 用法：node scripts/check-pack.js [workspaceRoot]
  *   退出码 0 = 全部通过；1 = 有缺失（每条缺失指出该加进哪个 package.json 字段）。
@@ -48,9 +51,13 @@ for (const name of pluginDirs) {
   for (const [cmd, entry] of Object.entries(pkg.bin || {})) {
     if (!paths.has(entry)) bad(`${name}: bin 入口 ${entry}（命令 ${cmd}）不在 tarball，把它加入 package.json 的 files`);
   }
-  // 必需件 2：zcode 插件双清单
-  for (const must of ['.zcode-plugin/plugin.json', '.mcp.json']) {
-    if (!paths.has(must)) bad(`${name}: ${must} 不在 tarball——zcode 靠它发现插件，加入 files 后发布`);
+  // 必需件 2：zcode 插件清单——plugin.json 无条件；.mcp.json 仅在插件目录声明了该文件时
+  // 要求进 tarball（有 MCP server 的插件漏发它才叫坏包，零 MCP 插件本就不该有）
+  if (!paths.has('.zcode-plugin/plugin.json')) {
+    bad(`${name}: .zcode-plugin/plugin.json 不在 tarball——zcode 靠它发现插件，加入 files 后发布`);
+  }
+  if (fs.existsSync(path.join(dir, '.mcp.json')) && !paths.has('.mcp.json')) {
+    bad(`${name}: .mcp.json 不在 tarball——插件声明了 MCP server，加入 files 后发布`);
   }
 }
 
