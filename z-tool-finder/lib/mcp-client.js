@@ -27,7 +27,7 @@ function buildErrorMessage(serverDef, action, stderrTail) {
  *
  * @param {{ command: string, args?: string[], env?: object }} serverDef
  * @param {{ timeoutMs?: number }} [options]
- * @returns {Promise<{ serverInfo: object, listTools: () => Promise<Array>, callTool: (name: string, args?: object) => Promise<object>, close: () => void, stderrTail: () => string }>}
+ * @returns {Promise<{ serverInfo: object, listTools: () => Promise<Array>, callTool: (name: string, args?: object) => Promise<object>, isDead: () => boolean, close: () => void, stderrTail: () => string }>}
  */
 async function connect(serverDef, { timeoutMs = 30000 } = {}) {
   const child = spawn(serverDef.command, serverDef.args || [], {
@@ -39,6 +39,7 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
   /** @type {Map<number, { resolve: Function, reject: Function, timer: NodeJS.Timeout }>} */
   const pending = new Map();
   let closed = false;
+  let dead = false; // 底层进程已退出（无论何种原因）——调用方据此丢弃连接
   let stderrBuf = '';
 
   // ring buffer：只保留最近 4KB，防止长跑 server 的 stderr 无限增长
@@ -97,6 +98,7 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
 
   // 用 close 而非 exit：close 在 stdio 流 flush 后触发，能拿到崩溃前最后一段 stderr
   child.on('close', () => {
+    dead = true;
     failAllPending(new Error(buildErrorMessage(serverDef, 'MCP server 进程提前退出', stderrTail())));
   });
 
@@ -120,6 +122,7 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
       serverInfo: initResult.serverInfo,
       listTools: () => request('tools/list', {}).then((r) => (r && r.tools) || []),
       callTool: (name, args) => request('tools/call', { name, arguments: args || {} }),
+      isDead: () => dead,
       close,
       stderrTail,
     };

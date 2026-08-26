@@ -12,13 +12,14 @@ const readline = require('readline');
 
 const PROXY = path.join(__dirname, '..', 'dist', 'mcp', 'proxy.js');
 const ECHO = path.join(__dirname, 'fixtures', 'echo-server.js');
+const CRASH = path.join(__dirname, 'fixtures', 'crash-server.js');
 
 // ---------- 行式 JSON-RPC 会话夹具 ----------
 
-function startProxy(serverKey, { env, onStderr } = {}) {
+function startProxy(serverKey, { env, onStderr, server = [process.execPath, ECHO] } = {}) {
   const child = spawn(
     process.execPath,
-    [PROXY, serverKey, '--', process.execPath, ECHO],
+    [PROXY, serverKey, '--', ...server],
     { env: { ...process.env, ...env } }
   );
   const pending = new Map();
@@ -178,4 +179,54 @@ test('call_tool：policies deny 在转发前拦截并提示改 registry', async 
   const text = res.result.content[0].text;
   assert.match(text, /被 registry 策略拒绝/);
   assert.match(text, /registry\.json/);
+});
+
+// ---------- 死连接自愈（底层崩溃后无需等 5 分钟空闲回收） ----------
+
+const CRASH_CATALOG = {
+  servers: {
+    'crash-test': {
+      fetchedAt: '2026-01-01T00:00:00Z',
+      serverInfo: { name: 'crash-server', version: '0.0.1' },
+      tools: [
+        {
+          name: 'crash',
+          whenToUse: '模拟崩溃',
+          description: '模拟底层崩溃：调用即 exit(1)',
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'echo',
+          whenToUse: '回显',
+          description: '回显传入参数',
+          inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+        },
+      ],
+    },
+  },
+};
+
+test('call_tool：底层调用中崩溃 → 可操作错误 + 下次调用自动重连', async (t) => {
+  const dataDir = withDataDir(t, { catalog: CRASH_CATALOG });
+  const rpc = startProxy('crash-test', {
+    env: { ZTF_DATA_DIR: dataDir },
+    server: [process.execPath, CRASH],
+  });
+  t.after(() => rpc.kill());
+  await init(rpc);
+
+  // 1. 正常调用建立连接
+  const ok = await rpc.call('call_tool', { tool: 'echo', args: { text: 'first' } });
+  assert.equal(ok.result.isError, undefined, JSON.stringify(ok.result));
+
+  // 2. crash 工具使底层进程退出：应得可操作错误（而非 wrapper 内部错误/挂死）
+  const crashed = await rpc.call('call_tool', { tool: 'crash', args: {} });
+  assert.equal(crashed.result.isError, true);
+  const text = crashed.result.content[0].text;
+  assert.match(text, /底层调用中断/);
+  assert.match(text, /连接已重置/);
+
+  // 3. 自愈核心断言：紧接着的调用自动重连新进程并成功
+  const healed = await rpc.call('call_tool', { tool: 'echo', args: { text: 'again' } });
+  assert.equal(healed.result.isError, undefined, JSON.stringify(healed.result));
 });

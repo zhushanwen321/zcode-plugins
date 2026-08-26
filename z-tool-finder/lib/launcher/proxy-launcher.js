@@ -3,7 +3,8 @@
  *
  * 接管条目的 command 指向数据目录下的本文件副本（~/.zcode/z-tool-finder/launcher/），
  * 内部解析当前插件本体后把控制权交给 dist/mcp/proxy.js。插件升级只刷新副本指向，
- * 不改接管条目。
+ * 不改接管条目。插件本体不存在（已卸载）时退化为直连透传：argv 自带原始定义，
+ * 原样 spawn——server 恢复原生工具面，config 无需改动。
  *
  * argv：<serverKey> -- <原 command> <原 args...>（与 proxy.js 相同约定，原样转发）
  *
@@ -97,13 +98,42 @@ function compareSemver(a, b) {
 
 const root = resolvePluginRoot();
 if (!root) {
-  // 插件已卸载：不回退用 cache 旧版本（避免僵尸版本静默续跑），直接失败并给还原指引
-  process.stderr.write(
-    'z-tool-finder 插件本体不存在（可能已卸载）。' +
-      '运行 node ~/.zcode/z-tool-finder/launcher/restore.js --all 还原全部接管。\n'
-  );
-  process.exit(1);
+  // 插件已卸载：退化为直连透传（argv 自带原始定义），server 恢复原生工具面，
+  // config 无需任何改动。不回退用 cache 旧版本续跑 ztf 代码（避免僵尸版本）——
+  // 透传不执行任何本插件逻辑，与僵尸版本无关（DESIGN.md D4 / §6.5.2）。
+  passthroughOrDie();
 }
 
 // 交给插件本体 wrapper（导出 main(argv) 形态，比改写 process.argv 稳）
 require(path.join(root, 'dist', 'mcp', 'proxy.js')).main(process.argv.slice(2));
+
+/** 卸载后兜底：把 '--' 之后的原始定义原样 spawn，stdio 直通 */
+function passthroughOrDie() {
+  const { spawn } = require('child_process');
+  const dashIdx = process.argv.indexOf('--');
+  if (dashIdx < 1 || dashIdx + 1 >= process.argv.length) {
+    process.stderr.write(
+      'z-tool-finder 插件本体不存在且透传参数缺失（argv 无 "--" 段）。' +
+      '运行 node ~/.zcode/z-tool-finder/launcher/restore.js --all 还原全部接管。\n'
+    );
+    process.exit(1);
+  }
+  process.stderr.write(
+    '[z-tool-finder] 插件本体不存在（可能已卸载），本 server 已退化为直连原生形态；' +
+    '如需清理 config 残留条目可运行 node ~/.zcode/z-tool-finder/launcher/restore.js --all\n'
+  );
+  const child = spawn(process.argv[dashIdx + 1], process.argv.slice(dashIdx + 2), {
+    stdio: 'inherit',
+  });
+  // 信号只转发给 child；child 退出（close = stdio 已 flush）后本进程随之退出，
+  // 不做信号自转发（会再次触发自身 handler，死循环）
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => child.kill(sig));
+  }
+  child.on('error', (err) => {
+    process.stderr.write(`[z-tool-finder] 直连启动失败: ${err.message}\n`);
+    process.exit(1);
+  });
+  child.on('close', (code) => process.exit(code == null ? 1 : code));
+  // 透传形态下本进程只做桥接，事件循环由 child 的句柄维系
+}

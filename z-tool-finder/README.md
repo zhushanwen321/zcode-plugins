@@ -64,7 +64,7 @@ inline 开发形态：
 
 - **正确顺序：先 restore，再禁用/卸载插件**。zcode 引擎没有卸载/禁用类钩子（hook 事件全集仅 7 个会话内事件；卸载路径是纯文件操作，不触发任何插件代码，也不清理 `mcp.servers`），接管条目不会随插件移除自动还原（源码证据见 DESIGN.md §6.5.2）。
 - 插件在装：`node <插件>/bin/tf.js restore --all`（或 `restore <server>` 单个还原）→ 重启 ZCode，原 `mcp__server__tool` 工具名全部恢复可调。
-- 插件已卸载：接管条目 command 指向数据目录下的稳定 launcher（`~/.zcode/z-tool-finder/launcher/proxy-launcher.js`）。插件本体不存在时连接会失败并在 stderr 给出指引：跑 `node ~/.zcode/z-tool-finder/launcher/restore.js --all` 还原全部接管（restore.js 不依赖插件存在）。还原后 config 无残留 wrapper 条目。
+- 插件已卸载：接管条目 command 指向数据目录下的稳定 launcher（`~/.zcode/z-tool-finder/launcher/proxy-launcher.js`）。launcher 含透传能力后（装新版并跑过一次会话刷新副本）插件卸载时 server 自动退化为直连原生形态，config 无需改动，stderr 提示一行还原指引；更早的 launcher 副本则是连接失败并给指引。两种情况都可用 `node ~/.zcode/z-tool-finder/launcher/restore.js --all` 彻底清理残留条目（restore.js 不依赖插件存在）。
 
 ## FAQ
 

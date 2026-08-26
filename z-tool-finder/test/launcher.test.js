@@ -111,7 +111,30 @@ test('launcher 回退：无 launcher.json 时用 ZTF_PLUGIN_ROOT', async (t) => 
   assert.equal(listRes.result.tools.length, 2);
 });
 
-test('launcher：本体不存在时 exit 1 并给出还原指引', (t) => {
+test('launcher：本体不存在时透传原始定义（卸载后不改配置继续用）', async (t) => {
+  const dataDir = tmpDir('ztf-launcher-test-');
+  const fakeHome = tmpDir('ztf-fake-home-');
+  t.after(() => {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  });
+  fs.mkdirSync(path.join(dataDir, 'launcher'), { recursive: true });
+  fs.copyFileSync(path.join(LAUNCHER_SRC, 'proxy-launcher.js'), path.join(dataDir, 'launcher', 'proxy-launcher.js'));
+  const { listRes } = await launcherToolsList(
+    path.join(dataDir, 'launcher', 'proxy-launcher.js'),
+    'echo-test',
+    { ZTF_DATA_DIR: dataDir, HOME: fakeHome }
+  );
+  // 透传形态：返回 fixture 原生工具，而非 wrapper 的 meta 2 件套
+  const names = listRes.result.tools.map((tool) => tool.name);
+  assert.ok(names.includes('echo'), `应含原生工具 echo，实际: ${names.join(',')}`);
+  assert.ok(
+    !names.includes('call_tool') && !names.includes('get_tool_details'),
+    `不应再有 meta 工具，实际: ${names.join(',')}`
+  );
+});
+
+test('launcher：本体不存在且 argv 无 "--" → exit 1 + restore 指引', (t) => {
   const dataDir = tmpDir('ztf-launcher-test-');
   const fakeHome = tmpDir('ztf-fake-home-');
   t.after(() => {
@@ -122,7 +145,7 @@ test('launcher：本体不存在时 exit 1 并给出还原指引', (t) => {
   fs.copyFileSync(path.join(LAUNCHER_SRC, 'proxy-launcher.js'), path.join(dataDir, 'launcher', 'proxy-launcher.js'));
   const res = spawnSync(
     process.execPath,
-    [path.join(dataDir, 'launcher', 'proxy-launcher.js'), 'echo-test', '--', process.execPath, 'x.js'],
+    [path.join(dataDir, 'launcher', 'proxy-launcher.js'), 'echo-test'], // 无 "--" 段
     { env: { ...process.env, ZTF_DATA_DIR: dataDir, HOME: fakeHome }, encoding: 'utf8', timeout: 10000 }
   );
   assert.equal(res.status, 1);

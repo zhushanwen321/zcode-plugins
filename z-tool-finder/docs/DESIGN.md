@@ -173,10 +173,10 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 
 ### 6.4 D4：stable launcher 隔离版本路径
 
-- **采用**：接管条目的 command 指向 `~/.zcode/z-tool-finder/launcher/proxy-launcher.js`（数据目录下的稳定路径），launcher 内部按以下优先级解析插件本体：inline `plugins.dirs` 中已启用的 `z-tool-finder@inline` 目录 > marketplace cache 中**最高版本**目录（多版本共存时）。hook 每次运行时自检并刷新 launcher 副本；launcher 目录同时放独立 `restore.js`。**插件卸载/本体不存在时**：launcher 不再尝试转发，对 zcode 的连接直接失败并在 stderr 给出「插件已卸载，运行 `node ~/.zcode/z-tool-finder/launcher/restore.js --all` 还原全部接管」（cache 中可能残留旧版本，故意不回退使用——避免僵尸版本静默续跑）。
-- **被否**：直接物化插件版本绝对路径进接管条目（插件升级即全量失效）；运行时自愈重写（时序不可控）。
-- **证据**：marketplace 副本机制（本仓 AGENTS.md 架构边界 2：cache/<marketplace>/<plugin>/<version>/）。
-- **效果**：G3——插件卸载/升级后接管条目仍可运行或可还原（restore.js 不依赖插件存在）。
+- **采用**：接管条目的 command 指向 `~/.zcode/z-tool-finder/launcher/proxy-launcher.js`（数据目录下的稳定路径），launcher 内部按以下优先级解析插件本体：inline `plugins.dirs` 中已启用的 `z-tool-finder@inline` 目录 > marketplace cache 中**最高版本**目录（多版本共存时）。hook 每次运行时自检并刷新 launcher 副本；launcher 目录同时放独立 `restore.js`。**插件卸载/本体不存在时**：launcher 退化为直连透传——argv 自带原始定义，原样 spawn，server 恢复原生工具面，config 无需任何改动（cache 中可能残留旧版本，故意不回退执行其 ztf 代码——透传不跑任何本插件逻辑，与僵尸版本无关）。argv 异常（无 `--` 段）才 exit 1 + restore 指引。
+- **被否**：直接物化插件版本绝对路径进接管条目（插件升级即全量失效）；运行时自愈重写（时序不可控）；数据目录放完整 proxy 副本冻结 meta 形态（清单注入已随 hook 消失，无清单的 meta 面只有两跳成本没有收益）。
+- **证据**：marketplace 副本机制（本仓 AGENTS.md 架构边界 2：cache/<marketplace>/<plugin>/<version>/）；卸载流程源码定论见 §6.5.2。
+- **效果**：G3——插件卸载/升级后接管条目仍可运行或可还原（restore.js 不依赖插件存在）。时序约束：透传能力随 launcher 副本刷新生效（须装新版并跑一次 hook 后再卸载才享受）。
 
 ### 6.5 D5：自动接管的边界（user 级与插件 server 自动；workspace 级仅显式）
 
@@ -251,11 +251,13 @@ user config 必有 wrapper 条目，fallback 自动失效，无实际影响）�
 - **inline 形态连卸载链都不经过**：inline 插件不在 installed.json（卸载函数查不到直接返回
   null），「卸载」= 从 config `plugins.dirs` 删路径，同样无任何触发点。
 - **设计推论**：自动还原在引擎机制上不可能——hook 由插件注册，插件移除后 hook 亦不再
-  执行（鸡生蛋）。唯一还原路径是手动 restore：插件在装时 `tf restore --all`；插件已卸载时
-  数据目录 `launcher/restore.js --all`（零依赖单文件，为此场景设计）。卸载默认删 cache 目录
-  使 proxy-launcher 四级插件解析全部落空，走「插件本体不存在 → exit 1 + stderr 打印 restore
-  指引」降级（D4）——该兜底覆盖的是卸载流程真实会制造的场景。用户文档须写明操作顺序：
-  **先 restore 再禁用/卸载**。
+  执行（鸡生蛋）。据此 D4 将 launcher 的「本体不存在」分支定为**直连透传**：卸载后
+  wrapper 条目退化为原样 spawn 原始定义，server 恢复原生工具面，config 无需改动；要彻底
+  清理仍走手动 restore（插件在装时 `tf restore --all`；插件已卸载时数据目录
+  `launcher/restore.js --all`，零依赖单文件，为此场景设计）。卸载默认删 cache 目录使
+  proxy-launcher 四级插件解析落空后即进透传分支——不执行任何 ztf 代码，无僵尸版本问题。
+  用户文档须写明操作顺序：**先 restore 再禁用/卸载**（透传是兜底不是推荐态：清单注入、
+  压缩收益、catalog 均随插件消失）。
 
 ### 6.6 D6：检索 = 自实现关键词 + BM25
 
@@ -389,3 +391,4 @@ z-tool-finder/
 - v1（2026-08-26）：初版。调研依据：市面方案（Anthropic TST / KGT24k / Stacklok / pi Dynamic Tool Loading）、zcode 能力对标（本仓 docs/research/）、superpowers hook 先例。
 - v2（2026-08-26）：按对抗式审查修订——G4 改述为「治理迁移」（披露 per-tool 引擎治理失配，由 wrapper policies 承接）；接管/restore 加单实例锁 + re-read + 记录级合并（并发 last-writer-wins 防护）；G2 改述「至多两次重启 + workspace 仅显式」；A2 口径闭环（清单计入常驻开销）；catalog 预扫描移出 hook 同步路径（后台化 + 实时兜底）；launcher 定版本解析优先级与卸载行为；A1 加并发变体、A4 加真实卸载变体；实施计划补 marketplace/check-sync/release.js 收尾阶段。
 - v3（2026-08-26）：M0 三探针执行完毕全部通过，结果与脚本归档 `test/probes/`；D5 覆盖 key 修正为 `plugin:<plugin>:<server>` 全命名空间形态（裸名无效，run2 实证）。
+- v4（2026-08-26）：§6.5.1 首验缺口修复记录；§6.5.2 卸载无引擎钩子源码定论（zcode.cjs 7 事件枚举 + 卸载纯文件操作）；D4 卸载行为改为直连透传（不改 config 恢复原生工具面，argv 异常才 exit 1）；search_tools 与 wrapper 错误文案区分「catalog 无数据」与「工具面为空」两种空语义；wrapper 死连接即时自愈（mcp-client 暴露 isDead，ensureClient 检测重建，替代 5 分钟空闲回收等待）。

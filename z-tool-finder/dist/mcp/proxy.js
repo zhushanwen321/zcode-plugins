@@ -161,9 +161,17 @@ function main(argv) {
     idleTimer.unref();
   };
 
-  /** 懒连接底层（并发调用共享同一个 in-flight Promise）；失败抛可操作错误 */
+  /** 懒连接底层（并发调用共享同一个 in-flight Promise）；失败抛可操作错误。
+   *  死连接检测：底层进程崩溃后 client 对象残留（isDead=true），此处即时清理
+   *  重建，否则要等 5 分钟空闲回收才自愈 */
   const ensureClient = async () => {
-    if (client) return client;
+    if (client) {
+      if (!client.isDead()) return client;
+      log('底层连接已死，丢弃并重连');
+      client.close();
+      client = null;
+      clientPromise = null;
+    }
     if (!clientPromise) {
       clientPromise = connect(serverDef, { timeoutMs: CONNECT_TIMEOUT_MS })
         .then((c) => {
@@ -206,6 +214,16 @@ function main(argv) {
 
   // ---------- meta 工具实现 ----------
 
+  /** 「实际可用工具」描述：区分 工具面为空 / catalog 无记录 两种空（与 search_tools 口径一致） */
+  const describeAvailableTools = (cat) => {
+    const entry = cat.servers[serverKey] || {};
+    const names = (entry.tools || []).map((t) => t && t.name).filter(Boolean);
+    if (names.length) return names.join(', ');
+    return serverKey in cat.servers
+      ? '该 server 工具面为空（如 zsw 1.1.0 offline 形态，本属正常）'
+      : 'catalog 无该 server 记录（首次调用后自动索引）';
+  };
+
   const handleGetToolDetails = async (args) => {
     const toolName = args && args.tool;
     if (!toolName || typeof toolName !== 'string') {
@@ -214,12 +232,8 @@ function main(argv) {
     const meta = await findToolMeta(toolName);
     if (!meta) {
       // 可操作错误：列出该 server 实际工具名，模型可直接纠正
-      const cat = loadCatalog(DATA_DIR);
-      const names = ((cat.servers[serverKey] || {}).tools || []).map((t) => t.name);
       return errorResult(
-        `工具 ${toolName} 不存在于 server ${serverKey}。实际可用工具: ${
-          names.length ? names.join(', ') : '（未知，catalog 为空）'
-        }`
+        `工具 ${toolName} 不存在于 server ${serverKey}。实际可用工具: ${describeAvailableTools(loadCatalog(DATA_DIR))}`
       );
     }
     return {
@@ -261,12 +275,8 @@ function main(argv) {
     // ② schema 轻量校验（catalog miss 同样走实时兜底）
     const meta = await findToolMeta(toolName);
     if (!meta) {
-      const cat = loadCatalog(DATA_DIR);
-      const names = ((cat.servers[serverKey] || {}).tools || []).map((t) => t.name);
       return errorResult(
-        `工具 ${toolName} 不存在于 server ${serverKey}。实际可用工具: ${
-          names.length ? names.join(', ') : '（未知，catalog 为空）'
-        }`
+        `工具 ${toolName} 不存在于 server ${serverKey}。实际可用工具: ${describeAvailableTools(loadCatalog(DATA_DIR))}`
       );
     }
     const validationErrors = validateArgs(meta.inputSchema, args.args);
@@ -288,7 +298,24 @@ function main(argv) {
         `建议动作: 运行 node <插件>/bin/tf.js doctor 排查，或 node <插件>/bin/tf.js restore ${serverKey} 还原为直连`
       );
     }
-    const result = await c.callTool(toolName, args.args);
+    let result;
+    try {
+      result = await c.callTool(toolName, args.args);
+    } catch (err) {
+      if (c.isDead()) {
+        // 调用中途底层进程退出：连接已由 ensureClient 的死连接检测清理路径兜底，
+        // 此处显式复位以覆盖并发窗口，重试即自动重连
+        client.close();
+        client = null;
+        clientPromise = null;
+        return errorResult(
+          `底层调用中断（server 进程退出）: ${err.message}\n连接已重置，重试本调用将自动重连`
+        );
+      }
+      return errorResult(
+        `底层调用失败: ${err.message}\n可重试本调用；若持续失败请运行 node <插件>/bin/tf.js doctor 排查`
+      );
+    }
     log(`call_tool ${toolName} 转发完成`);
     return result; // 结果原样返回
   };

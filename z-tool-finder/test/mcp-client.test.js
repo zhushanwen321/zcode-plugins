@@ -11,11 +11,13 @@ test('connect + listTools + callTool 全链路', async () => {
   const client = await connect(ECHO);
   try {
     assert.equal(client.serverInfo.name, 'echo-server');
+    assert.equal(client.isDead(), false);
     const tools = await client.listTools();
     assert.equal(tools.length, 2);
     assert.equal(tools[0].name, 'echo');
     const result = await client.callTool('echo', { text: 'hi' });
     assert.match(result.content[0].text, /"text":"hi"/);
+    assert.equal(client.isDead(), false, '存活期间 isDead 应为 false');
   } finally {
     client.close();
   }
@@ -78,6 +80,8 @@ test('底层进程崩溃：未决请求 reject + stderr 摘要 + 建议动作', 
     assert.ok(client.stderrTail().includes('crashy-server'));
     return true;
   });
+  // 崩溃后 isDead=true：调用方据此丢弃连接（proxy 的死连接自愈依赖此信号）
+  assert.equal(client.isDead(), true);
 });
 
 test('connect 失败（无法启动的 command）给出可操作错误', async () => {
