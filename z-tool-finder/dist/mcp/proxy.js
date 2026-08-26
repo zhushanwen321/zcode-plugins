@@ -320,11 +320,14 @@ function main(argv) {
       result = await c.callTool(toolName, args.args);
     } catch (err) {
       if (c.isDead()) {
-        // 调用中途底层进程退出：连接已由 ensureClient 的死连接检测清理路径兜底，
-        // 此处显式复位以覆盖并发窗口，重试即自动重连
-        client.close();
-        client = null;
-        clientPromise = null;
+        // 调用中途底层进程退出：只复位本次调用持有的连接 c。
+        // 不能用模块级 client：并发调用 B 可能已重连出健康连接，close() 会误杀；
+        // 也只在引用未变时清空，避免抹掉并发方刚建立/正在建的连接
+        c.close();
+        if (client === c) {
+          client = null;
+          clientPromise = null;
+        }
         return errorResult(
           `底层调用中断（server 进程退出）: ${err.message}\n连接已重置，重试本调用将自动重连`
         );

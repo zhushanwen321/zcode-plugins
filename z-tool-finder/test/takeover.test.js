@@ -318,6 +318,36 @@ test('applyTakeover：LockHeldError 时 degradeOnLock=true 降级不抛，false 
   fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
 });
 
+test('applyTakeover 写序回归：user config 写失败时 registry 已落记录，下轮 hook 漂移检测自愈', async () => {
+  const f = makeFixture();
+  const originalConfig = JSON.parse(fs.readFileSync(f.userConfigPath, 'utf8'));
+
+  // 注入 guardedSaveUserConfig 失败：把 config 所在目录设为只读（load 仍可读，save 抛 EACCES）
+  const cfgDir = path.dirname(f.userConfigPath);
+  fs.chmodSync(cfgDir, 0o555);
+
+  await assert.rejects(() => applyTakeover({ home: f.home, dataDir: f.dataDir, workspaceRoot: f.workspaceRoot }));
+
+  // 先 registry 后 config 的写序：中途失败时 registry 已含接管记录（restore 依赖），
+  // 而 user config 未被改写（不产生 config 已覆盖、registry 无记录的孤儿）
+  const reg = loadRegistry(f.dataDir);
+  assert.ok(reg.servers.alpha, 'registry 已记录 alpha（restore 凭此可还原）');
+  assert.ok(reg.servers['plugin:p-demo:demo'], 'registry 已记录插件级条目');
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(f.userConfigPath, 'utf8')), originalConfig);
+
+  // 自愈路径：恢复可写后重跑，takenEntries 漂移检测补写 wrapper 条目
+  fs.chmodSync(cfgDir, 0o755);
+  const r2 = await applyTakeover({ home: f.home, dataDir: f.dataDir, workspaceRoot: f.workspaceRoot });
+  assert.deepStrictEqual(r2.newly, []);
+  assert.deepStrictEqual(r2.refreshed.sort(), ['alpha', 'blocked', 'plugin:p-demo:demo'].sort());
+  const after = JSON.parse(fs.readFileSync(f.userConfigPath, 'utf8'));
+  assert.strictEqual(after.mcp.servers.alpha.args[1], 'alpha', 'wrapper 条目已被补写');
+
+  fs.rmSync(f.home, { recursive: true, force: true });
+  fs.rmSync(f.dataDir, { recursive: true, force: true });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+});
+
 test('restoreAll：registry 无记录时返回 missing 而非崩溃', () => {
   const f = makeFixture();
   const rr = restoreAll({ home: f.home, dataDir: f.dataDir });

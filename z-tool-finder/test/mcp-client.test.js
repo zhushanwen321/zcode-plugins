@@ -95,6 +95,51 @@ test('connect 失败（无法启动的 command）给出可操作错误', async (
   );
 });
 
+test('进程退出后的调用走 dead 预检：以「底层进程已退出」reject；dead 时 close() 立即 resolve', async () => {
+  const crashDef = {
+    command: process.execPath,
+    args: ['-e', `
+      const readline = require('readline');
+      const rl = readline.createInterface({ input: process.stdin });
+      let initialized = false;
+      rl.on('line', (line) => {
+        let m; try { m = JSON.parse(line); } catch { return; }
+        if (m.method === 'initialize') {
+          process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'crashy2', version: '0' } } }) + '\\n');
+          initialized = true;
+        } else if (initialized) {
+          process.exit(1);
+        }
+      });
+    `],
+  };
+  const c2 = await connect(crashDef, { timeoutMs: 5000 });
+  await assert.rejects(() => c2.listTools(), /提前退出/);
+  // ① dead 预检分支：进程退出后再调用，不等待超时，直接以固定文案 reject
+  await assert.rejects(() => c2.listTools(), (err) => {
+    assert.match(err.message, /底层进程已退出/);
+    return true;
+  });
+  await assert.rejects(() => c2.callTool('x', {}), /底层进程已退出/);
+  // ② dead 时 close() 不等 kill 宽限，立即 resolve
+  const start = Date.now();
+  await c2.close();
+  assert.ok(Date.now() - start < 1000, 'dead 连接的 close() 应立即 resolve');
+});
+
+test('close() 对忽略 SIGTERM 的底层进程升级 SIGKILL 并 resolve', async () => {
+  const def = { command: process.execPath, args: [path.join(__dirname, 'fixtures', 'term-ignore-server.js')] };
+  const client = await connect(def, { timeoutMs: 5000 });
+  assert.equal(client.isDead(), false);
+  const start = Date.now();
+  await client.close(); // SIGTERM 被忽略，只能等 SIGKILL
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed >= 4500, `应在 SIGTERM 宽限（5s）后升级 SIGKILL，实际 ${elapsed}ms`);
+  assert.ok(elapsed < 15000, `不应远超宽限期，实际 ${elapsed}ms`);
+  assert.equal(client.isDead(), true);
+  assert.ok(client.stderrTail().includes('SIGTERM 已收到但被忽略'), 'SIGTERM 确实送达并被忽略，证明退出由 SIGKILL 完成');
+});
+
 test('close 幂等且清理 pending', async () => {
   const client = await connect(ECHO);
   client.close();
