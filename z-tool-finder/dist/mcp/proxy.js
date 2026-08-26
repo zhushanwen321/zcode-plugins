@@ -206,7 +206,15 @@ function main(argv) {
     if (idleTimer) clearTimeout(idleTimer);
     // 等待底层进程确认退出（client.close 保证 SIGTERM 超时后 SIGKILL），
     // 避免 wrapper 先退、底层进程被 reparent 成孤儿
-    if (client) await client.close();
+    // 懒连接进行中（connect 握手未完成）时 client 尚为 null，须等待 in-flight
+    // promise 完成后再 close，否则刚 spawn 的底层进程无人收尾被 reparent 成孤儿
+    if (client) {
+      await client.close();
+    } else if (clientPromise) {
+      await clientPromise
+        .then((c) => c.close())
+        .catch(() => {}); // 连接失败时 connect 内部已自清进程
+    }
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
@@ -397,7 +405,14 @@ function main(argv) {
   // stdin 关闭（zcode 退出/重启）时静默收尾
   rl.on('close', () => {
     if (idleTimer) clearTimeout(idleTimer);
-    if (client) client.close();
+    if (client) {
+      client.close();
+    } else if (clientPromise) {
+      // 懒连接进行中关 stdin：同样要等握手完成再 close，防孤儿进程
+      clientPromise
+        .then((c) => c.close())
+        .catch(() => {});
+    }
   });
 }
 

@@ -42,8 +42,10 @@ inline 开发形态：
 |------|------|
 | `servers.<name>.pinned` | 高频白名单标注（默认空）：pinned 的 server 在 hook 清单中带 `(pinned)` 标注提示优先选用。注意：pinned **不改变接管形态**——server 仍被接管、工具仍经 `call_tool` 调用，原生 `mcp__server__tool` 名不可直调 |
 | `excluded`（顶层字符串数组） | 排除清单：数组中的 server key 不被接管（如 `["browser-use", "plugin:foo:bar"]`）。注意是 registry 顶层字段，不是 `servers.<name>` 子字段 |
-| `overrides` | when-to-use 覆写，如 `{"browser-use:xlsx_read": "读 Excel/CSV 数据文件时使用"}`（默认取工具 description 首句） |
-| `policies` | per-tool allow/deny，如 `{"browser-use:execute_js": "deny", "zcode-cua:*": "allow"}`。这是从引擎迁移来的 per-tool 治理承接：接管后引擎侧 per-tool 级管控必然失配（见下节），由 wrapper 在转发前自执行 |
+| `overrides` | when-to-use 覆写（key 形态 `<serverKey>:<tool>`），如 `{"plugin:my-plugin:my-server:xlsx_read": "读 Excel/CSV 数据文件时使用"}`（默认取工具 description 首句） |
+| `policies` | per-tool allow/deny（key 形态 `<serverKey>:<tool>` 或 `<serverKey>:*`），如 `{"computer-use:execute_js": "deny", "plugin:my-plugin:my-server:*": "allow"}`。这是从引擎迁移来的 per-tool 治理承接：接管后引擎侧 per-tool 级管控必然失配（见下节），由 wrapper 在转发前自执行 |
+
+注意：key 中的 `<serverKey>` 与 `excluded` 同形态——用户级 server 用裸名，插件源 server 必须用 `plugin:<plugin>:<server>` 全命名空间（裸插件名永远不命中，deny 会静默失效）；且必须是已被接管的 server（`excluded` 列表内或引擎注入如 zcode-cua 的 server 不会被接管，条目同样无效）。
 
 ## CLI 命令（`node <插件>/bin/tf.js`）
 

@@ -38,6 +38,7 @@ function startProxy(serverKey, { env, onStderr, server = [process.execPath, ECHO
     }
   });
   return {
+    child,
     request(method, params) {
       const id = nextId++;
       return new Promise((resolve, reject) => {
@@ -303,4 +304,44 @@ test('call_tool：并发 crash + echo → 双方可操作错误、无误杀、�
   );
   const connectCount = (logText.match(/底层连接建立/g) || []).length;
   assert.equal(connectCount, 2, `底层建连应恰 2 次（实际 ${connectCount}）:\n${logText}`);
+});
+
+// ---------- R1 回归：懒连接握手进行中收 SIGTERM，不留孤儿底层进程 ----------
+
+const SLOW_INIT = path.join(__dirname, 'fixtures', 'slow-init-server.js');
+
+test('SIGTERM 落在懒连接握手窗口内：proxy 等握手完成后 close 底层，不孤儿化', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const pidFile = path.join(dataDir, 'server.pid');
+  const rpc = startProxy('slow-init-test', {
+    env: {
+      ZTF_DATA_DIR: dataDir,
+      ZTF_TEST_PIDFILE: pidFile,
+      ZTF_TEST_SLOW_INIT_MS: '1500',
+    },
+    server: [process.execPath, SLOW_INIT],
+  });
+  t.after(() => rpc.kill());
+  await init(rpc);
+
+  // 触发懒连接（catalog miss → ensureClient → connect 握手 1500ms），随即 SIGTERM
+  rpc.call('get_tool_details', { tool: 'echo' }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 300)); // 确保进入 connect() 握手窗口
+  rpc.child.kill('SIGTERM');
+
+  // proxy 应等到握手完成后才退出（退出码 0），而不是握手期间立刻 exit(0)
+  const code = await new Promise((resolve) => rpc.child.on('exit', (c) => resolve(c)));
+  assert.equal(code, 0);
+
+  // 底层 server 子进程须被 close（SIGTERM 链），不能存活成孤儿
+  await new Promise((r) => setTimeout(r, 500));
+  assert.ok(fs.existsSync(pidFile), 'slow-init server 应已启动并写 pidfile');
+  const serverPid = Number(fs.readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  try {
+    process.kill(serverPid, 0);
+  } catch {
+    alive = false;
+  }
+  assert.equal(alive, false, `底层 server（pid ${serverPid}）应已退出，不能被孤儿化`);
 });
