@@ -1,0 +1,181 @@
+'use strict';
+// wrapper 代理层冒烟：真实 spawn proxy.js 子进程 + 行式 JSON-RPC，
+// 底层用 test/fixtures/echo-server.js。全部走 ZTF_DATA_DIR 注入，不碰真实 ~/.zcode。
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+const readline = require('readline');
+
+const PROXY = path.join(__dirname, '..', 'dist', 'mcp', 'proxy.js');
+const ECHO = path.join(__dirname, 'fixtures', 'echo-server.js');
+
+// ---------- 行式 JSON-RPC 会话夹具 ----------
+
+function startProxy(serverKey, { env, onStderr } = {}) {
+  const child = spawn(
+    process.execPath,
+    [PROXY, serverKey, '--', process.execPath, ECHO],
+    { env: { ...process.env, ...env } }
+  );
+  const pending = new Map();
+  let nextId = 1;
+  if (onStderr) child.stderr.on('data', (d) => onStderr(String(d)));
+  readline.createInterface({ input: child.stdout }).on('line', (line) => {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (msg.id !== undefined && pending.has(msg.id)) {
+      pending.get(msg.id)(msg);
+      pending.delete(msg.id);
+    }
+  });
+  return {
+    request(method, params) {
+      const id = nextId++;
+      return new Promise((resolve, reject) => {
+        pending.set(id, resolve);
+        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+        setTimeout(() => {
+          if (pending.delete(id)) reject(new Error(`请求超时: ${method}`));
+        }, 10000);
+      });
+    },
+    call(name, args) {
+      return this.request('tools/call', { name, arguments: args });
+    },
+    kill() {
+      for (const fn of pending.values()) fn({ error: { message: 'killed' } });
+      pending.clear();
+      child.kill();
+    },
+  };
+}
+
+// ---------- 公共夹具：临时数据目录 + 预置 registry/catalog ----------
+
+function withDataDir(t, { registry, catalog } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-proxy-test-'));
+  if (registry) fs.writeFileSync(path.join(dir, 'registry.json'), JSON.stringify(registry));
+  if (catalog) fs.writeFileSync(path.join(dir, 'catalog.json'), JSON.stringify(catalog));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+async function init(rpc) {
+  const initRes = await rpc.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'test', version: '0' },
+  });
+  assert.equal(initRes.result.serverInfo.name, 'z-tool-finder-proxy');
+}
+
+// ---------- 用例 ----------
+
+test('tools/list 只返回两个 meta 工具（核心价值断言）', async (t) => {
+  const dataDir = withDataDir(t);
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.request('tools/list', {});
+  const names = res.result.tools.map((tool) => tool.name).sort();
+  assert.deepEqual(names, ['call_tool', 'get_tool_details']);
+});
+
+test('get_tool_details：catalog 命中返回完整详情与示例', async (t) => {
+  const dataDir = withDataDir(t, {
+    catalog: {
+      servers: {
+        'echo-test': {
+          fetchedAt: '2026-01-01T00:00:00Z',
+          tools: [
+            {
+              name: 'echo',
+              whenToUse: '回显传入参数',
+              description: '回显传入参数。Echo the arguments back.',
+              inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+            },
+          ],
+        },
+      },
+    },
+  });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('get_tool_details', { tool: 'echo' });
+  assert.equal(res.result.isError, undefined);
+  const details = JSON.parse(res.result.content[0].text);
+  assert.equal(details.name, 'echo');
+  assert.equal(details.whenToUse, '回显传入参数');
+  assert.deepEqual(details.example, { text: 'text' }); // required 属性按 type 填占位值
+});
+
+test('get_tool_details：catalog miss 走实时兜底并回写 catalog', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('get_tool_details', { tool: 'ping' });
+  const details = JSON.parse(res.result.content[0].text);
+  assert.equal(details.name, 'ping');
+  // 回写后 catalog 应包含底层真实 tools/list 结果
+  const cat = JSON.parse(fs.readFileSync(path.join(dataDir, 'catalog.json'), 'utf8'));
+  const names = cat.servers['echo-test'].tools.map((tool) => tool.name).sort();
+  assert.deepEqual(names, ['echo', 'ping']);
+});
+
+test('get_tool_details：兜底后仍 miss 返回可操作错误（列实际工具名）', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('get_tool_details', { tool: 'not-exist' });
+  assert.equal(res.result.isError, true);
+  const text = res.result.content[0].text;
+  assert.match(text, /not-exist 不存在/);
+  assert.match(text, /echo/);
+  assert.match(text, /ping/);
+});
+
+test('call_tool：required 缺失返回校验错误文本', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('call_tool', { tool: 'echo', args: {} });
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /缺少必填参数: text/);
+});
+
+test('call_tool：合法参数懒启动底层并原样转发结果', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('call_tool', { tool: 'echo', args: { text: 'hi' } });
+  assert.equal(res.result.isError, undefined);
+  assert.equal(res.result.content[0].text, 'echo: {"text":"hi"}');
+});
+
+test('call_tool：policies deny 在转发前拦截并提示改 registry', async (t) => {
+  const dataDir = withDataDir(t, {
+    catalog: { servers: {} },
+    registry: { servers: {}, overrides: {}, policies: { 'echo-test:echo': 'deny' } },
+  });
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+  const res = await rpc.call('call_tool', { tool: 'echo', args: { text: 'hi' } });
+  assert.equal(res.result.isError, true);
+  const text = res.result.content[0].text;
+  assert.match(text, /被 registry 策略拒绝/);
+  assert.match(text, /registry\.json/);
+});
