@@ -10,7 +10,10 @@
  * scope==='user' 时把 original 写回 config 的 mcp.servers[serverName]；
  * scope==='plugin'/'workspace' 时删除 mcp.servers 里的覆盖条目
  * （原始定义仍在插件 .mcp.json / 仓库 workspace config，不进 user config）。
- * 随后从 registry 移除该记录，两个文件均原子写。
+ * 随后从 registry 移除该记录并失效 catalog.json 中对应条目（还原后 meta 工具
+ * 不复存在，残留条目会误导清单渲染与 search_tools），文件均原子写。
+ * catalog 写者（lib/catalog.js withCatalogLock）与 registry 共用同一把锁，
+ * 本入口持锁期间直接改写即安全。
  *
  * 并发防护：内联实现与 lib/registry.js withLock 同款的 wx 锁协议
  * （PID 存活检测），防止与并发 takeover 互相覆盖（last-writer-wins）。
@@ -26,6 +29,7 @@ const os = require('os');
 
 const DATA_DIR = process.env.ZTF_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-tool-finder');
 const REGISTRY_PATH = path.join(DATA_DIR, 'registry.json');
+const CATALOG_PATH = path.join(DATA_DIR, 'catalog.json');
 const LOCK_PATH = path.join(DATA_DIR, 'registry.lock');
 const CONFIG_PATH = path.join(os.homedir(), '.zcode', 'cli', 'config.json');
 const USER_CONFIG_MAX_RETRIES = 5;
@@ -126,7 +130,7 @@ function guardedConfigSave(configPath, mutations, { maxRetries = USER_CONFIG_MAX
  * 还原主流程（锁 → registry 读 → mutations → guarded config save → registry 落盘）。
  * 与脚本入口分离以便测试注入路径与并发写模拟；不 process.exit，返回 { exitCode, messages }。
  */
-function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, lockPath = LOCK_PATH, configPath = CONFIG_PATH, target, simulateExternalWrite } = {}) {
+function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, catalogPath = path.join(dataDir, 'catalog.json'), lockPath = LOCK_PATH, configPath = CONFIG_PATH, target, simulateExternalWrite } = {}) {
   if (!target) return { exitCode: 2, messages: ['用法: node restore.js [--all | <serverKey>]'] };
   const release = acquireLock(dataDir, lockPath);
   if (!release) {
@@ -171,6 +175,18 @@ function runRestore({ dataDir = DATA_DIR, registryPath = REGISTRY_PATH, lockPath
       return { exitCode: 1, messages };
     }
     writeJsonAtomic(registryPath, reg);
+    // 失效 catalog 条目（损坏/缺失按空 catalog 处理，delete 幂等无害）
+    const cat = readJsonSafe(catalogPath);
+    if (cat && cat.servers && typeof cat.servers === 'object') {
+      let changed = false;
+      for (const key of keys) {
+        if (key in cat.servers) {
+          delete cat.servers[key];
+          changed = true;
+        }
+      }
+      if (changed) writeJsonAtomic(catalogPath, cat);
+    }
     messages.push(`已还原 ${keys.length} 个 server: ${keys.join(', ')}（config: ${configPath}）`);
   } finally {
     release();

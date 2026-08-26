@@ -20,7 +20,7 @@ const {
   removeServer,
   LockHeldError,
 } = require('./registry');
-const { backgroundPrescan } = require('./catalog');
+const { backgroundPrescan, loadCatalog, saveCatalog, removeServer: removeCatalogServer } = require('./catalog');
 const { DATA_DIR } = require('./paths');
 
 // user config 与 zcode 引擎写进程无共享锁：落盘前比对 mtime，外部已改则
@@ -328,6 +328,15 @@ function restoreKeys({ home, dataDir, keys }) {
     }
     if (mutations.length) guardedSaveUserConfig(home, mutations, dir);
     saveRegistry(dir, next);
+    // 同步失效 catalog 条目：还原后 server 恢复直连、meta 工具不复存在，
+    // 残留条目会让 renderManifest/search_tools 继续引导模型调不存在的
+    // mcp__<server>__get_tool_details。已在 registry 锁内（catalog 写者共用
+    // 同一把锁），直接改而非 withCatalogLock（会死锁）。
+    if (restored.length) {
+      const cat = loadCatalog(dir);
+      for (const key of restored) removeCatalogServer(cat, key);
+      saveCatalog(dir, cat);
+    }
     return { restored, missing };
   });
 }

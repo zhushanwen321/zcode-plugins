@@ -356,3 +356,36 @@ test('restoreAll：registry 无记录时返回 missing 而非崩溃', () => {
   fs.rmSync(f.dataDir, { recursive: true, force: true });
   fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
 });
+
+// R1：restore 必须同步失效 catalog 条目，否则还原后的 server 仍被
+// renderManifest/search_tools 按 catalog 渲染并引导调用不存在的 meta 工具
+test('restore 失效 catalog：restoreAll/restoreOne 删除对应 catalog 条目（R1）', async () => {
+  const f = makeFixture();
+  await applyTakeover({ home: f.home, dataDir: f.dataDir, workspaceRoot: f.workspaceRoot });
+
+  // 模拟 prescan 已写入的 catalog（含接管 server 与无关 server）
+  const catalogPath = path.join(f.dataDir, 'catalog.json');
+  writeJson(catalogPath, {
+    servers: {
+      alpha: { fetchedAt: '2026-08-26T00:00:00Z', serverInfo: {}, tools: [{ name: 't' }] },
+      'plugin:p-demo:demo': { fetchedAt: '2026-08-26T00:00:00Z', serverInfo: {}, tools: [] },
+      unrelated: { fetchedAt: '2026-08-26T00:00:00Z', serverInfo: {}, tools: [] },
+    },
+  });
+
+  // restoreOne：只删该 key
+  restoreOne({ home: f.home, dataDir: f.dataDir, key: 'alpha' });
+  let cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  assert.ok(!('alpha' in cat.servers), 'alpha 条目应被删除');
+  assert.ok('plugin:p-demo:demo' in cat.servers, '其余条目保留');
+
+  // restoreAll：接管条目全删，无关条目保留
+  restoreAll({ home: f.home, dataDir: f.dataDir });
+  cat = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  assert.ok(!('plugin:p-demo:demo' in cat.servers), '接管条目应被删除');
+  assert.ok('unrelated' in cat.servers, '无关条目不受影响');
+
+  fs.rmSync(f.home, { recursive: true, force: true });
+  fs.rmSync(f.dataDir, { recursive: true, force: true });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+});

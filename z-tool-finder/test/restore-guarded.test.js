@@ -132,3 +132,26 @@ test('mcp-client close()：未决请求被 reject 而非挂死（R3）', async (
   client.close();
   await assert.rejects(pendingCall, /client 主动关闭/);
 });
+
+// R1：独立 restore 入口同样要失效 catalog 条目（插件卸载场景无 lib/ 可用）
+test('runRestore：还原时失效 catalog 对应条目，无关条目保留（R1）', () => {
+  const f = setupFixture();
+  const catalogPath = path.join(f.dataDir, 'catalog.json');
+  writeJson(catalogPath, {
+    servers: {
+      x: { fetchedAt: '2026-08-26T00:00:00Z', serverInfo: {}, tools: [{ name: 't' }] },
+      other: { fetchedAt: '2026-08-26T00:00:00Z', serverInfo: {}, tools: [] },
+    },
+  });
+  const res = runRestore({
+    dataDir: f.dataDir,
+    registryPath: f.registryPath,
+    lockPath: f.lockPath,
+    configPath: f.configPath,
+    target: '--all',
+  });
+  assert.strictEqual(res.exitCode, 0);
+  const cat = readJson(catalogPath);
+  assert.ok(!('x' in cat.servers), '被还原 server 的 catalog 条目应删除');
+  assert.ok('other' in cat.servers, '无关条目保留');
+});
