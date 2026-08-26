@@ -258,8 +258,12 @@ async function applyTakeover({ home, dataDir, workspaceRoot, names, degradeOnLoc
       }
 
       if (newEntries.length || refreshed.length) {
-        guardedSaveUserConfig(home, mutations, dir);
+        // 先落 registry 再改 user config：若两写之间进程被杀（如 hook 超时被引擎 kill），
+        // config 未改、registry 已有记录，下个会话 hook 的 takenEntries 漂移检测会自动补写
+        // wrapper 条目（自愈）；反向顺序则产生 config 已覆盖而 registry 无记录的孤儿，
+        // tf restore 无法还原
         saveRegistry(dir, next);
+        guardedSaveUserConfig(home, mutations, dir);
       }
       // 预扫描预算（§7）：只对新接管条目触发；刷新路径 newEntries 为空，
       // 覆盖写空 entries 文件会清掉上一轮未消费的任务

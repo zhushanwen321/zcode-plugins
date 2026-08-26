@@ -22,7 +22,8 @@ const { loadRegistry } = require('../../lib/registry');
 const { loadCatalog, withCatalogLock, getTool, upsertServer } = require('../../lib/catalog');
 const { connect } = require('../../lib/mcp-client');
 
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+// ZTF_IDLE_TIMEOUT_MS 仅测试注入用（短超时压缩回收窗口），非法值回退默认 5 分钟
+const IDLE_TIMEOUT_MS = Number.parseInt(process.env.ZTF_IDLE_TIMEOUT_MS, 10) || 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 30 * 1000;
 
 /** 两个 meta 工具的定义（全局统一名称，靠 server 命名空间区分归属） */
@@ -197,10 +198,15 @@ function main(argv) {
     return clientPromise;
   };
 
-  const shutdown = () => {
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return; // SIGTERM/SIGINT/stdin close 可能并发触发
+    shuttingDown = true;
     log('wrapper 退出（信号触发），关闭底层连接');
     if (idleTimer) clearTimeout(idleTimer);
-    if (client) client.close();
+    // 等待底层进程确认退出（client.close 保证 SIGTERM 超时后 SIGKILL），
+    // 避免 wrapper 先退、底层进程被 reparent 成孤儿
+    if (client) await client.close();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

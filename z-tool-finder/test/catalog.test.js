@@ -93,10 +93,42 @@ test('prescan：一个好 def + 一个坏 def，好者入库、坏者入 failed 
   assert.equal(result.failed.length, 1);
   assert.equal(result.failed[0].key, 'bad');
   assert.match(result.failed[0].error, /建议动作/);
-  assert.equal(cat.servers.echo.tools.length, 2);
+  assert.equal(cat.servers.echo.tools.length, 3);
   assert.equal(cat.servers.echo.serverInfo.name, 'echo-server');
   assert.ok(!cat.servers.bad);
   saveCatalog(dir, cat);
   const reloaded = loadCatalog(dir);
   assert.equal(reloaded.servers.echo.tools[0].whenToUse, '回显传入参数。');
+});
+
+test('并发写者不互抹：两个后台 prescan 子进程并发合并，既有与新写记录全部保留', async () => {
+  const dir = tmpDataDir();
+  try {
+    // 预置既有 server 记录：修复前（旧快照整体覆盖写）会被并发写者抹掉
+    const seed = { servers: {} };
+    upsertServer(seed, 'keep', { serverInfo: { name: 'keep' }, tools: [] });
+    saveCatalog(dir, seed);
+
+    // 两个独立 prescan 子进程（真实多进程并发，各自扫一个 server）
+    const { backgroundPrescan } = require('../lib/catalog');
+    const writeEntries = (name, key) => {
+      const file = path.join(dir, `entries-${name}.json`);
+      fs.writeFileSync(file, JSON.stringify({ entries: [{ key, config: ECHO_CONFIG }] }));
+      return file;
+    };
+    const run = (name, key) =>
+      new Promise((resolve, reject) => {
+        const child = backgroundPrescan(dir, writeEntries(name, key));
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${name} exit ${code}`))));
+        child.on('error', reject);
+      });
+    await Promise.all([run('a', 'writer-a'), run('b', 'writer-b')]);
+
+    const cat = loadCatalog(dir);
+    assert.ok(cat.servers.keep, '既有 keep 记录被并发写者抹掉（丢失更新回归）');
+    assert.ok(cat.servers['writer-a'], 'writer-a 记录丢失');
+    assert.ok(cat.servers['writer-b'], 'writer-b 记录丢失');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

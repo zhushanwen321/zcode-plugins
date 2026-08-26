@@ -14,6 +14,7 @@ const readline = require('readline');
 
 const PROTOCOL_VERSION = '2024-11-05';
 const STDERR_RING_BYTES = 4096;
+const KILL_GRACE_MS = 5000; // SIGTERM 后多久升级 SIGKILL（防忽略 TERM 的底层进程变孤儿）
 
 /** 可操作错误信息：原 command + stderr 摘要 + 恢复动作建议 */
 function buildErrorMessage(serverDef, action, stderrTail) {
@@ -27,7 +28,7 @@ function buildErrorMessage(serverDef, action, stderrTail) {
  *
  * @param {{ command: string, args?: string[], env?: object }} serverDef
  * @param {{ timeoutMs?: number }} [options]
- * @returns {Promise<{ serverInfo: object, listTools: () => Promise<Array>, callTool: (name: string, args?: object) => Promise<object>, isDead: () => boolean, close: () => void, stderrTail: () => string }>}
+ * @returns {Promise<{ serverInfo: object, listTools: () => Promise<Array>, callTool: (name: string, args?: object) => Promise<object>, isDead: () => boolean, close: () => Promise<void>, stderrTail: () => string }>}
  */
 async function connect(serverDef, { timeoutMs = 30000 } = {}) {
   const child = spawn(serverDef.command, serverDef.args || [], {
@@ -53,13 +54,20 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
   // 具体 reject 由下方 close 兜底完成，这里只吞掉事件
   child.on('error', () => {});
 
+  // 向已销毁 stdin 写入（进程退出与 request() 之间的窗口）会以 error 事件异步抛出；
+  // child.on('error') 不覆盖流错误，不挂监听会作为未捕获异常杀死宿主 wrapper 进程
+  child.stdin.on('error', () => {
+    closed = true;
+    failAllPending(new Error(buildErrorMessage(serverDef, 'MCP server stdin 已销毁（进程已退出）', stderrTail())));
+  });
+
   const stderrTail = () => stderrBuf;
 
   /** 发送请求并挂 pending；超时只 reject 该请求，不杀进程（close 才杀） */
   const request = (method, params) =>
     new Promise((resolve, reject) => {
-      if (closed) {
-        reject(new Error(buildErrorMessage(serverDef, `MCP 请求 ${method}`, 'client 已关闭')));
+      if (closed || dead) {
+        reject(new Error(buildErrorMessage(serverDef, `MCP 请求 ${method}`, dead ? '底层进程已退出' : 'client 已关闭')));
         return;
       }
       const id = nextId++;
@@ -105,12 +113,33 @@ async function connect(serverDef, { timeoutMs = 30000 } = {}) {
 
   /** kill + 清理 pending。幂等。pending 必须显式 reject：
    *  若只清不 reject，in-flight 请求 promise 永不 settle（failAllPending 挂在
-   *  'close' 事件上，此刻 pending 已被清空），调用方只能靠自身超时兜底 */
+   *  'close' 事件上，此刻 pending 已被清空），调用方只能靠自身超时兜底。
+   *  返回 Promise：底层进程退出（SIGTERM 生效或超时后 SIGKILL 强杀）后 resolve，
+   *  wrapper 退出路径 await 它可保证不留孤儿进程 */
+  let closePromise = null;
   const close = () => {
-    if (closed) return;
+    if (closePromise) return closePromise;
     closed = true;
     failAllPending(new Error(buildErrorMessage(serverDef, 'client 主动关闭（空闲回收/退出）', stderrTail())));
+    if (dead) {
+      closePromise = Promise.resolve();
+      return closePromise;
+    }
+    closePromise = new Promise((resolve) => {
+      const killTimer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // 进程已退出（close 竞态）：无需强杀
+        }
+      }, KILL_GRACE_MS);
+      child.on('close', () => {
+        clearTimeout(killTimer);
+        resolve();
+      });
+    });
     child.kill();
+    return closePromise;
   };
 
   try {

@@ -130,7 +130,37 @@ test('get_tool_details：catalog miss 走实时兜底并回写 catalog', async (
   // 回写后 catalog 应包含底层真实 tools/list 结果
   const cat = JSON.parse(fs.readFileSync(path.join(dataDir, 'catalog.json'), 'utf8'));
   const names = cat.servers['echo-test'].tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ['echo', 'ping']);
+  assert.deepEqual(names, ['echo', 'ping', 'slow']);
+});
+
+test('idle 回收：在途调用推迟回收、完成后重计窗、空闲到期后回收并自动重连', async (t) => {
+  const dataDir = withDataDir(t, { catalog: { servers: {} } });
+  // 300ms 空闲窗：慢工具（800ms）必然跨窗，验证 inFlightCalls 推迟分支
+  const rpc = startProxy('echo-test', { env: { ZTF_DATA_DIR: dataDir, ZTF_IDLE_TIMEOUT_MS: '300' } });
+  t.after(() => rpc.kill());
+  await init(rpc);
+
+  // 慢调用：idle 窗口在调用进行中到期，连接不被回收，调用照常成功
+  const res = await rpc.call('call_tool', { tool: 'slow', args: {} });
+  assert.equal(res.result.isError, undefined, JSON.stringify(res.result));
+
+  const readLog = () => {
+    try {
+      return fs.readFileSync(path.join(dataDir, 'logs', 'proxy-echo-test.log'), 'utf8');
+    } catch {
+      return '';
+    }
+  };
+  assert.match(readLog(), /推迟回收/);
+
+  // 调用完成后重计窗：再等空闲到期，应看到自动回收日志
+  await new Promise((r) => setTimeout(r, 700));
+  assert.match(readLog(), /自动回收/);
+
+  // 回收后再调用：自动重连新底层进程并成功
+  const again = await rpc.call('call_tool', { tool: 'echo', args: { text: 'again' } });
+  assert.equal(again.result.isError, undefined, JSON.stringify(again.result));
+  assert.equal((readLog().match(/底层连接建立/g) || []).length, 2);
 });
 
 test('get_tool_details：兜底后仍 miss 返回可操作错误（列实际工具名）', async (t) => {

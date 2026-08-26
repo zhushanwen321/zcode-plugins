@@ -14,10 +14,12 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { connect } = require('./mcp-client');
-const { withLock } = require('./registry');
+const { withLock, LockHeldError } = require('./registry');
 
 const CATALOG_FILENAME = 'catalog.json';
 const WHEN_TO_USE_MAX = 120;
+const CATALOG_LOCK_RETRIES = 20; // 撞锁重试次数（临界区毫秒级，50ms 退避 ≈ 最长约 1s）
+const CATALOG_LOCK_BACKOFF_MS = 50;
 
 function catalogPath(dataDir) {
   return path.join(dataDir, CATALOG_FILENAME);
@@ -53,12 +55,25 @@ function loadCatalog(dataDir) {
  * 因此统一走此入口，与 registry 同一把锁（catalog 写临界区毫秒级，不与 takeover 长临界区冲突）。
  */
 function withCatalogLock(dataDir, mutator) {
-  return withLock(dataDir, () => {
-    const cat = loadCatalog(dataDir);
-    const result = mutator(cat);
-    saveCatalog(dataDir, cat);
-    return result;
-  });
+  // 撞锁（LockHeldError）重试而非放弃：写者放弃会丢失自己的记录——锁只保证
+  // 不互抹损坏，不保证记录不丢；临界区毫秒级，短退避重试即可等到
+  let lastErr;
+  for (let i = 0; i < CATALOG_LOCK_RETRIES; i++) {
+    try {
+      return withLock(dataDir, () => {
+        const cat = loadCatalog(dataDir);
+        const result = mutator(cat);
+        saveCatalog(dataDir, cat);
+        return result;
+      });
+    } catch (err) {
+      if (!(err instanceof LockHeldError)) throw err;
+      lastErr = err;
+      // withCatalogLock 被 prescan 子进程在顶层同步调用，Atomics.wait 同步退避即可
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CATALOG_LOCK_BACKOFF_MS);
+    }
+  }
+  throw lastErr;
 }
 
 /** 原子写：tmp + rename，防写一半进程死导致 catalog 损坏 */

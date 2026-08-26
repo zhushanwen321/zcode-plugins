@@ -13,7 +13,7 @@ z-tool-finder 通过「per-server 中间人 wrapper + SessionStart hook 自动�
 inline 开发形态：
 
 1. 把 `z-tool-finder` 目录绝对路径追加进 `~/.zcode/cli/config.json` 的 `plugins.dirs` 数组 → **重启 ZCode（第 1 次）**。
-2. 会话 1 打开：SessionStart hook 自动扫描并接管用户级与插件自带的 stdio server，会话内注入接管提示（含还原命令与 per-tool 治理失配提示）；catalog 预扫描在后台进行（就绪前 wrapper 走实时兜底）。
+2. 会话 1 打开：SessionStart hook 自动扫描并接管用户级与插件自带的 stdio server，会话内注入接管提示（含还原命令）；catalog 预扫描在后台进行（就绪前 wrapper 走实时兜底）。
 3. **重启 ZCode（第 2 次）**。此后 wrapper 生效：本机实测工具区从 37 个工具变为 3 server × 2 meta 工具 + 1 个全局 `mcp__plugin_z-tool-finder_z-tool-finder__search_tools` = 7 个。
 
 正式形态走 marketplace 安装（marketplace.json 登记），生效时序相同。
@@ -58,7 +58,7 @@ inline 开发形态：
 
 ## 治理提示（重要披露）
 
-接管后 per-server 粒度的 PreToolUse hook matcher 与命名空间**保留**；但 **per-tool 粒度的引擎治理必然失配**——如 matcher `mcp__computer-use__left_click`、`--disallowed-tools` 条目 `mcp__x__y`。per-tool 管控请改用 registry 的 `policies` 字段（`tf status` 查看）。首次接管时 hook 会显式提示已有 per-tool 条目失配。
+接管后 per-server 粒度的 PreToolUse hook matcher 与命名空间**保留**；但 **per-tool 粒度的引擎治理必然失配**——如 matcher `mcp__computer-use__left_click`、`--disallowed-tools` 条目 `mcp__x__y`。per-tool 管控请改用 registry 的 `policies` 字段（`tf status` 查看）；如原有 per-tool 条目，请在接管前自行梳理迁移。
 
 ## 还原与卸载
 

@@ -13,7 +13,7 @@ test('connect + listTools + callTool 全链路', async () => {
     assert.equal(client.serverInfo.name, 'echo-server');
     assert.equal(client.isDead(), false);
     const tools = await client.listTools();
-    assert.equal(tools.length, 2);
+    assert.equal(tools.length, 3);
     assert.equal(tools[0].name, 'echo');
     const result = await client.callTool('echo', { text: 'hi' });
     assert.match(result.content[0].text, /"text":"hi"/);

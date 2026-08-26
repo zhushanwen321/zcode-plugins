@@ -45,9 +45,22 @@ rl.on('line', (line) => {
             description: '返回 pong.',
             inputSchema: { type: 'object', properties: {} },
           },
+          {
+            name: 'slow',
+            description: '延迟 800ms 后回显参数（测试慢调用/在途推迟）',
+            inputSchema: { type: 'object', properties: {} },
+          },
         ],
       },
     });
+  } else if (msg.params && msg.params.name === 'slow') {
+    setTimeout(() => {
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: { content: [{ type: 'text', text: 'slow-done' }] },
+      });
+    }, 800);
   } else if (msg.method === 'tools/call') {
     send({
       jsonrpc: '2.0',

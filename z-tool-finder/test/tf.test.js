@@ -240,13 +240,13 @@ test('catalog refresh：真实扫描已接管 server 并落盘工具清单（插
   assert.match(r.stderr, /ok: alpha,plugin:p-demo:demo/);
   const cat = readJson(path.join(dataDir, 'catalog.json'));
   const toolNames = cat.servers.alpha.tools.map((t) => t.name).sort();
-  assert.deepStrictEqual(toolNames, ['echo', 'ping']);
+  assert.deepStrictEqual(toolNames, ['echo', 'ping', 'slow']);
   // 插件源 original 是 ${ZCODE_PLUGIN_ROOT} 模板：未按 pluginRoot 展开则 prescan spawn
   // 必然 failed（旧实现该断言失败，回归 R7/上一轮 catalog refresh 修复）
   assert.ok(cat.servers['plugin:p-demo:demo'], '插件源 server 应出现在 catalog');
   assert.deepStrictEqual(
     cat.servers['plugin:p-demo:demo'].tools.map((t) => t.name).sort(),
-    ['echo', 'ping']
+    ['echo', 'ping', 'slow']
   );
 });
 
