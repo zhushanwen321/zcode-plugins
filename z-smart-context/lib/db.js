@@ -36,14 +36,15 @@ function getLatestCompletedUsage(db, sessionId) {
 }
 
 // SQL-2（§5.2）：--latest 按 cwd 反查最近活跃主会话。
-// parent_id IS NULL 必带（D5 定案②）：子会话 directory 与主会话相同且 time_updated 更新，
-// 不过滤则 CLI 自查会反查到刚结束的内建 Agent 子会话。
+// 过滤条件用 id 形态而非 parent_id（2026-08-27 真机实测修正）：/fork 产生的主工作会话同样
+// 带 parent_id，按 parent_id 过滤会把 fork 会话从反查里漏掉；内建 Agent 子会话的 id 前缀
+// sess_subagent_agent_ 才是稳定辨识面。GLOB 不做转义展开，* 即通配。
 function findLatestSessionByDirectory(db, directory) {
   const row = db
     .prepare(
       `SELECT id, title, time_updated
        FROM session
-       WHERE directory = ? AND parent_id IS NULL
+       WHERE directory = ? AND id NOT GLOB 'sess_subagent_agent_*'
        ORDER BY time_updated DESC
        LIMIT 1`
     )
@@ -52,12 +53,4 @@ function findLatestSessionByDirectory(db, directory) {
   return { id: row.id, title: row.title, timeUpdated: row.time_updated };
 }
 
-// SQL-3（§5.2）：内建 Agent 工具子会话判定。parent_id 非空即子会话，hook 侧静默跳过；
-// 行不存在或 parent_id 为空返 null。
-function getSessionParentId(db, sessionId) {
-  const row = db.prepare('SELECT parent_id FROM session WHERE id = ? LIMIT 1').get(sessionId);
-  if (!row || !row.parent_id) return null;
-  return row.parent_id;
-}
-
-module.exports = { openDb, getLatestCompletedUsage, findLatestSessionByDirectory, getSessionParentId };
+module.exports = { openDb, getLatestCompletedUsage, findLatestSessionByDirectory };

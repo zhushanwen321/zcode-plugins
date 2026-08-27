@@ -158,7 +158,7 @@ test('CLI: usage 默认 --latest 命中 cwd 主会话，单行 JSON 字段与数
   const fx = makeFixture();
   try {
     insertSession(fx.db, { id: 'sess_main_a', directory: fx.projectDir, timeUpdated: 2000 });
-    // 子会话 directory 相同且 time_updated 更新：D5 定案②，反查必须排除它
+    // 子会话 directory 相同且 time_updated 更新：按 id 子代理形态过滤（GLOB），反查必须排除它
     insertSession(fx.db, {
       id: 'sess_subagent_agent_x',
       directory: fx.projectDir,

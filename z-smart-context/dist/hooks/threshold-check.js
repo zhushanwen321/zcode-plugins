@@ -15,7 +15,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { openDb, getLatestCompletedUsage, getSessionParentId } = require('../../lib/db');
+const { openDb, getLatestCompletedUsage } = require('../../lib/db');
 const { readConfig } = require('../../lib/config');
 const {
   isValidSessionId,
@@ -128,9 +128,10 @@ function mainFlow(rawStdin) {
 
   let usage = null;
   try {
-    // D3 嵌套静默双判：env 标记 + db session.parent_id（内建 Agent 子会话不带 env 标记，
-    // 须靠 db 补判）；命中即子会话——不产生 state 文件、不提醒
-    if (isNestedSession(process.env, getSessionParentId(db, sessionId))) {
+    // D3 嵌套静默双判：env 标记 + 内建子会话 id 前缀判定。
+    // 不用 session.parent_id——/fork 主会话同样带 parent_id，按它判会误杀 fork 会话
+    // （2026-08-27 真机实测）；子代理 id 前缀是稳定辨识面
+    if (isNestedSession(process.env, sessionId)) {
       silentExit();
     }
     usage = getLatestCompletedUsage(db, sessionId);

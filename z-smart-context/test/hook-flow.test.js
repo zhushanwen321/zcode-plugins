@@ -278,9 +278,9 @@ test('嵌套 env（ZSW_NESTED=1）：静默且不产 state', () => {
   }
 });
 
-// ---- ⑤ session.parent_id 非空静默 ----
+// ---- ⑤ 内建子会话 id 前缀静默 ----
 
-test('db 子会话（parent_id 非空）：静默且不产 state', () => {
+test('内建 Agent 子会话（sess_subagent_agent_ 前缀）：静默且不产 state', () => {
   const ctx = setup();
   try {
     writeConfig(ctx);
@@ -288,15 +288,38 @@ test('db 子会话（parent_id 非空）：静默且不产 state', () => {
       ctx,
       [
         { id: 'sess_parent' },
-        { id: 'sess_subagent', parentId: 'sess_parent' },
+        { id: 'sess_subagent_agent_x', parentId: 'sess_parent' },
       ],
-      [{ sessionId: 'sess_subagent', inputTokens: 60, cacheReadTokens: 90 }]
+      [{ sessionId: 'sess_subagent_agent_x', inputTokens: 60, cacheReadTokens: 90 }]
     );
 
-    const res = runHook(ctx, { stdin: stdinOf('sess_subagent') });
+    const res = runHook(ctx, { stdin: stdinOf('sess_subagent_agent_x') });
     assert.equal(res.status, 0);
     assert.equal(res.stdout, '');
-    assert.equal(fs.existsSync(stateFileOf(ctx, 'sess_subagent')), false);
+    assert.equal(fs.existsSync(stateFileOf(ctx, 'sess_subagent_agent_x')), false);
+  } finally {
+    teardown(ctx);
+  }
+});
+
+test('fork 回归（2026-08-27 真机事故）：parent_id 非空但非子代理 id，正常计档提醒', () => {
+  const ctx = setup();
+  try {
+    writeConfig(ctx, { tiers: [50] });
+    buildFixtureDb(
+      ctx,
+      [
+        { id: 'sess_origin' },
+        { id: 'sess_forked', parentId: 'sess_origin' },
+      ],
+      [{ sessionId: 'sess_forked', inputTokens: 60, cacheReadTokens: 90 }]
+    );
+
+    // 读数 150 > 档位 50 且未 fired：必须注入提醒并落 state，不得因 parent_id 静默
+    const res = runHook(ctx, { stdin: stdinOf('sess_forked') });
+    assert.equal(res.status, 0);
+    assert.ok(res.stdout.includes('additionalContext'), 'fork 会话必须收到越档提醒');
+    assert.equal(fs.existsSync(stateFileOf(ctx, 'sess_forked')), true);
   } finally {
     teardown(ctx);
   }

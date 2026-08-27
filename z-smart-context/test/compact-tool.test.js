@@ -213,10 +213,10 @@ function seedFixtureDb(dbFile) {
       context_exceeded INTEGER, model_id TEXT, started_at INTEGER
     );
   `);
-  // 同目录两条主会话（time_updated 定新旧）+ 一条更新的子会话（parent_id 过滤应排除它）
+  // 同目录两条主会话（time_updated 定新旧）+ 一条更新的子会话（子代理 id 形态过滤应排除它）
   db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run('sess_fix_old', 'old', 100, '/proj/x', null);
   db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run('sess_fix_new', 'new', 200, '/proj/x', null);
-  db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run('sess_child', 'child', 300, '/proj/x', 'sess_fix_new');
+  db.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?)').run('sess_subagent_agent_child', 'child', 300, '/proj/x', 'sess_fix_new');
   db.prepare('INSERT INTO model_usage VALUES (?, ?, ?, ?, ?, ?, ?)').run('sess_fix_new', 'completed', 100, 400, 0, 'model-x', 9);
   db.close();
 }

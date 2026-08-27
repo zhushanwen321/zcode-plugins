@@ -116,8 +116,13 @@ test('isNestedSession: env 存在 _NESTED$ 键名即嵌套', () => {
   assert.equal(isNestedSession({ OTHER: 'x', DWF_NESTED: '1' }, null), true);
 });
 
-test('isNestedSession: parentDbId 非空即嵌套（内建 Agent 子会话不带 env 标记）', () => {
-  assert.equal(isNestedSession({}, 'sess_parent_x'), true);
+test('isNestedSession: 内建 Agent 子会话 id 前缀即嵌套（不带 env 标记也算）', () => {
+  assert.equal(isNestedSession({}, 'sess_subagent_agent_x'), true);
+});
+
+test('isNestedSession: fork 会话回归——普通 sess_ id 即使有 parent 不在参数面也不误判', () => {
+  // 函数签名只收 sessionId 字符串：/fork 主会话 id 无前缀，绝不静默（2026-08-27 真机事故）
+  assert.equal(isNestedSession({}, 'sess_forked_abc'), false);
 });
 
 test('isNestedSession: 双条件全否则不嵌套', () => {

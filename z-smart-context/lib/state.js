@@ -103,10 +103,15 @@ function pickTier(tiers, tokens, firedEffective) {
 
 // D3 嵌套静默双判：① env 存在键名匹配 /_NESTED$/ 即「被 spawn 的嵌套会话」（本仓纪律：
 // 编排插件自带 <前缀>_NESTED=1，通配后缀覆盖未来新插件，无需逐个枚举）；
-// ② parentDbId 非空即内建 Agent 工具子会话——探针实测子会话不带任何嵌套 env，须靠 db 补判。
-function isNestedSession(envObj, parentDbId) {
+// ② sessionId 命中内建 Agent 子会话形态（sess_subagent_agent_ 前缀）。
+// 不用 session.parent_id 判定——真机实测（2026-08-27）：zcode /fork 产生的主工作会话同样
+// 带 parent_id，按 parent_id 静默会把 fork 会话一并吞掉（提醒全灭）；子代理会话的 id
+// 前缀是稳定辨识面（探针批 + 生产 db 全量样本均符合）。
+const BUILTIN_SUBAGENT_PREFIX = 'sess_subagent_agent_';
+
+function isNestedSession(envObj, sessionId) {
   if (envObj && Object.keys(envObj).some((key) => /_NESTED$/.test(key))) return true;
-  return Boolean(parentDbId);
+  return typeof sessionId === 'string' && sessionId.startsWith(BUILTIN_SUBAGENT_PREFIX);
 }
 
 // D3：写前顺带清理 updatedAt 超 TTL 的孤儿 state（会话废弃/clear 后残留）。
