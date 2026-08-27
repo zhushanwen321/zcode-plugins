@@ -5,7 +5,11 @@ const assert = require('node:assert');
 const {
   parseDiffAddedLines, buildLineIndex, unionRanges, rangesIntersect,
   cleanForComplexity, countDecisions, complexityOf, crapScore,
+  mergeCoverageDir,
 } = require('../scripts/quality-gate.js');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // ── parseDiffAddedLines ──
 
@@ -146,4 +150,41 @@ test('crapScore: 全覆盖退化为 comp，零覆盖放大', () => {
   // comp=3, cov=0.5 → 9*0.125+3 = 4.125
   assert.strictEqual(crapScore(3, 0.5), 4.125);
   assert.ok(crapScore(10, 0) > crapScore(10, 0.5));
+});
+
+// ── mergeCoverageDir：V8 父区间 + count===0 子区间打洞（回归用例） ──
+
+test('mergeCoverageDir: 父区间 count>0 时 exec = 父区间挖掉 count===0 子区间', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qg-cov-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const fileUrl = 'file:///opt/app/a.js';
+  // 父区间 [0,100) count=1（主体执行）；子区间 [10,20) count=0（未执行分支）；
+  // 子区间 [30,40) count=2（执行次数差异区，不算洞）；函数整体未执行的另一函数 count=0
+  const coverage = {
+    result: [
+      {
+        url: fileUrl,
+        functions: [
+          {
+            functionName: 'fnA',
+            ranges: [
+              { startOffset: 0, endOffset: 100, count: 1 },
+              { startOffset: 10, endOffset: 20, count: 0 },
+              { startOffset: 30, endOffset: 40, count: 2 },
+            ],
+          },
+          { functionName: 'fnB', ranges: [{ startOffset: 200, endOffset: 300, count: 0 }] },
+        ],
+      },
+    ],
+  };
+  fs.writeFileSync(path.join(dir, 'coverage-123.json'), JSON.stringify(coverage));
+  const byFile = mergeCoverageDir(dir);
+  const abs = new URL(fileUrl).pathname;
+  assert.ok(byFile.has(abs));
+  // 期望：[0,10) ∪ [20,100)（30-40 差异区保留在执行主体内），fnB 不产生 exec
+  assert.deepStrictEqual(
+    [...byFile.get(abs).execMerged],
+    [[0, 10], [20, 100]],
+  );
 });

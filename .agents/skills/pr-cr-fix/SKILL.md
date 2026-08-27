@@ -164,6 +164,10 @@ xyz-agent 2026-08-23 [HISTORICAL] 教训：每次弹窗打断执行、多数是�
 
 - **待发版**（fix→patch / feat→minor / BREAKING→major，多插件逐个记）：PR body 写明
   「待发版插件 + 建议类型」，实际 bump 在合 main 后走 merge skill 阶段 5 / release.js
+- **首次发版固定 0.0.1，不询问**：插件从未发布过 npm（无 `<plugin>@<version>` tag）时，
+  首次发版版本一律 0.0.1——release.js 只支持 bump 不支持首 tag，首次发版走「三处版本
+  统一改 0.0.1（check-sync 验证一致）+ 合 main 后手工 tag `<plugin>@0.0.1` 触发发布」，
+  PR body 记录该形态即可，不弹窗询问（2026-08-26 z-tool-finder 首发确立）
 - **不发版**（纯文档/测试/零行为差重构/`test-only`）：PR body 列明「插件 + 跳过原因 + 证据」
 - **歧义**（type 无法从 commits 判定 / `SHARED_CHANGED` 涉及 vendored 传播）：才问用户
   （zcode AskUserQuestion / pi ask_user，措辞等价）
@@ -203,8 +207,21 @@ gh pr create --repo zhushanwen321/zcode-plugins \
 # 已有 PR（重跑场景）：gh pr edit 同名 PR 更新 title/body
 ```
 
-**Gate-3**：PR URL 匹配 `^https://github\.com/.+/pull/\d+$`；push 后
-`gh pr checks --watch` 等 CI 绿（CI FAIL 按日志修复 push 新 commit，直至绿）。
+**Gate-3**：PR URL 匹配 `^https://github\.com/.+/pull/\d+$`；push 后用**有限轮询**等 CI 绿
+（禁 `gh pr checks --watch`——无限阻塞命令，GitHub runner 排队时会把会话/后台任务挂死：
+2026-08-27 PR #4 事故，PR 侧 run 排队 7h 被 runner 回收成无 step 的假 failure，watch 进程
+跨会话残留）。轮询姿势（60s 间隔、15 分钟上限，pass 即 break，超时上报用户人工接管）：
+
+```bash
+for i in $(seq 1 15); do
+  if gh pr checks <PR编号> --repo zhushanwen321/zcode-plugins; then break; fi
+  sleep 60
+done
+```
+
+CI FAIL 的甄别与处置：`gh run view <runId> --json jobs` 看 jobs[].steps——**为空数组且
+conclusion 为 failure 的是 runner 排队假失败**（job 从未启动），`gh run rerun <runId>` 重跑；
+有 step 记录的真失败才按日志修复 push 新 commit，直至绿。
 PR 合并动作不在本 skill——用户确认后走 merge skill。
 
 ## 维度 → Agent 映射（两路径共用）
@@ -258,6 +275,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | quality-gate exit 2 当 pass 处理 | 工具错误静默放行 = 假 pass（xyz coverage-gate [HISTORICAL] 同型事故）；必须排查后重跑 |
 | subagent 封装 zsw workflow CLI 调用 | 多一层无增益中转（subagent 内 bash 一样同步等 CLI 退出） |
 | workflow run 后轮询 status 等结果 | run_in_background 完成即原生通知，轮询白耗 |
+| `gh pr checks --watch` 等 CI（无限阻塞） | runner 排队时挂死（PR #4 事故挂 7h+ 跨会话残留）；用 Gate-3 的有限轮询姿势 |
 | 脏工作区跑审查 | fix 改动与认知外改动混淆 |
 | 用旧 token（`run_workflow` tool / `zflow(action=...)` MCP 调用 / `zsub` 目录名 / `bin/zsub.js`） | zflow MCP 面 1.0.0 起恒空；2026-08 改名后失效；命名 SSOT 见 z-subagent-workflow/CONTEXT.md |
 | review 前先开 PR | review/fix 期间分支会变，PR 描述反复过期；PR 在 3b 一次性开 |
@@ -279,7 +297,8 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | reviewer parseFail 告警（轮次摘要有「输出无法解析，按 clean 处理」） | 重跑该维度（输出格式漂移，检查 agent.md 输出契约节） |
 | 修复后测试回归 | 从阶段 1 重来（Gate-1 → 阶段 2） |
 | push 冲突 | `git fetch` 后按全局规范 merge（禁 rebase）重试；重写历史后重审未解决的 review 线程 |
-| PR CI FAIL | 按日志修复 → push 新 commit → `gh pr checks --watch` 直至绿 |
+| PR CI FAIL（真失败，有 step 记录） | 按日志修复 → push 新 commit → Gate-3 有限轮询直至绿 |
+| PR CI FAIL（假失败：`gh run view --json jobs` 的 steps 为空） | runner 排队超时回收，job 从未启动 → `gh run rerun <runId>` 重跑 |
 
 ## [OPTIONAL] prompt 文本质量审查（CoT Leakage）
 
