@@ -46,23 +46,22 @@ Exit code 语义：
 
 插件根 `.mcp.json` 注册 stdio MCP server（`dist/mcp/server.js`，客户端内全名 `mcp__zsc__zsc_compact`），供 agent 在收到越档提醒后自主决策发起压缩。改完需重启 ZCode 生效（GUI 只在启动时扫描插件配置）。
 
-输入契约（retention 与 nextInstruction 至少其一必填，压缩后继续任务的编排依赖 nextInstruction）：
+输入契约（v2.1：retention 必填；`nextInstruction` 已随「压缩后自动继续对话」一并移除——探针定案见 `.tmp/probe-report-bg-compact.md`）：
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `retention` | string | 压缩保留指令，拼入 `/compact 保留：…`；任务语义由 agent 提供 |
-| `nextInstruction` | string | 压缩完成后注入的继续消息 |
+| `retention` | string | 必填。压缩保留指令，拼入 `/compact 保留：…`；描述压缩后必须留存的上下文（已完成子任务的状态、关键文件路径、未完成任务清单） |
 | `sessionId` | string | 可选；缺省链：显式入参 → env `CLAUDE_SESSION_ID` → db 按 cwd 反查最近活跃主会话 |
 
 返回按会话形态分派（best-effort 判定：env `ZSC_HEADLESS=1` → 进程树父链 GUI host 特征 → unknown 兜底）：
 
 | mode | 含义 | 返回 |
 |------|------|------|
-| `gui-active` | GUI 会话可实时压缩 | `plan` 三步编排（computer-use 向输入框 element 注入 `/compact 保留：<retention 原文>` → 紧接注入 `<nextInstruction 原文>` 靠 GUI 忙时排队 → 结束回复等压缩 turn）、`verifyHint`（`zsc usage --session <sid>` 事后核实 contextTokens 回落）、`fallback` 半自动降级文案 |
+| `gui-active` | GUI 活跃会话——**纯后台压缩不可达**（探针 BP-1..BP-5 穷尽：会话活动性=持有进程内存态，外部零调用面；CUA 编排因占用前台 GUI 已删除） | `plan` 粘贴交接两步（把组织好的 `/compact 保留：<retention 原文>` 原样转告用户执行 → 用户执行后 hook 回落知情注入到达，基于摘要继续）、`note`（不可达依据一句话）、`verifyHint`（`zsc usage --session <sid>` 事后核实 contextTokens 回落） |
 | `headless-active` | 无头 mid-run（引擎运行中不热重读 config） | 诚实降级指引：本会话无法实时压缩，主控下次 spawn 前调 `zsc override apply` 预备 config 覆盖；绝不含空 plan 假装成功 |
-| `unknown` | 形态无法判定 | 双路径说明（GUI 编排 + 无头预备），agent 按处境自选 |
+| `unknown` | 形态无法判定 | 双路径说明（GUI 粘贴交接 + 无头预备），agent 按处境自选 |
 
-前置条件与降级链：GUI 实时压缩依赖 computer-use 类工具的系统 TCC 授权（一次性授权；未授权时调用报 `CUA_PERMISSION_REQUIRED`），此时按返回的 `fallback` 走半自动降级——引导用户手动执行 `/compact 保留：…`（附原文可整段复制，v1 行为兜底）。注入消息建议带署名前缀「（由 agent 经 zsc 自动压缩流程注入）」，便于 transcript 回看溯源。
+对**非活跃会话**（GUI tab 已关 / 无头 runner 已退出）的真·纯后台压缩走 CLI：`node bin/zsc.js compact --session <id> --retention "…"`——外部执行器（resume → subscribe → runtimeModel 修复 → `/compact` 投递 → `Compacted`/`noop` 确认）端到端实证（52s 真实压缩）；活跃会话被防呆拒绝（exit 2），防「落盘成功但持有者无感知」的双持分裂。
 
 嵌套防护：被编排插件 spawn 的子会话 env 带 `*_NESTED` 键时，server 的工具面为空列表（tools/list 返回 `[]`），防递归编排。人读日志与 hook、CLI 同落 `~/.zcode/z-smart-context/log/hook.log`。
 

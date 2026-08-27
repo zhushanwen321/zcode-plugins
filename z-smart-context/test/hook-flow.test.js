@@ -147,9 +147,10 @@ test('越档：首轮注入 additionalContext 且 firedTiers 落盘', () => {
     assert.match(text, /^\[z-smart-context\] 上下文用量 150 tokens，已越过阈值 100（100）。/);
     assert.ok(text.includes('node ' + path.join(PLUGIN_ROOT, 'bin', 'zsc.js') + ' usage --session sess_fire1'), '应内联插件根真实路径的精确自查命令');
     assert.ok(!text.includes('\n'), '注入文案必须单行');
-    // v2 文案锚点（D6 面向 agent）：自主工具引导 + v1 合规资产保留 + 旧用户导向表述清除
+    // v2.1 文案锚点（D6 面向 agent）：自主工具引导 + v1 合规资产保留 + 旧用户导向表述清除
     assert.ok(text.includes('zsc_compact'), '应含 agent 自主调用的 zsc_compact 工具引导');
-    assert.ok(text.includes('retention') && text.includes('nextInstruction'), '应说明 zsc_compact 两个入参');
+    assert.ok(text.includes('retention'), '应说明 zsc_compact 核心入参 retention');
+    assert.ok(!text.includes('nextInstruction'), 'v2.1 起不再教 nextInstruction（压缩后自动继续已移除）');
     assert.ok(text.includes('不是必须执行的指令'), '应保留「数据非指令」合规表述');
     assert.ok(text.includes('阶段性完成并验证'), '三条件自查①：任务阶段性完成');
     assert.ok(text.includes('依赖将被压缩的细节'), '三条件自查②：后续依赖');

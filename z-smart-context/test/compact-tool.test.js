@@ -14,7 +14,6 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
 const {
-  INJECT_SIGNATURE,
   RETENTION_SOFT_LIMIT,
   detectSessionShape,
   handleCompactTool,
@@ -81,14 +80,20 @@ test('detectSessionShape: 判定异常吞掉当 unknown，绝不向上抛', () =
 
 // ---------- 入参校验（错误文本必须可操作） ----------
 
-test('缺双参返回结构化错误，文本含正确入参格式示例作恢复动作', () => {
+test('缺 retention 返回结构化错误，文本含正确入参格式示例作恢复动作', () => {
   const out = handleCompactTool({}, {});
   assert.equal(out.ok, false);
   assert.equal(out.reason, 'invalid-arguments');
-  assert.match(out.text, /retention/);
-  assert.match(out.text, /nextInstruction/);
-  assert.match(out.text, /\{"retention":[\s\S]*"nextInstruction"/);
+  assert.match(out.text, /retention 必填/);
+  assert.match(out.text, /\{"retention"/);
   assert.match(out.text, /zsc_compact/);
+});
+
+test('仅传 nextInstruction（已移除参数）不再构成合法调用，错误说明移除原因', () => {
+  const out = handleCompactTool({ nextInstruction: '继续任务' }, {});
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, 'invalid-arguments');
+  assert.match(out.text, /retention 必填/);
 });
 
 test('非对象入参（字符串/数组/null）一律按参数错误拒绝', () => {
@@ -122,41 +127,37 @@ test('显式合法 sessionId 直通（不查 db、不做 cwd 反查）', () => {
   }
 });
 
-// ---------- gui-active：plan 包装原文 ----------
+// ---------- gui-active：粘贴交接（v2.1，CUA 已删） ----------
 
-test('gui-active: plan 包含 retention/nextInstruction 原文、署名前缀与压缩命令', () => {
+test('gui-active: plan 是粘贴交接——含组织好的压缩指令原文与转告动作，绝无 CUA 痕迹', () => {
   const retention = 'T1/T2 完成状态与关键文件路径 lib/compact-tool.js；T3 任务描述与验收标准';
-  const nextInstruction = '继续执行 T3（压缩完成后开始）';
   const out = handleCompactTool(
-    { retention, nextInstruction, sessionId: 'sess_gui1' },
+    { retention, sessionId: 'sess_gui1' },
     { shape: 'gui-active' }
   );
   assert.equal(out.ok, true);
   assert.equal(out.mode, 'gui-active');
   const joined = out.plan.join('\n');
-  for (const frag of [
-    `/compact 保留：${retention}`,
-    nextInstruction,
-    INJECT_SIGNATURE,
-    'computer-use',
-    'element',
-    'step3',
-  ]) {
-    assert.ok(joined.includes(frag), `plan 应包含片段：${frag.slice(0, 40)}`);
-  }
+  assert.ok(joined.includes(`/compact 保留：${retention}`), '交接必须含完整可粘贴指令');
+  assert.match(joined, /转告用户/);
+  assert.match(out.note, /纯后台压缩在当前 zcode 版本不可达/);
   assert.match(out.verifyHint, /zsc\.js usage --session sess_gui1/);
-  assert.match(out.fallback, /CUA_PERMISSION_REQUIRED/);
-  assert.ok(out.fallback.includes(`/compact 保留：${retention}`), 'fallback 应附可整段复制的保留指令原文');
+  // CUA 方案删除的硬断言：任何注入编排痕迹都算回归
+  assert.ok(!joined.includes('computer-use'), '不得再出现 CUA 编排');
+  assert.ok(!joined.includes('element'), '不得再出现 AX element 步骤');
+  assert.equal(out.fallback, undefined, 'fallback（TCC 降级）随 CUA 一并移除');
 });
 
-test('gui-active: 仅传 nextInstruction 时退化为裸 /compact，step 结构仍完整', () => {
-  const out = handleCompactTool({ nextInstruction: '压缩后继续收尾文档' }, { shape: 'gui-active' });
+test('gui-active: 压缩后自动继续编排已按产品决策移除（无 nextInstruction 相关输出）', () => {
+  const out = handleCompactTool(
+    { retention: '保留要点', nextInstruction: '继续任务 X', sessionId: 'sess_gui2' },
+    { shape: 'gui-active' }
+  );
   const joined = out.plan.join('\n');
-  assert.ok(joined.includes('\n/compact'), `应含裸 /compact 命令行，实得：${joined}`);
-  assert.ok(joined.includes('压缩后继续收尾文档'));
+  assert.ok(!joined.includes('继续任务 X'), 'nextInstruction 不得再进任何编排');
 });
 
-test('retention 超软上限时 plan 给出截断建议并注明理由', () => {
+test('retention 超软上限时交接文案给出截断建议并注明理由', () => {
   const longRetention = '长'.repeat(RETENTION_SOFT_LIMIT + 1);
   const out = handleCompactTool({ retention: longRetention }, { shape: 'gui-active' });
   const joined = out.plan.join('\n');
@@ -177,20 +178,20 @@ test('headless-active: 绝不含空 plan 假装成功，guidance 说明无法实
 
 // ---------- mode unknown：双路径兜底 ----------
 
-test('unknown: 双路径说明（GUI 编排步骤 + 无头预备）由 agent 自选', () => {
+test('unknown: 双路径说明（GUI 粘贴交接 + 无头预备）由 agent 自选', () => {
   const retention = '保留要点R';
-  const nextInstruction = '之后继续 N';
   const out = handleCompactTool(
-    { retention, nextInstruction },
+    { retention },
     { dataDir: makeIsolatedDataDir(), shape: 'unknown' }
   );
   assert.equal(out.mode, 'unknown');
   const joined = out.plan.join('\n');
   assert.match(joined, /路径 A/);
   assert.match(joined, /路径 B/);
-  assert.match(joined, /computer-use/, '路径 A 应是 GUI 编排');
+  assert.match(joined, /转告用户/, '路径 A 应是粘贴交接');
   assert.match(joined, /override apply/, '路径 B 应是无头预备');
-  assert.ok(joined.includes(retention) && joined.includes(nextInstruction));
+  assert.ok(joined.includes(retention));
+  assert.ok(!joined.includes('computer-use'), '任何路径都不得再出现 CUA');
 });
 
 // ---------- sessionId 缺省链与 db 只读取数 ----------
@@ -243,7 +244,7 @@ test('db 不可用只把 contextTokens 降为 null，照常出结果', () => {
   const dir = makeIsolatedDataDir();
   try {
     const out = handleCompactTool(
-      { retention: 'r', nextInstruction: 'n' },
+      { retention: 'r' },
       { dataDir: dir, cwd: os.tmpdir(), shape: 'gui-active' }
     );
     assert.equal(out.ok, true);
@@ -318,10 +319,9 @@ test('冒烟：initialize 回 serverInfo，tools/list 恰含 zsc_compact 且 sch
   assert.equal(list.result.tools.length, 1);
   const tool = list.result.tools[0];
   assert.equal(tool.name, 'zsc_compact');
-  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['nextInstruction', 'retention', 'sessionId']);
-  // 「retention 与 nextInstruction 至少其一必填」的 anyOf 表达
-  const requiredAlts = tool.inputSchema.anyOf.map((alt) => alt.required[0]).sort();
-  assert.deepEqual(requiredAlts, ['nextInstruction', 'retention']);
+  // v2.1 契约：retention 必填，nextInstruction 已随「压缩后自动继续」一并移除
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['retention', 'sessionId']);
+  assert.deepEqual(tool.inputSchema.required, ['retention']);
 });
 
 test('冒烟：tools/call 缺参返回 isError 且正文含恢复动作', () => {

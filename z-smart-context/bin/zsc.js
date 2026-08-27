@@ -57,13 +57,17 @@ const USAGE = [
   '      崩溃残留先看 override status 的 residue 字段再决定 revert --force 或人工处理。',
   '  node zsc.js override status',
   '      只读输出当前登记（owners/backup）与 config 现场核对结果，排查与人工审查入口。',
+  '  node zsc.js compact --session <sessionId> [--retention "<保留指令>"] [--timeout <sec>]',
+  '      对**非活跃会话**执行真实外部压缩（resume → runtimeModel 修复 → /compact 投递），',
+  '      纯后台、不触碰 GUI。活跃会话（GUI tab 开着 / runner 在跑）会被防呆拒绝（exit 2）——',
+  '      对 GUI 当前会话请走 zsc_compact 工具的粘贴交接。',
   '  node zsc.js --help | -h',
   '      显示本帮助。',
   '',
   'Exit code:',
   '  0  成功（含会话尚无已完成请求的正常态，contextTokens 为 null）',
-  '  1  内部错误（db 打不开/查询失败/引擎配置坏 JSON 等；排查 tail ~/.zcode/z-smart-context/log/hook.log）',
-  '  2  用法错误（未知子命令/参数非法/--latest 反查无命中/override 未登记该 owner）',
+  '  1  内部错误（db 打不开/查询失败/引擎配置坏 JSON/压缩协议故障等；排查 tail ~/.zcode/z-smart-context/log/hook.log）',
+  '  2  用法错误（未知子命令/参数非法/--latest 反查无命中/override 未登记该 owner/compact 防呆拒绝）',
   '',
   '示例:',
   '  node zsc.js usage',
@@ -71,6 +75,7 @@ const USAGE = [
   '  node zsc.js override apply --model glm-5.2 --threshold 200000 --owner task-a1',
   '  node zsc.js override revert --owner task-a1',
   '  node zsc.js override status',
+  '  node zsc.js compact --session sess_1a2b3c --retention "保留 T1/T2 结论与 T3 待办"',
 ].join('\n');
 
 function writeOut(text) {
@@ -113,7 +118,7 @@ function failOverride(result, exitCode, source) {
   process.exit(2);
 }
 
-const VALUE_FLAGS = new Set(['--session', '--model', '--threshold', '--owner']);
+const VALUE_FLAGS = new Set(['--session', '--model', '--threshold', '--owner', '--retention', '--timeout']);
 
 function parseArgs(args) {
   const flags = {};
@@ -280,6 +285,37 @@ function runOverride(action, extra, flags) {
   process.exit(0);
 }
 
+// ---- compact 子命令（非活跃会话外部压缩，探针 BP-9 ✅）----
+//
+// 对「无持有者」的会话做真实压缩：resume → updateRuntimeModelConfig → send "/compact"。
+// 活跃会话（GUI tab 开着 / runner 在跑）会被防呆拒绝——压缩落盘但持有者无感知（P15）。
+// 业务失败码归 2（防呆拒绝/参数/找不到会话），环境/协议故障归 1。
+
+const COMPACT_USAGE_LEVEL_CODES = new Set([
+  'invalid-session-id',
+  'session-not-found',
+  'session-likely-held',
+  'model-unknown',
+]);
+
+async function runCompact(flags) {
+  if (!flags.session) {
+    failUsage('compact 缺少 --session（外部压缩必须显式指定目标会话；当前会话的自压缩请走 zsc_compact 工具的形态路由）。示例: node zsc.js compact --session sess_1a2b3c --retention "保留 T1 结论"');
+  }
+  const timeoutSec = flags.timeout !== undefined ? Number(flags.timeout) : 180;
+  if (!Number.isFinite(timeoutSec) || timeoutSec <= 0) {
+    failUsage(`--timeout 须为正数（秒），收到 "${flags.timeout}"`);
+  }
+  const { compactSession } = require('../lib/compact-exec');
+  const result = await compactSession({
+    sessionId: flags.session,
+    retention: flags.retention ?? '',
+    timeoutMs: timeoutSec * 1000,
+  });
+  writeOut(`${JSON.stringify(result)}\n`);
+  process.exit(result.ok ? 0 : COMPACT_USAGE_LEVEL_CODES.has(result.reason) ? 2 : 1);
+}
+
 function main(argv) {
   const args = argv.slice(2);
   if (args.length === 0) failUsage('缺少子命令');
@@ -293,6 +329,11 @@ function main(argv) {
   }
   if (subcommand === 'override') {
     runOverride(positionals.shift() ?? null, positionals, flags);
+    return;
+  }
+  if (subcommand === 'compact') {
+    if (positionals.length > 0) failUsage(`多余参数 "${positionals[0]}"`);
+    runCompact(flags);
     return;
   }
   failUsage(`未知子命令 "${subcommand}"`);

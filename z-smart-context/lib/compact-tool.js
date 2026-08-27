@@ -1,9 +1,15 @@
 'use strict';
 
-// zsc_compact 决策核心（v2 W1，设计 .tmp/agent-self-compact-design.md §3.1 场景一 / D5 / D8）。
-// 工具自身只能从 db 拿用量数字，任务语义全部由 agent 入参提供（D5 定案）：
-// 这里只做入参校验、sessionId 缺省探测、会话形态判定（P-G4 三途径 + 兜底）
-// 与对应 plan / 降级文案生成——绝不真正触发压缩，也绝不返回空 plan 假装成功。
+// zsc_compact 决策核心（v2.1，探针 .tmp/probe-report-bg-compact.md 定案后的重定向）。
+//
+// 形态路由（诚实边界，CUA 方案已按用户决策删除——占用/扰动前台 GUI 且实测不稳）：
+// - gui-active：GUI 活跃会话无纯后台压缩通道（BP-1..BP-5 穷尽：活动性=持有进程内存态，
+//   外部零调用面）。返回「粘贴交接」——agent 组织 retention，用户 Cmd+V 执行。
+// - headless-active：保持 override apply 预备指引（P17 通道，spawn 前生效）。
+// - unknown：双路径说明，agent 按实际处境自选。
+// 工具自身只做入参校验、sessionId 缺省探测、形态判定与文案生成——不假装成功。
+// 真实执行器（非活跃会话的外部压缩）在 lib/compact-exec.js，经 `zsc compact --session`
+// 由调用方使用；本工具的 headless 形态无持有权，不在此内联执行。
 
 const os = require('node:os');
 const path = require('node:path');
@@ -20,19 +26,19 @@ const DATA_DIR = process.env.ZSC_DATA_DIR || path.join(os.homedir(), '.zcode', '
 // verifyHint 里的核实命令须指向插件根（bin/zsc.js）；lib 文件天然位于 <root>/lib/ 下
 const PLUGIN_ROOT = path.join(__dirname, '..');
 
-// CUA 注入消息的署名前缀约定（§3.1 用户可见性：代打消息以 user 角色进 transcript，
-// 须可一眼溯源到 agent 代打而非用户亲手输入）
-const INJECT_SIGNATURE = '（由 agent 经 zsc 自动压缩流程注入）';
-
-// retention 超过此长度时在 plan 中建议截断：压缩摘要生成本身有输出上限，
+// retention 超过此长度时在交接文案中建议截断：压缩摘要生成本身有输出上限，
 // 超长保留指令可能在摘要环节丢失细节（工具只建议、不代截——语义边界只有 agent 知道）
 const RETENTION_SOFT_LIMIT = 2000;
+
+// GUI 会话无纯后台通道的一句话依据（可审计，指向探针报告）
+const GUI_NO_BG_NOTE =
+  'GUI 活跃会话的纯后台压缩在当前 zcode 版本不可达（探针定案：会话 compact/updateRuntimeModelConfig 跨实例被活动性检查拒绝，CUA 会占用前台 GUI 已弃用）';
+
+// ---------- 会话形态判定（P-G4） ----------
 
 // P-G4 进程树上溯限深：GUI host→shell→node 的真实链远短于 8 层；
 // 限深防御异常环图把工具拖死
 const PROBE_MAX_DEPTH = 8;
-
-// ---------- 会话形态判定（P-G4） ----------
 
 // GUI host 特征（best-effort，误判代价低——还有 fallback 兜底）：
 // ① 设计文档点名的 "zcode-host-local-" 等 host 进程命名；② macOS app bundle 主进程
@@ -116,7 +122,7 @@ function safeClose(db) {
   }
 }
 
-// 用量读数失败一律置 null——contextTokens 只是 plan 的辅助信息，绝不能因它拖垮 plan 输出
+// 用量读数失败一律置 null——contextTokens 只是交接文案的辅助信息，绝不能因它拖垮输出
 function fetchContextTokens(dataDir, sessionId) {
   try {
     const db = openReadonlyDb(dataDir);
@@ -142,48 +148,29 @@ function findByDirectoryFromDb(dataDir, directory) {
   };
 }
 
-// ---------- plan / 降级文案生成 ----------
+// ---------- 交接文案生成 ----------
 
 function compactCommandOf(retention) {
   // retention 缺省时裸 /compact 也合法（无保留指令的纯压缩）
   return retention ? `/compact 保留：${retention}` : '/compact';
 }
 
-// GUI 实时路径的编排步骤（C13/C9/C14）：消息体第一行固定署名，第二行才是要执行的内容
-function buildGuiSteps(retention, nextInstruction) {
+// GUI 粘贴交接（v2.1：CUA 删除后的唯一 gui 路径）。agent 的动作 = 把 command 原样贴给用户。
+function buildGuiHandoff(retention) {
   const steps = [];
   if (retention && retention.length > RETENTION_SOFT_LIMIT) {
     steps.push(
-      `前置建议：retention 当前 ${retention.length} 字符，超过软上限 ${RETENTION_SOFT_LIMIT}，建议先截断到核心信息再注入——` +
+      `前置建议：retention 当前 ${retention.length} 字符，超过软上限 ${RETENTION_SOFT_LIMIT}，建议先截断到核心信息——` +
         '理由：压缩摘要生成本身有输出上限，超长保留指令可能在摘要环节丢失细节。'
     );
   }
   steps.push(
-    'step1 用 computer-use 的 type 工具定位 ZCode 聊天输入框 element（AX 文本框定位，勿用屏幕坐标），' +
-      `注入以下整段消息后回车（消息首行为署名约定，勿删）：\n${INJECT_SIGNATURE}\n${compactCommandOf(retention)}`
+    `step1 把下面整段压缩指令原样转告用户执行（复制到 ZCode 输入框回车；你已按任务边界组织好保留要点，这正是自决策压缩的核心增益）：\n${compactCommandOf(retention)}`
   );
-  if (nextInstruction) {
-    steps.push(
-      'step2 紧接 step1 再注入第二条消息后回车（依赖 GUI 忙时排队顺序执行，若顺序异常见 fallback）：' +
-        `\n${INJECT_SIGNATURE}\n${nextInstruction}`
-    );
-  }
   steps.push(
-    nextInstruction
-      ? 'step3 结束当前回复（压缩 turn 只在 agent turn 结束后由引擎排队执行），收到继续消息后基于压缩摘要继续任务'
-      : 'step3 结束当前回复等待压缩 turn 执行完毕；之后按既有任务清单继续'
+    'step2 用户执行后，下一条用户消息时 hook 会注入用量回落知情通知；基于压缩摘要继续任务即可（引用早前细节前先确认或重读文件）'
   );
   return steps;
-}
-
-// 半自动降级（D8）：CUA 权限缺失或注入失败时不静默失败，回落 v1 手动 /compact 行为兜底
-function buildGuiFallback(retention) {
-  return (
-    'fallback（computer-use 报 CUA_PERMISSION_REQUIRED 或注入失败时启用半自动降级）：' +
-    '请用户手动在输入框执行压缩，以下指令可整段复制：\n' +
-    compactCommandOf(retention) +
-    '\nTCC 未授权时的一次性恢复动作：系统设置 → 隐私与安全性 → 辅助功能，为 ZCode 宿主授权后重试 computer-use。'
-  );
 }
 
 function buildHeadlessGuidance() {
@@ -197,12 +184,12 @@ function buildHeadlessGuidance() {
 }
 
 // 形态不明的双路径兜底（P-G4）：体验降级但功能不缺失，由 agent 按实际处境自选
-function buildUnknownPlan(retention, nextInstruction) {
+function buildUnknownPlan(retention) {
   return [
     '无法判定当前会话形态（GUI 或无头），请按你的实际处境二选一执行：',
     '',
-    '— 路径 A：你在 ZCode 桌面 GUI 会话中（工具面有 computer-use 类能力）→',
-    ...buildGuiSteps(retention, nextInstruction).map((s) => `  ${s}`),
+    '— 路径 A：你在 ZCode 桌面 GUI 会话中 →',
+    ...buildGuiHandoff(retention).map((s) => `  ${s}`),
     '',
     '— 路径 B：你是被编排方 spawn 的无头/subagent 会话 →',
     ...buildHeadlessGuidance().map((s) => `  ${s}`),
@@ -211,8 +198,7 @@ function buildUnknownPlan(retention, nextInstruction) {
 
 // ---------- 结构化错误（附可操作的恢复动作，§3.4） ----------
 
-const ARGS_EXAMPLE =
-  '{"retention": "已完成 T1/T2 的状态与关键文件路径；T3 的任务描述与验收标准", "nextInstruction": "继续执行 T3"}';
+const ARGS_EXAMPLE = '{"retention": "已完成 T1/T2 的状态与关键文件路径；T3 的任务描述与验收标准"}';
 
 function invalidArgsError(detail) {
   return {
@@ -220,10 +206,9 @@ function invalidArgsError(detail) {
     reason: 'invalid-arguments',
     text:
       `[zsc_compact] ${detail}\n` +
-      `恢复动作：retention 与 nextInstruction 至少传其一（压缩后继续任务的编排依赖 nextInstruction），正确入参形如：\n` +
+      `恢复动作：retention 必填（描述压缩后必须留存的上下文：已完成子任务的状态、关键文件路径、未完成任务清单），正确入参形如：\n` +
       `  ${ARGS_EXAMPLE}\n` +
-      `也允许只传其一：{"nextInstruction": "压缩完成后继续任务 X"}。\n` +
-      `重试：以 correct 格式重新调用 mcp__zsc__zsc_compact。`,
+      `重试：以正确格式重新调用 mcp__zsc__zsc_compact。`,
   };
 }
 
@@ -247,9 +232,8 @@ function handleCompactTool(rawArgs, options = {}) {
     return invalidArgsError('入参必须是 JSON 对象');
   }
   const retention = typeof rawArgs.retention === 'string' ? rawArgs.retention.trim() : '';
-  const nextInstruction = typeof rawArgs.nextInstruction === 'string' ? rawArgs.nextInstruction.trim() : '';
-  if (!retention && !nextInstruction) {
-    return invalidArgsError('retention 与 nextInstruction 至少其一必填，当前两者均缺省');
+  if (!retention) {
+    return invalidArgsError('retention 必填且不能为空白（v2.1 起不再接受 nextInstruction——压缩后自动继续对话已按产品决策移除）');
   }
 
   const envObj = options.env !== undefined ? options.env : process.env;
@@ -283,17 +267,18 @@ function handleCompactTool(rawArgs, options = {}) {
   if (shape === 'gui-active') {
     return {
       ...base,
-      plan: buildGuiSteps(retention, nextInstruction),
+      plan: buildGuiHandoff(retention),
+      note: GUI_NO_BG_NOTE,
       verifyHint,
-      fallback: buildGuiFallback(retention),
     };
   }
-  return { ...base, plan: buildUnknownPlan(retention, nextInstruction), verifyHint, fallback: buildGuiFallback(retention) };
+  return { ...base, plan: buildUnknownPlan(retention), note: GUI_NO_BG_NOTE, verifyHint };
 }
 
 module.exports = {
-  INJECT_SIGNATURE,
   RETENTION_SOFT_LIMIT,
   detectSessionShape,
   handleCompactTool,
 };
+
+module.exports.__internal = { compactCommandOf }; // 供单测与 compact-exec 行为对齐断言

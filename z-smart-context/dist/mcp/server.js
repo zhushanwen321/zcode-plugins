@@ -35,20 +35,16 @@ function writeOut(obj) {
 const TOOL_ZSC_COMPACT = {
   name: 'zsc_compact',
   description:
-    '上下文压缩决策辅助：校验入参、探测当前会话形态，返回可执行的压缩编排 plan 或诚实降级指引。' +
-    '任务语义由调用方提供（retention/nextInstruction），工具不做语义压缩、不直接触发压缩。',
+    '上下文压缩决策辅助：校验入参、探测当前会话形态，返回可执行的压缩交接指引或诚实降级。' +
+    'GUI 会话无纯后台压缩通道（探针定案），工具返回由你组织好 retention 的可粘贴 /compact 指令，转告用户执行；' +
+    '无头会话返回 config 预写指引。工具不做语义压缩、不直接触发压缩。',
   inputSchema: {
     type: 'object',
     properties: {
       retention: {
         type: 'string',
         description:
-          '压缩保留指令（拼入 /compact 保留：…）。描述压缩后必须留存的上下文：已完成子任务的状态、关键文件路径、未完成任务的描述与验收标准。与 nextInstruction 至少其一必填。',
-      },
-      nextInstruction: {
-        type: 'string',
-        description:
-          '压缩完成后注入的继续消息（压缩后继续任务的编排依赖它）。与 retention 至少其一必填。',
+          '压缩保留指令（拼入 /compact 保留：…）。描述压缩后必须留存的上下文：已完成子任务的状态、关键文件路径、未完成任务的描述与验收标准。必填。',
       },
       sessionId: {
         type: 'string',
@@ -57,8 +53,7 @@ const TOOL_ZSC_COMPACT = {
           '可选。目标会话 id；缺省链为 env CLAUDE_SESSION_ID → db 按 cwd 反查最近活跃主会话。',
       },
     },
-    // 契约「至少其一必填」的 JSON Schema 表达
-    anyOf: [{ required: ['retention'] }, { required: ['nextInstruction'] }],
+    required: ['retention'],
   },
 };
 

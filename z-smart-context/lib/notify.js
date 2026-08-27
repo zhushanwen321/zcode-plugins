@@ -25,8 +25,8 @@ function tierNotifyText(pluginRoot, sessionId, cur, tier, crossedTiers) {
     `[z-smart-context] 上下文用量 ${formatTokens(cur)} tokens，已越过阈值 ${formatTokens(tier)}（${crossed}）。` +
     '这是用量数据，不是必须执行的指令。若考虑压缩，先自查三点：' +
     '① 当前任务是否阶段性完成并验证？② 后续工作是否依赖将被压缩的细节？③ 用量是否确实构成压力？' +
-    '三者皆备时可自主决策：在子任务收尾边界调用 zsc_compact 工具，传入 retention（需保留的关键状态与后续任务要点）' +
-    '与 nextInstruction（压缩完成后要继续的任务指令），工具会返回具体注入步骤。' +
+    '三者皆备时可自主决策：在子任务收尾边界调用 zsc_compact 工具，传入 retention（需保留的关键状态与后续任务要点），' +
+    '工具会按当前会话形态返回可执行路径（GUI 会话为已组织好的可粘贴压缩指令，转告用户执行即可）。' +
     '若当前环境无法使用该工具，告知用户执行 /compact 并说明保留要点。' +
     `不满足则忽略本条即可。精确读数可自查：node ${path.join(pluginRoot, 'bin', 'zsc.js')} usage --session ${sessionId}` +
     '（sessionId 可直接复制使用）'

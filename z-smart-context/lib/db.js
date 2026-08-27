@@ -53,4 +53,45 @@ function findLatestSessionByDirectory(db, directory) {
   return { id: row.id, title: row.title, timeUpdated: row.time_updated };
 }
 
-module.exports = { openDb, getLatestCompletedUsage, findLatestSessionByDirectory };
+// SQL-3（compact-exec）：会话定位与活跃防呆。directory 供外部 app-server 的 --cwd
+// 对齐会话工作区；turn_usage 最新行的 status/started_at 是「会话是否正被持有者使用」的
+// db 侧近似（活动性真值在持有进程内存里，外部不可查——见 .tmp/probe-report-bg-compact.md BP-1）。
+function getSessionMeta(db, sessionId) {
+  const row = db.prepare('SELECT id, directory, time_updated FROM session WHERE id = ?').get(sessionId);
+  if (!row) return null;
+  return { id: row.id, directory: row.directory, timeUpdated: row.time_updated };
+}
+
+function getLatestTurnStatus(db, sessionId) {
+  const row = db
+    .prepare(
+      `SELECT status, started_at, completed_at FROM turn_usage
+       WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`
+    )
+    .get(sessionId);
+  if (!row) return null;
+  return { status: row.status, startedAt: row.started_at, completedAt: row.completed_at };
+}
+
+// SQL-4（compact-exec）：会话最近一次成功调用的模型（updateRuntimeModelConfig 的
+// runtimeModel 构造源）。取 status='completed' 末行，避免撞限重试行带出未落地模型。
+function getLatestModelOfSession(db, sessionId) {
+  const row = db
+    .prepare(
+      `SELECT provider_id, model_id FROM model_usage
+       WHERE session_id = ? AND status = 'completed'
+       ORDER BY started_at DESC LIMIT 1`
+    )
+    .get(sessionId);
+  if (!row) return null;
+  return { providerId: row.provider_id, modelId: row.model_id };
+}
+
+module.exports = {
+  openDb,
+  getLatestCompletedUsage,
+  findLatestSessionByDirectory,
+  getSessionMeta,
+  getLatestTurnStatus,
+  getLatestModelOfSession,
+};
