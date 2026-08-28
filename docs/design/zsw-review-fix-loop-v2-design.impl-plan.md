@@ -70,6 +70,9 @@ graph LR
 | U1 | DECLINE 用例显式钉 maxRounds:5（默认 10 后原路径变 stuck） | 保留 fixed-unverified 意图，stuck 另立用例 | 2026-08-29 |
 | U1 | bin/zsw.js 未知 flag 原样透传入口（CLI 不重复维护白名单） | 白名单单一权威在 workflow 入口，防拼错 flag 被 CLI 静默丢弃 | 2026-08-29 |
 | U1 | state 骨架多落 agentStatus/fixCount/baseHash/batchNames；loop 返回多带 targetType/target/batches/batchNames/warnings | 均设计 §3.4 state 规格内字段 + S4/S7 断言数据源 | 2026-08-29 |
+| U2 | AGGREGATOR_SCHEMA 增补 title 字段；aggregated.md 落 runDir/batch-i/round-j/（非根平铺） | ID 标题匹配/表格/fix 队列必需；防多轮同名覆盖 | 2026-08-29 |
+| U2 | fixer 结果落盘与 dormant 接线归 U3（本轮存 loop.fixResult/fixResultParsed） | 设计本就拆在 U3 状态机单元 | 2026-08-29 |
+| U2 | fake CLI failList 分支改 parseFail 语义、abort 用例锚点移 aggregate done、prompt 关键词锚点精确化 | v2 聚合为独立阶段后的用例形态对齐 | 2026-08-29 |
 
 ## 6 状态表
 
@@ -77,7 +80,7 @@ graph LR
 |------|------|------|----------|
 | u-foundation | committed | 1 | utils 34/34 绿；导出面探针 miss=none |
 | U1 | committed | 1 | 5 套件 121/121 绿（workflow-b 25 用例） |
-| U2 | pending | 0 | — |
+| U2 | committed | 1 | workflow-b+utils 64/64 绿（workflow-b 30 用例） |
 | U3 | pending | 0 | — |
 | U4 | pending | 0 | — |
 
