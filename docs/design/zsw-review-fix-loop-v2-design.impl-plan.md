@@ -99,9 +99,16 @@ graph LR
 | U2 | committed | 1 | workflow-b+utils 64/64 绿（workflow-b 30 用例） |
 | U3 | committed | 2 | 修复轮 1 后 7 套件 177/177 绿（workflow-b 43 用例） |
 | U4 | committed | 1 | check-sync/check-pack 双绿；npm pack 实测 commands/ 入包 |
+| 一致性修复轮 1/2 | committed | — | a32098a / ca31769；定向复审 10/10 生效，新 3 minor 轮 2 清零 |
+| Gate A | passed | — | 全量 433/433（含 e2e 真机 13 次模型调用）+ check-sync/check-pack 双绿 + 5 文件语法过 + 零跳过 |
+| Gate B | passed | — | 7 pass / 0 fail / 1 blocked（S6 GUI 冒烟待用户重启 ZCode）；4 次真机 run（wf-db4cec48 双批 / wf-abe05bcb 诱导降级 / wf-2cb88bde + wf-e316aa79 老参数） |
 
 ## 7 残留风险与变更历史
 
-- 真机遵循率风险（设计 §5 待验证检查点 1/2）：R2 reconciliation 缺失率 >30% 或聚合 fallback 率 >20% 时按设计回改路径执行（D2 拆二次调用 / D1 加 few-shot），登记本表。
+- 真机遵循率风险（设计 §5 待验证检查点 1/2）：Gate B 实证通过——Run 2 真机 reconciliation 覆盖全部活跃 ID、LLM 聚合全程未降级（4 run 零 js-dedup）；回改路径未触发。
+- S6 GUI 冒烟 blocked：/zsw command 的 GUI 发现与触发需重启 ZCode 后人工输入 /zsw 验证（本地 manifest/文件/门禁证据全过）——待用户操作。
+- U4 command 资源无本地行为测试（声明式 prompt 资源无可执行契约；check-pack 白名单覆盖入包性）。
+- AGENTS.md「常用命令」的 `node --test test/` 在 Node v24.11.1 失效（目录参数被当入口模块）；等价命令 `node --test 'test/*.test.js'` 或 `node --test` 可用——AGENTS.md 属用户文档，待用户裁决更新。
+- e2e 真机成本知悉：全量本地验证含真实模型调用（本轮 Gate A 13 次 + Gate B 4 run）。
 - U1 的 workflow-manager.js 改动（runId 注入）触及共享层：_invokeEntry 增字段对其他 4 个内置 workflow 无害（解构风格忽略多余字段，复审已核实），但 workflow-manager.test.js 必须随跑。
-- 变更历史：2026-08-29 计划创建（基线 aa00a84）；2026-08-29 一致性审查（A 区 6 unreasonable + B 区 4 unreasonable + 5 doc_errors）→ 修复轮 1 双批次清零（A 区 4 major：reviewer 落盘/修复说明段 wrap/dormant 复活 ID 对齐/聚合 abort 检查点；minor：maxRounds 上限放开/reconciliation 归一；B 区：batchN 数组透传/skills frontmatter/aggregatorModel 文案/测试护栏）+ doc_errors 主 agent 修订。
+- 变更历史：2026-08-29 计划创建（基线 aa00a84）；2026-08-29 一致性审查（A 区 6 unreasonable + B 区 4 unreasonable + 5 doc_errors）→ 修复轮 1 双批次清零（A 区 4 major：reviewer 落盘/修复说明段 wrap/dormant 复活 ID 对齐/聚合 abort 检查点；minor：maxRounds 上限放开/reconciliation 归一；B 区：batchN 数组透传/skills frontmatter/aggregatorModel 文案/测试护栏）+ doc_errors 主 agent 修订；修复轮 2 清零定向复审新发 3 minor；2026-08-29 双级验收 Gate A（433/433）+ Gate B（7 pass/1 blocked）完成，交付。
