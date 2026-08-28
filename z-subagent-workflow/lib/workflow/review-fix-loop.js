@@ -5,7 +5,10 @@
  * - 审查者 = 视角名（非 agent .md 文件）
  * - 聚合 = JS 去重合并（pi 用 LLM aggregator）
  * - 无 autoCommit（永不提交，改动留给用户）
- * - 保留：批内循环 / clean 审查者跳过 / maxRounds / 停滞检测
+ * - 保留：批内循环 / clean 审查者跳过（skipCleanAgents 默认 true，fix 后默认
+ *   不清空 clean 集合——对齐原版 :691-695；recheckAfterFix=true 时 fix 后重派
+ *   全批，上一轮 clean 的审查者走限定复检 prompt，只查 fix 引入的回归）/ maxRounds /
+ *   停滞检测
  * 唯一带写操作的工作流（fix 阶段修改文件）。
  *
  * zsub 移植差异（相对 dynamic-workflow/lib/review-fix-loop.js，循环/熔断/聚合语义不变）：
@@ -30,6 +33,7 @@ const { runPhase } = require('./phases');
 const { runWithLimit } = require('../pool');
 const { extractJsonObject } = require('../jsonout');
 const ModelRouter = require('../model-router');
+const { execSync } = require('node:child_process');
 
 // 模块级单例：resolve 无解析状态；与 run-phase.js 同一约定（见其头注）。
 const modelRouter = new ModelRouter();
@@ -53,6 +57,38 @@ function dedupKey(title) {
 
 /** signal 缺省（undefined）与未触发都视为未中止；编排层只认 signal.aborted 单一事实源。 */
 function isAborted(signal) { return !!signal && signal.aborted === true; }
+
+/**
+ * 字符串强制转布尔（对齐原版 coerceBool：LLM/CLI 可能以字符串传布尔，
+ * "false" 若按 truthy 处理会反转语义）。非布尔非 "true"/"false" 回退默认值。
+ */
+function coerceBool(v, fallback) {
+  if (typeof v === 'boolean') return v;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return fallback;
+}
+
+/** 非 git 目录（或 rev-parse 失败）→ null；fix 前后各取一次以实测本轮 fix 改动。 */
+function gitHead(workdir) {
+  try {
+    return execSync('git rev-parse HEAD', { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
+  } catch { return null; }
+}
+
+/**
+ * recheckAfterFix 限定复检的 scope 来源：git diff 实测本轮 fix 触碰的文件
+ * （对齐原版 lastModifiedFiles 通道）。prevHead 为 null（非 git 目录）时返回 []，
+ * 限定复检 prompt 退化为仅基于修复说明。diff 含 fix 前已存在的未提交改动——
+ * 复检范围偏大是安全方向的误差，与原版同口径。
+ */
+function gitModifiedSince(prevHead, workdir) {
+  if (!prevHead) return [];
+  try {
+    const out = execSync(`git diff --name-only ${prevHead}`, { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
+    return out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+  } catch { return []; }
+}
 
 /** 聚合：合并多审查者的 issues，去重（标题归一化相同视为同一问题，保留最高严重度）。 */
 function aggregateIssues(reviewerOutputs) {
@@ -94,6 +130,9 @@ function issuesJsonBlock(issues) {
  * @param {string} [opts.reviewTarget] 审查范围描述，默认 'git 未提交改动'
  * @param {string[]} [opts.reviewers] 审查焦点，默认 correctness+robustness
  * @param {number} [opts.maxRounds=5]
+ * @param {boolean} [opts.skipCleanAgents=true] clean 审查者下轮跳过不派（对齐原版同名参数）
+ * @param {boolean} [opts.recheckAfterFix=false] fix 后重派全批：上一轮 clean 的审查者走
+ *   限定复检 prompt（只查 fix 引入的回归）；false 时 fix 后 clean 集合不清空，clean 持续跳过
  * @param {string} opts.workdir
  * @param {string} [opts.model]
  * @param {number} [opts.maxConcurrent=3]
@@ -103,8 +142,11 @@ function issuesJsonBlock(issues) {
 async function runReviewFixLoop({
   task, reviewTarget = 'git 未提交改动', reviewers, maxRounds = 5,
   workdir, model, signal, maxConcurrent = 3, timeoutMsPerPhase = null, onPhase, onPlan,
+  skipCleanAgents: skipCleanAgentsRaw, recheckAfterFix: recheckAfterFixRaw,
 }) {
   const modelRef = modelRouter.resolve(model);
+  const skipCleanAgents = coerceBool(skipCleanAgentsRaw, true);
+  const recheckAfterFix = coerceBool(recheckAfterFixRaw, false);
   const startedAt = new Date().toISOString();
 
   const rs = (Array.isArray(reviewers) && reviewers.length ? reviewers : DEFAULT_REVIEWERS)
@@ -123,24 +165,38 @@ async function runReviewFixLoop({
   let remaining = [];
   let prevMustFixCount = null;
   let stagnantRounds = 0;
+  let roundHasFix = false; // recheckAfterFix 用：上一轮是否发生 fix
+  let lastModifiedFiles = []; // 上一轮 fix 实测改动文件（限定复检 prompt 的 scope）
 
   for (let round = 1; round <= maxRounds; round++) {
     // 检查点（轮间）：上一轮结束后 signal 已 aborted → 本轮任何阶段不再启动
     if (isAborted(signal)) { status = 'aborted'; abortedAtPhase = `round${round}-review`; break; }
 
     // ── 并行 review（上一轮 clean 且其后无 fix 的审查者跳过）──
-    const active = rs.filter((r) => !cleanReviewers.has(r));
+    // 对齐原版（workflows/review-fix-loop.js:689-695）：recheckAfterFix=true 且上轮
+    // 有 fix → 重派全批，上一轮 clean 的审查者本轮走限定复检 prompt；默认
+    // （recheckAfterFix=false）fix 后 clean 集合不清空——clean 持续跳过，这就是
+    // skipCleanAgents=true 的字面语义（原版 :163-165 注释）
+    let scopedClean = new Set();
+    if (recheckAfterFix && round > 1 && roundHasFix) {
+      scopedClean = new Set(cleanReviewers);
+      cleanReviewers.clear();
+    }
+    const active = rs.filter((r) => !(skipCleanAgents && cleanReviewers.has(r)));
     if (active.length === 0) { status = 'clean'; break; }
 
     if (onPhase) onPhase({ phase: `round${round}-review`, status: `running x${active.length}` });
     const reviews = await runWithLimit(active, maxConcurrent, (r) => runPhase({
       name: `review`, label: `R${round} 审查: ${r}`,
       prompt:
-        `你是审查-修复循环中的审查者「${r}」（${reviewerDesc(r)}）。\n\n` +
+        `你是审查-修复循环中的审查者「${r}」（${reviewerDesc(r)}）。${scopedClean.has(r) ? '你上一轮结论为 clean；上一轮结束后修复者已改动代码，本轮你只做限定复检。' : ''}\n\n` +
         `## 任务背景\n${task || '(未提供)'}\n\n` +
         `## 审查范围\n${reviewTarget}\n\n` +
         `${round > 1 && lastFixResponse ? `## 上一轮修复说明\n${lastFixResponse.slice(0, 2000)}\n\n` : ''}` +
-        `## 你的职责\n只从「${r}」焦点审查上述范围。禁止修改任何文件。\n\n` +
+        (scopedClean.has(r)
+          ? `## 本轮 fix 实测改动文件（git diff）\n${lastModifiedFiles.length ? lastModifiedFiles.map((f) => `- ${f}`).join('\n') : '（非 git 目录或 diff 为空——按修复说明涉及的改动复检）'}\n\n` +
+            `## 你的职责（限定复检）\n只检查上述 fix 改动是否引入属于「${r}」焦点的新问题（回归）。禁止修改任何文件；不要全量重审，未被本轮 fix 触碰的上一轮遗留问题不要重复报告。\n\n`
+          : `## 你的职责\n只从「${r}」焦点审查上述范围。禁止修改任何文件。\n\n`) +
         `## 输出格式\n先 2-3 句总体印象，然后必须输出一个 \`\`\`json 围栏块：\n` +
         '```json\n' +
         '{"status":"clean","issues":[]}\n' +
@@ -181,11 +237,12 @@ async function runReviewFixLoop({
       detail: parsedReviews.map((p) =>
         `${p.reviewer}: ${p.runFail ? '审查执行失败' : p.parseFail ? '输出解析失败' : p.clean ? 'clean' : `${p.issues.length} 个问题`}`
       ).join('；')
+        + (rs.some((r) => !active.includes(r)) ? `（跳过: ${rs.filter((r) => !active.includes(r)).join('、')}——上轮 clean 且此后无 fix）` : '')
         + (runFails.length ? `（${runFails.length} 个审查者执行失败）` : '')
         + (parseFails.length ? `（${parseFails.length} 个审查者输出无法解析，按 clean 处理并告警）` : ''),
       mustFixCount: mustFix.length,
     });
-    for (const p of parsedReviews) if (p.clean && !p.parseFail) cleanReviewers.add(p);
+    for (const p of parsedReviews) if (p.clean && !p.parseFail) cleanReviewers.add(p.reviewer);
 
     if (onPhase) onPhase({ phase: `round${round}-review`, status: `done, must-fix=${mustFix.length}` });
 
@@ -212,6 +269,7 @@ async function runReviewFixLoop({
 
     // ── fix ──
     if (onPhase) onPhase({ phase: `round${round}-fix`, status: `running (${mustFix.length} 个 must-fix)` });
+    const prevHead = gitHead(workdir);
     const fix = await runPhase({
       name: 'fix', label: `R${round} 修复 (${mustFix.length} 项)`,
       prompt:
@@ -229,8 +287,14 @@ async function runReviewFixLoop({
     if (!fix.ok) { status = 'fix-failed'; remaining = mustFix; break; }
     lastFixResponse = fix.response;
     lastAction = 'fix';
-    // 修复发生后，之前 clean 的审查者也要重审（改动可能引入新问题）
-    cleanReviewers.clear();
+    roundHasFix = true;
+    lastModifiedFiles = gitModifiedSince(prevHead, workdir);
+    // 对齐原版（workflows/review-fix-loop.js:691-695）：fix 后这里不动 cleanReviewers——
+    // 默认（recheckAfterFix=false）clean 审查者下轮持续跳过（skipCleanAgents 的字面
+    // 语义，原版 :163-165 注释）；recheckAfterFix=true 时由下轮轮顶统一做快照 + 清空
+    // （上一轮 clean 的走限定复检 prompt，见轮顶 scopedClean 分支）。修复引入的跨维度
+    // 回归默认不被全量重审覆盖——需要强回归防护时显式传 recheckAfterFix=true
+    // （限定复检，成本远低于全量重审）。
   }
 
   // 轮数耗尽且最后一步是修复成功：问题可能已全修但未经复核，与“未收敛”区分

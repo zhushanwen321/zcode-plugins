@@ -142,6 +142,10 @@ function workflowUsage(exitCode = 1) {
     + '  --review-target <text>    review-fix-loop：审查范围（默认 git 未提交改动）\n'
     + '  --reviewers "a,b"         review-fix-loop：审查焦点（默认 correctness,robustness）\n'
     + '  --max-rounds <n>          review-fix-loop：最大轮数（默认 5）\n'
+    + '  --skip-clean-agents [b]   review-fix-loop：clean 审查者下轮跳过不派（默认 true；\n'
+    + '                            传 false 关闭）\n'
+    + '  --recheck-after-fix [b]   review-fix-loop：fix 后重派全批，上一轮 clean 的走限定\n'
+    + '                            复检（只查 fix 引入的回归；默认 false）\n'
     + '\n'
     + 'abort / status / list / scripts（管理面：默认经 daemon，zflow 同源；--local 本地）:\n'
     + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
@@ -158,6 +162,17 @@ function workflowUsage(exitCode = 1) {
 
 function csv(v) {
   return typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+}
+
+/**
+ * --flag 布尔解析：parseArgs 的无值 flag 形态给 true，--flag true/false 字符串
+ * 归一为布尔；其余值（拼错等）原样返回让 workflow 入口的 coerceBool 走默认值。
+ */
+function parseBoolFlag(v) {
+  if (v === true) return true;
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return v;
 }
 
 /** --items 双形态：JSON 数组（'["a","b"]'）优先，逗号分隔（a,b,c）回退。 */
@@ -207,6 +222,8 @@ async function runWorkflowRun(wfManager, args, cwd) {
   if (args.reviewTarget !== undefined) params.reviewTarget = args.reviewTarget;
   if (args.reviewers !== undefined) params.reviewers = csv(args.reviewers);
   if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
+  if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
+  if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
 
   const fin = await wfManager.start(params, { cwd });
   const summary = {

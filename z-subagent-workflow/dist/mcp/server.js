@@ -224,6 +224,14 @@ function buildRunWorkflowToolDefinition() {
           type: 'integer', minimum: 1, maximum: 10,
           description: 'review-fix-loop only. Max review-fix rounds. Default 5.',
         },
+        skipCleanAgents: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Skip reviewers that reported clean in a previous round (not re-dispatched while no fix happens). Default true.',
+        },
+        recheckAfterFix: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt (review only what the fix touched). Default false (clean reviewers stay skipped).',
+        },
         maxConcurrent: {
           type: 'integer', minimum: 1, maximum: 6,
           description: 'Max concurrent phase sessions. Default 3.',

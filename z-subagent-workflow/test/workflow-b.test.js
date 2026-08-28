@@ -244,7 +244,9 @@ test('review-fix-loop：首轮 must-fix → fix → 次轮全 clean → round=2 
   assert.equal(result.loop.status, 'clean');
   assert.equal(result.loop.rounds, 2);
   assert.equal(result.loop.remainingCount, 0);
-  assert.equal(result.phases.length, 5); // R1 双审 + fix + R2 双审（fix 后 clean 集清空，全员重审）
+  // skip-clean 语义（对齐原版 skipCleanAgents=true 默认）：R1 的 robustness 报 clean，
+  // fix 后 clean 集合不清空 → R2 只重审 correctness（R1 双审 + fix + R2 单审 = 4）
+  assert.equal(result.phases.length, 4);
   assert.ok(result.phases.every((p) => p.ok));
 
   // fix 阶段确实被调用，且收到聚合后的 must-fix
@@ -256,12 +258,14 @@ test('review-fix-loop：首轮 must-fix → fix → 次轮全 clean → round=2 
 
   assert.ok(result.final.includes('## 审查通过'));
   assert.ok(result.sections[0].body.includes('must-fix 1 个'));
+  // 轮次摘要显式记录被跳过的 clean 审查者（可观测：R2 维度消失有解释）
+  assert.ok(result.sections[0].body.includes('跳过: robustness'));
   assert.equal(result.error, undefined);
 
   // 报告条目冒烟：轮次摘要段 + 阶段表末行
   const md = report.buildMarkdownReport(result);
   assert.ok(md.includes('## 轮次摘要'));
-  assert.ok(md.includes('| 5 | review |'));
+  assert.ok(md.includes('| 4 | review |'));
 });
 
 test('review-fix-loop：恒不 clean 且逐轮递减 → 默认 maxRounds=5 熔断 → fixed-unverified', async () => {
@@ -404,8 +408,55 @@ test('review-fix-loop：signal 存在但未触发 → 行为不变（status=ok�
   assert.equal(result.ok, true);
   assert.equal(result.status, 'ok');
   assert.equal(result.loop.status, 'clean');
-  assert.equal(result.phases.length, 5); // 默认场景：R1 双审+fix + R2 双审
+  assert.equal(result.phases.length, 4); // skip-clean 默认：R2 只重审 R1 非 clean 的 correctness
   assert.equal(result.abortedAtPhase, undefined);
+});
+
+test('review-fix-loop：skipCleanAgents=false → clean 审查者不跳过，R2 仍全量双审', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runReviewFixLoop({
+    task: '关闭跳过的审查', workdir: makeWorkdir('rfl-no-skip'),
+    skipCleanAgents: false,
+  });
+  assert.equal(result.loop.status, 'clean');
+  assert.equal(result.loop.rounds, 2);
+  assert.equal(result.phases.length, 5); // R1 双审 + fix + R2 双审（skip 关闭）
+  // robustness 被派两次（字符串布尔 'false' 同样生效——入口 coerceBool 防御）
+  assert.equal(readCalls().filter((c) => c.prompt.includes('审查者「robustness」')).length, 2);
+});
+
+test('review-fix-loop：skipCleanAgents 字符串 "false" → 等价布尔 false（coerceBool 防御）', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runReviewFixLoop({
+    task: '字符串布尔的审查', workdir: makeWorkdir('rfl-str-bool'),
+    skipCleanAgents: 'false',
+  });
+  assert.equal(result.loop.status, 'clean');
+  assert.equal(readCalls().filter((c) => c.prompt.includes('审查者「robustness」')).length, 2);
+});
+
+test('review-fix-loop：recheckAfterFix=true → fix 后重派全批，clean 审查者走限定复检 prompt', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runReviewFixLoop({
+    task: '强回归复检的审查', workdir: makeWorkdir('rfl-recheck'),
+    recheckAfterFix: true,
+  });
+  assert.equal(result.loop.status, 'clean');
+  assert.equal(result.loop.rounds, 2);
+  assert.equal(result.phases.length, 5); // R2 重派全批（双审）
+  const robustnessCalls = readCalls().filter((c) => c.prompt.includes('审查者「robustness」'));
+  assert.equal(robustnessCalls.length, 2);
+  // 第二次（R2 重派）prompt 是限定复检：只查 fix 引入的回归，非全量重审
+  assert.ok(robustnessCalls[1].prompt.includes('限定复检'));
+  assert.ok(robustnessCalls[1].prompt.includes('只检查'));
+  // R1 非 clean 的 correctness 重派走常规 R2 prompt（含上轮修复说明，无限定段）
+  const correctnessCalls = readCalls().filter((c) => c.prompt.includes('审查者「correctness」'));
+  assert.equal(correctnessCalls.length, 2);
+  assert.ok(!correctnessCalls[1].prompt.includes('限定复检'));
+  assert.ok(correctnessCalls[1].prompt.includes('上一轮修复说明'));
 });
 
 test('review-fix-loop：全部审查者执行失败（ok:false）→ review-failed，不得按 0 问题判 clean', async () => {

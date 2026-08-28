@@ -108,7 +108,7 @@ node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本�
 | 已知 items 数组逐个处理再归总 | `map-reduce` | items + operation 必填，并行 map → 单 agent reduce |
 | 单一目标多视角审查后聚合 | `parallel` | 默认 security/performance/maintainability，可传 perspectives |
 | 大任务先拆分再并行再合并 | `scatter-gather` | scatter 拆 2-4 份 → 并行 process → gather |
-| 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds 可调 |
+| 并行审查 → 聚合 must-fix → 修复 → 重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；reviewers/maxRounds/skipCleanAgents（默认 true，clean 审查者下轮跳过）/recheckAfterFix（默认 false，true 时 fix 后全批重派、clean 者走限定复检）可调 |
 | 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
 
 通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，阶段在其下工作）；`--model`（可用清单先查 `node bin/zsw.js models`——模型集随环境变化，勿硬编码）/ `--max-concurrent`（默认 3）/ `--timeout-per-phase`（单阶段超时，不设则无超时）/ `--timeout-ms`（整体超时，不设则无超时）。运行可达数分钟——run_in_background 包裹时完成通知自动到达，通知到达前去做别的事。
