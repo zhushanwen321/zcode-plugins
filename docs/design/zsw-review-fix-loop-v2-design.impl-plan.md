@@ -62,13 +62,17 @@ graph LR
 
 ## 5 合理偏差登记表
 
-（空）
+| Unit | 偏差 | 理由 | 登记时间 |
+|------|------|------|----------|
+| u-foundation | 额外导出 SEVERITIES/MUST_FIX_SEVERITIES 常量 | U2 聚合判定与 D6 全等级修复的直接消费面，属 §3.4 契约枚举常量化 | 2026-08-29 |
+| u-foundation | 依赖闭包 vendor 5 个辅助（parseResult/normIssueId/DORMANT_ADJUDICATIONS/toIdSet/dormantDetail，前两个导出） | 14 函数的内部互引链必需 | 2026-08-29 |
+| u-foundation | 函数体逐字保留 pi 源风格（双引号/原注释），仅模块壳遵循 zsw 惯例 | 最小化 vendor 分叉，便于上游 diff 审计 | 2026-08-29 |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| u-foundation | pending | 0 | — |
+| u-foundation | committed | 1 | utils 34/34 绿；导出面探针 miss=none |
 | U1 | pending | 0 | — |
 | U2 | pending | 0 | — |
 | U3 | pending | 0 | — |
