@@ -861,18 +861,36 @@ async function runReviewFixLoop(raw = {}) {
 
       // reviewer 报告落盘（S5/§2.3 数据流）：原始 response → <runDir>/batch-i/round-j/
       // <reviewer>.md（reviewer 名经 safeFileStem 安全化）；runFail 条目无 response 自然
-      // 跳过。落盘失败不阻断循环（WARN 出声，与 aggregated.md 同款防御）
+      // 跳过。逐 reviewer 独立 try/catch：单个文件写失败只 WARN 该 reviewer，不影响
+      // 其余落盘（目录创建失败才整轮跳过）；落盘失败均不阻断循环（与 aggregated.md
+      // 同款防御）。同轮安全化后 stem 碰撞（如 "Reviewer A" 与 "Reviewer/A"）时按
+      // active 顺序追加序号去重（确定性），WARN 出声，不静默覆写
       if (runDir) {
+        const roundDir = path.join(runDir, `batch-${batchIndex}`, `round-${round}`);
         try {
-          const roundDir = path.join(runDir, `batch-${batchIndex}`, `round-${round}`);
           fs.mkdirSync(roundDir, { recursive: true });
+        } catch (e) {
+          process.stderr.write(`[zsw] WARN: reviewer 报告目录创建失败（${e.message}）——本轮落盘跳过，循环继续\n`);
+        }
+        if (fs.existsSync(roundDir)) {
+          const usedStems = new Set();
           for (let i = 0; i < active.length; i++) {
             const response = reviews[i]?.response;
             if (typeof response !== 'string' || response === '') continue;
-            fs.writeFileSync(path.join(roundDir, `${safeFileStem(active[i])}.md`), response);
+            let stem = safeFileStem(active[i]);
+            if (usedStems.has(stem)) {
+              let n = 2;
+              while (usedStems.has(`${stem}-${n}`)) n += 1;
+              process.stderr.write(`[zsw] WARN: reviewer 报告文件名碰撞（${stem}.md，reviewer: ${active[i]}）——追加序号 → ${stem}-${n}.md\n`);
+              stem = `${stem}-${n}`;
+            }
+            usedStems.add(stem);
+            try {
+              fs.writeFileSync(path.join(roundDir, `${stem}.md`), response);
+            } catch (e) {
+              process.stderr.write(`[zsw] WARN: reviewer 报告落盘失败（${active[i]} → ${stem}.md: ${e.message}）——跳过该 reviewer，循环继续\n`);
+            }
           }
-        } catch (e) {
-          process.stderr.write(`[zsw] WARN: reviewer 报告落盘失败（${e.message}）——循环继续\n`);
         }
       }
 
@@ -1231,11 +1249,6 @@ async function runReviewFixLoop(raw = {}) {
       // 该检查点语义为「聚合结果保留、fix 不启动」）
       if (isAborted(signal)) {
         status = 'aborted'; abortedAtPhase = `${phasePrefix}-round${round}-aggregate`;
-        remaining = fixQueue; closeRound(); break;
-      }
-      // 检查点 ④（fix 启动前）：本轮聚合出的 must-fix 原样保留给报告
-      if (isAborted(signal)) {
-        status = 'aborted'; abortedAtPhase = `${phasePrefix}-round${round}-fix`;
         remaining = fixQueue; closeRound(); break;
       }
 

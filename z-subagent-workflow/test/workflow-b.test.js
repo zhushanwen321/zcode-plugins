@@ -1117,6 +1117,32 @@ test('review-fix-loop v2：LLM 聚合——downgraded 条目不进 fix 队列 + 
   }
 });
 
+test('review-fix-loop：reviewer 报告落盘——stem 碰撞追加序号去重 + 逐 reviewer 独立失败不阻断', async () => {
+  writeV2Config();
+  resetCalls();
+  // '性能 分析' 与 '性能/分析' 经 safeFileStem 安全化后同为 '性能_分析'：后者须去重为
+  // '性能_分析-2'（按 active 顺序的确定性序号），不静默覆写。同时临时 patch
+  // writeFileSync 让首个 stem 的写入抛错，验证逐 reviewer 独立 try/catch——单文件
+  // 失败只跳过该 reviewer（WARN），不影响其余落盘、不阻断循环
+  const origWrite = fs.writeFileSync;
+  fs.writeFileSync = function (p, ...rest) {
+    if (String(p).endsWith(`${path.sep}性能_分析.md`)) throw new Error('simulated disk full');
+    return origWrite.call(this, p, ...rest);
+  };
+  try {
+    const result = await runReviewFixLoop({
+      task: '落盘碰撞演示', workdir: makeWorkdir('rfl-collision'), runId: 'wf-utest-collision',
+      reviewers: ['性能 分析', '性能/分析'],
+    });
+    assert.equal(result.loop.status, 'clean'); // 落盘失败不阻断循环
+    const roundDir = path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-collision', 'batch-1', 'round-1');
+    assert.ok(!fs.existsSync(path.join(roundDir, '性能_分析.md'))); // 首个写入失败被独立跳过
+    assert.ok(fs.existsSync(path.join(roundDir, '性能_分析-2.md'))); // 碰撞者追加序号去重落盘
+  } finally {
+    fs.writeFileSync = origWrite;
+  }
+});
+
 test('review-fix-loop v2：聚合降级链——JS fallback、degraded 标记、循环继续、ID 标题匹配沿用（S8）', async () => {
   writeV2Config();
   resetCalls();
