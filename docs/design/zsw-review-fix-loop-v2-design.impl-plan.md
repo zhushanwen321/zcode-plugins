@@ -73,6 +73,11 @@ graph LR
 | U2 | AGGREGATOR_SCHEMA 增补 title 字段；aggregated.md 落 runDir/batch-i/round-j/（非根平铺） | ID 标题匹配/表格/fix 队列必需；防多轮同名覆盖 | 2026-08-29 |
 | U2 | fixer 结果落盘与 dormant 接线归 U3（本轮存 loop.fixResult/fixResultParsed） | 设计本就拆在 U3 状态机单元 | 2026-08-29 |
 | U2 | fake CLI failList 分支改 parseFail 语义、abort 用例锚点移 aggregate done、prompt 关键词锚点精确化 | v2 聚合为独立阶段后的用例形态对齐 | 2026-08-29 |
+| U3 | fixer 提取失败收紧为 fix-failure 终止（以设计 §4.1 差异 #5 为准，覆盖 U2 的降级存续行为） | 结构化契约违规即终止，v2 语义 | 2026-08-29 |
+| U3 | stuck 用例改 FAKE_STUCK_RECON（对账驱动 openStreak 累计）；FAKE_DECLINE 留给 fixed-unverified | v2 对账通道优先，计数式 stuck 场景构造需对账数据 | 2026-08-29 |
+| U3 | 批级 issue 状态隔离（issues/dormant/knownRemaining/convergeStreak 每批重置；agentStatus/fixCount 全局） | 对齐 pi MF-1/A2，防跨批收敛污染 | 2026-08-29 |
+| U3 | filterDormantFromRecon 以 6 行适配实现在编排层（未入 vendor 清单）；A4 全降级轮不补记 clean（不采纳 pi W5） | 前者补位 vendor 缺口；后者保守方向（跨批全价重派优于误 skip） | 2026-08-29 |
+| U3 | meta.terminated 运行中快照 null（pi 为乐观默认 clean） | 崩溃恢复「未终止」语义更诚实 | 2026-08-29 |
 
 ## 6 状态表
 
@@ -81,7 +86,7 @@ graph LR
 | u-foundation | committed | 1 | utils 34/34 绿；导出面探针 miss=none |
 | U1 | committed | 1 | 5 套件 121/121 绿（workflow-b 25 用例） |
 | U2 | committed | 1 | workflow-b+utils 64/64 绿（workflow-b 30 用例） |
-| U3 | pending | 0 | — |
+| U3 | committed | 1 | utils+workflow-b 74/74 绿（workflow-b 40 用例）；manager/base/a 回归 50/50 绿 |
 | U4 | pending | 0 | — |
 
 ## 7 残留风险与变更历史
