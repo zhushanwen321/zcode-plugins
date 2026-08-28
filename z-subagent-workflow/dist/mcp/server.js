@@ -214,23 +214,75 @@ function buildRunWorkflowToolDefinition() {
         },
         reviewTarget: {
           type: 'string',
-          description: 'review-fix-loop only. What to review (e.g. "git 未提交改动" or specific files). Defaults to uncommitted changes.',
+          description: 'review-fix-loop only (legacy sugar). Same as targetType="text" + target=<value>. Defaults to uncommitted changes.',
+        },
+        targetType: {
+          type: 'string', enum: ['git-diff', 'file', 'dir', 'text'],
+          description: 'review-fix-loop only. Target kind. Default "text".',
+        },
+        target: {
+          type: 'string',
+          description: 'review-fix-loop only. What to review, interpreted per targetType. Default "git 未提交改动".',
+        },
+        batch1: {
+          type: 'array', items: { type: 'string' },
+          description: `review-fix-loop only. Reviewer dims of batch 1; pass batch2, batch3... the same way for more batches (same array form). Batches run serially: a batch starts only after the previous one finishes clean; dims clean in an earlier batch with no fix since are skipped. Overrides the legacy "reviewers" sugar when both are given.`,
+        },
+        batchNames: {
+          type: 'array', items: { type: 'string' },
+          description: 'review-fix-loop only. Display names for batches; count must match the number of batchN. Defaults batch-1..N.',
         },
         reviewers: {
           type: 'array', items: { type: 'string' },
-          description: `review-fix-loop only. Review focuses. Default [${DEFAULT_REVIEWERS.join(', ')}].`,
+          description: `review-fix-loop only (legacy sugar). Review focuses wrapped as a single batch. Default [${DEFAULT_REVIEWERS.join(', ')}]. Ignored when batchN is given.`,
         },
         maxRounds: {
           type: 'integer', minimum: 1, maximum: 10,
-          description: 'review-fix-loop only. Max review-fix rounds. Default 5.',
+          description: 'review-fix-loop only. Max review-fix rounds per batch. Default 10.',
+        },
+        stuckThreshold: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Declare stuck after this many consecutive rounds without must-fix decrease. Default 3.',
         },
         skipCleanAgents: {
           type: 'boolean',
-          description: 'review-fix-loop only. Skip reviewers that reported clean in a previous round (not re-dispatched while no fix happens). Default true.',
+          description: 'review-fix-loop only. Skip reviewers that reported clean (within the batch and across batches while no fix happened). Default true.',
         },
         recheckAfterFix: {
           type: 'boolean',
           description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt (review only what the fix touched). Default false (clean reviewers stay skipped).',
+        },
+        convergeNewIssues: {
+          type: 'integer', minimum: 0,
+          description: 'review-fix-loop only. Convergence: max new findings per round. Default 1.',
+        },
+        convergeRounds: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Convergence: consecutive rounds within convergeNewIssues before converging. Default 2.',
+        },
+        maxFixAttempts: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Regressed fix attempts per issue before needs-redesign. Default 2.',
+        },
+        aggregatorModel: {
+          type: 'string',
+          description: 'review-fix-loop only. Model for the aggregation phase (exact "<provider>/<model>"). Default: same as the run model.',
+        },
+        reviewPrompt: {
+          type: 'string',
+          description: 'review-fix-loop only. Extra guidance appended to every reviewer prompt.',
+        },
+        fixPrompt: {
+          type: 'string',
+          description: 'review-fix-loop only. Extra guidance appended to the fixer prompt.',
+        },
+        fallowScan: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Run a fallow static scan as a leading batch (requires targetType=git-diff). Default false.',
+        },
+        autoCommit: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Let the fixer stage/commit its changes. Default false (changes left uncommitted).',
         },
         maxConcurrent: {
           type: 'integer', minimum: 1, maximum: 6,

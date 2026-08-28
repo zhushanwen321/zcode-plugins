@@ -139,13 +139,30 @@ function workflowUsage(exitCode = 1) {
     + '  --items <json数组|a,b,c>  map-reduce：待处理条目，如 \'["a","b"]\' 或 a,b,c\n'
     + '  --operation <text>        map-reduce：对每个 item 做什么\n'
     + '  --subtask-count <n>       scatter-gather：拆分数提示（2-4）\n'
-    + '  --review-target <text>    review-fix-loop：审查范围（默认 git 未提交改动）\n'
-    + '  --reviewers "a,b"         review-fix-loop：审查焦点（默认 correctness,robustness）\n'
-    + '  --max-rounds <n>          review-fix-loop：最大轮数（默认 5）\n'
-    + '  --skip-clean-agents [b]   review-fix-loop：clean 审查者下轮跳过不派（默认 true；\n'
-    + '                            传 false 关闭）\n'
-    + '  --recheck-after-fix [b]   review-fix-loop：fix 后重派全批，上一轮 clean 的走限定\n'
-    + '                            复检（只查 fix 引入的回归；默认 false）\n'
+    + '  review-fix-loop（批次外环：batch1..batchN 串行，批内 review→聚合→fix→重审到 clean）:\n'
+    + '  --batch1 "a,b"            批次维度（batch1、batch2、… 连续编号，缺号报错；批间串行，\n'
+    + '                            前一批 clean 后一批才启动；跨批 clean 且无 fix 的维度跳过）\n'
+    + '  --batch-names "a,b"       批次命名（数量须与批次数一致，缺省 batch-1..N）\n'
+    + '  --reviewers "a,b"         老参数 sugar：包装为单批（默认 correctness,robustness；\n'
+    + '                            与 batchN 同传时 batchN 优先）\n'
+    + '  --target-type <t>         审查目标类型 git-diff|file|dir|text（默认 text）\n'
+    + '  --target <text>           审查目标（与 --target-type 配套；全缺省 = "git 未提交改动"）\n'
+    + '  --review-target <text>    老参数 sugar：等价 --target-type text --target <text>\n'
+    + '  --max-rounds <n>          每批最大轮数（默认 10，1-10）\n'
+    + '  --stuck-threshold <n>     连续 N 轮 must-fix 不降判 stuck（默认 3）\n'
+    + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭；\n'
+    + '                            同时作用于批内轮间与跨批）\n'
+    + '  --recheck-after-fix [b]   fix 后重派全批，上一轮 clean 的走限定复检（只查 fix 引入的\n'
+    + '                            回归；默认 false，clean 持续跳过）\n'
+    + '  --converge-new-issues <n> 收敛判定：每轮新发现上限（默认 1）\n'
+    + '  --converge-rounds <n>     收敛判定：连续 N 轮达标即收敛（默认 2）\n'
+    + '  --max-fix-attempts <n>    同一问题回归 N 次后判 needs-redesign（默认 2）\n'
+    + '  --aggregator-model <ref>  聚合阶段模型（缺省跟随 run 模型）\n'
+    + '  --review-prompt <text>    追加到每个审查者 prompt 的补充指令\n'
+    + '  --fix-prompt <text>       追加到修复者 prompt 的补充指令\n'
+    + '  --fallow-scan [b]         先跑 fallow 静态扫描前置批（仅 --target-type git-diff 合法；\n'
+    + '                            默认 false）\n'
+    + '  --auto-commit [b]         允许修复者提交改动（默认 false，改动留给用户）\n'
     + '\n'
     + 'abort / status / list / scripts（管理面：默认经 daemon，zflow 同源；--local 本地）:\n'
     + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
@@ -224,6 +241,49 @@ async function runWorkflowRun(wfManager, args, cwd) {
   if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
   if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
   if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
+
+  // review-fix-loop v2 参数面（设计 §3.4 终态全集）。target/review-target/batchN/
+  // reviewers 的优先级裁决与缺省映射统一在 workflow 入口 normalizeParams（D5）——
+  // CLI 只做形态转换，不重复实现映射，防两处漂移。
+  if (args.targetType !== undefined) params.targetType = args.targetType;
+  if (args.target !== undefined) params.target = args.target;
+  for (const [key, value] of Object.entries(args)) {
+    if (!/^batch([1-9]\d*)$/.test(key)) continue;
+    if (value === true) {
+      process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
+      workflowUsage(1);
+    }
+    params[key] = csv(value);
+  }
+  if (args.batchNames !== undefined) params.batchNames = csv(args.batchNames);
+  if (args.stuckThreshold !== undefined) params.stuckThreshold = Number(args.stuckThreshold);
+  if (args.convergeNewIssues !== undefined) params.convergeNewIssues = Number(args.convergeNewIssues);
+  if (args.convergeRounds !== undefined) params.convergeRounds = Number(args.convergeRounds);
+  if (args.maxFixAttempts !== undefined) params.maxFixAttempts = Number(args.maxFixAttempts);
+  if (args.aggregatorModel !== undefined) params.aggregatorModel = args.aggregatorModel;
+  if (args.reviewPrompt !== undefined) params.reviewPrompt = args.reviewPrompt;
+  if (args.fixPrompt !== undefined) params.fixPrompt = args.fixPrompt;
+  if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
+  if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
+
+  // 未显式映射的其余 flags 原样透传：parseArgs 是通用 --key 解析，拼错的 flag
+  // （如 --batchX、--stuck-threshld）若在此静默丢弃，入口白名单就永远拦不到。
+  // 透传后 review-fix-loop 入口的参数白名单会报「未知参数」并列合法清单（单一
+  // 权威，CLI 不重复维护清单）；其他内置 workflow 无白名单，多余键被入口解构
+  // 忽略，与透传前行为一致。CLI 自有 / 已映射 flag 不透传。
+  const consumedArgs = new Set([
+    '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait',
+    'workflow', 'task', 'workdir', 'model', 'maxConcurrent', 'timeoutPerPhase', 'timeoutMs',
+    'perspectives', 'items', 'operation', 'subtaskCount',
+    'reviewTarget', 'reviewers', 'maxRounds', 'skipCleanAgents', 'recheckAfterFix',
+    'targetType', 'target', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
+    'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
+    'fallowScan', 'autoCommit', 'onPhase',
+  ]);
+  for (const [key, value] of Object.entries(args)) {
+    if (consumedArgs.has(key) || value === undefined) continue;
+    params[key] = value;
+  }
 
   const fin = await wfManager.start(params, { cwd });
   const summary = {

@@ -431,6 +431,9 @@ class WorkflowManager {
         task: plan.task,
         workdir: plan.workdir,
         model: plan.model,
+        // D4：runId 注入（review-fix-loop v2 据此建 ~/.zcode/zsw/rfl/<runId>/ 并在
+        // 结果带回 runDir；其他内置 workflow 不认识该字段，解构忽略，无害透传）
+        runId,
         signal,
       });
       return { kind: 'builtin', result, reportText: buildDualReport(result) };
@@ -496,6 +499,8 @@ class WorkflowManager {
       model: (res && res.model) || before.model,
       outputFile,
       ...(res && Array.isArray(res.phases) ? { phaseCount: res.phases.length } : {}),
+      // D4：runDir 指针（review-fix-loop v2 在结果中带出；其他 workflow 无该字段不落）
+      ...(res && typeof res.runDir === 'string' && res.runDir ? { runDir: res.runDir } : {}),
     });
 
     // 完成通知：cancelled 是调用方主动行为（abort 响应已回），不再通知。
