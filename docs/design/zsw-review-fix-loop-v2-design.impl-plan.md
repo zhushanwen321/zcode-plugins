@@ -78,6 +78,8 @@ graph LR
 | U3 | 批级 issue 状态隔离（issues/dormant/knownRemaining/convergeStreak 每批重置；agentStatus/fixCount 全局） | 对齐 pi MF-1/A2，防跨批收敛污染 | 2026-08-29 |
 | U3 | filterDormantFromRecon 以 6 行适配实现在编排层（未入 vendor 清单）；A4 全降级轮不补记 clean（不采纳 pi W5） | 前者补位 vendor 缺口；后者保守方向（跨批全价重派优于误 skip） | 2026-08-29 |
 | U3 | meta.terminated 运行中快照 null（pi 为乐观默认 clean） | 崩溃恢复「未终止」语义更诚实 | 2026-08-29 |
+| U4 | package.json files 主动加 "commands/"（check-pack 不强制但属运行必需件） | plugin.json 已声明 commands 目录，npm 形态缺失则不可发现 | 2026-08-29 |
+| U4 | README 迁移段「逻辑零漂移」改排除表述 + 状态目录树补 rfl/ | v2 后原表述失真；S5 可观测性入口 | 2026-08-29 |
 
 ## 6 状态表
 
@@ -87,7 +89,7 @@ graph LR
 | U1 | committed | 1 | 5 套件 121/121 绿（workflow-b 25 用例） |
 | U2 | committed | 1 | workflow-b+utils 64/64 绿（workflow-b 30 用例） |
 | U3 | committed | 1 | utils+workflow-b 74/74 绿（workflow-b 40 用例）；manager/base/a 回归 50/50 绿 |
-| U4 | pending | 0 | — |
+| U4 | committed | 1 | check-sync/check-pack 双绿；npm pack 实测 commands/ 入包 |
 
 ## 7 残留风险与变更历史
 

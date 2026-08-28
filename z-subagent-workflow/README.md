@@ -2,7 +2,7 @@
 
 > 两条能力线，1.0.0 起统一走 CLI（`node bin/zsw.js`，默认连常驻 daemon thin client；MCP 工具面已下线——tools/list 恒空、tools/call 指引走 CLI）：
 > **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **zflow** — 确定性多阶段编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 同步阻塞出报告（配 Bash run_in_background 即完成原生唤醒）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
+> **zflow** — 确定性多阶段编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 同步阻塞出报告（配 Bash run_in_background 即完成原生唤醒）。review-fix-loop v2 内置质量内核：LLM 聚合裁决（审查噪声降级不进修复队列）+ 跨轮 ID 对账 + 批次依赖 + 收敛/needs-redesign 状态机 + state 落盘（过程可观测）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
@@ -61,6 +61,29 @@ node bin/zsw.js workflow --action scripts          # 内置 5 + 自定义脚本�
 node bin/zsw.js workflow --action lint --file <脚本路径>
 ```
 
+**review-fix-loop v2（批次外环 + 质量内核）**：唯一会写文件的内置 workflow（fix 阶段）。批次外环：`--batch1..--batchN` 串行，前一批 clean 后一批才启动，跨批 clean 且无 fix 的维度自动跳过。每轮并行 review → LLM 聚合裁决（臆测/无证据条目降级，不进修复队列）→ 结构化契约 fix → R2 起逐条 ID 对账（fixed/not-fixed/regressed）→ 收敛/needs-redesign 状态机；全程 state 落盘 `~/.zcode/zsw/rfl/<runId>/state.json`（每轮发生了什么、为什么终止可查证）。
+
+```bash
+node bin/zsw.js workflow --workflow review-fix-loop \
+  --task "审查 PR：重构 auth 中间件" --workdir <绝对路径> \
+  --target-type git-diff --target main \
+  --batch1 "correctness,security" --batch2 "robustness,performance" \
+  --stuck-threshold 3 --aggregator-model <模型短名>
+```
+
+参数面全集见 `node bin/zsw.js workflow --help`（`--target-type`/`--target`、`--batch1..N`/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--reviewers` 等价单批 sugar（无 batchN 时包装为 `[reviewers]`）；`--review-target <text>` 等价 `--target-type text --target <text>`；target 系全缺省 = text / "git 未提交改动"。
+
+v1→v2 行为差异（老参数调用者需知：参数兼容、语义刻意对齐 pi，非回归；完整清单见 `docs/design/zsw-review-fix-loop-v2-design.md` §4.1）：
+
+| # | 差异 | v1 | v2 |
+|---|------|----|----|
+| 1 | reviewer 失败容忍 | 部分失败容忍（parseFail 按 clean 并告警） | 任一 reviewer 无效即 review-failed 结构化终止 |
+| 2 | max-rounds 默认 | 5 | 10 |
+| 3 | stuck-threshold | 硬编码 2、不可调 | 默认 3、`--stuck-threshold` 可调 |
+| 4 | 修复范围 | 仅 must-fix，minor 不阻塞收敛 | 全等级修复，成功类终止要求 suggestion 归零 |
+| 5 | 修复者输出 | 自由 markdown | 结构化契约（fixes/deferred 硬校验，违规 fix-failed） |
+| 6 | 聚合 | JS 标题去重 | LLM 聚合裁决优先，JS 降级链兜底 |
+
 **自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsw/workflows` > `~/.agents/workflows` > `~/.zsw/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
 
 `--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动 + 聚合等待（`wait` / `start --wait`）走默认 daemon 模式（见下节）。
@@ -75,7 +98,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 ## 从 dynamic-workflow 迁移
 
-原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（含 review-fix-loop 的 maxRounds 熔断/stuck 检测/must-fix 聚合语义），tool 名曾从 `mcp__dynamic-workflow__zflow` 改为 `mcp__zsw__zflow`（MCP 工具面时代命名；1.0.0 工具面下线后入口为 CLI `zsw workflow` 子命令），报告品牌为 `# zsw ·`（命名体系见 CONTEXT.md）。旧插件目录保留在原 worktree 作历史归档。
+原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（review-fix-loop 除外——其后升级 v2 批次外环与质量内核，见上文），tool 名曾从 `mcp__dynamic-workflow__zflow` 改为 `mcp__zsw__zflow`（MCP 工具面时代命名；1.0.0 工具面下线后入口为 CLI `zsw workflow` 子命令），报告品牌为 `# zsw ·`（命名体系见 CONTEXT.md）。旧插件目录保留在原 worktree 作历史归档。
 
 结果全文落 `~/.zcode/zsw/outputs/<id>.md`；worktree 任务的 patch 落 `<id>.patch`（完成通知含 `git apply` 指引）。
 
@@ -85,6 +108,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ~/.zcode/zsw/
 ├── records.jsonl        append-only 事件流（崩溃后重放恢复）
 ├── outputs/             结果全文 + patch
+├── rfl/<runId>/         review-fix-loop v2 run 目录（state.json + 各轮报告/aggregated.md/fix 结果）
 ├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
 ├── home-<model>/        per-model 隔离 HOME（spawn runner 模型路由）
