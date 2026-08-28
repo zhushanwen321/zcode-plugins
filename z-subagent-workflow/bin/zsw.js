@@ -148,7 +148,7 @@ function workflowUsage(exitCode = 1) {
     + '  --target-type <t>         审查目标类型 git-diff|file|dir|text（默认 text）\n'
     + '  --target <text>           审查目标（与 --target-type 配套；全缺省 = "git 未提交改动"）\n'
     + '  --review-target <text>    老参数 sugar：等价 --target-type text --target <text>\n'
-    + '  --max-rounds <n>          每批最大轮数（默认 10，1-10）\n'
+    + '  --max-rounds <n>          每批最大轮数（默认 10，≥1）\n'
     + '  --stuck-threshold <n>     连续 N 轮 must-fix 不降判 stuck（默认 3）\n'
     + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭；\n'
     + '                            同时作用于批内轮间与跨批）\n'
@@ -244,11 +244,29 @@ async function runWorkflowRun(wfManager, args, cwd) {
 
   // review-fix-loop v2 参数面（设计 §3.4 终态全集）。target/review-target/batchN/
   // reviewers 的优先级裁决与缺省映射统一在 workflow 入口 normalizeParams（D5）——
-  // CLI 只做形态转换，不重复实现映射，防两处漂移。
+  // CLI 负责形态转换（csv→数组、字符串→数字/布尔）与已映射键的消费标记：
+  // batchN 动态键必须 add 进 consumedArgs，否则下方透传循环会用原始逗号字符串
+  // 覆写回 params，数组形态永远到不了入口。CLI 不重复实现映射，防两处漂移。
+  //
+  // 透传面：CLI 自有 / 已映射 flag（consumedArgs）不透传，其余 flags 原样透传
+  // ——parseArgs 是通用 --key 解析，拼错的 flag（如 --batchX、--stuck-threshld）
+  // 若在此静默丢弃，入口白名单就永远拦不到。透传后 review-fix-loop 入口的参数
+  // 白名单会报「未知参数」并列合法清单（单一权威，CLI 不重复维护清单）；其他
+  // 内置 workflow 无白名单，多余键被入口解构忽略，与透传前行为一致。
+  const consumedArgs = new Set([
+    '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait',
+    'workflow', 'task', 'workdir', 'model', 'maxConcurrent', 'timeoutPerPhase', 'timeoutMs',
+    'perspectives', 'items', 'operation', 'subtaskCount',
+    'reviewTarget', 'reviewers', 'maxRounds', 'skipCleanAgents', 'recheckAfterFix',
+    'targetType', 'target', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
+    'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
+    'fallowScan', 'autoCommit', 'onPhase',
+  ]);
   if (args.targetType !== undefined) params.targetType = args.targetType;
   if (args.target !== undefined) params.target = args.target;
   for (const [key, value] of Object.entries(args)) {
     if (!/^batch([1-9]\d*)$/.test(key)) continue;
+    consumedArgs.add(key); // 已映射为 csv 数组，透传循环不得用原始字符串覆写
     if (value === true) {
       process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
       workflowUsage(1);
@@ -266,20 +284,6 @@ async function runWorkflowRun(wfManager, args, cwd) {
   if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
   if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
 
-  // 未显式映射的其余 flags 原样透传：parseArgs 是通用 --key 解析，拼错的 flag
-  // （如 --batchX、--stuck-threshld）若在此静默丢弃，入口白名单就永远拦不到。
-  // 透传后 review-fix-loop 入口的参数白名单会报「未知参数」并列合法清单（单一
-  // 权威，CLI 不重复维护清单）；其他内置 workflow 无白名单，多余键被入口解构
-  // 忽略，与透传前行为一致。CLI 自有 / 已映射 flag 不透传。
-  const consumedArgs = new Set([
-    '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait',
-    'workflow', 'task', 'workdir', 'model', 'maxConcurrent', 'timeoutPerPhase', 'timeoutMs',
-    'perspectives', 'items', 'operation', 'subtaskCount',
-    'reviewTarget', 'reviewers', 'maxRounds', 'skipCleanAgents', 'recheckAfterFix',
-    'targetType', 'target', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
-    'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
-    'fallowScan', 'autoCommit', 'onPhase',
-  ]);
   for (const [key, value] of Object.entries(args)) {
     if (consumedArgs.has(key) || value === undefined) continue;
     params[key] = value;

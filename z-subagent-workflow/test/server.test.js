@@ -420,6 +420,23 @@ test('buildRunWorkflowToolDefinition：action 枚举 6 值、description ≤1000
   assert.ok(!JSON.stringify(tool.inputSchema).includes('dynamic-workflow'));
 });
 
+test('buildRunWorkflowToolDefinition：review-fix-loop v2 参数面齐全（定义级护栏）', () => {
+  const props = server.buildRunWorkflowToolDefinition().inputSchema.properties;
+  // v2 参数面全集（设计 §3.4）：schema 漏登记（与入口参数面漂移）在此拦下
+  for (const key of [
+    'targetType', 'target', 'batch1', 'stuckThreshold', 'convergeNewIssues',
+    'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt',
+    'fixPrompt', 'fallowScan', 'autoCommit', 'skipCleanAgents', 'recheckAfterFix',
+  ]) {
+    assert.ok(props[key] !== undefined, `inputSchema.properties 缺 ${key}`);
+  }
+  // maxRounds：上限已放开（maximum 删除，不再有 1-10 旧约束），默认文案保留
+  assert.equal(props.maxRounds.maximum, undefined);
+  assert.match(props.maxRounds.description, /Default 10/);
+  // aggregatorModel：措辞与 model 字段对齐（短名合法，非 exact 全名限定）
+  assert.match(props.aggregatorModel.description, /short name/);
+});
+
 test('dispatchToolCall：恒拒绝（1.0.0 终态 D1）——任何 tool 名同文案，不再 -32601', async () => {
   const wfm = makeFakeWfManager();
   const srv = server.createServer({

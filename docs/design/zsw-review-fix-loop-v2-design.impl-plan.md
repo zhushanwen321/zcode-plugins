@@ -80,6 +80,15 @@ graph LR
 | U3 | meta.terminated 运行中快照 null（pi 为乐观默认 clean） | 崩溃恢复「未终止」语义更诚实 | 2026-08-29 |
 | U4 | package.json files 主动加 "commands/"（check-pack 不强制但属运行必需件） | plugin.json 已声明 commands 目录，npm 形态缺失则不可发现 | 2026-08-29 |
 | U4 | README 迁移段「逻辑零漂移」改排除表述 + 状态目录树补 rfl/ | v2 后原表述失真；S5 可观测性入口 | 2026-08-29 |
+| 一致性审查 | state.issues 增补 lastActiveRound/deferredReason，rounds[] 增补 skipped | 活跃清单精确过滤 / knownRemaining 格式 / S4 跳过可证 | 2026-08-29 |
+| 一致性审查 | deferred 条目计入 R2+ 对账清单注入 | escalate 通道触发面；reconcileIssues 对 deferred 免疫无误转换 | 2026-08-29 |
+| 一致性审查 | validateFixResult 保留 pi 源对未追踪自报条目的 trivial 容忍（编排层按 minor 建条目） | vendor 逐字纪律；行为效果等同 minor | 2026-08-29 |
+| 一致性审查 | suggestion 明细从 reviewer minor issues 按 dedupKey 去重汇总（聚合契约仅计数） | D6 全等级修复的数据源 | 2026-08-29 |
+| 一致性审查 | fallow 探测与 audit 执行主体 = 无头会话（workflow 只锁 base 与规定步骤） | 与 pi buildFallowReviewCall 同构 | 2026-08-29 |
+| 一致性审查 | 防御性归一组（mdCell 转义/title 缺失回填/severity 回落 minor/落盘失败 WARN 不阻断） | 保守防御，不丢真 must-fix | 2026-08-29 |
+| 修复轮 1 | 聚合 abort 双检查点（phases.push 后 + 归一摘要后同点保留） | 既有 aggregate-done 用例的 abort 时机在归一后，删同点检查会改变其 abortedAtPhase 语义 | 2026-08-29 |
+| 修复轮 1 | dormant 条目 title 由编排层在 recordDormant 返回后补齐 | utils vendor 逐字纪律；标题匹配依赖该字段 | 2026-08-29 |
+| 修复轮 1 | fake CLI 修复者分支锚词收紧为「循环中的修复者」 | wrap 警示文案含「修复者」被分支截胡致 9 用例失败 | 2026-08-29 |
 
 ## 6 状态表
 
@@ -88,11 +97,11 @@ graph LR
 | u-foundation | committed | 1 | utils 34/34 绿；导出面探针 miss=none |
 | U1 | committed | 1 | 5 套件 121/121 绿（workflow-b 25 用例） |
 | U2 | committed | 1 | workflow-b+utils 64/64 绿（workflow-b 30 用例） |
-| U3 | committed | 1 | utils+workflow-b 74/74 绿（workflow-b 40 用例）；manager/base/a 回归 50/50 绿 |
+| U3 | committed | 2 | 修复轮 1 后 7 套件 177/177 绿（workflow-b 43 用例） |
 | U4 | committed | 1 | check-sync/check-pack 双绿；npm pack 实测 commands/ 入包 |
 
 ## 7 残留风险与变更历史
 
 - 真机遵循率风险（设计 §5 待验证检查点 1/2）：R2 reconciliation 缺失率 >30% 或聚合 fallback 率 >20% 时按设计回改路径执行（D2 拆二次调用 / D1 加 few-shot），登记本表。
 - U1 的 workflow-manager.js 改动（runId 注入）触及共享层：_invokeEntry 增字段对其他 4 个内置 workflow 无害（解构风格忽略多余字段，复审已核实），但 workflow-manager.test.js 必须随跑。
-- 变更历史：2026-08-29 计划创建（基线本 commit）。
+- 变更历史：2026-08-29 计划创建（基线 aa00a84）；2026-08-29 一致性审查（A 区 6 unreasonable + B 区 4 unreasonable + 5 doc_errors）→ 修复轮 1 双批次清零（A 区 4 major：reviewer 落盘/修复说明段 wrap/dormant 复活 ID 对齐/聚合 abort 检查点；minor：maxRounds 上限放开/reconciliation 归一；B 区：batchN 数组透传/skills frontmatter/aggregatorModel 文案/测试护栏）+ doc_errors 主 agent 修订。

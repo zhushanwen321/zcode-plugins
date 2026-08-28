@@ -237,7 +237,7 @@ function buildRunWorkflowToolDefinition() {
           description: `review-fix-loop only (legacy sugar). Review focuses wrapped as a single batch. Default [${DEFAULT_REVIEWERS.join(', ')}]. Ignored when batchN is given.`,
         },
         maxRounds: {
-          type: 'integer', minimum: 1, maximum: 10,
+          type: 'integer', minimum: 1,
           description: 'review-fix-loop only. Max review-fix rounds per batch. Default 10.',
         },
         stuckThreshold: {
@@ -266,7 +266,7 @@ function buildRunWorkflowToolDefinition() {
         },
         aggregatorModel: {
           type: 'string',
-          description: 'review-fix-loop only. Model for the aggregation phase (exact "<provider>/<model>"). Default: same as the run model.',
+          description: 'review-fix-loop only. Model for the aggregation phase (full "<provider>/<model>" name or short name (resolved via the default provider)). Default: same as the run model.',
         },
         reviewPrompt: {
           type: 'string',

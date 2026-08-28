@@ -149,9 +149,9 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 - **D3 parseFail/runFail 语义：任一 reviewer 无效即 review-failed 结构化终止（对齐 pi :728-793，R1 与 R2+ 一致）**（被否：v1 的「部分失败容忍、parseFail 按 clean 处理并告警」——v1 无对账时按 clean 无害，v2 有对账后 reconciliation 缺失会被状态机误读为「未重报 = 已修复」，制造假收敛；被否：仅全员失败才终止——单个无效 reviewer 的缺席让聚合口径不完整，继续跑等于用残缺结论驱动 fix）。终止报告指明失败的 reviewer 名与原因（runFail=CLI 崩溃/超时，parseFail=输出无有效 json 围栏）。此为 v1→v2 行为差异（见 §4.1）。
 - **D4 state 布局：`~/.zcode/zsw/rfl/<runId>/`，runId 由 WorkflowManager 注入**（被否：照抄 pi 的 `~/.review-fix-loop/<repo-slug>/<runId>/`——zsw 全部运行数据统一在 `~/.zcode/zsw/` 数据根（CONTEXT.md 命名 SSOT），另开根违反本仓一致性惯例；被否：塞进 outputs/ 单文件——报告与状态是两种生命周期：报告只读消费、状态会被后续工具查询/续跑）。**接口改动**：runId 现由 WorkflowManager.start 生成（`lib/workflow-manager.js:210`）但不传入 workflow 入口（`_invokeEntry` 只传 workflowParams/task/workdir/model/signal，:429-435）——v2 在 `_invokeEntry` 的调用参数中新增 `runId` 字段注入（对不认识该字段的 workflow 无害，属透传参数面扩展）；record 的终态 transition patch（`_finalize` :493-499）增加 `runDir` 字段（review-fix-loop 在返回结果中带出 runDir，manager 落进 record）。目录内：`state.json`（tmp+rename 原子写）+ `batch-<i>/round-<j>/<reviewer>.md` + `aggregated.md` + `fix-result-<round>.json`。报告与 record 增加 runDir 指针字段。
 - **D5 参数兼容：batchN 新增，reviewers 降级为单批 sugar**（被否：破坏性移除 reviewers——违反 G6 参数兼容）。无 batchN 时 `reviewers` 包装为 `[reviewers]` 单批；`--review-target <text>` 等价 `--target-type text --target <text>`；**全缺省映射**：target 系参数一个都不传 → `targetType=text`、`target='git 未提交改动'`（v1 缺省文案）；新参旧参同时传时新参优先并 WARN 一行。maxRounds 默认 5→10、stuckThreshold 默认 3（对齐 pi 值；被否：保留 5/2——G5 要求与 pi 一致，且 pi 值经真实场景校准）。**成本披露**：名义调用上限约为 v1 同维度的 3-4 倍（maxRounds ×2、每轮 +1 聚合调用、批次数乘数、全等级修复延长轮次），skip-clean 生效时实际增量约 1.5-2 倍；成本敏感场景显式传 `--max-rounds 5`。
-- **D6 修复范围全等级对齐**（fix prompt 喂 must-fix 优先 + suggestion 附带；成功类终止要求 suggestion 也归零——pi 头注与 :801/:1100 明确此语义；被否：保留「minor 不阻塞」——pi 语义是「must-fix 只是终止条件、不是修复范围」，保留旧语义会让建议级问题在收敛出口被静默漏修）。成本：fix 轮平均多处理 1-3 条 minor（计入 D5 成本披露）；换取语义一致。
+- **D6 修复范围全等级对齐**（fix prompt 喂 must-fix 优先 + suggestion 附带——明细数据源 = 各 reviewer 契约的 minor issues 按 dedupKey 去重汇总，聚合契约的 suggestion 仅为计数；成功类终止要求 suggestion 也归零——pi 头注与 :801/:1100 明确此语义；被否：保留「minor 不阻塞」——pi 语义是「must-fix 只是终止条件、不是修复范围」，保留旧语义会让建议级问题在收敛出口被静默漏修）。成本：fix 轮平均多处理 1-3 条 minor（计入 D5 成本披露）；换取语义一致。
 - **D7 fallowScan / autoCommit / aggregatorModel 随行**：fallowScan=true 仅 git-diff 合法（`which fallow` 探测，未安装则该批记 clean 并注明）；autoCommit 默认 false（fix prompt 按 flag 注入 commit 指令，对齐 pi 的显式路径 stage 纪律）；aggregatorModel 缺省 = run model（降档是可选项不是默认）。
-- **D8 /zsw command**：`commands/zsw.md`（frontmatter：description/argument-hint；正文引导 skill）+ plugin.json 增 `"commands": "commands"`。✅ 格式已验证：官方 android-emulator 插件同款（commands/*.md + manifest 声明）。
+- **D8 /zsw command**：`commands/zsw.md`（frontmatter：description/argument-hint/skills——skills 键使平台自动挂载 zsub-zflow-orchestration，不依赖正文 prose 的模型自觉；正文保留引导与纪律）+ plugin.json 增 `"commands": "commands"`。✅ 格式已验证：官方 android-emulator 插件同款（commands/*.md + manifest 声明 + skills frontmatter）。
 - **D9 嵌套与隔离不变**：聚合 phase 走现有 runPhase（prepareRunEnv 隔离 HOME + ZSW_NESTED），无新进程形态。
 - **D10 防注入（对齐 pi wrapUntrusted 三层防御第 1 层）**：vendor `wrapUntrusted`，并规定**全部**上游 LLM 产出嵌入下游 prompt 的通道必须过 wrap。按**通道**枚举（各通道覆盖该通道内全部自由文本字段，防清单式遗漏）：
   1. **reviewer → 聚合 phase**：issues JSON 全字段（title/detail/evidence/reconciliation）；
@@ -174,16 +174,16 @@ node bin/zsw.js workflow --workflow review-fix-loop \
   "reconciliation": [{ "prev_id": "MF-1", "status": "fixed|not-fixed|regressed|escalate", "evidence": "…" }] }
 ```
 
-**聚合输出契约**（聚合 phase json 围栏内，对齐 pi aggregatorSchema 语义）：
+**聚合输出契约**（聚合 phase json 围栏内，对齐 pi aggregatorSchema 语义；title 为 zsw 增补字段——ID 对齐的标题匹配、aggregated.md 表格与 fix 队列都依赖它）：
 
 ```json
 { "must_fix": 2, "suggestion": 1,
-  "must_fix_ids": [{ "id": "MF-1", "severity": "major", "files": ["a.js"], "evidence": "…",
+  "must_fix_ids": [{ "id": "MF-1", "severity": "major", "title": "问题标题", "files": ["a.js"], "evidence": "…",
                      "guidance": "一行修复方向", "adjudication": "evidence|unverified|downgraded", "note": "降级理由" }],
   "fixes_caution": ["高危条目提醒"] }
 ```
 
-聚合输入策略：reviewer 契约本身是结构化 issues 内联（无报告正文），聚合输入 = 各 reviewer 提取后的 issues JSON + 计数字段——不存在 pi 的「正文双份付费」问题（pi :760 W6），无需 read-file 通道。**ID 对齐（LLM 与 JS 两路径同规）**：R2+ 聚合输入附加 state.issues 当前活跃条目清单（id + title + severity），prompt 指示同一问题沿用既有 MF id；聚合输出侧**不信任** LLM 编号——统一经归一后处理（findIssueKey/dedupKey 语义：与既有条目匹配则沿用其 id，未匹配才从 state 计数器分配新 MF-N），**MF id 分配以 state.issues 为单一权威**。JS fallback 路径的标题匹配（D1）是该后处理的子集，两路径共用同一实现。
+聚合输入策略：reviewer 契约本身是结构化 issues 内联（无报告正文），聚合输入 = 各 reviewer 提取后的 issues JSON + 计数字段——不存在 pi 的「正文双份付费」问题（pi :760 W6），无需 read-file 通道。**ID 对齐（LLM 与 JS 两路径同规）**：R2+ 聚合输入附加 state.issues 当前活跃条目清单（id + title + severity），prompt 指示同一问题沿用既有 MF id；聚合输出侧**不信任** LLM 编号——统一经归一后处理（findIssueKey/dedupKey 语义：与既有条目匹配则沿用其 id，未匹配才从 state 计数器分配新 MF-N），**MF id 分配以 state.issues 为单一权威**。JS fallback 路径的标题匹配（D1）是该后处理的子集，两路径共用同一实现。deferred 条目计入 R2+ 对账清单注入（escalate 通道的触发面就是对 deferred 条目的声明；reconcileIssues 对 deferred 的 seen/not-fixed 天然免疫，注入不产生误转换）。
 
 **fixer 输出契约**（json 围栏内，对齐 pi fixSchema 语义；正文同时保留 `## 修复结果` markdown 段供人读）：
 
@@ -193,15 +193,15 @@ node bin/zsw.js workflow --workflow review-fix-loop \
   "deferred": [{ "issue_id": "MF-3", "reason": "具体成本描述（≥20 字）" }] }
 ```
 
-fix 结果经 normalizeFixResult 归一 + validateFixResult 硬校验（vendor，同 U3）：deferred 只允许 minor、活跃 must-fix 必须全进 fixes[]（ID 经 findIssueKey 归一匹配，容忍大小写/尾注漂移）——违规即 fix-failure 终止。fix-attempted / deferred 状态、knownRemaining 由此契约驱动（v1 的自由 markdown 输出撑不起 ID 级状态机，此契约为 U3 状态机的数据源）。
+fix 结果经 normalizeFixResult 归一 + validateFixResult 硬校验（vendor，同 U3）：deferred 只允许 minor（vendor 逐字保留 pi 源，对追踪表无此 ID 的自报条目另容忍 trivial——编排层对未追踪 defer 一律按 minor 建条目，效果等同）、活跃 must-fix 必须全进 fixes[]（ID 经 findIssueKey 归一匹配，容忍大小写/尾注漂移）——违规即 fix-failure 终止。fix-attempted / deferred 状态、knownRemaining 由此契约驱动（v1 的自由 markdown 输出撑不起 ID 级状态机，此契约为 U3 状态机的数据源）。
 
-**escalate 映射**：reconciliation.status=escalate（deferred 条目上下文被本轮 fix 改变）→ state.issues 该条目 status 转 `open`（重新进修复队列）+ openStreak+1，fixAttempts 不变（pi reconcileIssues 同语义）。
+**escalate 映射**：reconciliation.status=escalate（deferred 条目上下文被本轮 fix 改变）→ state.issues 该条目 status 转 `open`（重新进修复队列）+ openStreak 重置 0，fixAttempts 不变（pi reconcileIssues 同语义，vendor 实现原样）。
 
 **aggregator-failure 触发条件**：仅当 JS fallback 自身异常（聚合后处理抛错、无法产出 must_fix 计数）才到达该终态——LLM 聚合 parseFail 不触发（走 D1 降级链）。终态枚举保留它作为降级链完全失效的最后出口。
 
-**state.json 字段**（对齐 pi freshState，zsw 特有字段标注）：`meta{runId, workdir, targetType, target, batches, baseHash, startedAt, terminated}`、`agentStatus{}`、`fixCount`、`batches[{index, rounds[{round, startedAt, finishedAt, mustFix, suggestion, degraded?, agents[], modifiedFiles}]}]`、`issues{id→{firstSeen, severity, status(open|fix-attempted|fixed|regressed|deferred), history[], fixAttempts, openStreak, guidance?, evidence?}}`、`dormant[]`、`knownRemaining[]`、`convergeStreak`、`lastModifiedFiles[]`。zsw 特有：`abortedAtPhase`（AbortSignal 契约）。rounds 带 startedAt/finishedAt（S1 批次时序验收的数据源）。
+**state.json 字段**（对齐 pi freshState，zsw 特有字段标注）：`meta{runId, workdir, targetType, target, batches, baseHash, startedAt, terminated}`、`agentStatus{}`、`fixCount`、`batches[{index, rounds[{round, startedAt, finishedAt, mustFix, suggestion, degraded?, agents[], modifiedFiles}]}]`、`issues{id→{firstSeen, severity, status(open|fix-attempted|fixed|regressed|deferred), history[], fixAttempts, openStreak, guidance?, evidence?}}`、`dormant[]`、`knownRemaining[]`、`convergeStreak`、`lastModifiedFiles[]`。zsw 特有：`abortedAtPhase`（AbortSignal 契约）。rounds 带 startedAt/finishedAt（S1 批次时序验收的数据源）与 skipped（本轮被跨维/跨批跳过的维度，S4 可证数据源）。issues 条目另含 `lastActiveRound`（R2+ 活跃清单注入的精确过滤依据）与 `deferredReason`（knownRemaining 的「ID: reason」格式必需）。
 
-**terminated 权威源**：`state.meta.terminated`（每次 saveState 快照落盘）为唯一权威；返回结果的 `loop.status` 与 record 终态均由它派生。崩溃窗口内 state 可能落后于实际进度（逐轮落盘已尽力覆盖），恢复语义 = 以最后一次成功 saveState 为准。
+**terminated 权威源**：`state.meta.terminated`（每次 saveState 快照落盘；运行中为 null，仅结构化终止时置终值——崩溃窗口「未终止」语义诚实）为唯一权威；返回结果的 `loop.status` 与 record 终态均由它派生。崩溃窗口内 state 可能落后于实际进度（逐轮落盘已尽力覆盖），恢复语义 = 以最后一次成功 saveState 为准。
 
 **abort 检查点全集**（abortedAtPhase 命名 `batch<i>-round<j>-<phase>`，phase ∈ {review, aggregate, fix}，另批间检查点 `batch<i>` = 批 i 启动前）：批间（批启动前）、review 批启动前、review 批完成后（聚合不进行）、聚合完成后（fix 不进行）、fix 启动前、fix 完成后。语义与 v1 AbortSignal 契约一致（已完成阶段条目保留、增量 status 'aborted'）。
 
@@ -234,7 +234,7 @@ G6 承诺的是**参数兼容**（老调用不破坏、可运行出结果），�
 | 2 | maxRounds 默认 | 5 | 10 | D5 |
 | 3 | stuckThreshold | 硬编码 2、不可调 | 默认 3、`--stuck-threshold` 可调 | D5 |
 | 4 | 修复范围 | 仅 must-fix；minor 不阻塞整体收敛 | 全等级修复；成功类终止要求 suggestion 也归零 | D6 |
-| 5 | 修复者输出 | 自由 markdown | 结构化契约（fixes/deferred + 硬校验，违规 fix-failure） | §3.4 fixer 契约 |
+| 5 | 修复者输出 | 自由 markdown | 结构化契约（fixes/deferred + 硬校验，违规 fix-failed） | §3.4 fixer 契约 |
 | 6 | 聚合 | JS 标题去重 | LLM 聚合裁决优先，JS 降级链兜底 | D1 |
 
 ## 5. 下一层拆分
@@ -262,3 +262,4 @@ G6 承诺的是**参数兼容**（老调用不破坏、可运行出结果），�
 | 2026-08-29 | 初版 | tech-design 流程 |
 | 2026-08-29 | 对抗式审查修订：D1 补 fallback 轮完整规格（标题匹配对账/ID 键空间/dormant 冻结）；D3 改为任一 reviewer 无效即终止（对齐 pi）；D4 补 runId 注入接口（workflow-manager.js 入 U1）；新增 fixer 输出契约与 vendor 扩充（normalize/validate/findIssueKey）；新增 D10 防注入（wrapUntrusted）；G6/S7 重述为参数兼容 + §4.1 行为差异清单；S1/S2/S4 验收数据源修正（rounds 时间戳/fixer 回指/批间重叠维度）；成本披露、缺省映射、abort 检查点全集、terminated 权威源、聚合输入策略补齐 | 对抗式审查 7 must-fix + 5 suggestion |
 | 2026-08-29 | 定向复审修订：聚合 ID 对齐升级为双路径同规（输入附活跃条目清单 + 输出侧归一后处理，state.issues 单一权威，§3.4）；D10 嵌入点改为通道枚举（补 reviewer→聚合、聚合→fixer evidence 两条通道）；补 escalate→open 映射与 aggregator-failure 触发条件（仅 JS fallback 自身异常） | 定向复审残留 MF-3/MF-7 + 2 suggestion |
+| 2026-08-29 | 一致性审查 doc 同步：escalate 的 openStreak 语义修正为重置 0（vendor 实现原样）；§4.1 #5 措辞统一 fix-failed；D8 补 skills frontmatter（自动挂载）；聚合契约补 title 字段；state 补 lastActiveRound/deferredReason/skipped；deferred 计入对账清单注入；suggestion 明细数据源与 terminated 运行中 null 补注 | 一致性审查 doc_errors + reasonable doc_sync |

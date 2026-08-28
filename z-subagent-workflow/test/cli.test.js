@@ -173,3 +173,55 @@ module.exports = {
   const j = JSON.parse(r.stdout);
   assert.equal(j.ok, true);
 });
+
+// ---------------------------------- review-fix-loop v2 CLI 冒烟（零引擎）
+
+// 探针脚本（模块顶层创建，发现根 = ZCODE_PROJECT_DIR = TMP；清理走文件级
+// after 的 TMP 整删）：run(ctx) 把收到的 ctx.params 塞进返回 json——manager
+// 剥壳后原样透传给脚本 ctx.params，CLI 组参形态（batchN 数组、透传键）由此
+// 端到端断言；脚本不调 runAgent，全程零引擎 spawn。
+const WF_DIR = path.join(TMP, '.agents', 'workflows');
+fs.mkdirSync(WF_DIR, { recursive: true });
+fs.writeFileSync(path.join(WF_DIR, 'params-probe.js'), `'use strict';
+module.exports = {
+  name: 'params-probe',
+  description: '测试探针：回显收到的 params',
+  async run(ctx) { return { markdown: 'probe', json: { params: ctx.params } }; },
+};
+`);
+
+/** 从 CLI 默认输出（markdown 报告 + 摘要两段）提取脚本返回的 ```json 机器段。 */
+function probeParams(stdout) {
+  const fenced = stdout.match(/```json\n([\s\S]*?)\n```/);
+  assert.ok(fenced, '报告应含 ```json 机器段（脚本返回的 json）');
+  return JSON.parse(fenced[1]).params;
+}
+
+test('v2 冒烟：batchN csv 转数组抵达入口参数（防透传覆写回归）', async () => {
+  const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
+    '--workdir', TMP, '--batch1', 'correctness,robustness', '--batch2', 'security']);
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+  const params = probeParams(r.stdout);
+  // 修复前：batchN 循环先 csv 成数组，透传循环又用原始字符串覆写回 params——
+  // 数组形态永远到不了入口。deepEqual 数组同时排除字符串形态回归。
+  assert.deepEqual(params.batch1, ['correctness', 'robustness']);
+  assert.deepEqual(params.batch2, ['security']);
+});
+
+test('v2 冒烟：未映射 flag 原样透传抵达入口参数（白名单可见面）', async () => {
+  const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
+    '--workdir', TMP, '--totally-unknown-flag', 'x']);
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+  const params = probeParams(r.stdout);
+  assert.equal(params.totallyUnknownFlag, 'x'); // parseArgs camelCase 化后透传
+});
+
+test('v2 冒烟：透传的未知键被 review-fix-loop 入口白名单拒绝（exit 1 + 可操作文案）', async () => {
+  // 拼错 flag（--stuck-threshld）不在 CLI 映射面 → 原样透传 → 入口
+  // normalizeParams 白名单报错（先于一切引擎派发，零 spawn 快速失败）
+  const r = await run(['workflow', '--workflow', 'review-fix-loop', '--task', '白名单冒烟',
+    '--workdir', TMP, '--batch1', 'correctness', '--stuck-threshld', '2']);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /收到未知参数/); // 报错文案随 error 报告落 stdout 双段
+  assert.match(r.stdout, /stuckThreshld/); // 指向透传后的实际键名（可操作）
+});
