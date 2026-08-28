@@ -153,7 +153,13 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 - **D7 fallowScan / autoCommit / aggregatorModel 随行**：fallowScan=true 仅 git-diff 合法（`which fallow` 探测，未安装则该批记 clean 并注明）；autoCommit 默认 false（fix prompt 按 flag 注入 commit 指令，对齐 pi 的显式路径 stage 纪律）；aggregatorModel 缺省 = run model（降档是可选项不是默认）。
 - **D8 /zsw command**：`commands/zsw.md`（frontmatter：description/argument-hint；正文引导 skill）+ plugin.json 增 `"commands": "commands"`。✅ 格式已验证：官方 android-emulator 插件同款（commands/*.md + manifest 声明）。
 - **D9 嵌套与隔离不变**：聚合 phase 走现有 runPhase（prepareRunEnv 隔离 HOME + ZSW_NESTED），无新进程形态。
-- **D10 防注入（对齐 pi wrapUntrusted 三层防御第 1 层）**：vendor `wrapUntrusted`，并规定**全部**上游 LLM 产出嵌入下游 prompt 的通道必须过 wrap——具体嵌入点：reconciliation evidence（reviewer→对账落 state 后回注入 R2+ prompt 的 known-remaining/dormant 段）、aggregator 产出的 guidance/fixes_caution（→fixer prompt）、fixer 输出的 description/self_check（→R2+ reviewer prompt 的修复说明段）、自定义 review-prompt/fix-prompt 参数。理由：这些内容是模型产出，含 ``` 围栏或 markdown 标题即可逃逸契约结构（「漏转义 = 标签逃逸 = 围栏失效」）。
+- **D10 防注入（对齐 pi wrapUntrusted 三层防御第 1 层）**：vendor `wrapUntrusted`，并规定**全部**上游 LLM 产出嵌入下游 prompt 的通道必须过 wrap。按**通道**枚举（各通道覆盖该通道内全部自由文本字段，防清单式遗漏）：
+  1. **reviewer → 聚合 phase**：issues JSON 全字段（title/detail/evidence/reconciliation）；
+  2. **聚合 → fixer**：must-fix 条目全字段（含 evidence/guidance）+ fixes_caution；
+  3. **reviewer/聚合 → state → 下轮 reviewer**：known-remaining、dormant、修复说明段；
+  4. **fixer → 下轮 reviewer**：修复结果（description/self_check）；
+  5. **用户自定义参数**：review-prompt/fix-prompt。
+  理由：这些内容是模型产出，含 ``` 围栏或 markdown 标题即可逃逸契约结构（「漏转义 = 标签逃逸 = 围栏失效」）；通道 1 的逃逸会直接推高聚合 parseFail 率、把 fallback 变常态。
 
 ### 3.4 接口与数据模型（下一层实现规格）
 
@@ -177,7 +183,7 @@ node bin/zsw.js workflow --workflow review-fix-loop \
   "fixes_caution": ["高危条目提醒"] }
 ```
 
-聚合输入策略：reviewer 契约本身是结构化 issues 内联（无报告正文），聚合输入 = 各 reviewer 提取后的 issues JSON + 计数字段——不存在 pi 的「正文双份付费」问题（pi :760 W6），无需 read-file 通道。
+聚合输入策略：reviewer 契约本身是结构化 issues 内联（无报告正文），聚合输入 = 各 reviewer 提取后的 issues JSON + 计数字段——不存在 pi 的「正文双份付费」问题（pi :760 W6），无需 read-file 通道。**ID 对齐（LLM 与 JS 两路径同规）**：R2+ 聚合输入附加 state.issues 当前活跃条目清单（id + title + severity），prompt 指示同一问题沿用既有 MF id；聚合输出侧**不信任** LLM 编号——统一经归一后处理（findIssueKey/dedupKey 语义：与既有条目匹配则沿用其 id，未匹配才从 state 计数器分配新 MF-N），**MF id 分配以 state.issues 为单一权威**。JS fallback 路径的标题匹配（D1）是该后处理的子集，两路径共用同一实现。
 
 **fixer 输出契约**（json 围栏内，对齐 pi fixSchema 语义；正文同时保留 `## 修复结果` markdown 段供人读）：
 
@@ -188,6 +194,10 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 ```
 
 fix 结果经 normalizeFixResult 归一 + validateFixResult 硬校验（vendor，同 U3）：deferred 只允许 minor、活跃 must-fix 必须全进 fixes[]（ID 经 findIssueKey 归一匹配，容忍大小写/尾注漂移）——违规即 fix-failure 终止。fix-attempted / deferred 状态、knownRemaining 由此契约驱动（v1 的自由 markdown 输出撑不起 ID 级状态机，此契约为 U3 状态机的数据源）。
+
+**escalate 映射**：reconciliation.status=escalate（deferred 条目上下文被本轮 fix 改变）→ state.issues 该条目 status 转 `open`（重新进修复队列）+ openStreak+1，fixAttempts 不变（pi reconcileIssues 同语义）。
+
+**aggregator-failure 触发条件**：仅当 JS fallback 自身异常（聚合后处理抛错、无法产出 must_fix 计数）才到达该终态——LLM 聚合 parseFail 不触发（走 D1 降级链）。终态枚举保留它作为降级链完全失效的最后出口。
 
 **state.json 字段**（对齐 pi freshState，zsw 特有字段标注）：`meta{runId, workdir, targetType, target, batches, baseHash, startedAt, terminated}`、`agentStatus{}`、`fixCount`、`batches[{index, rounds[{round, startedAt, finishedAt, mustFix, suggestion, degraded?, agents[], modifiedFiles}]}]`、`issues{id→{firstSeen, severity, status(open|fix-attempted|fixed|regressed|deferred), history[], fixAttempts, openStreak, guidance?, evidence?}}`、`dormant[]`、`knownRemaining[]`、`convergeStreak`、`lastModifiedFiles[]`。zsw 特有：`abortedAtPhase`（AbortSignal 契约）。rounds 带 startedAt/finishedAt（S1 批次时序验收的数据源）。
 
@@ -251,3 +261,4 @@ G6 承诺的是**参数兼容**（老调用不破坏、可运行出结果），�
 |------|------|------|
 | 2026-08-29 | 初版 | tech-design 流程 |
 | 2026-08-29 | 对抗式审查修订：D1 补 fallback 轮完整规格（标题匹配对账/ID 键空间/dormant 冻结）；D3 改为任一 reviewer 无效即终止（对齐 pi）；D4 补 runId 注入接口（workflow-manager.js 入 U1）；新增 fixer 输出契约与 vendor 扩充（normalize/validate/findIssueKey）；新增 D10 防注入（wrapUntrusted）；G6/S7 重述为参数兼容 + §4.1 行为差异清单；S1/S2/S4 验收数据源修正（rounds 时间戳/fixer 回指/批间重叠维度）；成本披露、缺省映射、abort 检查点全集、terminated 权威源、聚合输入策略补齐 | 对抗式审查 7 must-fix + 5 suggestion |
+| 2026-08-29 | 定向复审修订：聚合 ID 对齐升级为双路径同规（输入附活跃条目清单 + 输出侧归一后处理，state.issues 单一权威，§3.4）；D10 嵌入点改为通道枚举（补 reviewer→聚合、聚合→fixer evidence 两条通道）；补 escalate→open 映射与 aggregator-failure 触发条件（仅 JS fallback 自身异常） | 定向复审残留 MF-3/MF-7 + 2 suggestion |
