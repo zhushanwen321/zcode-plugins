@@ -235,7 +235,10 @@ function wrapWithProbeInvalidation(inner, records) {
           exec: { kind: 'spawn', pid: undefined },
           cancel: () => {
             if (active) { active.cancel(); return; }
-            // 启动窗口内的取消：等句柄就绪后立即转发（done settle 时 active 必已赋值）
+            // 启动窗口（亚秒级）内的 cancel 实质丢失：done.then 只在任务自然完成
+            // 后才触发，此时 cancel 已是 no-op，不会真正转发——已知边界（impl-plan
+            // 偏差登记表区 B 行：窗口亚秒级、终态不悬挂、裁决不修），终态仍正常
+            // 落盘；active 就绪后的 cancel 走上一行正常转发
             done.then(() => { if (active) active.cancel(); }).catch(() => {});
           },
           done,
