@@ -206,7 +206,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 - **效果**：G5。
 
 **D9：测试/文档翻转 + 发版 minor（选定）**
-- **采用**：`assemble.test.js` 缺省断言反转 + `ZSW_RUNNER=spawn` 显式回退用例；`e2e.test.js` E1-E6/E8 逐场景显式钉 spawn（E4 pid 探活/E6 exec.pid 为 spawn 专有概念），E7 升主链路回归 + 新增多会话并发场景；README（:99-103 已知边界重写 + 单 provider 过时条目顺修 + M5 行，行号按当前 HEAD d7b8c48）/CONTEXT.md（env 清单补 ZSW_RUNNER）；发版 **minor**（新增默认路径 + 回退开关保留旧路径，非不兼容删除）。**minor 论证以 D6 来源②接线为前提**：接线后既有 agent .md 黑名单在两通道均为引擎级硬拦截、行为等价；若不接线则构成仓版本准则的「action 行为不兼容变更」，须升 major。
+- **采用**：`assemble.test.js` 缺省断言反转 + `ZSW_RUNNER=spawn` 显式回退用例；`e2e.test.js` E1-E6/E8 逐场景显式钉 spawn（E4 pid 探活/E6 exec.pid 为 spawn 专有概念），E7 升主链路回归 + 新增多会话并发场景；**`e2e-daemon.test.js` A5（SIGKILL daemon 看门狗接管）同样钉 spawn**——其 victim 断言依赖 `exec.pid` 整数与 orphan 语义（spawn 独立子进程在 daemon 死后仍存活），apc 的 exec 为 `{kind:'apc', sessionId}` 无 pid（Gate A 发现的测试影响面漏项，已修）；apc 下 daemon 死亡语义为引擎随亡 → 任务 lost + 重新 start 指引（看门狗探活走 runner.alive 通道无关，recover 幂等），不与 spawn 的 orphan 语义混同验收；README（:99-103 已知边界重写 + 单 provider 过时条目顺修 + M5 行，行号按当前 HEAD d7b8c48）/CONTEXT.md（env 清单补 ZSW_RUNNER）；发版 **minor**（新增默认路径 + 回退开关保留旧路径，非不兼容删除）。**minor 论证以 D6 来源②接线为前提**：接线后既有 agent .md 黑名单在两通道均为引擎级硬拦截、行为等价；若不接线则构成仓版本准则的「action 行为不兼容变更」，须升 major。
 - **被否**：major——无参数/行为不兼容删除面（spawn 路径完整保留），升 major 违反本仓版本准则表。
 - **证据**：测试影响面清单（调研文档 §2.2 问题 5）。
 - **效果**：G6；发布说明含「重启 ZCode 生效」注意事项。

@@ -467,6 +467,10 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
 test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管 → status 带 lost/orphan 与重发指引', async (t) => {
   if (!(await requireModel(t))) return;
   const sc = newScenario(t, 'a5');
+  // A5 的 victim 断言依赖 exec.pid（spawn 专有：独立子进程 + pid 探活/orphan 语义；
+  // apc 的 exec 是 {kind:'apc', sessionId}，无 pid 字段，断言永假）。
+  // 看门狗机制本身通道无关；apc 下 daemon 死亡 = 引擎随亡 → 任务 lost（语义不同，不在此验）。
+  sc.env.ZSW_RUNNER = 'spawn';
   const a = spawnMcpServer(sc, 'a5-daemon');
   assert.equal(await a.role, 'daemon');
   assert.equal(fs.readFileSync(sc.lockPath, 'utf8'), String(a.child.pid), 'lock 内必须是 daemon A 的 pid');

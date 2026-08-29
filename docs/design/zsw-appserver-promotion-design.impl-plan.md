@@ -106,6 +106,7 @@ graph TD
 | 2026-08-29 | 修复批次 | 检查点 2（spec 形态实测）改记归 A-6 真机收口：不为冒烟增加 token 成本（升级后高频操作保持极小），E9 仅保留参数面无漂移断言，行为面验证归一次性验收场景 A-6 | 冒烟 token 成本 vs 一次性验证；设计文档检查点 2 已同步改记 | 设计文档已改记 |
 | 2026-08-29 | 修复批次 | 区 B 观察项不修裁决：降级重跑 `await runSpawnRound` 秒级窗口内 cancel 丢失（终态仍落盘不悬挂，仅 cancel 语义弱化） | 窗口极窄 + 无悬挂后果，修复属过度工程 | 登记为已知边界；后续若报告实际影响再修 |
 | 2026-08-29 | 定向复审 | 复审 pass（R1-R8 全过、非降级分支零回归、测试 101/101 复跑绿）；2 条 suggestion 随后微修（MCP inputSchema 改 array 类型、cancel 窗口注释如实化，commit aac864f）；2 条 info 不修登记：① relabelRecord 兜底路径（实际不可达）中 runnerKind 残留与标注判定源不一致；② 降级后第二任务 prepareRunEnv 幂等冗余调用一次 | info 级无行为面/不可达路径/幂等无影响 | 已在此登记 |
+| 2026-08-29 | Gate A | e2e-daemon.test.js A5 稳定失败（exec.pid 断言为 spawn 专有，apc exec 为 {kind:'apc',sessionId} 无 pid）→ 场景内钉 `sc.env.ZSW_RUNNER='spawn'` 修复（文件 5/5 全绿，A5 fail→pass）。设计 D9 测试影响面漏项（A5 未随 E4/E6 钉 spawn）同步补记 | 看门狗机制通道无关（探活走 runner.alive 端口）；A5 的 orphan 语义验证依赖 spawn 独立子进程在 daemon 死后存活的特性；apc 下 daemon 死亡 = 引擎随亡 → 任务 lost + 重新 start 指引，不与 orphan 混同验收 | 设计文档 D9 已补记 |
 
 ## 6 状态表
 
