@@ -433,6 +433,9 @@ test('buildRunWorkflowToolDefinition：review-fix-loop v2 参数面齐全（定�
   // maxRounds：上限已放开（maximum 删除，不再有 1-10 旧约束），默认文案保留
   assert.equal(props.maxRounds.maximum, undefined);
   assert.match(props.maxRounds.description, /Default 10/);
+  // convergeNewIssues 下限与 lib 侧 normalizeParams 一致（min 1 + clamp）：schema 仍声明
+  // minimum 0 时与 lib 侧下限漂移（lib 收 0 会 clamp 抬到 1，schema 却放行 0 语义分裂）
+  assert.equal(props.convergeNewIssues.minimum, 1);
   // aggregatorModel：措辞与 model 字段对齐（短名合法，非 exact 全名限定）
   assert.match(props.aggregatorModel.description, /short name/);
 });

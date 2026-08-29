@@ -40,8 +40,9 @@
  *   FAKE_FALLBACK_BADSEV（v2.1 D8 降级轮归一双形态：R1 报 1 畸形 severity（'blocker'）+
  *   1 缺失 severity（显式 null）+ 1 minor + FAKE_AGG_GARBAGE 走降级链 → 验证两条畸形/
  *   缺失条目均归一回落 major 进 fix 队列（不静默丢弃）、minor 仍走 suggestion 通道）、
- *   FAKE_BAD_CONTRACT（v2.1 D3c/FS3b：reviewer 输出六种契约缺失/矛盾形态——okonly/
- *   maybe/nonarray/cleanplus/badcount/malformed → 全部 parseFail 结构化终止）、
+ *   FAKE_BAD_CONTRACT（v2.1 D3c/FS3b：reviewer 输出八种契约缺失/矛盾形态——okonly/
+ *   maybe/nonarray/cleanplus/badcount/nullcount/malformed/emptyissues → 全部 parseFail
+ *   结构化终止）、
  *   FAKE_MF_COLLIDE（v2.1 D4/FS4：R1 双 major + 聚合臆测条目落 dormant MF-3；R2 'new'
  *   报全新独有问题（验证 dormant 占号不被复用 → 分得 MF-4）/ 'revive' 重报 dormant
  *   同题（验证复活走原 id + revived 置位）；聚合复用 FAKE_DORMANT_REVIVE 段）。
@@ -54,7 +55,14 @@
  *   R3 新 issue（1 条新发现驱动收敛 streak）；R4 臆测(降级)+对 MF-1/MF-3 声明 fixed →
  *   converged。convergeNewIssues=0 抬到 1 的行为断言数据源：字面 0 会在 R3 重置
  *   streak，本序列只能以 clean 收场）、FAKE_AGG_BADSEV（v2.1 D8：聚合回包 severity
- *   非契约枚举 → 编排层归一回落 major）。
+ *   非契约枚举 → 编排层归一回落 major）、FAKE_SCOPED_FIXED（D7 scoped 对账状态效应：
+ *   robustness 常规轮 clean；限定复检轮（prompt 含「限定复检」）对 MF-1 声明 fixed 带
+ *   evidence——统一收集进 reconFixed → 配套转换 regressed→fixed 的数据源，与 FAKE_FS6
+ *   的 correctness not-fixed 声明组合出「残留被 scoped 对账消除」场景）、
+ *   FAKE_CONFLICT_RECON（混合声明极角：correctness R1 报顽固问题；R2 报同题重报 +
+ *   对 MF-1 声明 not-fixed；R3+ clean——与 FAKE_SCOPED_FIXED 的 robustness fixed+evidence
+ *   声明构成同轮同 id 双冲突声明 + stuckThreshold 卡线，验证 stuckIds 消费点按
+ *   postReconcile 后状态过滤：已 fixed 的条目不得被 stuck 点名）。
  *   fake 聚合者按 v2 契约汇总：must_fix_ids 只收 critical/major（minor 计入
  *   suggestion）、标题含「臆测」的条目裁决 downgraded（噪声裁决路径）。
  * - fake 修复者按 v2 契约回包：从 prompt 的 aggregated-issues untrusted 块提取全部
@@ -99,6 +107,7 @@ const FALLBACK_MINOR_FILE = path.join(TMP, 'fallback-minor-count.txt');
 const FALLBACK_BADSEV_FILE = path.join(TMP, 'fallback-badsev-count.txt');
 const MF_COLLIDE_FILE = path.join(TMP, 'mf-collide-count.txt');
 const FS6_FILE = path.join(TMP, 'fs6-count.txt');
+const CONFLICT_FILE = path.join(TMP, 'conflict-count.txt');
 const CONV_LIFT_FILE = path.join(TMP, 'conv-lift-count.txt');
 
 // ---- fake zcode CLI：按 prompt 关键词分支（围栏反引号放普通字符串，避免嵌套模板）----
@@ -365,9 +374,11 @@ fs.writeFileSync(FAKE_CLI, [
   "      objFB = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }] };",
   '    }',
   "    reply(F + 'json\\n' + JSON.stringify(objFB) + '\\n' + F);",
-  // FS3b（v2.1 D3c）：六种契约缺失/矛盾形态（围栏解析都成功）——{"ok":true}（status
+  // FS3b（v2.1 D3c）：八种契约缺失/矛盾形态（围栏解析都成功）——{"ok":true}（status
   // 缺失）/ status:"maybe"（非法枚举）/ issues 非数组 / clean+条目（矛盾输出）/
-  // suggestion_count 非数值 / 条目全无 title（剔除后有效 0）。全部应 parseFail 终止
+  // suggestion_count 非数值 / suggestion_count 显式 null（Number(null)=0 放行即漏拦）/
+  // 条目全无 title（剔除后有效 0）/ status=issues 而 issues=[]（声明 issues 却零有效
+  // 条目）。全部应 parseFail 终止
   "  } else if (process.env.FAKE_BAD_CONTRACT && prompt.includes('审查者「correctness」')) {",
   "    const bc = process.env.FAKE_BAD_CONTRACT;",
   "    let objB;",
@@ -376,6 +387,8 @@ fs.writeFileSync(FAKE_CLI, [
   "    else if (bc === 'nonarray') objB = { status: 'issues', issues: '很多问题，详见正文', suggestion_count: 0, reconciliation: [] };",
   "    else if (bc === 'cleanplus') objB = { status: 'clean', issues: [{ id: 'A1', severity: 'major', title: '矛盾条目', detail: 'clean 却报条目', file: 'a.js' }], suggestion_count: 0, reconciliation: [] };",
   "    else if (bc === 'badcount') objB = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }], suggestion_count: '两个', reconciliation: [] };",
+  "    else if (bc === 'nullcount') objB = { status: 'clean', issues: [], suggestion_count: null, reconciliation: [] };",
+  "    else if (bc === 'emptyissues') objB = { status: 'issues', issues: [], suggestion_count: 0, reconciliation: [] };",
   "    else objB = { status: 'issues', issues: [{ id: 'A1', severity: 'major', detail: '无标题畸形条目' }], suggestion_count: 0, reconciliation: [] };",
   "    reply(F + 'json\\n' + JSON.stringify(objB) + '\\n' + F);",
   // FS4（v2.1 D4）reviewer：R1 双 major（配 dormant 聚合段 → issues={MF-1,MF-2}+dormant
@@ -396,6 +409,30 @@ fs.writeFileSync(FAKE_CLI, [
   "      objC2 = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
   '    }',
 "    reply(F + 'json\\n' + JSON.stringify(objC2) + '\\n' + F);",
+  // 混合声明极角（FAKE_CONFLICT_RECON）：correctness R1 报顽固问题；R2 报同题重报 +
+  // 对 MF-1 声明 not-fixed（reconSeen 数据源）；R3+ clean。与 FAKE_SCOPED_FIXED 的
+  // robustness fixed+evidence 组成同轮同 id 双冲突声明
+"  } else if (process.env.FAKE_CONFLICT_RECON === '1' && prompt.includes('审查者「correctness」')) {",
+"    const fCF = process.env.FAKE_CONFLICT_FILE;",
+"    const nCF = Number(fs.existsSync(fCF) ? fs.readFileSync(fCF, 'utf8') : '0') + 1;",
+"    fs.writeFileSync(fCF, String(nCF));",
+"    let objCF;",
+"    if (nCF === 1) {",
+"      objCF = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '顽固问题', detail: '边界条件', file: 'a.js' }], suggestion_count: 0, reconciliation: [] };",
+"    } else if (nCF === 2) {",
+"      objCF = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '顽固问题', detail: '仍未解决', file: 'a.js' }], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'not-fixed', evidence: '仍然存在' }] };",
+"    } else {",
+"      objCF = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
+'    }',
+"    reply(F + 'json\\n' + JSON.stringify(objCF) + '\\n' + F);",
+  // D7 scoped 对账状态效应（FAKE_SCOPED_FIXED）：robustness 常规轮 clean；限定复检轮
+  //（prompt 含「限定复检」）clean + 对 MF-1 声明 fixed 带 evidence——经统一收集进
+  // reconFixed，配套转换 regressed→fixed 的数据源
+"  } else if (process.env.FAKE_SCOPED_FIXED === '1' && prompt.includes('审查者「robustness」')) {",
+"    const objSF = prompt.includes('限定复检')",
+"      ? { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '限定复检确认上一轮修复未引入回归且原问题未再现' }] }",
+"      : { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
+"    reply(F + 'json\\n' + JSON.stringify(objSF) + '\\n' + F);",
 "  } else if (process.env.FAKE_FS6 === '1' && prompt.includes('审查者「correctness」')) {",
 // FS6：R1 报顽固问题；R2+ clean + 对 MF-1 声明 not-fixed（regressed 残留常驻到终态）
 "    const f6 = process.env.FAKE_FS6_FILE;",
@@ -483,6 +520,7 @@ process.env.FAKE_FALLBACK_MINOR_FILE = FALLBACK_MINOR_FILE;
 process.env.FAKE_FALLBACK_BADSEV_FILE = FALLBACK_BADSEV_FILE;
 process.env.FAKE_MF_COLLIDE_FILE = MF_COLLIDE_FILE;
 process.env.FAKE_FS6_FILE = FS6_FILE;
+process.env.FAKE_CONFLICT_FILE = CONFLICT_FILE;
 process.env.FAKE_CONV_LIFT_FILE = CONV_LIFT_FILE;
 
 // env 隔离完成后才允许 require lib（见文件头注释）
@@ -1510,6 +1548,9 @@ test('review-fix-loop v2 U3：fixer 契约硬校验——deferred 塞 must-fix /
     assert.match(r1.final, /契约校验失败明细/);
     assert.match(r1.final, /deferred 含非 minor 条目（must-fix 不得 defer）— MF-1\(major\)/);
     assert.equal(r1.phases.length, 3); // review+聚合+fix，校验失败即终止（不进下一轮）
+    // final 残留口径行分档措辞：remaining=fixQueue 非空与 state.issues 残留并存时用
+    // 「同时存在」衔接同一集合面的两种口径（「另有」会暗示两个不同集合）
+    assert.ok(r1.final.includes('同时存在 open/regressed 残留 1 条（MF-1），见残留清单'), r1.final);
   } finally {
     delete process.env.FAKE_FIX_VIOLATE;
   }
@@ -2164,16 +2205,20 @@ test('review-fix-loop v2.1 D8：JS 降级轮畸形/缺失 severity 归一回落 
 test('review-fix-loop v2.1 D3c (FS3b)：reviewer 契约缺失/矛盾输出 → review-failed 终止并指明 reviewer 与字段', async () => {
   writeV2Config();
   // 四设计形态（{"ok":true} / status:"maybe" / issues 非数组 / status=clean 但 issues
-  // 有条目）+ D3c 决策补全的 ④suggestion_count 不可数值化 ⑤条目全畸形两形态，逐一断言：
-  // 围栏解析成功但契约缺失/矛盾 → parseFail 结构化终止（防假 clean/丢条目），终止报告
-  // 指明 reviewer 名与具体缺失/矛盾字段；聚合/fix 不启动
+  // 有条目）+ D3c 决策补全的 ④suggestion_count 不可数值化 ⑤条目全畸形两形态 + 收紧
+  // 补全的 ④'suggestion_count 显式 null（Number(null)=0 放行即漏拦，视同缺失）
+  // ⑥status=issues 而 issues 零有效条目（与「clean+零条目」的合法 clean 对称），
+  // 逐一断言：围栏解析成功但契约缺失/矛盾 → parseFail 结构化终止（防假 clean/丢条目），
+  // 终止报告指明 reviewer 名与具体缺失/矛盾字段；聚合/fix 不启动
   const cases = [
     ['okonly', 'status 缺失或非法'],        // ① status 缺失
     ['maybe', 'maybe'],                     // ① status 非枚举
     ['nonarray', 'issues 非数组'],          // ② status=issues 而 issues 非数组
     ['cleanplus', '矛盾输出'],              // ③ status=clean 而有效条目 >0
-    ['badcount', 'suggestion_count 不可数值化'], // ④
+    ['badcount', 'suggestion_count 不可数值化'], // ④ 字符串形态
+    ['nullcount', 'suggestion_count 不可数值化'], // ④' 显式 null 视同缺失
     ['malformed', '全部畸形'],              // ⑤ title 畸形剔除后有效 0 而原始 >0
+    ['emptyissues', '矛盾输出'],            // ⑥ status=issues 而 issues 零有效条目
   ];
   for (const [form, fragment] of cases) {
     resetCalls();
@@ -2278,6 +2323,8 @@ test('review-fix-loop v2.1 D5 (FS5)：双维度首轮全 clean → 零聚合调�
   assert.ok(!fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs5', 'batch-1', 'round-1', 'aggregated.md')));
   // 轮次摘要标注「全员 clean，未聚合」
   assert.ok(result.sections[0].body.includes('全员 clean，未聚合'));
+  // final 文本残留口径统一行的负断言：残留为空时不得出现该行
+  assert.ok(!result.final.includes('另有 open/regressed 残留'));
 });
 
 // ----------------- v2.1 D6：报告完备（FS6，M1）— runDir 行 + 终报残留/deferred 清单
@@ -2304,6 +2351,15 @@ test('review-fix-loop v2.1 D6 (FS6)：max-rounds 终报——头部 runDir 行 +
     assert.equal(result.loop.deferredIssues.length, 1);
     assert.equal(result.loop.deferredIssues[0].id, 'S-1');
     assert.ok(result.loop.deferredIssues[0].reason.includes('重构批次'));
+
+    // final 文本残留口径统一：remaining（fixQueue 残值）为 0 但 state.issues 有
+    // regressed 残留时，final 追加指向残留清单的行，计数与 residualIssues.length 一致
+    //（旧行为「剩余 must-fix 0 个」与残留清单 regressed 条目矛盾）
+    assert.equal(result.loop.remainingCount, 0);
+    assert.ok(
+      result.final.includes(`另有 open/regressed 残留 ${result.loop.residualIssues.length} 条（MF-1），见残留清单`),
+      result.final,
+    );
 
     // 人读报告：头部元信息区含 runDir 行；终报段渲染残留 + deferred 双清单
     const md = report.buildMarkdownReport(result);
@@ -2406,8 +2462,11 @@ test('review-fix-loop v2.1 D7：fixImpactFiles 归并 + 限定复检 scope 并�
   const robustnessCalls = readCalls().filter((c) => c.prompt.includes('审查者「robustness」'));
   assert.equal(robustnessCalls.length, 2);
   const scopedPrompt = robustnessCalls[1].prompt;
-  // scope = lastModifiedFiles ∪ fixImpactFiles：非 git 目录下并集仍含自报触碰面
+  // scope = lastModifiedFiles ∪ fixImpactFiles：非 git 目录下并集仍含自报触碰面。
+  // scope 段过 wrapUntrusted（fixImpactFiles 源自 fixer LLM 产出，与 fix-response/
+  // state-issues 通道同规防注入）——wrap 标记在场 + wrap 后文件名行仍可匹配
   assert.ok(scopedPrompt.includes('## 本轮 fix 改动文件（git 实测 ∪ fixer 契约 affected_files）'));
+  assert.ok(scopedPrompt.includes('<untrusted source="recheck-scope">'));
   assert.ok(scopedPrompt.includes('- a.js'));
   // scoped reviewer 同样拿到对账清单段并须产出 reconciliation（v2.1 D7；其判定经
   // 消费端统一收集进 reconcileIssues 链，收集口径与常规 reviewer 相同）
@@ -2415,6 +2474,138 @@ test('review-fix-loop v2.1 D7：fixImpactFiles 归并 + 限定复检 scope 并�
   assert.ok(scopedPrompt.includes('<untrusted source="state-issues">'));
   assert.ok(scopedPrompt.includes('MF-1'));
   assert.ok(scopedPrompt.includes('reconciliation 对账'));
+});
+
+test('review-fix-loop v2.1 D7：scoped reviewer 对账声明 fixed（带 evidence）→ 配套转换生效（状态效应）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FS6_FILE, { force: true });
+  // correctness 走 FAKE_FS6 形态（R1 报顽固问题；R2 clean + 对 MF-1 声明 not-fixed），
+  // robustness 走 FAKE_SCOPED_FIXED（R1 常规 clean；R2 限定复检 clean + 对 MF-1 声明
+  // fixed 带 evidence）。R2 rawAllClean 回填：correctness not-fixed → MF-1 fix-attempted
+  // 转 regressed；scoped 声明经统一收集进 reconFixed → 编排层配套转换 regressed→fixed
+  // → open 残留清零、clean 出口放行。scoped 声明缺席时 MF-1 停在 regressed（出口断言
+  // 阻断 clean，只能空转到 maxRounds）——clean 终态 + history 落痕即 scoped
+  // reconciliation 状态效应的直接证明
+  process.env.FAKE_FS6 = '1';
+  process.env.FAKE_SCOPED_FIXED = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: 'scoped 对账状态效应', workdir: makeWorkdir('rfl-scoped-recon'), runId: 'wf-utest-scoped-recon',
+      recheckAfterFix: true, stuckThreshold: 5,
+    });
+    assert.equal(result.loop.status, 'clean');
+    assert.equal(result.loop.rounds, 2);
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-scoped-recon', 'state.json'), 'utf8'));
+    assert.equal(st.issues['MF-1'].status, 'fixed');
+    assert.equal(st.issues['MF-1'].fixAttempts, 1); // correctness not-fixed 先驱动 regressed
+    assert.deepEqual(st.issues['MF-1'].history.slice(-2), [
+      { round: 2, status: 'regressed' },
+      { round: 2, status: 'fixed' }, // scoped reconciliation fixed 的配套转换落痕
+    ]);
+  } finally {
+    delete process.env.FAKE_FS6;
+    delete process.env.FAKE_SCOPED_FIXED;
+  }
+});
+
+test('review-fix-loop v2.1：全员 clean 但残留连续 not-fixed 达阈值 → rawAllClean 轮 stuck 终态（早于 maxRounds）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FS6_FILE, { force: true });
+  // FAKE_FS6 场景：R1 issue→fix（MF-1 fix-attempted + 幽灵 defer S-1）；R2+ 全员原始
+  // clean + 对 MF-1 声明 not-fixed。修复前：rawAllClean 回填只取 rec.issues/knownRemaining
+  // 丢弃 stuck 信号，该形态只能空转到 maxRounds；修复后 R2 openStreak 2 ≥ 2 → stuck
+  //（消费 rec.stuck，与主路径 stuck 检测同一判定源——同一残留出现在非 rawAllClean 轮
+  // 可达 stuck，两路径停滞终态自此一致）
+  process.env.FAKE_FS6 = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: 'rawAllClean 轮 stuck', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-rawclean-stuck'), runId: 'wf-utest-rawclean-stuck',
+      maxRounds: 5, stuckThreshold: 2,
+    });
+    assert.equal(result.loop.status, 'stuck'); // 不判 clean、诚实停滞
+    assert.equal(result.ok, false);
+    assert.equal(result.loop.rounds, 2); // 早于 maxRounds（5）终止
+    assert.ok(result.final.includes('MF-1 连续 2 轮未收敛'));
+    // 残留渲染（核心断言不弱化）：MF-1 regressed 残留在场
+    assert.deepEqual(result.loop.residualIssues, [
+      { id: 'MF-1', severity: 'major', title: '顽固问题', status: 'regressed' },
+    ]);
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-rawclean-stuck', 'state.json'), 'utf8'));
+    assert.equal(st.meta.terminated, 'stuck');
+    assert.equal(st.issues['MF-1'].status, 'regressed');
+    assert.equal(st.issues['MF-1'].openStreak, 2);
+  } finally {
+    delete process.env.FAKE_FS6;
+  }
+});
+
+test('review-fix-loop v2.1：混合对账声明极角——同轮 not-fixed 与 fixed+evidence 并存且卡线，已 fixed 条目不得被 stuck 点名（rawAllClean 通道）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FS6_FILE, { force: true });
+  // correctness（FAKE_FS6）：R1 报顽固问题；R2 clean + 对 MF-1 声明 not-fixed。
+  // robustness（FAKE_SCOPED_FIXED）：R1 clean；R2 限定复检 clean + 对 MF-1 声明 fixed
+  // 带 evidence。stuckThreshold=2 卡线：R2 rawAllClean 回填 rec 中 MF-1（not-fixed 驱动
+  // regressed、openStreak 2 ≥ 2）进 stuckIds，但 postReconcile 随后按 fixed 声明将其转
+  // fixed——stuckIds 计算先于该转换，消费前须按 postReconcile 后状态过滤：过滤后为空
+  // 不判 stuck（修复前会以 stuck 终态点名一个已 fixed 的条目）
+  process.env.FAKE_FS6 = '1';
+  process.env.FAKE_SCOPED_FIXED = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: '混合声明卡线（rawAllClean）', workdir: makeWorkdir('rfl-conflict-rawclean'),
+      runId: 'wf-utest-conflict-rawclean', recheckAfterFix: true, stuckThreshold: 2, maxRounds: 3,
+    });
+    assert.equal(result.loop.status, 'clean'); // 不因已 fixed 条目判 stuck，clean 出口放行
+    assert.equal(result.loop.rounds, 2);
+    assert.ok(!result.final.includes('修复停滞')); // 终报不渲染 stuck 停滞
+    assert.ok(!result.final.includes('MF-1 连续')); // stuckIds 不点名已 fixed 条目
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-conflict-rawclean', 'state.json'), 'utf8'));
+    assert.equal(st.issues['MF-1'].status, 'fixed');
+    assert.equal(st.issues['MF-1'].fixAttempts, 1); // not-fixed 先驱动 regressed
+    assert.deepEqual(st.issues['MF-1'].history.slice(-2), [
+      { round: 2, status: 'regressed' },
+      { round: 2, status: 'fixed' }, // fixed 声明的配套转换落痕
+    ]);
+    assert.equal(st.meta.terminated, 'clean');
+  } finally {
+    delete process.env.FAKE_FS6;
+    delete process.env.FAKE_SCOPED_FIXED;
+  }
+});
+
+test('review-fix-loop v2.1：混合对账声明极角——同轮 not-fixed 与 fixed+evidence 并存且卡线，已 fixed 条目不得被 stuck 点名（聚合主路径通道）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(CONFLICT_FILE, { force: true });
+  // correctness（FAKE_CONFLICT_RECON）：R1 报顽固问题；R2 报同题重报 + 对 MF-1 声明
+  // not-fixed（非 rawAllClean，走聚合主路径）；R3 clean。robustness（FAKE_SCOPED_FIXED）
+  // R2 限定复检对 MF-1 声明 fixed 带 evidence。stuckThreshold=2 卡线：R2 主路径 rec 中
+  // MF-1 进 stuckIds（not-fixed 驱动 regressed、openStreak 2 ≥ 2），postReconcile 随后
+  // 转 fixed——消费前过滤后为空则不判 stuck，fall-through 继续 fix，R3 收敛 clean
+  process.env.FAKE_CONFLICT_RECON = '1';
+  process.env.FAKE_SCOPED_FIXED = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: '混合声明卡线（主路径）', reviewers: ['correctness', 'robustness'],
+      workdir: makeWorkdir('rfl-conflict-main'), runId: 'wf-utest-conflict-main',
+      recheckAfterFix: true, stuckThreshold: 2, maxRounds: 3,
+    });
+    assert.equal(result.loop.status, 'clean'); // 不判 stuck，fall-through 走完 fix/收敛
+    assert.equal(result.loop.rounds, 3);
+    assert.ok(!result.final.includes('修复停滞')); // 终报不渲染 stuck 停滞
+    assert.ok(!result.final.includes('MF-1 连续')); // stuckIds 不点名已 fixed 条目
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-conflict-main', 'state.json'), 'utf8'));
+    assert.equal(st.issues['MF-1'].status, 'fixed');
+    assert.equal(st.issues['MF-1'].fixAttempts, 1);
+    assert.equal(st.meta.terminated, 'clean');
+  } finally {
+    delete process.env.FAKE_CONFLICT_RECON;
+    delete process.env.FAKE_SCOPED_FIXED;
+  }
 });
 
 // --------------------- v2.1 D8：参数与防御（M3）— convergeNewIssues 下限/severity/phaseTimings

@@ -93,6 +93,13 @@ graph LR
 | F4 | README 仅 1 处 aggregated.md 措辞修正（「状态与目录」树行），无「各轮齐全」原文 | README 全文 grep 仅此一处（设计措辞基于 v2 设计 S5 的推测表述）；该处已条件化 | 接受 |
 | F4 | impl-plan F4 行「S2/S5 断言改条件断言」经核查为 no-op | F3 偏差表已随行为变更改毕 10 处；现存断言均落非全员 clean 轮语义自洽 | 接受（计划行冗余，无代码动作） |
 | 修复批次 | stuck 终态构造未用 FAKE_FS6，改用 FAKE_STUCK_RECON + 新开关 FAKE_STUCK_DEFER | FAKE_FS6 的 R2+ reviewer 为 clean，走 D5 rawAllClean 上移路径到不了 stuck 终态；FAKE_STUCK_RECON + stuckThreshold:2 使残留/deferred 双清单非空，与既有两终态断言同构 | 接受 |
+| 终审批次 | 项6 stuck 消费照主路径同模式（rec.stuck/stuckIds），remaining 按空队列口径 | 落地前核实 vendor reconcileIssues 返回 {issues, stuck, stuckIds, knownRemaining}，rawAllClean 轮 rec 内 stuck 判定可达（openStreak 累计达阈值即置位）；rawAllClean 轮无聚合队列故 remaining 为空 | 接受 |
+| 终审批次 | 项6 无既有用例需更新 | FS2b/FS6 max-rounds/RECON_DRIFT 等 rawAllClean 残留场景的 stuckThreshold 均钉在 3/5/10，openStreak 峰值低于阈值，收紧不触达；核心断言零弱化 | 接受（语义收紧零回归面） |
+| 终审批次 | 项3 残留提示行措辞含 id 括注（「另有 open/regressed 残留 1 条（MF-1），见残留清单。」），落在 stuck/fix-failed/max-rounds 三终态共用 fallback 分支 | 对齐同分支 stuck 行「问题 MF-1 连续 N 轮未收敛」的指名风格；负断言放 FS5（残留为空不含该行） | 接受 |
+| 终审批次 | 项7 状态效应断言经 not-fixed→regressed→scoped fixed 带 evidence→fixed 全链证明（新开关 FAKE_SCOPED_FIXED） | scoped 声明缺席则残留阻断 clean 空转到 maxRounds——状态效应以 history 转换落痕证明（[{round:2,regressed},{round:2,fixed}]） | 接受 |
+| 终审批次R2 | stuckIds 过滤实现为主路径 `stuck = { stuck: liveIds.length>0, stuckIds: liveIds }`（vendor 保证 stuck 当且仅当 stuckIds 非空，无命中时严格等价）；计数式通道（updateStuckState）无 stuckIds 概念未动 | 仅混合声明命中时收敛为 false 走既有 fall-through；rawAllClean 分支过滤后为空落点 = 既有 hasOpenResidue 检查 | 接受 |
+| 终审批次R2 | 残留行措辞选分档（remaining 非空「同时存在」/为空「另有」）而非统一 | 两场景无一句话同时通顺的措辞；分档成本一行三元；FS6 max-rounds 用例走「另有」档既有断言免改 | 接受 |
+| 终审批次R2 | 混合声明极角用例复用 FAKE_SCOPED_FIXED + 新增 FAKE_CONFLICT_RECON（R1 报 issue/R2 同题重报+not-fixed/R3 clean） | 双 reviewer 同轮出场需 recheckAfterFix=true + stuckThreshold=2 卡线（openStreak 恰达阈值） | 接受 |
 
 ## 6 状态表
 
@@ -121,3 +128,6 @@ graph LR
 | 2026-08-29 | 定向复审：4 项修复全部闭环；新增 2 low（缺失 severity 子路径无断言→续聊原 dev 补；登记表锚点 920-921→921-922 已修） | dev-flow 阶段 4 定向复审 |
 | 2026-08-29 | Gate A 双绿：全量 450/450（fail/skipped/todo/cancelled 全零，含 e2e 真机 13 场景真跑）+ check-sync/check-pack 双绿 + 语法三过；覆盖矩阵无缺口（D9 文档措辞无单测承载属正常形态）；AGENTS.md `node --test test/` 漂移再实证（glob 口径） | dev-flow 阶段 5 |
 | 2026-08-29 | Gate B 7 pass / 0 fail / 0 blocked：FS1 真机 run wf-a8a8af18（391.7s，2 轮收敛 clean，meta.baseHash == rev-parse main 逐字符一致且 ≠ HEAD，分支 commit 的 off-by-one bug 被报出→修复→R2 clean+reconciliation fixed）；FS2-FS6 定向单测 10/10；FS7 引用 Gate A。计划状态表 F1-F4 全 committed，交付完成 | dev-flow 阶段 5 |
+| 2026-08-29 | 交付后终审（用户指令，3 subagent 三轴：D1-D9 机制落地 / D6-D9 与验收证据真实性 / pi 对齐声明验真 18 项）：0 major；3 minor 代码（MCP schema minimum 漂移、recheckScope 未 wrap、终报 final 文本口径分裂）+ 2 minor doc（v2 字段清单漏同步、v2 parseFail 定义过时）+ 6 info；验收双绿经对抗复核成立（FS1 runDir 独立复验） | 终审对抗审查 |
+| 2026-08-29 | 终审修复批次（用户指令「全部修复」）：代码 8 项派 dev（schema/wrap/final 口径/null 收紧/空 issues 收紧/stuck 通道/状态效应断言/注释）；文档由主 agent（v2 D10 通道 4 枚举 + parseFail 括注 + 字段清单 + §6；v2.1 五决策 pi 差异补注与行为变更同步 + D9 按位点计 + §6）；接受现状三项以设计补注处置（多批终报边界、畸形计数口径、D9 计数） | 终审修复 |
+| 2026-08-29 | 终审修复定向复审：8 项全闭环、4 风险探针排除；残留 1 low doc（D6 补注全称过宽，主 agent 已限定为三终报段）+ 2 info（混合声明 stuck/fixed 极角、fix-failed「另有」措辞）→ 续聊原 dev 全部修复（stuckIds 按 postReconcile 后状态过滤两消费点 + 分档措辞，红态 3 fail 实证，97/97）；全量回归含 e2e 复跑 | 终审修复定向复审 |

@@ -253,7 +253,7 @@ function buildRunWorkflowToolDefinition() {
           description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt (review only what the fix touched). Default false (clean reviewers stay skipped).',
         },
         convergeNewIssues: {
-          type: 'integer', minimum: 0,
+          type: 'integer', minimum: 1,
           description: 'review-fix-loop only. Convergence: max new findings per round. Default 1.',
         },
         convergeRounds: {
