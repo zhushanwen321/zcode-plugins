@@ -1,18 +1,21 @@
 'use strict';
 
 /**
- * bin/zsw.js `hook session-start` 子命令测试（子进程黑盒）：覆盖 impl-plan
- * u2 验收条款——嵌套守卫输出 {} 且 exit 0（P-nested-guard，双断言防 exit 1
- * 违规形态）、正常路径严格协议 JSON（hookEventName + <zsw-resources 块 +
- * 本机默认 provider 名）、ZCODE_PROJECT_DIR 项目级 agent 发现（P-cwd 可脚
- * 本部分）、v2 config 不可读整体降级 {}、cli config 缺失时默认标记回退链
- * 生效（D3 与 zsw models 同口径：v2 顶层 model.main / 内置回退，禁止缺席）。
+ * bin/zsw-hook.js（SessionStart hook 专用极薄入口，hooks/hooks.json 指向
+ * 此处）子进程黑盒测试：覆盖 impl-plan u2 验收条款——嵌套守卫输出 {} 且
+ * exit 0（P-nested-guard，双断言防 exit 1 违规形态）、正常路径严格协议
+ * JSON（hookEventName + <zsw-resources 块 + 本机默认 provider 名）、
+ * ZCODE_PROJECT_DIR 项目级 agent 发现（P-cwd 可脚本部分）、v2 config 不可
+ * 读整体降级 {}、cli config 缺失时默认标记回退链生效（D3 与 zsw models 同
+ * 口径：v2 顶层 model.main / 内置回退，禁止缺席）、入口极薄性守门（require
+ * 全在 try 内 + 无 process.exit——防把 bin/zsw.js 的顶层重 require 链搬回
+ * hook 入口，D5 降级承诺的静态防线）。
  *
  * 隔离：HOME 指向临时目录——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 在
  * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME，仓内 workflow-script/
  * driver 同款注释），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
- * fixture 项目目录（与 bin/zsw.js workflow 子命令及本地模式的 projectDir
- * 解析链对齐：ZCODE_PROJECT_DIR > process.cwd()）。
+ * fixture 项目目录（与 lib/hook-source 的 projectDir 解析链对齐：
+ * ZCODE_PROJECT_DIR > process.cwd()）。
  */
 
 const { execFile } = require('node:child_process');
@@ -25,7 +28,7 @@ const assert = require('node:assert/strict');
 const { PROVIDER_ID } = require('../lib/model-router');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-cli-hook-'));
-const BIN = path.join(__dirname, '..', 'bin', 'zsw.js');
+const BIN = path.join(__dirname, '..', 'bin', 'zsw-hook.js'); // 专用极薄入口，无参数
 const HOME = path.join(TMP, 'home'); // 正常路径 HOME（v2 + cli config 齐全）
 const EMPTY_HOME = path.join(TMP, 'empty-home'); // v2 config 不可读用例
 const PROJECT = path.join(TMP, 'project'); // ZCODE_PROJECT_DIR fixture
@@ -57,12 +60,12 @@ fs.writeFileSync(
   '---\nname: proj-probe\ndescription: 项目级探针 agent\n---\n\nbody\n',
 );
 
-/** 真跑 `node bin/zsw.js hook session-start`（cwd 与 env 可控）。 */
+/** 真跑 `node bin/zsw-hook.js`（cwd 与 env 可控）。 */
 function run(extraEnv = {}, opts = {}) {
   return new Promise((resolve) => {
     execFile(
       process.execPath,
-      [BIN, 'hook', 'session-start'],
+      [BIN], // 极薄入口无子命令/参数
       {
         cwd: opts.cwd, // 缺省继承测试进程 cwd；P-cwd 用例显式指到无 agent 目录
         env: {
@@ -82,6 +85,24 @@ function run(extraEnv = {}, opts = {}) {
 
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
+});
+
+// ------------------------------------------- 入口极薄性守门（D5 静态防线）
+
+test('bin/zsw-hook.js 极薄性：require ≤2 且在 try 内、无 process.exit', () => {
+  const src = fs.readFileSync(BIN, 'utf8');
+  // 剥注释后守门：断言只认代码形态，头注里的说明文案（如「不 process.exit」）不得误报
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const requireCount = (code.match(/\brequire\s*\(/g) || []).length;
+  assert.ok(requireCount <= 2, `极薄入口 require 计数须 ≤2，实际 ${requireCount}`);
+  assert.ok(
+    /try\s*\{[\s\S]*?require\s*\(/.test(code),
+    'require 须位于 try 块内（hook-source 模块级损坏时兜底 {}）',
+  );
+  assert.ok(
+    !code.includes('process.exit('),
+    'hook 入口禁 process.exit（自然退出即 exit 0，防 stdout 未 flush）',
+  );
 });
 
 // ------------------------------------------- P-nested-guard（双断言）
