@@ -1557,6 +1557,24 @@ async function runReviewFixLoop(raw = {}) {
      * 终态（§3.4：唯一到达路径，LLM parseFail 不触发））→ 队列计算 → 落盘 → merge/
      * dormant → 摘要。返回 null = 继续；{ stop } = 终止本批。
      */
+// MF-7：聚合输出结构合法（must_fix_ids 是数组）但 entries 为空、而 reviewer
+// 原始报告存在 must-fix 级上报时，聚合与输入矛盾（AGGREGATOR_SCHEMA 不校验
+// must_fix/must_fix_ids 与输入的一致性，空数组是合法解析结果不触发降级链）——
+// 视为聚合不可用走 JS 降级链。放行的话 handleAllDowngraded 会在无残留时把被
+// 聚合器静默丢弃的 must-fix 判成 clean（连 dormant 痕迹都没有）。合法 clean
+// 路径不受影响：reviewer 原始全 clean 在聚合前已被 rawAllClean 短路；原始仅
+// minor 上报不命中守卫（severity 按 recordRoundAgents 同口径缺失视为 minor）。
+const isAggDroppedMustFix = (outcome, parsedReviews) => !!outcome && outcome.entries.length === 0
+  && parsedReviews.some((p) => (p.issues || []).some((x) =>
+    MUST_FIX_SEVERITIES.includes(String(x?.severity || 'minor').toLowerCase())));
+
+// JS 降级 WARN 的原因子句（字面量是测试断言契约，逐字保留）
+const aggFallbackReason = (opts) => {
+  if (opts.aborted) return '聚合阶段已中止（abort）';
+  if (opts.dropped) return '聚合输出与原始上报矛盾（reviewer 有 must-fix 上报而聚合零条目）';
+  return opts.ok ? '聚合输出无法解析' : '聚合阶段执行失败';
+};
+
     const runAggregateStage = async (round) => {
       if (onPhase) onPhase({ phase: `${phasePrefix}-round${round}-aggregate`, status: 'running' });
       const aggMs0 = Date.now();
@@ -1586,18 +1604,10 @@ async function runReviewFixLoop(raw = {}) {
         closeRound();
         return { stop: true };
       }
-      let outcome = normalizeAggOutput(agg);
-      // MF-7：聚合输出结构合法（must_fix_ids 是数组）但 entries 为空、而 reviewer
-      // 原始报告存在 must-fix 级上报时，聚合与输入矛盾（AGGREGATOR_SCHEMA 不校验
-      // must_fix/must_fix_ids 与输入的一致性，空数组是合法解析结果不触发降级链）——
-      // 视为聚合不可用走 JS 降级链。放行的话 handleAllDowngraded 会在无残留时把被
-      // 聚合器静默丢弃的 must-fix 判成 clean（连 dormant 痕迹都没有）。合法 clean
-      // 路径不受影响：reviewer 原始全 clean 在聚合前已被 rawAllClean 短路；原始仅
-      // minor 上报不命中守卫（severity 按 recordRoundAgents 同口径缺失视为 minor）。
-      const aggDroppedMustFix = !!outcome && outcome.entries.length === 0
-        && parsedReviews.some((p) => (p.issues || []).some((x) =>
-          MUST_FIX_SEVERITIES.includes(String(x?.severity || 'minor').toLowerCase())));
-      if (aggDroppedMustFix) outcome = null;
+      const outcome0 = normalizeAggOutput(agg);
+      // MF-7 守卫（rationale 见 isAggDroppedMustFix 头注）：矛盾形态视为聚合不可用
+      const aggDroppedMustFix = isAggDroppedMustFix(outcome0, parsedReviews);
+      let outcome = aggDroppedMustFix ? null : outcome0;
       if (!outcome) {
         try {
           const fallback = jsAggregateFallback(parsedReviews);
@@ -1609,7 +1619,7 @@ async function runReviewFixLoop(raw = {}) {
           };
           process.stderr.write(
             `[zsw] WARN: aggregator fallback to js-dedup（batch${batchIndex} round${round}，` +
-            `${isAborted(signal) ? '聚合阶段已中止（abort）' : aggDroppedMustFix ? '聚合输出与原始上报矛盾（reviewer 有 must-fix 上报而聚合零条目）' : agg.ok ? '聚合输出无法解析' : '聚合阶段执行失败'}）——该轮无裁决/降级数据，循环继续\n`);
+            `${aggFallbackReason({ aborted: isAborted(signal), dropped: aggDroppedMustFix, ok: agg.ok })}）——该轮无裁决/降级数据，循环继续\n`);
         } catch (aggErr) {
           status = 'aggregator-failure';
           aggregateError = aggErr?.message || String(aggErr);
