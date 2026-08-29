@@ -1,0 +1,117 @@
+# zsw appserver 主通道化 实施计划
+
+基线: TBD（本文件首次 commit，hash 于 commit 后回填） | 来源设计: [docs/design/zsw-appserver-promotion-design.md](zsw-appserver-promotion-design.md)（三轮对抗式审查通过，must_fix==0） | 日期: 2026-08-29
+
+## 0 章节映射
+
+| 内容 | 设计文档实际位置 |
+|------|--------------|
+| 背景/目标 | §1 背景目标（SCQA / 系统是什么 / 设计目标 G1-G6 表 / In & Out of scope） |
+| 终态/机制 | §2 现状与问题分析；§3 解决方案（§3.1 终态使用者视角 / §3.2 方案对比 A-E / §3.3 关键决策 D1-D9） |
+| 验收场景表 | §4 验收（A-1 ~ A-9 真机场景表，含场景/步骤/通过标准/回溯列） |
+| 下一层拆分 | §5 下一层拆分（F0-F5 单元表 + 实施路径） |
+| 待验证检查点 | §5 末「待验证检查点」3 条（TP-1 restoreWarning / 工具限制格式契约 / 背压+多会话恢复） |
+
+审查证据：`/tmp/design-review-zsw-appserver-round2.md`（二审 1 must-fix + 8 suggestion）→ 已全部修复 → `/tmp/design-review-zsw-appserver-round3.md`（定向复审 9/9 fixed、新 must-fix 0、可定稿）。
+
+## 1 目标快照（逐字摘录）
+
+> **一句话结论**：把 zsw 的默认执行通道从「每轮 spawn 一个 zcode CLI 进程」翻转为「常驻 app-server（apc 协议）引擎」——与 ZCode GUI 底层同一架构；以「默认翻转 + 显式回退开关 + probe 降级链保留」控制风险，分四阶段交付（前置收口 → 默认翻转 → 能力增量 → 可选 workflow 接入），恢复序与协议漂移检测是两个硬前置。
+
+设计目标：
+
+| # | 目标（使用者体验倒推） | 判定标准 |
+|---|------------------------|----------|
+| G1 | 默认通道 = appserver：`zsw start` 不带任何 env 即走常驻引擎，任务与 conversation 续聊正常完成，冷启动开销消失 | record.runnerKind='appserver'；第二轮 send 无进程重建 |
+| G2 | 断链自愈：空闲驱逐（引擎驻留池 10min）或进程崩溃后，conversation 下一次交互自动恢复或以诚实错误降级 | -32004 触发自动 resume 重试一次；不可恢复时报「会话弃用+重试指引」而非裸错误码 |
+| G3 | 协议漂移可发现：ZCode 升级导致的协议不兼容被识别为「版本问题」并给出恢复指引，不伪装成普通任务失败 | -32601/-32602 分类为 protocol-drift；升级冒烟脚本本地手动一键可跑（CI 不含真机 e2e） |
+| G4 | thinking 可调：`zsw start --thinking <level>` 生效且非法值容错 | 引擎 stderr 落盘（D3 新增实时落盘）thoughtLevel 命中；非法值 warn 跳过不失败 |
+| G5 | apc 独有安全面接入：per-session 工具白/黑名单；隔离环境遥测关闭 | create 参数携带工具限制；子进程 env 无遥测标识写入 |
+| G6 | 回退与可观测：`ZSW_RUNNER=spawn` 显式回退旧路径；probe 失败自动降级；每个任务如实标注实际通道 | 降级日志 + record.runnerKind 与实际一致 |
+
+**In**：默认翻转与回退开关；恢复序；漂移检测与冒烟；thinking/工具限制/遥测接线；测试与文档翻转；发版判定。
+**Out**：workflow 线接入 runner 端口（独立后续设计）；GUI 层重写 / v4 订阅面逆向；共享主 HOME（三次被否）；`session/setThoughtLevel` RPC 的任何使用。
+
+## 2 单元列表
+
+u-foundation 缺席说明：本项目 plain Node CJS 无跨单元共享类型/接口契约模块；唯一多单元共享文件 `lib/runner-appserver.js` 由 F1→F2→F4 串行边覆盖，无需独立契约根节点。
+
+| Unit | 职责 | 领地（精确文件路径，均相对 `z-subagent-workflow/`） | 依赖 | 隔离 | 验收条款 |
+|------|------|------|------|------|------|
+| F0 | TP-1 真机探针（场景矩阵 A 驱逐/B 崩溃/C 多会话 + 四条排查候选），产出恢复序分支判定结论 | `test/e2e-tp1-recovery.test.js`（新增，e2e 前缀使 CI 天然排除） | 无 | plain | 脚本真机可重复执行；结论明确回答：驱逐线是否触发 restoreWarning、四条清除候选（send runtimeModel / create runtimeModel / updateRuntimeModelConfig / registry 等待）哪条可用；C 线给出多会话 -32031 连坐观察数据。结论写入脚本头注 + 本计划状态表证据指针，并据此判定 D2 双分支（全自愈 vs 驱逐自愈+崩溃诚实报错） |
+| F1 | 协议漂移分类 protocol-drift + 升级冒烟脚本（probe 扩面）；A2/A4 假设收口 | `lib/runner-appserver.js`、`test/appserver.test.js`、`test/e2e.test.js` | 无 | plain | 单测：fake server 返回 -32601/-32602 时错误分类为 protocol-drift、record 与 stderr 双落点、错误信息含冒烟命令与 `ZSW_RUNNER=spawn` 回退指引；冒烟脚本（create + send 极小任务 + sessionId 路径/turn.terminal/response 非空/toolDenylist 生效断言）本地手动跑通；对应设计 A-7 |
+| F2 | -32004 四步恢复序（含 ④ timeoutMs 窗口 + stop 清场 + runner 级恢复互斥）；引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`；create 显式化（persistence:immediate）；遥测 env；idle TTL 常量删除 | `lib/runner-appserver.js`、`lib/config.js`、`test/appserver.test.js` | F0（恢复序分支结论） | plain | 单测（fake server 驱动）：-32004→resume→重挂 subscribe→重试 send 链路、④ 超时→stop→分支 B、恢复互斥串行化、订阅重挂（缺则终态不达）均覆盖；create 携带 persistence:"immediate"；子进程 env 含 `ZCODE_MODEL_TELEMETRY_ENABLED=false`；stderr 实时写 `~/.zcode/zsw/logs/`；`lib/config.js:78` idleConversationTtlMs 删除且全仓 grep 无引用；对应设计 A-2a/A-2b 的单测面 |
+| F3 | 默认翻转 + 显式回退 + probe 落盘缓存（含命中后首败失效重探）+ 测试/文档翻转 | `lib/assemble.js`、`lib/ports.js`、`test/assemble.test.js`、`test/e2e.test.js`、`README.md`、`CONTEXT.md` | F1、F2 | plain | `assemble.js:64-65`/`ports.js:130` 缺省翻转为 appserver，`ZSW_RUNNER=spawn` 显式回退；probe 结果落盘 `~/.zcode/zsw/probe-cache.json`（键=CLI 路径+mtime；只缓存 ok；命中后首次 create -32603/-32601/-32602 失效重探一次）；assemble.test.js 缺省断言反转 + 回退用例；e2e E1-E6/E8 显式钉 spawn、E7 升主链路；README（:99-103 重写+顺修）/CONTEXT.md（补 ZSW_RUNNER）更新；翻转点为独立最小 diff 可回滚 |
+| F4 | 能力增量：`--thinking`（readState 校验源缓存）+ 工具限制双来源（CLI flag + frontmatter disallowedTools → toolDenylist 并集；tools 白名单维持软约束）；record 标注 | `bin/zsw.js`、`lib/manager.js`、`lib/model-router.js`、`lib/runner-appserver.js`、`test/cli.test.js`、`test/manager.test.js`、`test/appserver.test.js` | F3 | plain | `zsw start --thinking low` 映射 create.thoughtLevel（readState.thoughtLevel.available 连接级缓存校验，非法值 warn 跳过不失败）；`--allow-tools/--deny-tools` 逗号分隔 → toolAllowlist/toolDenylist；`taskCtx.disallowedTools`（frontmatter）与 CLI deny 并集去重入 create.toolDenylist；不调用 session/setThoughtLevel；record 标注 thinking 实际档位（spawn 降级轮 thinking:null）；对应设计 A-5/A-6 单测面 |
+| F5 | 发版与收尾：minor release + 发布说明（重启生效）+ skill/command 文档复核 | 版本三件套（`package.json`、`.zcode-plugin/plugin.json`、根 `marketplace.json`，经 `scripts/release.js`）；发布说明随 tag | F1-F4 | plain | `node scripts/release.js z-subagent-workflow minor` 完成三处版本同步 + commit + tag（不 push，push 另行授权）；仓根 `node scripts/check-sync.js`、`node scripts/check-pack.js` 绿；`node scripts/check-release-needed.js` 对本插件清零；发布说明含「重启 ZCode 生效」与升级冒烟指引 |
+
+## 3 DAG 图
+
+```mermaid
+graph TD
+  subgraph W1[Wave1]
+    F0["F0 TP-1 真机探针<br/>领地: test/e2e-tp1-recovery.test.js"]
+    F1["F1 漂移分类+冒烟<br/>领地: lib/runner-appserver.js, test/appserver.test.js, test/e2e.test.js"]
+  end
+  subgraph W2[Wave2]
+    F2["F2 恢复序+create显式化+stderr落盘<br/>领地: lib/runner-appserver.js, lib/config.js, test/appserver.test.js"]
+  end
+  subgraph W3[Wave3]
+    F3["F3 默认翻转+回退+probe缓存<br/>领地: lib/assemble.js, lib/ports.js, test/*, README, CONTEXT"]
+  end
+  subgraph W4[Wave4]
+    F4["F4 能力增量 thinking/工具双来源<br/>领地: bin/zsw.js, lib/manager.js, lib/model-router.js, lib/runner-appserver.js, test/*"]
+  end
+  subgraph W5[Wave5]
+    F5["F5 发版 minor+收尾<br/>领地: 版本三件套 via release.js"]
+  end
+  F0 -->|"恢复序分支结论（D2 双分支判定）"| F2
+  F1 -->|"同文件 lib/runner-appserver.js 共改 + 漂移分类为恢复序错误出口"| F2
+  F2 -->|"翻转默认前恢复序/落盘必须就绪（设计 §5 实施路径）"| F3
+  F3 -->|"能力增量在翻转后的默认通道上验收（A-5/A-6）+ record 标注语义"| F4
+  F4 -->|"发版包含全部能力增量 + check-release-needed 清零"| F5
+```
+
+波次：W1={F0,F1}（领地互斥可并行）→ W2={F2} → W3={F3} → W4={F4} → W5={F5}。全 plain（无热点公共文件并行共改、非实验性大改、用户未指定 worktree）。
+
+## 4 测试策略
+
+测试命令真实来源：项目 AGENTS.md「插件目录内 node --test test/」；`package.json` 无 scripts 字段（1.1.0，CJS，node>=20）。
+
+| 类型 | 命令（cwd=`z-subagent-workflow/`） | 用途 |
+|------|------|------|
+| 增量单测（单元开发期） | `node --test test/appserver.test.js`（F1/F2/F4）、`node --test test/assemble.test.js`（F3）、`node --test test/cli.test.js test/manager.test.js`（F4）、`node --test test/config.test.js`（F2） | 每单元 dev→fix 循环的绿门 |
+| 真机探针（F0） | `node --test test/e2e-tp1-recovery.test.js`（真实 app-server 进程，注意 token 消耗） | F0 验收；不进常规循环 |
+| 全量（收尾/阶段5） | `node --test test/`（含真实模型 e2e，约 3.5 分钟 + token） | Gate A；收尾场景才跑 |
+| 一致性（仓根） | `node scripts/check-sync.js`、`node scripts/check-pack.js`、`node scripts/check-release-needed.js` | F5 与 pre-commit 版本拦截 |
+
+单测中的协议交互一律 fake server（内存 NDJSON mock），不触真实模型；真机面归 F0 探针与阶段 5 验收。
+
+## 5 合理偏差登记表
+
+| 日期 | 单元 | 偏差 | 裁决理由 | 设计侧动作 |
+|------|------|------|----------|------------|
+| （空） | | | | |
+
+## 6 状态表
+
+| Unit | 状态(pending/in-progress/committed/blocked) | 轮次 | 证据指针 |
+|------|------|------|------|
+| F0 | pending | 0 | — |
+| F1 | pending | 0 | — |
+| F2 | pending | 0 | — |
+| F3 | pending | 0 | — |
+| F4 | pending | 0 | — |
+| F5 | pending | 0 | — |
+
+## 7 残留风险与变更历史
+
+残留风险（承接设计 §5 检查点与复审 INFO）：
+1. F0 结论可能判定崩溃分支不可自愈（-32031 无解）→ D2 走分支 B（驱逐自愈 + 崩溃诚实报错），不阻塞翻转（设计已预案）。
+2. 工具限制 spec 形态（`Bash(git *)`）支持性待 F1 冒烟实测；先按裸工具名落地。
+3. stdio 背压 + 多会话并发恢复（A-8/F0 C 线）为观察项非阻塞门。
+4. 复审 INFO×2（实施期留白）：D2 ④ 失败场景的分支 B 文案措辞需适配「事件流不可达」语义；D1 缓存重探 ok 后的重试动作由 D3 漂移分类兜底。
+
+| 日期 | 事件 |
+|------|------|
+| 2026-08-29 | 计划创建（设计文档自 /tmp 归位 docs/design/；DAG 沿用设计 §5 F0-F5，F0 领地精确化为新文件 test/e2e-tp1-recovery.test.js） |
