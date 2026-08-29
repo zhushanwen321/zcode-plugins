@@ -37,9 +37,9 @@
  *   FAKE_FALLBACK_MINOR（v2.1 D3a/FS3a：R1 报 1 major + 1 minor + FAKE_AGG_GARBAGE 走
  *   JS 聚合降级链；修复者只修 critical/major、合法 defer minor（≥20 字理由）→ 验证
  *   fallback 队列只收 must-fix 等级、minor 走 suggestion 明细段、循环继续非 fix-failed）、
- *   FAKE_FALLBACK_BADSEV（v2.1 D8 降级轮归一：R1 报 1 畸形 severity（'blocker'）+ 1 minor +
- *   FAKE_AGG_GARBAGE 走降级链 → 验证畸形条目归一回落 major 进 fix 队列（不静默丢弃）、
- *   minor 仍走 suggestion 通道）、
+ *   FAKE_FALLBACK_BADSEV（v2.1 D8 降级轮归一双形态：R1 报 1 畸形 severity（'blocker'）+
+ *   1 缺失 severity（显式 null）+ 1 minor + FAKE_AGG_GARBAGE 走降级链 → 验证两条畸形/
+ *   缺失条目均归一回落 major 进 fix 队列（不静默丢弃）、minor 仍走 suggestion 通道）、
  *   FAKE_BAD_CONTRACT（v2.1 D3c/FS3b：reviewer 输出六种契约缺失/矛盾形态——okonly/
  *   maybe/nonarray/cleanplus/badcount/malformed → 全部 parseFail 结构化终止）、
  *   FAKE_MF_COLLIDE（v2.1 D4/FS4：R1 双 major + 聚合臆测条目落 dormant MF-3；R2 'new'
@@ -360,7 +360,7 @@ fs.writeFileSync(FAKE_CLI, [
   "    fs.writeFileSync(fFB, String(nFB));",
   "    let objFB;",
   "    if (nFB === 1) {",
-  "      objFB = { status: 'issues', issues: [{ id: 'A1', severity: 'blocker', title: '阻塞级缺陷', detail: '畸形等级条目', file: 'a.js' }, { id: 'A2', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }], suggestion_count: 1, reconciliation: [] };",
+  "      objFB = { status: 'issues', issues: [{ id: 'A1', severity: 'blocker', title: '阻塞级缺陷', detail: '畸形等级条目', file: 'a.js' }, { id: 'A2', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }, { id: 'A3', severity: null, title: '缺失等级条目', detail: 'severity 缺失形态', file: 'c.js' }], suggestion_count: 1, reconciliation: [] };",
   "    } else {",
   "      objFB = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }] };",
   '    }',
@@ -2099,16 +2099,18 @@ test('review-fix-loop v2.1 D3a/b (FS3a)：fallback 轮 minor 不进 fix 队列�
   }
 });
 
-test('review-fix-loop v2.1 D8：JS 降级轮畸形 severity（blocker）归一回落 major 进 fix 队列——不静默丢弃（对照 minor 仍走 suggestion）', async () => {
+test('review-fix-loop v2.1 D8：JS 降级轮畸形/缺失 severity 归一回落 major 进 fix 队列——不静默丢弃（对照 minor 仍走 suggestion）', async () => {
   writeV2Config();
   resetCalls();
   fs.rmSync(FALLBACK_BADSEV_FILE, { force: true });
   // FAKE_AGG_GARBAGE：LLM 聚合失效 → JS 聚合降级链；reviewer R1 报 1 条畸形 severity
-  //（'blocker'，非契约枚举）+ 1 条合法 minor。旧行为：降级链 severity 过滤缺省 minor /
-  // 非枚举一律 continue 静默丢弃——条目到不了 normalizeAggregated 的 D8 归一层，畸形
-  // must-fix 条目凭空消失（fixQueue 空 + suggestion 归零可构成假 clean），与 LLM 聚合
-  // 路径（缺失/非枚举回落 major 进活跃追踪）行为分叉。修复后：与 LLM 路径同款归一前移
-  // ——缺失/非枚举回落 major 进队列，归一后 minor 才排除（D3a 语义不变）
+  //（'blocker'，非契约枚举）+ 1 条缺失 severity（显式 null，归一第①子路径 `?? 'major'`
+  // 分支；'blocker' 承载第②子路径 `!SEVERITIES.includes` 分支）+ 1 条合法 minor。旧行为：
+  // 降级链 severity 过滤缺省 minor / 非枚举一律 continue 静默丢弃——条目到不了
+  // normalizeAggregated 的 D8 归一层，must-fix 条目凭空消失（fixQueue 空 + suggestion
+  // 归零可构成假 clean），与 LLM 聚合路径（缺失/非枚举回落 major 进活跃追踪）行为分叉。
+  // 修复后：与 LLM 路径同款归一前移——缺失/非枚举回落 major 进队列，归一后 minor 才
+  // 排除（D3a 语义不变）
   process.env.FAKE_AGG_GARBAGE = '1';
   process.env.FAKE_FALLBACK_BADSEV = '1';
   try {
@@ -2116,38 +2118,43 @@ test('review-fix-loop v2.1 D8：JS 降级轮畸形 severity（blocker）归一�
       task: '降级轮畸形 severity 归一', reviewers: ['correctness'],
       workdir: makeWorkdir('rfl-fallback-badsev'), runId: 'wf-utest-fallback-badsev',
     });
-    // R1 fix（MF-1 归一 major 进队列被修复）→ R2 clean + recon fixed → 批 clean
+    // R1 fix（MF-1/MF-2 归一 major 进队列被修复）→ R2 clean + recon fixed → 批 clean
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 2);
 
-    // 畸形条目进 fix 队列且 severity 归一为 major（未被静默丢弃的直接证据）：
-    // aggregated-issues 块只含 MF-1（major）——minor 不进队列（D3a 对照面）
+    // 畸形/缺失条目进 fix 队列且 severity 归一为 major（未被静默丢弃的直接证据）：
+    // aggregated-issues 块只含 MF-1/MF-2（major）——minor 不进队列（D3a 对照面）
     const fixCall = readCalls().find((c) => c.prompt.includes('循环中的修复者'));
     assert.ok(fixCall);
     const queueBlock = /<untrusted source="aggregated-issues">\n([\s\S]*?)\n<\/untrusted>/.exec(fixCall.prompt);
     assert.ok(queueBlock);
     const queueItems = JSON.parse(queueBlock[1]);
-    assert.deepEqual(queueItems.map((x) => x.id), ['MF-1']);
-    assert.deepEqual(queueItems.map((x) => x.severity), ['major']);
+    assert.deepEqual(queueItems.map((x) => x.id), ['MF-1', 'MF-2']);
+    assert.deepEqual(queueItems.map((x) => x.severity), ['major', 'major']);
     assert.ok(fixCall.prompt.includes('阻塞级缺陷'));
+    assert.ok(fixCall.prompt.includes('缺失等级条目'));
     // 合法 minor 条目仍走 suggestion 明细段（D3a 行为不变）
     assert.ok(fixCall.prompt.includes('<untrusted source="suggestion-issues">'));
     assert.ok(fixCall.prompt.includes('建议重命名变量'));
 
-    // aggregated.md 同口径：降级链报告含畸形条目（归一 major），minor 不入表
+    // aggregated.md 同口径：降级链报告含畸形/缺失条目（归一 major），minor 不入表
     const aggMd = fs.readFileSync(
       path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fallback-badsev', 'batch-1', 'round-1', 'aggregated.md'), 'utf8');
     assert.ok(aggMd.includes('degraded: js-dedup'));
     assert.ok(aggMd.includes('| MF-1 | major | 阻塞级缺陷 |'));
+    assert.ok(aggMd.includes('| MF-2 | major | 缺失等级条目 |'));
     assert.ok(!aggMd.includes('建议重命名变量'));
 
-    // 状态机：MF-1 活跃追踪（severity=major）且 R2 rawAllClean 回填转 fixed；
-    // minor 未占 MF-2 号
+    // 状态机：MF-1/MF-2 活跃追踪（severity=major）且 R2 rawAllClean 回填转 fixed
+    //（MF-2 未被 recon 声明 → 走「未重报 = 已修复」F1 链）；minor 未占 MF-3 号
     const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fallback-badsev', 'state.json'), 'utf8'));
     assert.equal(st.issues['MF-1'].severity, 'major');
     assert.equal(st.issues['MF-1'].title, '阻塞级缺陷');
     assert.equal(st.issues['MF-1'].status, 'fixed');
-    assert.ok(!st.issues['MF-2']);
+    assert.equal(st.issues['MF-2'].severity, 'major'); // 缺失（null）形态归一回落 major
+    assert.equal(st.issues['MF-2'].title, '缺失等级条目');
+    assert.equal(st.issues['MF-2'].status, 'fixed');
+    assert.ok(!st.issues['MF-3']);
   } finally {
     delete process.env.FAKE_AGG_GARBAGE;
     delete process.env.FAKE_FALLBACK_BADSEV;
