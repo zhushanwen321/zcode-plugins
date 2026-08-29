@@ -34,6 +34,14 @@
  *   与成功出口 open 残留断言。FAKE_ESCALATE_FIX_R3='1' 时 R3 改为对 S-1 声明 fixed
  *   带 evidence（配套转换 → 出口放行 clean）；='noevidence' 时声明 fixed 但空
  *   evidence（不触发转换，open 残留继续））。
+ *   FAKE_FALLBACK_MINOR（v2.1 D3a/FS3a：R1 报 1 major + 1 minor + FAKE_AGG_GARBAGE 走
+ *   JS 聚合降级链；修复者只修 critical/major、合法 defer minor（≥20 字理由）→ 验证
+ *   fallback 队列只收 must-fix 等级、minor 走 suggestion 明细段、循环继续非 fix-failed）、
+ *   FAKE_BAD_CONTRACT（v2.1 D3c/FS3b：reviewer 输出六种契约缺失/矛盾形态——okonly/
+ *   maybe/nonarray/cleanplus/badcount/malformed → 全部 parseFail 结构化终止）、
+ *   FAKE_MF_COLLIDE（v2.1 D4/FS4：R1 双 major + 聚合臆测条目落 dormant MF-3；R2 'new'
+ *   报全新独有问题（验证 dormant 占号不被复用 → 分得 MF-4）/ 'revive' 重报 dormant
+ *   同题（验证复活走原 id + revived 置位）；聚合复用 FAKE_DORMANT_REVIVE 段）。
  *   fake 聚合者按 v2 契约汇总：must_fix_ids 只收 critical/major（minor 计入
  *   suggestion）、标题含「臆测」的条目裁决 downgraded（噪声裁决路径）。
  * - fake 修复者按 v2 契约回包：从 prompt 的 aggregated-issues untrusted 块提取全部
@@ -74,6 +82,8 @@ const REVIVE_REVIEW_FILE = path.join(TMP, 'revive-review-count.txt');
 const REVIVE_AGG_FILE = path.join(TMP, 'revive-agg-count.txt');
 const DRIFT_FILE = path.join(TMP, 'drift-count.txt');
 const ESCALATE_FILE = path.join(TMP, 'escalate-count.txt');
+const FALLBACK_MINOR_FILE = path.join(TMP, 'fallback-minor-count.txt');
+const MF_COLLIDE_FILE = path.join(TMP, 'mf-collide-count.txt');
 
 // ---- fake zcode CLI：按 prompt 关键词分支（围栏反引号放普通字符串，避免嵌套模板）----
 const FAKE_CLI = path.join(TMP, 'fake-zcode.cjs');
@@ -118,9 +128,10 @@ fs.writeFileSync(FAKE_CLI, [
   // FAKE_DORMANT_REVIVE 聚合段：按 state-issues 清单同题沿用既有 id（模拟真实聚合
   // 的「同一问题沿用既有 id」指示）；臆测条目首轮（无 prior）裁决 downgraded、后续
   // 轮改判 evidence（复活 = 重新确证），并在首轮补一条臆测条目（对齐 FAKE_AGG_DEMOTE
-  // 的注入形态，供 R1 落 dormant）
+  // 的注入形态，供 R1 落 dormant）。FAKE_MF_COLLIDE 复用本段：R1 同样产出
+  // issues={MF-1,MF-2}+dormant MF-3 的前置状态（FS4 的撞号/复活双分支数据源）
   "    const majors = all.filter((it) => ['critical', 'major'].includes(String(it.severity || '').toLowerCase()));",
-  "    if (process.env.FAKE_DORMANT_REVIVE === '1') {",
+  "    if (process.env.FAKE_DORMANT_REVIVE === '1' || process.env.FAKE_MF_COLLIDE) {",
   "      const fV = process.env.FAKE_REVIVE_AGG_FILE;",
   "      const nV = Number(fs.existsSync(fV) ? fs.readFileSync(fV, 'utf8') : '0') + 1;",
   "      fs.writeFileSync(fV, String(nV));",
@@ -168,6 +179,20 @@ fs.writeFileSync(FAKE_CLI, [
   "    try { idsE = mE ? JSON.parse(mE[1]).map((x) => x.id) : []; } catch (e) { idsE = []; }",
   "    const fixesE = idsE.map((id) => ({ issue_id: id, description: '测试修复 ' + id, self_check: 'grep ok', affected_files: ['a.js'] }));",
   "    reply('## 修复结果\\n' + fixesE.map((f2) => f2.issue_id + ' → 已修复（测试模拟修复）。').join('\\n') + '\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: fixesE.length, fixes: fixesE, deferred: [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续重构批次处理' }] }) + '\\n' + F);",
+  // FS3a（v2.1 D3a/b）修复者：只修聚合队列里的 critical/major；minor 条目合法 defer
+  // （≥20 字理由过软校验）。旧行为下 minor 被塞进队列 → defer 即 must-fix-not-fixed
+  // → fix-failed（本分支正是红态驱动源）；队列无 minor 时 defer 幽灵 S-1（建议级延期形态）
+  "  } else if (process.env.FAKE_FALLBACK_MINOR === '1') {",
+  "    const mFM = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
+  "    let itemsFM = [];",
+  "    try { itemsFM = mFM ? JSON.parse(mFM[1]) : []; } catch (e) { itemsFM = []; }",
+  "    const mustFixFM = itemsFM.filter((x) => ['critical', 'major'].includes(String(x.severity || '').toLowerCase()));",
+  "    const minorFM = itemsFM.find((x) => String(x.severity || '').toLowerCase() === 'minor');",
+  "    const fixesFM = mustFixFM.map((x) => ({ issue_id: x.id, description: '测试修复 ' + x.id, self_check: 'grep ok', affected_files: ['a.js'] }));",
+  "    const deferredFM = minorFM",
+  "      ? [{ issue_id: minorFM.id, reason: '该 minor 修复涉及多处调用点重构，本轮集中处理 must-fix，放到下一批统一处理' }]",
+  "      : [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续批次处理' }];",
+  "    reply('## 修复结果\\n' + fixesFM.map((f3) => f3.issue_id + ' → 已修复（测试模拟修复）。').join('\\n') + '\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: fixesFM.length, fixes: fixesFM, deferred: deferredFM }) + '\\n' + F);",
   '  } else {',
   "    const mF = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
   "    let ids = [];",
@@ -276,6 +301,50 @@ fs.writeFileSync(FAKE_CLI, [
   "      objG = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
   '    }',
   "    reply(F + 'json\\n' + JSON.stringify(objG) + '\\n' + F);",
+  // FS3a（v2.1 D3a）：R1 报 1 major + 1 minor（suggestion_count 1）；R2 clean + 对 MF-1
+  // 声明 fixed（rawAllClean 回填转 fixed → 批 clean）
+  "  } else if (process.env.FAKE_FALLBACK_MINOR === '1' && prompt.includes('审查者「correctness」')) {",
+  "    const fF = process.env.FAKE_FALLBACK_MINOR_FILE;",
+  "    const nF = Number(fs.existsSync(fF) ? fs.readFileSync(fF, 'utf8') : '0') + 1;",
+  "    fs.writeFileSync(fF, String(nF));",
+  "    let objF;",
+  "    if (nF === 1) {",
+  "      objF = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }, { id: 'A2', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }], suggestion_count: 1, reconciliation: [] };",
+  "    } else {",
+  "      objF = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }] };",
+  '    }',
+  "    reply(F + 'json\\n' + JSON.stringify(objF) + '\\n' + F);",
+  // FS3b（v2.1 D3c）：六种契约缺失/矛盾形态（围栏解析都成功）——{"ok":true}（status
+  // 缺失）/ status:"maybe"（非法枚举）/ issues 非数组 / clean+条目（矛盾输出）/
+  // suggestion_count 非数值 / 条目全无 title（剔除后有效 0）。全部应 parseFail 终止
+  "  } else if (process.env.FAKE_BAD_CONTRACT && prompt.includes('审查者「correctness」')) {",
+  "    const bc = process.env.FAKE_BAD_CONTRACT;",
+  "    let objB;",
+  "    if (bc === 'okonly') objB = { ok: true };",
+  "    else if (bc === 'maybe') objB = { status: 'maybe', issues: [], suggestion_count: 0, reconciliation: [] };",
+  "    else if (bc === 'nonarray') objB = { status: 'issues', issues: '很多问题，详见正文', suggestion_count: 0, reconciliation: [] };",
+  "    else if (bc === 'cleanplus') objB = { status: 'clean', issues: [{ id: 'A1', severity: 'major', title: '矛盾条目', detail: 'clean 却报条目', file: 'a.js' }], suggestion_count: 0, reconciliation: [] };",
+  "    else if (bc === 'badcount') objB = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }], suggestion_count: '两个', reconciliation: [] };",
+  "    else objB = { status: 'issues', issues: [{ id: 'A1', severity: 'major', detail: '无标题畸形条目' }], suggestion_count: 0, reconciliation: [] };",
+  "    reply(F + 'json\\n' + JSON.stringify(objB) + '\\n' + F);",
+  // FS4（v2.1 D4）reviewer：R1 双 major（配 dormant 聚合段 → issues={MF-1,MF-2}+dormant
+  // MF-3）；R2 按 FAKE_MF_COLLIDE 分支——'new' 全新独有问题（撞号探针）/ 'revive' 重报
+  // dormant 同题臆测竞态（复活探针）；R3+ clean 收尾
+  "  } else if (process.env.FAKE_MF_COLLIDE && prompt.includes('审查者「correctness」')) {",
+  "    const fC2 = process.env.FAKE_MF_COLLIDE_FILE;",
+  "    const nC2 = Number(fs.existsSync(fC2) ? fs.readFileSync(fC2, 'utf8') : '0') + 1;",
+  "    fs.writeFileSync(fC2, String(nC2));",
+  "    let objC2;",
+  "    if (nC2 === 1) {",
+  "      objC2 = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }, { id: 'A2', severity: 'major', title: '第二处空指针', detail: '空引用风险', file: 'b.js' }], suggestion_count: 0, reconciliation: [] };",
+  "    } else if (nC2 === 2 && process.env.FAKE_MF_COLLIDE === 'new') {",
+  "      objC2 = { status: 'issues', issues: [{ id: 'A3', severity: 'major', title: '全新独有问题', detail: '新发现', file: 'c.js' }], suggestion_count: 0, reconciliation: [] };",
+  "    } else if (nC2 === 2) {",
+  "      objC2 = { status: 'issues', issues: [{ id: 'A3', severity: 'major', title: '臆测竞态', detail: '本轮确认有证据', file: 'x.js' }], suggestion_count: 0, reconciliation: [] };",
+  "    } else {",
+  "      objC2 = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
+  '    }',
+  "    reply(F + 'json\\n' + JSON.stringify(objC2) + '\\n' + F);",
   "  } else if (process.env.FAKE_DECLINE === '1') {",
   "    const f = process.env.FAKE_STATE_FILE;",
   "    const n = Number(fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '0') + 1;",
@@ -329,6 +398,8 @@ process.env.FAKE_REVIVE_REVIEW_FILE = REVIVE_REVIEW_FILE;
 process.env.FAKE_REVIVE_AGG_FILE = REVIVE_AGG_FILE;
 process.env.FAKE_DRIFT_FILE = DRIFT_FILE;
 process.env.FAKE_ESCALATE_FILE = ESCALATE_FILE;
+process.env.FAKE_FALLBACK_MINOR_FILE = FALLBACK_MINOR_FILE;
+process.env.FAKE_MF_COLLIDE_FILE = MF_COLLIDE_FILE;
 
 // env 隔离完成后才允许 require lib（见文件头注释）
 const config = require('../lib/config');
@@ -487,12 +558,13 @@ test('review-fix-loop：首轮 must-fix → fix → 次轮全 clean → round=2 
   assert.equal(result.loop.remainingCount, 0);
   // skip-clean 语义（对齐原版 skipCleanAgents=true 默认）：R1 的 robustness 报 clean，
   // fix 后 clean 集合不清空 → R2 只重审 correctness。v2 每轮 review 批后各有一个
-  // 聚合 phase（设计 D1）：R1 双审 + R1 聚合 + fix + R2 单审 + R2 聚合 = 6
-  assert.equal(result.phases.length, 6);
+  // 聚合 phase（设计 D1），但 v2.1 D5 起全员原始 clean 轮在聚合前 break——R2 零聚合：
+  // R1 双审 + R1 聚合 + fix + R2 单审 = 5
+  assert.equal(result.phases.length, 5);
   assert.ok(result.phases.every((p) => p.ok));
-  // 聚合 phase 条目（label R<n> 聚合，设计 D1）
+  // 非全员 clean 轮聚合齐全（R1）；全员 clean 轮（R2）不产聚合条目（v2.1 D5）
   assert.ok(result.phases.some((p) => p.phase === 'aggregate' && p.label === 'R1 聚合'));
-  assert.ok(result.phases.some((p) => p.phase === 'aggregate' && p.label === 'R2 聚合'));
+  assert.ok(!result.phases.some((p) => p.phase === 'aggregate' && p.label === 'R2 聚合'));
   // fixer v2 契约解析成功（U3 硬校验链路：parse → normalize → validate 全过）
   assert.equal(result.loop.fixResultParsed, true);
 
@@ -515,10 +587,10 @@ test('review-fix-loop：首轮 must-fix → fix → 次轮全 clean → round=2 
   assert.equal(st.fixCount, 1);
   assert.ok(fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-clean', 'batch-1', 'round-1', 'fix-result-1.json')));
 
-  // 报告条目冒烟：轮次摘要段 + 阶段表末行（v2 末阶段为 R2 聚合，设计 D1）
+  // 报告条目冒烟：轮次摘要段 + 阶段表末行（v2.1 D5 后 R2 无聚合，末阶段为 R2 review）
   const md = report.buildMarkdownReport(result);
   assert.ok(md.includes('## 轮次摘要'));
-  assert.ok(md.includes('| 6 | aggregate |'));
+  assert.ok(md.includes('| 5 | review |'));
 });
 
 test('review-fix-loop：恒不 clean 且逐轮递减 → maxRounds=5 熔断 → fixed-unverified', async () => {
@@ -693,27 +765,29 @@ test('review-fix-loop：聚合阶段运行中 abort → 立即中止于 aggregat
     task: '聚合运行中止演示', workdir: makeWorkdir('rfl-abort-agg-run'),
     reviewers: ['correctness'], runId: 'wf-utest-abort-agg-run',
     signal: controller.signal,
-    // R2 聚合 phase 启动回调里同步 abort：聚合 runPhase 预置中止（不 spawn）。
-    // 归一提取前的检查点必须立即中止——R2 reviewer 全 clean，若无此检查点，
-    // rawAllClean 分支会先产出 clean 终态把 abort 吞掉
+    // R1（reviewer 报 issues，非全员 clean → 聚合照跑）聚合 phase 启动回调里同步 abort：
+    // 聚合 runPhase 预置中止（不 spawn）。归一提取前的检查点必须立即中止——否则后续
+    // fallback/状态机分支（A4 全降级、stuck/converged）可能先产出 clean 等终态把 abort
+    // 吞掉。（v2.1 D5 起 rawAllClean 判定上移至聚合 phase 前：全员 clean 轮不再有聚合
+    // phase，本场景从原 R2 全 clean 轮改挂 R1 非全 clean 轮，检查点语义不变）
     onPhase: (e) => {
-      if (e.phase === 'batch1-round2-aggregate' && e.status === 'running') controller.abort();
+      if (e.phase === 'batch1-round1-aggregate' && e.status === 'running') controller.abort();
     },
   });
   assert.equal(result.status, 'aborted');
-  assert.equal(result.abortedAtPhase, 'batch1-round2-aggregate');
+  assert.equal(result.abortedAtPhase, 'batch1-round1-aggregate');
   assert.equal(result.loop.status, 'aborted');
   assert.ok(result.final.includes('已中止'));
-  // R1 完整轮 + R2 聚合中止轮（轮记录与摘要保留，mustFix=null 不误导为聚合结论）
-  assert.equal(result.loop.rounds, 2);
-  // R1 三阶段（review+聚合+fix）+ R2 review + R2 聚合（aborted 条目保留）
-  assert.equal(result.phases.length, 5);
-  const agg2 = result.phases.filter((p) => p.phase === 'aggregate').pop();
-  assert.equal(agg2.aborted, true);
-  // R2 聚合 phase 未 spawn（预置中止）：全程只有 R1 一次聚合调用
-  assert.equal(readCalls().filter((c) => c.prompt.includes('聚合者')).length, 1);
+  // R1 聚合中止轮（轮记录与摘要保留，mustFix=null 不误导为聚合结论）
+  assert.equal(result.loop.rounds, 1);
+  // R1 review + R1 聚合（aborted 条目保留）
+  assert.equal(result.phases.length, 2);
+  const agg1 = result.phases.filter((p) => p.phase === 'aggregate').pop();
+  assert.equal(agg1.aborted, true);
+  // R1 聚合 phase 未 spawn（预置中止）：全程零聚合调用
+  assert.equal(readCalls().filter((c) => c.prompt.includes('聚合者')).length, 0);
   // 中止轮 reviewer 报告已落盘（S5：聚合中止轮有迹可查）；聚合未产出结论 → 无剩余
-  assert.ok(fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-abort-agg-run', 'batch-1', 'round-2', 'correctness.md')));
+  assert.ok(fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-abort-agg-run', 'batch-1', 'round-1', 'correctness.md')));
   assert.equal(result.loop.remainingCount, 0);
 });
 
@@ -727,9 +801,9 @@ test('review-fix-loop：signal 存在但未触发 → 行为不变（status=ok�
     assert.equal(result.ok, true);
     assert.equal(result.status, 'ok');
     assert.equal(result.loop.status, 'clean');
-    // skip-clean 默认：R2 只重审 R1 非 clean 的 correctness；每轮各 1 个聚合 phase
-    // （R1 双审 + R1 聚合 + fix + R2 单审 + R2 聚合 = 6，设计 D1）
-    assert.equal(result.phases.length, 6);
+    // skip-clean 默认：R2 只重审 R1 非 clean 的 correctness；R1 聚合 + fix + R2 review，
+    // R2 全员原始 clean 零聚合（v2.1 D5）= R1 双审 + R1 聚合 + fix + R2 单审 = 5
+    assert.equal(result.phases.length, 5);
     assert.equal(result.abortedAtPhase, undefined);
   });
 
@@ -742,8 +816,9 @@ test('review-fix-loop：skipCleanAgents=false → clean 审查者不跳过，R2 
   });
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 2);
-    // R1 双审 + R1 聚合 + fix + R2 双审 + R2 聚合（skip 关闭；每轮 1 个聚合 phase，设计 D1）
-    assert.equal(result.phases.length, 7);
+    // R2 双审（skip 关闭）；R1 聚合 + fix；R2 全员原始 clean 零聚合（v2.1 D5）：
+    // R1 双审 + R1 聚合 + fix + R2 双审 = 6
+    assert.equal(result.phases.length, 6);
     // robustness 被派两次（字符串布尔 'false' 同样生效——入口 coerceBool 防御）
     assert.equal(readCalls().filter((c) => c.prompt.includes('审查者「robustness」')).length, 2);
   });
@@ -768,8 +843,9 @@ test('review-fix-loop：recheckAfterFix=true → fix 后重派全批，clean 审
   });
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 2);
-    // R2 重派全批（双审）；每轮 1 个聚合 phase（R1 双审+聚合+fix+R2 双审+聚合 = 7）
-    assert.equal(result.phases.length, 7);
+    // R2 重派全批（双审）；R1 聚合 + fix；R2 全员原始 clean 零聚合（v2.1 D5）：
+    // R1 双审+聚合+fix+R2 双审 = 6
+    assert.equal(result.phases.length, 6);
     const robustnessCalls = readCalls().filter((c) => c.prompt.includes('审查者「robustness」'));
     assert.equal(robustnessCalls.length, 2);
   // 第二次（R2 重派）prompt 是限定复检：只查 fix 引入的回归，非全量重审
@@ -1198,7 +1274,8 @@ test('review-fix-loop v2：聚合降级链——JS fallback、degraded 标记、
     // 降级轮循环继续：R1 报 1 → fallback 聚合 MF-1 → fix → R2 重报同题沿用 MF-1 → fix → R3 clean
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 3);
-    assert.equal(result.phases.length, 8); // 2 × (review+聚合+fix) + R3 review+聚合，聚合条目本身 ok
+    // R1/R2 各三阶段 + R3 review（全员原始 clean 零聚合，v2.1 D5），聚合条目本身 ok
+    assert.equal(result.phases.length, 7);
     assert.ok(result.phases.every((p) => p.ok));
     // 报告轮次摘要注明降级（S8）
     assert.ok(result.sections[0].body.includes('聚合降级: js-dedup'));
@@ -1288,7 +1365,8 @@ test('review-fix-loop v2 U3：对账转换链——R1 issue → fix → R2 recon
     });
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 2);
-    assert.equal(result.phases.length, 5); // R1 三阶段 + R2 review+聚合（rawAllClean break）
+    // R1 三阶段 + R2 review（R2 全员原始 clean 零聚合，rawAllClean break 前移，v2.1 D5）
+    assert.equal(result.phases.length, 4);
     // 状态转换链：open → fix-attempted → fixed（history 全程可查，G2 修复效果可对账）
     const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-recon-chain', 'state.json'), 'utf8'));
     assert.equal(st.issues['MF-1'].status, 'fixed');
@@ -1462,7 +1540,8 @@ test('review-fix-loop v2 U3：修复范围全等级（D6）——suggestion 未�
     });
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.loop.rounds, 3);
-    assert.equal(result.phases.length, 8); // R1/R2 各三阶段 + R3 review+聚合
+    // R1/R2 各三阶段 + R3 review（R3 全员原始 clean 零聚合，v2.1 D5）
+    assert.equal(result.phases.length, 7);
     const fixCalls = readCalls().filter((c) => c.prompt.includes('循环中的修复者'));
     assert.equal(fixCalls.length, 2);
     // R1 fix prompt：must-fix 段 + 建议级汇总段（reviewer minor 条目标题清单）
@@ -1762,7 +1841,8 @@ test('review-fix-loop v2.1 D2 (FS2a)：R1 defer(minor) → R2 escalate → R3 �
     assert.equal(result.loop.rounds, 4);
     assert.equal(result.loop.status, 'max-rounds'); // open 残留阻断 clean 终态
     assert.equal(result.ok, false);
-    assert.equal(result.phases.length, 9); // R1 三阶段 + R2/R3/R4 各 review+聚合（残留轮不派 fixer）
+    // R1 三阶段 + R2/R3/R4 各 review（R2 起全员原始 clean 零聚合，v2.1 D5；残留轮不派 fixer）
+    assert.equal(result.phases.length, 6);
     // R2 轮摘要：全员原始 clean 但有 open/regressed 残留 → 出声并继续（不静默）
     assert.ok(result.sections[0].body.includes('open/regressed 残留'));
 
@@ -1816,7 +1896,7 @@ test('review-fix-loop v2.1 D2 (FS2b)：全员 clean 但存在 open 残留 → �
     assert.equal(result.loop.status, 'max-rounds'); // 非 clean/converged
     assert.equal(result.ok, false);
     assert.equal(result.loop.rounds, 2); // R2 确实继续跑了（循环未提前终止）
-    assert.equal(result.phases.length, 5); // R1 三阶段 + R2 review+聚合
+    assert.equal(result.phases.length, 4); // R1 三阶段 + R2 review（全员 clean 零聚合，v2.1 D5）
     const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-b', 'state.json'), 'utf8'));
     assert.equal(st.issues['S-1'].status, 'open'); // escalate→open 残留在场
     assert.equal(st.meta.terminated, 'max-rounds');
@@ -1843,7 +1923,7 @@ test('review-fix-loop v2.1 D2 (FS2c)：open 残留被对账声明 fixed（带 ev
     assert.equal(result.loop.status, 'clean');
     assert.equal(result.ok, true);
     assert.equal(result.loop.rounds, 3);
-    assert.equal(result.phases.length, 7); // R1 三阶段 + R2/R3 各 review+聚合
+    assert.equal(result.phases.length, 5); // R1 三阶段 + R2/R3 各 review（全员 clean 零聚合，v2.1 D5）
     const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-c', 'state.json'), 'utf8'));
     assert.equal(st.issues['S-1'].status, 'fixed');
     assert.equal(st.issues['S-1'].openStreak, 0);
@@ -1878,4 +1958,179 @@ test('review-fix-loop v2.1 D2：对账声明 fixed 但无 evidence → 不触发
     delete process.env.FAKE_ESCALATE;
     delete process.env.FAKE_ESCALATE_FIX_R3;
   }
+});
+
+// ------------- v2.1 D3：契约校验双修（FS3a/FS3b，GF3 消两条假终态）
+
+test('review-fix-loop v2.1 D3a/b (FS3a)：fallback 轮 minor 不进 fix 队列——fixer 合法 defer 后循环继续（非 fix-failed）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FALLBACK_MINOR_FILE, { force: true });
+  // FAKE_AGG_GARBAGE：LLM 聚合失效 → JS 聚合降级链；reviewer R1 报 1 major + 1 minor。
+  // 旧行为（假终态）：minor 一并进 fixQueue → fixer 合法 defer 该 minor（契约允许 minor
+  // 延期）→ mustFixIds 取全队列判 must-fix-not-fixed → 整 run fix-failed。
+  // D3a：fallback 队列只收 critical/major（与 LLM 聚合契约同形），minor 走既有
+  // suggestion 明细通道；D3b：mustFixIds 只传 must-fix 等级条目（双保险）
+  process.env.FAKE_AGG_GARBAGE = '1';
+  process.env.FAKE_FALLBACK_MINOR = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: 'fallback minor defer', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs3a'), runId: 'wf-utest-fs3a',
+    });
+    // 循环继续（非 fix-failed）：R1 fix → R2 clean → 批 clean
+    assert.equal(result.loop.status, 'clean');
+    assert.ok(result.loop.status !== 'fix-failed');
+    assert.equal(result.loop.rounds, 2);
+
+    // fix 队列 prompt 只含 major：aggregated-issues 块内无 minor 条目（D3a 拆分面）
+    const fixCall = readCalls().find((c) => c.prompt.includes('循环中的修复者'));
+    assert.ok(fixCall);
+    const queueBlock = /<untrusted source="aggregated-issues">\n([\s\S]*?)\n<\/untrusted>/.exec(fixCall.prompt);
+    assert.ok(queueBlock);
+    const queueItems = JSON.parse(queueBlock[1]);
+    assert.deepEqual(queueItems.map((x) => x.id), ['MF-1']);
+    assert.deepEqual(queueItems.map((x) => x.severity), ['major']);
+    assert.ok(fixCall.prompt.includes('样例逻辑错误'));
+    // minor 走 suggestion 明细段（既有通道）
+    assert.ok(fixCall.prompt.includes('建议级问题'));
+    assert.ok(fixCall.prompt.includes('<untrusted source="suggestion-issues">'));
+    assert.ok(fixCall.prompt.includes('建议重命名变量'));
+
+    // aggregated.md 同口径：降级链报告不含 minor 条目
+    const aggMd = fs.readFileSync(
+      path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs3a', 'batch-1', 'round-1', 'aggregated.md'), 'utf8');
+    assert.ok(aggMd.includes('degraded: js-dedup'));
+    assert.ok(aggMd.includes('样例逻辑错误'));
+    assert.ok(!aggMd.includes('建议重命名变量'));
+
+    // 幽灵 defer 的 minor 建 deferred 条目（S-1，fixer 契约未追踪 defer 通道）；
+    // minor 未占 MF-2 号
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs3a', 'state.json'), 'utf8'));
+    assert.equal(st.issues['S-1'].status, 'deferred');
+    assert.ok(st.issues['S-1'].deferredReason.length >= 20);
+    assert.ok(!st.issues['MF-2']);
+  } finally {
+    delete process.env.FAKE_AGG_GARBAGE;
+    delete process.env.FAKE_FALLBACK_MINOR;
+  }
+});
+
+test('review-fix-loop v2.1 D3c (FS3b)：reviewer 契约缺失/矛盾输出 → review-failed 终止并指明 reviewer 与字段', async () => {
+  writeV2Config();
+  // 四设计形态（{"ok":true} / status:"maybe" / issues 非数组 / status=clean 但 issues
+  // 有条目）+ D3c 决策补全的 ④suggestion_count 不可数值化 ⑤条目全畸形两形态，逐一断言：
+  // 围栏解析成功但契约缺失/矛盾 → parseFail 结构化终止（防假 clean/丢条目），终止报告
+  // 指明 reviewer 名与具体缺失/矛盾字段；聚合/fix 不启动
+  const cases = [
+    ['okonly', 'status 缺失或非法'],        // ① status 缺失
+    ['maybe', 'maybe'],                     // ① status 非枚举
+    ['nonarray', 'issues 非数组'],          // ② status=issues 而 issues 非数组
+    ['cleanplus', '矛盾输出'],              // ③ status=clean 而有效条目 >0
+    ['badcount', 'suggestion_count 不可数值化'], // ④
+    ['malformed', '全部畸形'],              // ⑤ title 畸形剔除后有效 0 而原始 >0
+  ];
+  for (const [form, fragment] of cases) {
+    resetCalls();
+    process.env.FAKE_BAD_CONTRACT = form;
+    try {
+      const out = await runReviewFixLoop({
+        task: `契约形态 ${form}`, reviewers: ['correctness'],
+        workdir: makeWorkdir(`rfl-bad-contract-${form}`), maxRounds: 2,
+      });
+      assert.equal(out.ok, false, `${form} 应判失败`);
+      assert.equal(out.loop.status, 'review-failed', `${form} 应 review-failed 终止`);
+      assert.match(out.final, /审查阶段失败/);
+      assert.match(out.final, /correctness：输出解析失败/, `${form} 应指明 reviewer 名`);
+      assert.ok(out.final.includes(fragment), `${form} 终止报告应含「${fragment}」：\n${out.final}`);
+      assert.match(out.final, /不能按 clean 处理/);
+      // D3 终止在聚合前：聚合/fix 均零调用
+      assert.equal(readCalls().filter((c) => c.prompt.includes('聚合者')).length, 0, form);
+      assert.equal(readCalls().filter((c) => c.prompt.includes('循环中的修复者')).length, 0, form);
+    } finally {
+      delete process.env.FAKE_BAD_CONTRACT;
+    }
+  }
+  // 围栏解析本身失败（无 json 块）等既有 parseFail 行为不变：仍走「无有效 json 围栏」文案
+  resetCalls();
+  process.env.FAKE_FAIL_REVIEWERS = 'correctness';
+  try {
+    const out = await runReviewFixLoop({
+      task: '围栏解析失败形态', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-bad-contract-fence'), maxRounds: 2,
+    });
+    assert.equal(out.loop.status, 'review-failed');
+    assert.match(out.final, /输出解析失败（无有效 json 围栏）/);
+  } finally {
+    delete process.env.FAKE_FAIL_REVIEWERS;
+  }
+});
+
+// ------------------------------- v2.1 D4：MF-N 键空间联合计数（issues ∪ dormant）
+
+test('review-fix-loop v2.1 D4 (FS4)：dormant 占号不被新条目复用；dormant 同题复活走原 id', async () => {
+  writeV2Config();
+  // 前置（两 run 共用）：R1 双 major（→ MF-1/MF-2）+ 聚合臆测条目降级落 dormant MF-3。
+  // 分支 a：R2 全新独有问题——旧号分配只扫 issues 键会复用 MF-3（撞 dormant，同 id
+  // 「活跃条目 + 待复活 dormant」双状态）→ 应联合计数分得 MF-4；dormant MF-3 原样休眠。
+  // 分支 b：R2 重报 dormant 同题（臆测竞态）→ 标题对齐沿用 MF-3 + revived 置位（不编新号）
+  resetCalls();
+  fs.rmSync(MF_COLLIDE_FILE, { force: true });
+  fs.rmSync(REVIVE_AGG_FILE, { force: true });
+  process.env.FAKE_MF_COLLIDE = 'new';
+  try {
+    const ra = await runReviewFixLoop({
+      task: 'dormant 占号', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs4a'), runId: 'wf-utest-fs4a',
+    });
+    assert.equal(ra.loop.status, 'clean');
+    const sta = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs4a', 'state.json'), 'utf8'));
+    assert.deepEqual(Object.keys(sta.issues), ['MF-1', 'MF-2', 'MF-4']); // MF-3 未被新条目复用
+    assert.equal(sta.issues['MF-4'].title, '全新独有问题');
+    assert.equal(sta.dormant.length, 1);
+    assert.equal(sta.dormant[0].id, 'MF-3');
+    assert.equal(sta.dormant[0].revived, false); // dormant 未被撞号污染
+  } finally {
+    delete process.env.FAKE_MF_COLLIDE;
+  }
+
+  resetCalls();
+  fs.rmSync(MF_COLLIDE_FILE, { force: true });
+  fs.rmSync(REVIVE_AGG_FILE, { force: true });
+  process.env.FAKE_MF_COLLIDE = 'revive';
+  try {
+    const rb = await runReviewFixLoop({
+      task: 'dormant 复活', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs4b'), runId: 'wf-utest-fs4b',
+    });
+    assert.equal(rb.loop.status, 'clean');
+    const stb = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs4b', 'state.json'), 'utf8'));
+    assert.equal(stb.issues['MF-3'].title, '臆测竞态'); // dormant 同题复活走原 id
+    assert.equal(stb.issues['MF-3'].status, 'fixed'); // R3 clean 回填转 fixed
+    assert.equal(stb.dormant[0].id, 'MF-3');
+    assert.equal(stb.dormant[0].revived, true);
+    assert.ok(!stb.issues['MF-4']); // 复活未编幽灵新号
+  } finally {
+    delete process.env.FAKE_MF_COLLIDE;
+  }
+});
+
+// ------------------------------- v2.1 D5：rawAllClean 上移（零聚合调用，GF5）
+
+test('review-fix-loop v2.1 D5 (FS5)：双维度首轮全 clean → 零聚合调用 + 摘要标注「全员 clean，未聚合」', async () => {
+  writeV2Config();
+  resetCalls();
+  const result = await runReviewFixLoop({
+    task: '首轮全 clean', workdir: makeWorkdir('rfl-fs5'), runId: 'wf-utest-fs5',
+    batch1: ['security', 'performance'],
+  });
+  assert.equal(result.loop.status, 'clean');
+  assert.equal(result.loop.rounds, 1);
+  // 零聚合调用：phases 无 aggregate 条目 + 调用日志无聚合者
+  assert.equal(result.phases.filter((p) => p.phase === 'aggregate').length, 0);
+  assert.equal(readCalls().filter((c) => c.prompt.includes('聚合者')).length, 0);
+  // 该轮不产 aggregated.md（原始全 clean 无聚合结论可落盘）
+  assert.ok(!fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs5', 'batch-1', 'round-1', 'aggregated.md')));
+  // 轮次摘要标注「全员 clean，未聚合」
+  assert.ok(result.sections[0].body.includes('全员 clean，未聚合'));
 });

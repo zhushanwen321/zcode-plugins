@@ -82,6 +82,10 @@ graph LR
 | F2 | 既有 FAKE_RECON_DRIFT 用例终态断言修正（clean → max-rounds 钉轮） | 原断言编码的正是 D2 要消除的假终态（regressed 残留判 clean）；核心断言（regressed 链/fixAttempts）原样保留 | 既有断言随行为修正，接受 |
 | F2 | 幽灵 defer 建条目额外补 title（reason 首段截断 40 字） | 对账清单条目与报告渲染需要 title；fixer deferred 契约无标题字段（pi 同构亦无） | 接受 |
 | F2 | deferred 抑制标注落条目独立 note 字段而非拼接 title（文案逐字保留设计原文） | 聚合 prompt 复用清单做「ID 权威」提示，拼接 title 会污染 dedupKey 标题对账 | 接受 |
+| F3 | D5 行为变更的 10 处既有断言改条件断言（T1-T8/FS2a/b/c 的聚合 phases 计数与 aggregated.md 存在性） | D5 直接测试面（任务书明示随 F3 更新，README/v2 措辞归 F4） | 接受（按计划执行） |
+| F3 | T7「聚合阶段 abort」场景重写（挂 R1 非 clean 轮 aggregate running） | 原场景挂 R2 全员 clean 轮聚合 phase，D5 后该轮无聚合、场景结构性消失；检查点断言语义原样 | 接受 |
+| F3 | FS3b 覆盖六形态（任务书四形态 + D3c ⑤全畸形 title + 围栏解析失败回归断言） | D3c 决策文本共 5 个命中条件，逐一测入 | 接受（超集覆盖） |
+| F3 | FS3a「队列只含 major」以 aggregated-issues 块级断言表达 | 整 prompt 负断言与「minor 在 suggestion 段」自相矛盾 | 接受 |
 
 ## 6 状态表
 
@@ -89,7 +93,7 @@ graph LR
 |------|------|------|----------|
 | F1 | committed | 1 | 47/47 workflow-b 绿（44 既有零回归 + 3 新增）；核验 2026-08-29 主 agent 复跑相符 |
 | F2 | committed | 1 | 51/51 workflow-b 绿（47 零回归 + 4 新增，实现前红态 4 fail 实证）；核验 2026-08-29 主 agent 复跑相符 |
-| F3 | pending | 0 | — |
+| F3 | committed | 1 | 55/55 workflow-b（51 零回归 + 4 新增，红态 14 fail 实证）；非 e2e 全量 431/431；核验 2026-08-29 主 agent 复跑相符 |
 | F4 | pending | 0 | — |
 
 ## 7 残留风险与变更历史

@@ -25,11 +25,16 @@
  * - U2 聚合 phase 与输出契约（设计 §3.3 D1/D2/D3/D10、§3.4 聚合/fixer 契约）：
  *   reviewer 契约扩展（issues[] + suggestion_count + reconciliation[]；R1 对账空表，
  *   R2+ 注入上轮活跃清单）；parseFail/runFail 收紧为任一即 review-failed 结构化终止
- *   （D3，v1 的部分失败容忍删除）；LLM 聚合 phase（runPhase + aggregatorModel，缺省
+ *   （D3，v1 的部分失败容忍删除；v2.1 D3c 起围栏解析成功的契约缺失/矛盾输出也计入
+ *   parseFail——status 缺失/非法枚举、status=issues 而 issues 非数组、status=clean 而
+ *   有效条目 >0、suggestion_count 不可数值化、条目全畸形，终止报告指明 reviewer 与字段）；
+ *   LLM 聚合 phase（runPhase + aggregatorModel，缺省
  *   与主模型同 ref，D7）+ JS 聚合降级链（fallback 轮标 degraded: js-dedup、无裁决
- *   数据、标题匹配对账；aggregator-failure 终态仅 JS fallback 自身异常到达，§3.4）；
+ *   数据、标题匹配对账、只收 critical/major——v2.1 D3a，minor 走 suggestion 明细通道；
+ *   aggregator-failure 终态仅 JS fallback 自身异常到达，§3.4）；
  *   聚合条目 ID 对齐双路径同规（id 归一 → 标题归一 → 新分配 MF-N，state.issues 单一
- *   权威，§3.4「ID 对齐」）；wrapUntrusted 覆盖 D10 嵌入通道（reviewer→聚合 /
+ *   权威，§3.4「ID 对齐」；v2.1 D4 起新号从 issues ∪ dormant 联合计数分配，dormant
+ *   占号不被复用）；wrapUntrusted 覆盖 D10 嵌入通道（reviewer→聚合 /
  *   聚合→fixer / state→reviewer / 用户自定义参数）。
  * - U3 对账/收敛状态机 + state 落盘（设计 §3.3 D6/D7、§3.4 状态机契约、§2.3 终态）：
  *   R2+ reconciliation 消费（reconSeen/reconEscalate/reconAll/reconFixed → reconcileIssues
@@ -41,7 +46,9 @@
  *   驱动，无对账走 updateStuckState 计数式）→ needs-redesign（fixAttempts>=
  *   maxFixAttempts 且 regressed，先 stuck 后 redesign）→ 收敛判定（checkConvergence
  *   + 无 open/regressed 活跃条目 + suggestion===0，D6）→ A4 全降级轮跳过 fix；
- *   rawAllClean 轮 break 前做确定性回填（pi applyCleanRoundBackfill 语义）；
+ *   rawAllClean 判定上移至 review 解析后、聚合 phase 前（v2.1 D5：全员原始 clean 轮
+ *   零聚合调用、不产 aggregated.md、轮摘要标注未聚合），break 前做确定性回填
+ *   （pi applyCleanRoundBackfill 语义）；
  *   fixer 契约硬校验（normalizeFixResult/validateFixResult：deferred 只允许 minor、
  *   活跃 must-fix 必须全进 fixes[]——违规即 fix-failed 终止，提取失败同罪，
  *   §4.1 差异 #5）；合规后 fixes[]→fix-attempted、deferred[]→deferred+reason、
@@ -292,7 +299,9 @@ const AGGREGATOR_SCHEMA = {
  *    id——否则复活置位的精确 id 匹配（updateIssuesFromAggregation）落空，dormant
  *    永不 revived 且幽灵新号累积。dormant.title 由编排层在 recordDormant 后补齐
  *    （vendor 函数的 pi 同构结构不含该字段）；
- * 3) 未匹配 → 从 state.issues 计数器分配新 MF-N（used 防同批重复分配同一号）。
+ * 3) 未匹配 → 从 issues ∪ dormant ∪ used 联合计数分配新 MF-N（v2.1 D4/GF4：dormant
+ *    占用的号不分配给新条目——撞号会让同一 id 同时存在「活跃条目 + 待复活 dormant」
+ *    双状态，复活对账与 upsert 身份错乱；used 防同批重复分配同一号）。
  * state.issues 是 MF id 的单一权威；本函数不写 state（写入统一在
  * updateIssuesFromAggregation，活跃条目 only——降级条目有 id 但不入追踪表）。
  */
@@ -309,7 +318,9 @@ function alignIssueToState(state, entry, used) {
     }
   }
   let max = 0;
-  for (const key of [...Object.keys(state.issues), ...used]) {
+  // v2.1 D4（GF4）联合计数：dormant 占用的 MF 号一并纳入扫描集——新条目从 max+1 起，
+  // 不复用 dormant 已占的号（对齐 dormant 复活的「沿用原 id」通道，防 id 双状态）
+  for (const key of [...Object.keys(state.issues), ...(state.dormant || []).map((d) => d.id), ...used]) {
     const m = /^MF-(\d+)$/i.exec(String(key).trim());
     if (m) max = Math.max(max, Number(m[1]));
   }
@@ -461,6 +472,10 @@ function postReconcile(state, { reconFixedIds, round }) {
  * （无裁决数据）+ reviewer suggestion_count 汇总（不依赖聚合输出）。条目不带 id，
  * ID 对齐统一走 normalizeAggregated 后处理（与 LLM 路径同规）。仅在本函数抛错时
  * 到达 aggregator-failure 终态（设计 §3.4：LLM 聚合 parseFail 不触发该终态）。
+ * v2.1 D3a（GF3）：按 severity 拆分——只收 critical/major（MUST_FIX_SEVERITIES），
+ * 与 LLM 聚合契约同形；minor 不进 fixQueue（走既有 suggestion 明细通道，fix prompt
+ * 的 suggestion-issues 段从 parsedReviews 汇总）。旧行为把 minor 一并塞队列，fixer
+ * 对其合法 defer 即误判 must-fix-not-fixed → 假 fix-failed 终态
  */
 function jsAggregateFallback(parsedReviews) {
   const map = new Map(); // dedupKey -> {title, severity, files, evidence}
@@ -468,8 +483,9 @@ function jsAggregateFallback(parsedReviews) {
     for (const it of issues || []) {
       const title = String(it?.title || '').trim();
       if (!title) continue;
-      const key = dedupKey(title);
       const severity = String(it?.severity || 'minor').toLowerCase();
+      if (!MUST_FIX_SEVERITIES.includes(severity)) continue; // minor 不进修复队列（D3a）
+      const key = dedupKey(title);
       if (!map.has(key)) {
         map.set(key, {
           title, severity,
@@ -795,8 +811,9 @@ async function runReviewFixLoop(raw = {}) {
   let stuckIdsOut = []; // stuck 终止报告数据源（reconcileIssues.stuckIds）
 
   /**
-   * 跑一个批次，返回批内终态。批内循环骨架 = review 批 → D3 失败判定 → LLM 聚合
-   * phase（JS 降级链）→ rawAllClean 回填 break → merge/dormant → stuck（对账
+   * 跑一个批次，返回批内终态。批内循环骨架 = review 批 → D3 失败判定 → rawAllClean
+   * 上移 break（v2.1 D5：回填 + 零聚合，不产 aggregated.md）→ LLM 聚合 phase
+   * （JS 降级链）→ merge/dormant → stuck（对账
    * stuckIds 驱动优先，无对账计数式）→ needs-redesign → 收敛判定 → A4 全降级
    * break → fix（契约硬校验 + fix-attempted/deferred 消费）；批间差异只在：批级
    * issue 状态重置 + 跨批 skip 预过滤 + agentStatus 记录 + 检查点命名。
@@ -948,13 +965,33 @@ async function runReviewFixLoop(raw = {}) {
         if (!entry.ok) return { reviewer: r, issues: [], runFail: true, entry };
         const obj = extractJsonObject(entry.response || '');
         if (!obj) return { reviewer: r, issues: [], parseFail: true, entry };
-        const issues = Array.isArray(obj.issues)
-          ? obj.issues.filter((x) => x && typeof x.title === 'string')
+        // v2.1 D3c（GF3）：围栏解析成功 ≠ 契约合规——缺契约字段的合法 JSON 会按
+        // 旧口径滑成 clean=true（假 clean/丢条目）。五形态任一命中即按 parseFail 走
+        // D3 终止，parseDetail 带具体缺失/矛盾字段供终止报告指名（可操作错误信息）：
+        // ① status 缺失或非 {clean,issues} 枚举 ② status=issues 而 issues 非数组
+        // ③ status=clean 而 issues 有效条目 >0（矛盾输出）④ suggestion_count 不可
+        // 数值化 ⑤ title 畸形条目剔除后有效 0 而原始 >0
+        const rawIssues = obj.issues;
+        const validIssues = Array.isArray(rawIssues)
+          ? rawIssues.filter((x) => x && typeof x.title === 'string')
           : [];
+        let parseDetail = null;
+        if (obj.status !== 'clean' && obj.status !== 'issues') {
+          parseDetail = `status 缺失或非法（期望 clean/issues，实际 ${JSON.stringify(obj.status ?? null)}）`;
+        } else if (obj.status === 'issues' && !Array.isArray(rawIssues)) {
+          parseDetail = `status=issues 但 issues 非数组（实际 ${typeof rawIssues}）`;
+        } else if (obj.status === 'clean' && validIssues.length > 0) {
+          parseDetail = `status=clean 但 issues 含 ${validIssues.length} 个有效条目（矛盾输出）`;
+        } else if (Number.isNaN(Number(obj.suggestion_count))) {
+          parseDetail = `suggestion_count 不可数值化（实际 ${JSON.stringify(obj.suggestion_count ?? null)}）`;
+        } else if (Array.isArray(rawIssues) && rawIssues.length > 0 && validIssues.length === 0) {
+          parseDetail = `issues ${rawIssues.length} 条原始条目全部畸形（title 缺失）剔除后有效 0`;
+        }
+        if (parseDetail) return { reviewer: r, issues: [], parseFail: true, parseDetail, entry };
         return {
           reviewer: r,
-          issues,
-          clean: obj.status === 'clean' || issues.length === 0,
+          issues: validIssues,
+          clean: obj.status === 'clean' || validIssues.length === 0,
           suggestionCount: Number(obj.suggestion_count) || 0,
           reconciliation: Array.isArray(obj.reconciliation) ? obj.reconciliation : [],
           entry,
@@ -1051,7 +1088,11 @@ async function runReviewFixLoop(raw = {}) {
       // 假收敛，且聚合口径不完整——继续跑等于用残缺结论驱动 fix
       const failedReviews = parsedReviews
         .filter((p) => p.runFail || p.parseFail)
-        .map((p) => ({ reviewer: p.reviewer, reason: p.runFail ? 'runFail' : 'parseFail' }));
+        .map((p) => ({
+          reviewer: p.reviewer,
+          reason: p.runFail ? 'runFail' : 'parseFail',
+          ...(p.parseDetail ? { detail: p.parseDetail } : {}), // D3c：具体缺失/矛盾字段
+        }));
       if (failedReviews.length > 0) {
         status = 'review-failed';
         failureReviewers = failedReviews;
@@ -1061,7 +1102,7 @@ async function runReviewFixLoop(raw = {}) {
           batch: batchIndex,
           round,
           detail: parsedReviews.map((p) =>
-            `${p.reviewer}: ${p.runFail ? '审查执行失败（runFail）' : p.parseFail ? '输出解析失败（parseFail）' : p.clean ? 'clean' : `${p.issues.length} 个问题`}`
+            `${p.reviewer}: ${p.runFail ? '审查执行失败（runFail）' : p.parseFail ? `输出解析失败（parseFail）${p.parseDetail ? `：${p.parseDetail}` : ''}` : p.clean ? 'clean' : `${p.issues.length} 个问题`}`
           ).join('；')
             + (crossSkipped.length ? `（跨批跳过: ${crossSkipped.join('、')}——此前批 clean 且此后无 fix）` : '')
             + (inBatchSkipped.length ? `（跳过: ${inBatchSkipped.join('、')}——上轮 clean 且此后无 fix）` : '')
@@ -1088,6 +1129,55 @@ async function runReviewFixLoop(raw = {}) {
         }
       }
       for (const p of parsedReviews) if (agentAllClean(p)) cleanNames.add(p.reviewer);
+
+      // ── v2.1 D5（GF5）rawAllClean 上移（pi all-clean break 时序对齐）：全员原始
+      // clean 的判定移至 review 解析后、聚合 phase 前——收尾轮零聚合调用，且不产
+      // aggregated.md（原始全 clean 无聚合结论可落盘，旧行为照跑聚合多付一次调用并
+      // 留误导性报告）。break 前仍用本轮 reconciliation 做确定性回填——fix-attempted
+      // 未再现 → fixed 的转换点（空 seenIds = 未重报 = 已修复，pi F1/M2）。
+      // rawAllClean（pi all-clean break 口径）= 本轮 reviewer 原始上报 must-fix 与
+      // suggestion 全零（区别于 A4「有原始上报但聚合裁决后归零」）──
+      const rawAllClean = parsedReviews.every((p) => p.clean && p.suggestionCount === 0);
+      const reviewOutcome = () => parsedReviews.map((p) => `${p.reviewer}: ${p.clean ? 'clean' : `${p.issues.length} 个问题`}`).join('；')
+        + (crossSkipped.length ? `（跨批跳过: ${crossSkipped.join('、')}——此前批 clean 且此后无 fix）` : '')
+        + (inBatchSkipped.length ? `（跳过: ${inBatchSkipped.join('、')}——上轮 clean 且此后无 fix）` : '');
+      if (rawAllClean) {
+        const hadFixAttempted = Object.values(state.issues || {}).some((i) => i.status === 'fix-attempted');
+        if (round > 1 && (reconAll.size > 0 || hadFixAttempted)) {
+          const dormantPending = new Set((state.dormant || []).filter((d) => d.revived !== true).map((d) => d.id));
+          const rec = reconcileIssues(state.issues || {}, {
+            seenIds: [...reconSeen].filter((id) => !dormantPending.has(id)),
+            escalateIds: [...reconEscalate].filter((id) => !dormantPending.has(id)),
+            round, stuckThreshold,
+          });
+          state.issues = rec.issues;
+          // v2.1 D2 编排层补充：open/regressed 的 fixed 消除 + escalate→open 刷新
+          // lastActiveRound（vendor 函数体无这两通道）
+          postReconcile(state, { reconFixedIds: [...reconFixed], round });
+          state.knownRemaining = rec.knownRemaining;
+        }
+        roundRecord.mustFix = 0;
+        roundRecord.suggestion = 0;
+        // v2.1 D2 出口断言：有 open/regressed 残留（如 escalate 复活条目）不判 clean——
+        // 继续下一轮，对账清单注入保证下轮 reviewer 可见。跳过 merge/fix：原始全 clean
+        // 无可信可修条目，聚合幻觉条目不入状态机（与 break 路径「merge 在 break 后」
+        // 同一防护）；mustFix 记 0 是原始口径（reviewer 无人报 must-fix）
+        if (hasOpenResidue(state)) {
+          summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员 clean，未聚合；存在 open/regressed 残留，不判 clean，继续对账）', mustFixCount: 0 });
+          rounds++;
+          lastAction = 'review';
+          // 本轮 reviewer 已被记入 cleanNames（skip-clean 会让下轮全跳 → active 空以
+          // clean 假终态漏出）——残留未清期间下轮仍需 reviewer 出场对账，清空重派
+          cleanNames.clear();
+          closeRound();
+          continue;
+        }
+        summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员 clean，未聚合，批 clean）', mustFixCount: 0 });
+        rounds++;
+        status = 'clean'; lastAction = 'review'; remaining = [];
+        closeRound();
+        break;
+      }
 
       // ── LLM 聚合 phase（D1 主路径）：输入 = 各 reviewer 提取后 issues JSON 全字段
       // （wrapUntrusted，D10 通道 1）+ R2+ 附上轮活跃清单（指示同一问题沿用既有 MF id）；
@@ -1185,20 +1275,14 @@ async function runReviewFixLoop(raw = {}) {
       const activeIds = new Set(filterActiveIds(entries));
       const fixQueue = entries.filter((e) => activeIds.has(e.id));
       const mustFixCount = fixQueue.filter((e) => MUST_FIX_SEVERITIES.includes(e.severity)).length;
-      // rawAllClean（pi all-clean break 口径）：本轮 reviewer 原始上报 must-fix 与
-      // suggestion 全零（区别于 A4「有原始上报但聚合裁决后归零」）
-      const rawAllClean = parsedReviews.every((p) => p.clean && p.suggestionCount === 0);
-
-      const reviewOutcome = () => parsedReviews.map((p) => `${p.reviewer}: ${p.clean ? 'clean' : `${p.issues.length} 个问题`}`).join('；')
-        + (crossSkipped.length ? `（跨批跳过: ${crossSkipped.join('、')}——此前批 clean 且此后无 fix）` : '')
-        + (inBatchSkipped.length ? `（跳过: ${inBatchSkipped.join('、')}——上轮 clean 且此后无 fix）` : '');
       const appendTerminationNote = (note) => {
         const last = summaries[summaries.length - 1];
         if (last) last.detail += `。判定：${note}`;
       };
 
       // aggregated.md 落盘（<runDir>/batch-i/round-j/，D4；S5/S8 数据源；fallback 轮
-      // 由同一函数合成并标 degraded: js-dedup）。落盘失败不阻断循环（WARN 出声）
+      // 由同一函数合成并标 degraded: js-dedup）。落盘失败不阻断循环（WARN 出声）。
+      // rawAllClean 轮不会到达此处（v2.1 D5：聚合前已 break，不产 aggregated.md）
       if (runDir) {
         try {
           const roundDir = path.join(runDir, `batch-${batchIndex}`, `round-${round}`);
@@ -1213,49 +1297,6 @@ async function runReviewFixLoop(raw = {}) {
         } catch (e) {
           process.stderr.write(`[zsw] WARN: aggregated.md 落盘失败（${e.message}）——循环继续\n`);
         }
-      }
-
-      // ── rawAllClean break（pi all-clean break + applyCleanRoundBackfill 语义）：
-      // break 前用本轮 reconciliation 做确定性回填——fix-attempted 未再现 → fixed 的
-      // 转换点（空 seenIds = 未重报 = 已修复，pi F1/M2）；否则末轮 fix 的对账永不发生，
-      // state.issues 停留在 fix-attempted 制造假「未收敛」观感 ──
-      if (rawAllClean) {
-        const hadFixAttempted = Object.values(state.issues || {}).some((i) => i.status === 'fix-attempted');
-        if (round > 1 && (reconAll.size > 0 || hadFixAttempted)) {
-          const dormantPending = new Set((state.dormant || []).filter((d) => d.revived !== true).map((d) => d.id));
-          const rec = reconcileIssues(state.issues || {}, {
-            seenIds: [...reconSeen].filter((id) => !dormantPending.has(id)),
-            escalateIds: [...reconEscalate].filter((id) => !dormantPending.has(id)),
-            round, stuckThreshold,
-          });
-          state.issues = rec.issues;
-          // v2.1 D2 编排层补充：open/regressed 的 fixed 消除 + escalate→open 刷新
-          // lastActiveRound（vendor 函数体无这两通道）
-          postReconcile(state, { reconFixedIds: [...reconFixed], round });
-          state.knownRemaining = rec.knownRemaining;
-        }
-        roundRecord.mustFix = 0;
-        roundRecord.suggestion = 0;
-        if (degraded) roundRecord.degraded = true;
-        // v2.1 D2 出口断言：有 open/regressed 残留（如 escalate 复活条目）不判 clean——
-        // 继续下一轮，对账清单注入保证下轮 reviewer 可见。跳过 merge/fix：原始全 clean
-        // 无可信可修条目，聚合幻觉条目不入状态机（与 break 路径「merge 在 break 后」
-        // 同一防护）；mustFix 记 0 是原始口径（reviewer 无人报 must-fix）
-        if (hasOpenResidue(state)) {
-          summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员原始 clean，但存在 open/regressed 残留，不判 clean，继续对账）', mustFixCount: 0 });
-          rounds++;
-          lastAction = 'review';
-          // 本轮 reviewer 已被记入 cleanNames（skip-clean 会让下轮全跳 → active 空以
-          // clean 假终态漏出）——残留未清期间下轮仍需 reviewer 出场对账，清空重派
-          cleanNames.clear();
-          closeRound();
-          continue;
-        }
-        summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员原始 clean，批 clean）', mustFixCount: 0 });
-        rounds++;
-        status = 'clean'; lastAction = 'review'; remaining = [];
-        closeRound();
-        break;
       }
 
       // 聚合条目 → state.issues 状态机写入（新条目 open/dormant 复活/无对账重报转
@@ -1368,7 +1409,8 @@ async function runReviewFixLoop(raw = {}) {
 
       if (fixQueue.length === 0 && suggestion === 0) {
         // A4 全降级轮：reviewer 有原始上报但聚合裁决后无活跃条目且 suggestion 归零
-        // → 语义等价 clean，跳过 fix（不空转派发 fixer；rawAllClean 轮已在上方 break）。
+        // → 语义等价 clean，跳过 fix（不空转派发 fixer；rawAllClean 轮已在聚合前的
+        // 上移 break 处处理，v2.1 D5）。
         // v2.1 D2 出口断言：state.issues 有 open/regressed 残留时不判 clean（假终态
         // 防护）——无活跃队列无可修，直接继续下一轮，对账清单注入保证下轮 reviewer 可见
         if (hasOpenResidue(state)) {
@@ -1474,10 +1516,17 @@ async function runReviewFixLoop(raw = {}) {
         fixFailureDetail = '修复者输出无有效 json 围栏或缺少 fixed_count（v2 结构化契约违规）';
         remaining = fixQueue; lastAction = 'fix'; closeRound(); break;
       }
-      // ES3 硬校验（pi 5.3-P1 红线）：mustFixIds 传活跃队列 id（降级条目不占修复
-      // 队列，两侧口径一致）；trackedIssues 传 state.issues——deferred 的 severity
-      // 与追踪表交叉核对（must-fix 标 minor 塞 deferred 的逃逸路径在追踪表面前失效）
-      const es3Violations = validateFixResult(fixResult, fixQueue.map((e) => e.id), state.issues);
+      // ES3 硬校验（pi 5.3-P1 红线）：mustFixIds 只传 severity ∈ MUST_FIX_SEVERITIES
+      // 的活跃队列条目（v2.1 D3b 与 mustFixCount 口径对齐的双保险——LLM 聚合违约把
+      // minor 塞进队列时，fixer 合法 defer 该 minor 不再误判 must-fix-not-fixed；
+      // 降级条目同样不占修复队列，两侧口径一致）；trackedIssues 传 state.issues——
+      // deferred 的 severity 与追踪表交叉核对（must-fix 标 minor 塞 deferred 的逃逸
+      // 路径在追踪表面前失效）
+      const es3Violations = validateFixResult(
+        fixResult,
+        fixQueue.filter((e) => MUST_FIX_SEVERITIES.includes(e.severity)).map((e) => e.id),
+        state.issues,
+      );
       if (es3Violations.length > 0) {
         status = 'fix-failed';
         // pi m7：violation 分两类——deferred 非 minor / must-fix 漏修，文案区分
@@ -1612,7 +1661,7 @@ async function runReviewFixLoop(raw = {}) {
   const finalText = status === 'aborted'
     ? `## 已中止\n\n在 ${abortedAtPhase} 检查点收到 abort，后续阶段未启动；已完成 ${totalRounds} 轮，已启动阶段的条目保留在下方阶段表。${remaining.length ? `\n\n中止时剩余 must-fix ${remaining.length} 个（未处理）：\n${remainingMd}` : ''}`
     : status === 'review-failed'
-      ? `## 审查阶段失败\n\n共 ${totalRounds} 轮，以下审查者无效，按 D3 结构化终止（任一 reviewer 无效即终止——对账契约下缺席者会被误读为「已修复」制造假收敛，且聚合口径不完整）：\n${(failureReviewers || []).map((f) => `- ${f.reviewer}：${f.reason === 'runFail' ? '审查执行失败（CLI 崩溃/超时）' : '输出解析失败（无有效 json 围栏）'}`).join('\n')}\n\n没有任何可信审查结论——不能按 clean 处理。恢复指引：runFail → 检查该 reviewer 的模型 CLI 可用性并调大 timeoutMsPerPhase；parseFail → 检查该 reviewer 的输出契约遵循；处理后重跑。`
+      ? `## 审查阶段失败\n\n共 ${totalRounds} 轮，以下审查者无效，按 D3 结构化终止（任一 reviewer 无效即终止——对账契约下缺席者会被误读为「已修复」制造假收敛，且聚合口径不完整）：\n${(failureReviewers || []).map((f) => `- ${f.reviewer}：${f.reason === 'runFail' ? '审查执行失败（CLI 崩溃/超时）' : f.detail ? `输出解析失败（${f.detail}）` : '输出解析失败（无有效 json 围栏）'}`).join('\n')}\n\n没有任何可信审查结论——不能按 clean 处理。恢复指引：runFail → 检查该 reviewer 的模型 CLI 可用性并调大 timeoutMsPerPhase；parseFail → 检查该 reviewer 的输出契约遵循（status 取 clean/issues、issues 为数组、clean 时不得携带条目、suggestion_count 须可数值化）；处理后重跑。`
       : status === 'aggregator-failure'
         ? `## 聚合链路失效\n\n共 ${totalRounds} 轮，LLM 聚合不可用后 JS 降级聚合自身异常（${aggregateError || '未知错误'}），无法产出修复队列。恢复指引：用 --aggregator-model 指定更强的聚合模型后重跑。`
         : status === 'needs-redesign'
