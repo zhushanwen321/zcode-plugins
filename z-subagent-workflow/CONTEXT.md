@@ -11,7 +11,7 @@
 | 层 | token | 适用场合 |
 |----|-------|---------|
 | **全名** | `z-subagent-workflow` | 人读的插件标识：marketplace.json 的 name/source、插件目录名、`.zcode-plugin/plugin.json` 的 name、`.mcp.json` 的 server key、文档标题、git 分支名（`feat-zcode-subagent-workflow-*`） |
-| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_RUNNER`、`ZSW_SOCK`、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
+| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_RUNNER`、`ZSW_SOCK`、`ZSW_TP1_*`（TP-1 恢复探针专用：`ZSW_TP1_SCENARIOS`/`ZSW_TP1_FLOOD_ONLY`/`ZSW_TP1_IDLE_WAIT_MS`，见 test/e2e-tp1-recovery.test.js）、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
 | **tool 名** | `zsub` / `zflow` | 语义层名（1.0.0 起 MCP 工具面下线，无实际 tool，叙事沿用）：`zsub` = subagent 生命周期（九 action：start/list/status/cancel/message/close/wait/agents/models），`zflow` = workflow 管理面（六 action：run/abort/status/list/scripts/lint）。skill 名 `zsub-zflow-orchestration` 由两者组合。CLI/文档中提到「zsub 面」「zflow 的 run action」用这些名 |
 
 ## 判定规则

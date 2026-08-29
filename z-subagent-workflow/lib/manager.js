@@ -333,7 +333,12 @@ class SubagentManager {
       );
     }
     if (rec.status === 'running' || rec.status === 'created') {
-      return { busy: true, message: '该 subagent 正在运行，仅 idle 状态可投递' };
+      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令真实可执行
+      return {
+        busy: true,
+        message: `该 subagent 正在运行，仅 idle 状态可投递。`
+          + `等待当前轮完成（zsw wait --id ${id}）或 zsw cancel --id ${id} 取消后再投递`,
+      };
     }
     if (rec.status !== 'idle') {
       throw new Error(
@@ -545,6 +550,11 @@ class SubagentManager {
         // F4/D5：thinking 请求值随首轮下行——终态标注的判定依据（resume 轮无
         // create 面，会话级设置随会话驻留，不改写首轮标注）
         thinkingRequested: plan.kind === 'first' ? plan.taskCtx.thinking : undefined,
+        // F4/D6（G6 标注面对称）：CLI 工具限制请求值随首轮下行——最终通道为
+        // spawn 时限制静默失效，终态落 toolsNote 如实标注
+        toolsRequested: plan.kind === 'first'
+          ? Boolean(plan.taskCtx.toolAllowlist || plan.taskCtx.toolDenylist)
+          : undefined,
       });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
     } catch (err) {
@@ -562,7 +572,7 @@ class SubagentManager {
   }
 
   /** done 之后的统一收尾：落盘 → 终态转移 → 通知。 */
-  async _completeRun(id, result, { conversation, thinkingRequested } = {}) {
+  async _completeRun(id, result, { conversation, thinkingRequested, toolsRequested } = {}) {
     const status = ['closed', 'timeout', 'cancelled'].includes(result && result.status)
       ? result.status
       : 'error';
@@ -636,6 +646,14 @@ class SubagentManager {
       transitionPatch.thinking = result.thinking;
     } else if (thinkingRequested !== undefined) {
       transitionPatch.thinking = before.runnerKind === 'appserver' ? null : 'null (spawn 降级)';
+    }
+    // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
+    // 键」纪律）：请求了 allow/deny 且最终通道非 appserver（spawn 回退 / probe
+    // 降级翻转）= 限制未生效，落 toolsNote；未请求或 appserver 通道不落字段。
+    // before.runnerKind 在此已是最终通道——降级翻转的 record 改标发生在 done
+    // settle 之前（assemble.relabelRecord）
+    if (toolsRequested && before.runnerKind !== 'appserver') {
+      transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
     }
     this._transitionOrSkip(id, 'running', to, transitionPatch);
 

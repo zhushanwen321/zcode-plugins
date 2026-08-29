@@ -1305,12 +1305,13 @@ class AppServerRunner {
       throw new Error('AppServerRunner.resume: message 必填。');
     }
     const timeoutMs = opts.timeoutMs ?? config.DEFAULTS.timeoutMs;
-    // A5：busy 保守分支（单点修改位置）
+    // A5：busy 保守分支（单点修改位置）。A-9：文案给两条出路（等待 / 取消），
+    // 本层只见 sessionId 不见 subagentId，命令以占位形态给出
     if (this._turns.has(exec.sessionId)) {
       return {
         status: 'error',
         sessionId: exec.sessionId,
-        error: `会话 ${exec.sessionId} 仍有进行中的一轮（busy）。恢复指引：等本轮 done 后再续聊。`,
+        error: `会话 ${exec.sessionId} 仍有进行中的一轮（busy）。恢复指引：等待当前轮完成（zsw wait --id <subagentId>）或 zsw cancel --id <subagentId> 取消本轮后再续聊。`,
       };
     }
     // 跨重启恢复的句柄本 runner 未必认识：补登记以便 chunk 聚合与 alive 查询
@@ -1346,8 +1347,15 @@ class AppServerRunner {
         stderrLog(err.message); // 分支 B 双落点（同 start）
         return { status: 'error', sessionId: exec.sessionId, error: err.message };
       }
-      // 其余错误如实上报（-32010 busy 等已有语境；-32004 已被恢复序消费，不再直达此处）
-      return { status: 'error', sessionId: exec.sessionId, error: err && err.message };
+      // 其余错误如实上报（-32004 已被恢复序消费，不再直达此处）。A-9：
+      // -32010（引擎侧 busy 硬错误）的裸文案无出路信息，附加 busy 语境指引
+      // 防其直达用户——判定走 message 的 [<code>] 前缀（request 层 _onResponse
+      // 构造），不依赖 err.code 形态
+      let errMsg = err && err.message;
+      if (typeof errMsg === 'string' && /\[-32010\]/.test(errMsg)) {
+        errMsg += '（busy：该会话仍有进行中的一轮。恢复指引：等待当前轮完成（zsw wait --id <subagentId>）或 zsw cancel --id <subagentId> 取消后再投递）';
+      }
+      return { status: 'error', sessionId: exec.sessionId, error: errMsg };
     }
   }
 

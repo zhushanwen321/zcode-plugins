@@ -329,3 +329,48 @@ test('缓存命中后首次 create 失败 + 重探失败 → 降级 spawn 重跑
     delete process.env.ZSW_ZCODE_CLI;
   }
 });
+
+test('通道级降级后第二个任务免重探：直接走 spawn，probe 与 inner 均不再触达', async () => {
+  delete process.env.ZSW_RUNNER;
+  clearProbeCache();
+  process.env.ZSW_ZCODE_CLI = FAKE_CLI;
+  writeProbeCacheEntry(FAKE_CLI, fakeCliMtime(), 1); // 预置命中态（组装期不 probe）
+  const probe = setProbe(() => ({ ok: false, reason: 'unit: 环境已变坏' })); // 首任务重探失败 → 降级
+  const failStart = setFailingStart();
+  const fakeRun = setFakeRunHeadless();
+  try {
+    const a = await assembleManager();
+    // 第一任务：撞失效类 create 失败 → 重探失败 → 降级翻转 + 本任务 spawn 重跑
+    const res1 = await a.manager.start(
+      { task: '单元测试', slug: 'asm-degrade-1st', model: 'GLM-5.3', wait: true },
+      { cwd: TMP },
+    );
+    assert.equal(res1.status, 'closed');
+    assert.equal(a.manager.runner.capabilities().kind, 'spawn', '前置：第一任务后已通道级降级');
+    assert.equal(probe.count(), 1);
+    assert.equal(fakeRun.count(), 1);
+    assert.equal(failStart.count(), 1);
+
+    // 第二任务（降级翻转后的核心断言面）：manager 按 capabilities().kind='spawn'
+    // 组装（runEnv 为 spawn 形态），runner.start 走 degraded 分流——不重探、
+    // 不撞 inner 的失效类 create，直接 spawn 执行
+    const res2 = await a.manager.start(
+      { task: '单元测试二', slug: 'asm-degrade-2nd', model: 'GLM-5.3', wait: true },
+      { cwd: TMP },
+    );
+    assert.equal(res2.status, 'closed', '第二任务直接 spawn 完成');
+    assert.equal(res2.result, 'SPAWN-OK');
+    assert.equal(probe.count(), 1, '免重探：probe 计数不再增长');
+    assert.equal(fakeRun.count(), 2, 'spawn 执行体恰好新增一次（第二任务直跑）');
+    assert.equal(failStart.count(), 1, '不再喂 AppServerRunner（inner.start 计数不增长）');
+    const rec2 = a.manager.status(res2.subagentId);
+    assert.equal(rec2.runnerKind, 'spawn', '第二任务 record 通道标注 spawn');
+    assert.equal(rec2.exec && rec2.exec.kind, 'spawn', '第二任务 exec 为真实 spawn 句柄（非占位）');
+    assert.ok(rec2.exec && typeof rec2.exec.pid === 'number', 'exec.pid 已由真实句柄回填（relabel 生效）');
+  } finally {
+    probe.restore();
+    failStart.restore();
+    fakeRun.restore();
+    delete process.env.ZSW_ZCODE_CLI;
+  }
+});

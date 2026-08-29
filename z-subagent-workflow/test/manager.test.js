@@ -316,7 +316,10 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   const h = await manager.start({ task: '忙碌任务书', slug: 'busy-demo', conversation: true }, c);
   await waitFor(() => runner.startCalls.length === 1);
   const busy = await manager.message(h.subagentId, '现在怎么样了');
-  assert.deepEqual(busy, { busy: true, message: '该 subagent 正在运行，仅 idle 状态可投递' });
+  assert.deepEqual(busy, {
+    busy: true,
+    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（zsw wait --id ${h.subagentId}）或 zsw cancel --id ${h.subagentId} 取消后再投递`,
+  });
 
   // 非 conversation：完成后 message 直接报可操作错误
   const h2 = await manager.start({ task: '普通任务书', slug: 'plain-demo' }, c);
@@ -891,6 +894,45 @@ test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 
   setTimeout(() => r2.finishAll({ status: 'error', error: '普通失败', response: '' }), 20);
   const res2 = await m2.start({ task: '普通失败任务书', slug: 'plain-err', wait: true }, ctx());
   assert.equal(rec2.get(res2.subagentId).errorKind, undefined);
+});
+
+test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools → toolsNote；appserver / 未请求 → 不落', async () => {
+  const settle = (records, id) =>
+    waitFor(() => {
+      const r = records.get(id);
+      return r && ['closed', 'idle'].includes(r.status) ? r : null;
+    });
+
+  // ① spawn 回退通道请求了工具限制：spawn 无 flag 通道 → 静默失效，toolsNote 如实标注
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start(
+      { task: '任务书', slug: 'tools-degraded', allowTools: ['Read'], denyTools: ['Bash'] },
+      ctx(),
+    );
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道工具限制失效必须可见');
+  }
+  // ② appserver 通道请求了工具限制：正常消费（create 面），不落降级标注
+  {
+    const runner = runnerWithKind('appserver');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-apc', allowTools: ['Read'] }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, 'appserver 通道无 toolsNote');
+  }
+  // ③ spawn 通道未请求工具限制：无失效面，不落字段
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-none' }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, '未请求 tools 不落 toolsNote');
+  }
 });
 
 test('F4 CLI 工具限制透传 taskCtx（appserver runner 侧做 frontmatter 并集）', async () => {

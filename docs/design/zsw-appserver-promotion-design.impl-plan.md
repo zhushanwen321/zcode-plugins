@@ -103,6 +103,8 @@ graph TD
 | 2026-08-29 | F4 | record.thinking 标注矩阵细化：生效=档位字符串；非法跳过=null；spawn 通道请求了='null (spawn 降级)'（设计字面）；未请求=不落字段；resume 轮不改写首轮标注（thinking 会话级驻留，续聊无 create 面）；「不改写」用条件携带键实现（record-store 内存 fold 的 Object.assign 会用 undefined 覆盖，行为事实沉淀 manager.js 头注） | 设计只给 spawn 降级字面；矩阵与 Object.assign 行为是实现层必要语义 | 无需改设计；一致性审查复核 |
 | 2026-08-29 | F5 | TaskCtx JSDoc 补字段超出任务点名清单（多补 runEnv 与 disallowedTools）——「以 lib 实际实现为准逐字段核对」的产物（manager.js:233-239 组装、两 runner 均消费，原 JSDoc 缺失） | 领地内（ports.js 仅 JSDoc）；契约完整性 | 无 |
 | 2026-08-29 | F5 | 观察项（未改，不在领地）：model-router.js:235 runnerKind JSDoc 缺省注释仍写 'spawn'（F3 翻转后未同步）；实际调用方恒显式传，无行为影响 | 纯注释漂移，无行为面 | 随下次触及 model-router.js 的单元顺修；一致性审查登记 |
+| 2026-08-29 | 修复批次 | 检查点 2（spec 形态实测）改记归 A-6 真机收口：不为冒烟增加 token 成本（升级后高频操作保持极小），E9 仅保留参数面无漂移断言，行为面验证归一次性验收场景 A-6 | 冒烟 token 成本 vs 一次性验证；设计文档检查点 2 已同步改记 | 设计文档已改记 |
+| 2026-08-29 | 修复批次 | 区 B 观察项不修裁决：降级重跑 `await runSpawnRound` 秒级窗口内 cancel 丢失（终态仍落盘不悬挂，仅 cancel 语义弱化） | 窗口极窄 + 无悬挂后果，修复属过度工程 | 登记为已知边界；后续若报告实际影响再修 |
 
 ## 6 状态表
 
@@ -140,7 +142,7 @@ graph TD
 
 ### 回退开关
 - `ZSW_RUNNER=spawn` 显式回退旧通道（每轮独立 zcode 进程，行为与翻转前一致）。注意：daemon 在进程启动时读一次 env——修改该变量后需重启 ZCode 生效。
-- probe 健康检查失败自动降级 spawn（结论落盘 `~/.zcode/zsw/probe-cache.json`，只缓存成功结论，CLI 更新即失效重探）。
+- probe 健康检查失败自动降级 spawn（结论落盘 `~/.zcode/zsw/probe-cache.json`，只缓存成功结论，CLI 更新即失效重探）。降级为**通道级**：daemon 生命周期内后续任务直接走 spawn 免重探；重启 ZCode 后恢复探测。
 
 ### 新参数：--thinking / --allow-tools / --deny-tools
 - `zsw start --thinking <low|high|max>`：appserver 通道映射会话思考档位（合法值按模型动态，GLM 默认 max；省预算场景显式传 low）。非法档位 warn 跳过，任务不失败。
@@ -158,5 +160,6 @@ apc 协议无版本协商，ZCode 升级后建议本地手动跑一次冒烟（�
 出现 protocol-drift 错误时按错误信息指引核对漂移面；确认不兼容期间设 `ZSW_RUNNER=spawn` 回退（重启 ZCode 生效）。
 
 ### 已知边界
-- spawn 回退通道（含 probe 降级轮）thinking 不可用——请求了会在 record 中如实标注 `null (spawn 降级)`。
+- spawn 回退通道（含 probe 降级轮）thinking 与工具限制均不可用——请求了会在 record 中如实标注（thinking: `null (spawn 降级)`；tools: `null (spawn 降级：工具限制未生效)`）。
 - daemon 进程启动时读一次 env：任何 `ZSW_RUNNER` / `ZSW_ZCODE_CLI` 变更需重启 ZCode 后生效。
+- 通道级降级后 daemon 生命周期内后续任务走 spawn 免重探，重启 ZCode 恢复探测。

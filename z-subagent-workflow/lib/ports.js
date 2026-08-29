@@ -115,7 +115,8 @@ const DEFAULTS = require('./config').DEFAULTS;
  *
  * 契约：
  *   resolve(requested?, agentDefault?) -> modelRef   未知模型抛可操作错误（列可用清单）
- *   prepareRunEnv(modelRef, runnerKind='appserver', sessionOpts?) ->
+ *   prepareRunEnv(modelRef, runnerKind, sessionOpts?) ->
+ *       （runnerKind 必填：调用方按 capabilities().kind 显式传，实现无缺省值）
  *       spawn     场景 {env:{HOME, ZSW_NESTED}}   per-model 隔离 HOME；sessionOpts 整体忽略
  *       appserver 场景 {createParams:{model, thoughtLevel?, toolAllowlist?, toolDenylist?}}
  *     第三参 sessionOpts（F4 per-session 能力参数，仅 appserver 分支消费）：

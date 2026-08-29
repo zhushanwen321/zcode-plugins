@@ -22,7 +22,9 @@
  * 不变期间变坏会让旧 ok 结论错误命中、降级链失效，故命中后首次 session/create 失败
  * （-32603/-32601/-32602）即失效缓存并重探一次（wrapWithProbeInvalidation）：
  * 重探 ok 则原 create 错误继续走既有错误路径（D3 漂移分类兜底），不静默重试；
- * 重探失败则补做降级判定，本任务转 spawn 重跑 + record 如实改标 + 通道级降级。
+ * 重探失败则补做降级判定，本任务转 spawn 重跑 + record 如实改标 + 通道级降级
+ * （capabilities 翻转后 start 分流直接走 spawn，daemon 生命周期内后续任务免重探；
+ * daemon 随 ZCode 重启后重新组装、恢复探测）。
  */
 
 const fs = require('node:fs');
@@ -192,16 +194,53 @@ function wrapWithProbeInvalidation(inner, records) {
     if (!spawnInst) spawnInst = new (require('./runner-spawn'))();
     return spawnInst;
   };
-  // 降级重跑的 spawn runEnv 现做：组装期按 appserver 只备了 createParams 形态
+  // 降级通道的 spawn runEnv 现做（重跑本任务 / 后续任务免重探共用）：无条件按
+  // spawn 重组并整体替换 taskCtx.runEnv——manager 按 capabilities().kind 组装，
+  // 正常时 runEnv 已是 spawn 形态；降级翻转落在 manager 组装之后的竞态窗口
+  // （capabilities 读取与 runner.start 之间隔着 prepareRunEnv 的 await）里
+  // taskCtx.runEnv 仍是 appserver 的 createParams 形态，替换式现做对两种形态都正确
   const runSpawnRound = async (taskCtx) => {
     const ModelRouter = require('./model-router');
     const runEnv = await new ModelRouter().prepareRunEnv(taskCtx.modelRef, 'spawn');
     return spawnRunner().start({ ...taskCtx, runEnv });
   };
+  // spawn 进程启动后把真实句柄与通道标注回写 record（占位 exec / 组装期
+  // runnerKind 的修正）；update 失败只出声不炸轮——实际通道以 exec.kind 为准
+  const relabelRecord = (taskCtx, spawnHandle) => {
+    if (records && taskCtx && taskCtx.subagentId) {
+      try {
+        records.update(taskCtx.subagentId, { runnerKind: 'spawn', exec: spawnHandle.exec });
+      } catch (e) {
+        log(`降级改标失败（${e && e.message || e}）；实际通道以 exec.kind=${spawnHandle.exec && spawnHandle.exec.kind} 为准`);
+      }
+    }
+  };
 
   return {
     capabilities: () => (degraded ? spawnRunner().capabilities() : inner.capabilities()),
     start(taskCtx) {
+      if (degraded) {
+        // 通道级降级后的后续任务：免重探直接走 spawn（stderr 的「后续任务免
+        // 重探」承诺兑现处）。inner 已被判定为故障通道，不再喂任何任务。
+        let active = null;
+        const done = (async () => {
+          const spawnHandle = await runSpawnRound(taskCtx);
+          active = spawnHandle;
+          relabelRecord(taskCtx, spawnHandle);
+          return spawnHandle.done;
+        })();
+        return {
+          // 启动窗口（prepareRunEnv 的 await 段）内 exec 未定，先落 spawn 占位，
+          // relabelRecord 以真实句柄覆盖
+          exec: { kind: 'spawn', pid: undefined },
+          cancel: () => {
+            if (active) { active.cancel(); return; }
+            // 启动窗口内的取消：等句柄就绪后立即转发（done settle 时 active 必已赋值）
+            done.then(() => { if (active) active.cancel(); }).catch(() => {});
+          },
+          done,
+        };
+      }
       const handle = inner.start(taskCtx);
       let active = handle; // cancel 转发的当前活动句柄（降级重跑后切换为 spawn）
       const done = (async () => {
@@ -224,13 +263,7 @@ function wrapWithProbeInvalidation(inner, records) {
         degraded = true;
         const spawnHandle = await runSpawnRound(taskCtx);
         active = spawnHandle;
-        if (records && taskCtx && taskCtx.subagentId) {
-          try {
-            records.update(taskCtx.subagentId, { runnerKind: 'spawn', exec: spawnHandle.exec });
-          } catch (e) {
-            log(`降级改标失败（${e && e.message || e}）；实际通道以 exec.kind=${spawnHandle.exec && spawnHandle.exec.kind} 为准`);
-          }
-        }
+        relabelRecord(taskCtx, spawnHandle);
         return spawnHandle.done;
       })();
       return {

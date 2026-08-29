@@ -9,7 +9,7 @@
 ### SCQA
 
 - **S**：zsw（z-subagent-workflow 插件）有两条例程化执行通道（`RunnerPort` 策略位）：spawn（每轮 spawn `zcode --json --prompt` 独立进程，冷启动 1-2s）与 appserver（常驻 `zcode app-server` 子进程，apc 协议 stdio NDJSON）。当前默认硬编码 spawn，appserver 仅 `ZSW_RUNNER=appserver` env 可启用。
-- **C**：调研证实 apc 功能面全面占优——per-session 模型/思考等级/工具白名单、零冷启动续聊、事件流进度；且 ZCode GUI 底层就是同款架构（同一个 zcode.cjs 的 app-server，GUI = Electron 壳 + 每 workspace 一个引擎进程，GUI 的 subagent 也是同进程 child session）。故障连坐面（单进程多会话）与 GUI 相当，用户已裁决可接受。但协议无公开契约、无版本协商，且 zsw 的 appserver 实现只有 happy path（无恢复序、无漂移检测），7 项真机探针中 2 项推翻了既往假设（send-while-running 是硬错误；崩溃恢复 resume 链卡在 -32031）。
+- **C**：调研证实 apc 功能面全面占优——per-session 模型/思考等级/工具白名单、零冷启动续聊、事件流进度；且 ZCode GUI 底层就是同款架构（同一个 zcode.cjs 的 app-server，GUI = Electron 壳 + 每 workspace 一个引擎进程，GUI 的 subagent 也是同进程 child session）。故障连坐面（单进程多会话）与 GUI 相当，用户已裁决可接受。但协议无公开契约、无版本协商，且 zsw 的 appserver 实现只有 happy path（无恢复序、无漂移检测），7 项真机探针中 2 项推翻了既往假设（send-while-running 是硬错误；崩溃恢复 resume 链卡在 -32031——后者已由 F0 探针解出，见 §2.2 事实 2）。
 - **Q**：如何在「协议无契约、两个假设刚被推翻」的前提下，安全地把默认通道翻到 apc，并拿到它的独有能力？
 - **A（答案）**：本设计——先收口硬前置（恢复序探针 + 漂移信号分类），再翻转默认（保留 `ZSW_RUNNER=spawn` 显式回退与 probe 自动降级），最后接入 apc 独有能力（thinking / 工具白名单）。spawn 不删除，退为回退位。
 
@@ -57,13 +57,13 @@ zsw 是 zcode 的外挂编排插件（无进程内 extension API，能力经 CLI
 - probe 门控：`lib/assemble.js:30-52`——env 推断 appserver 时先 `probe()`（create 探针会话 + close，10s 预算），失败降级 spawn 并 stderr 出声；显式注入则不探测。
 - appserver 实现：`lib/runner-appserver.js`（RunnerPort 五方法全实现）——惰性启动单连接、单进程承载全部会话；`_handleExit` 后 reject 全部 pending，**下一次操作时重建新连接，但旧会话不迁移**（resume 撞 -32004 只提示重新 start，:834-839）。
 - 四个协议假设标注待收口（头注 A2/A4/A5/A6）：本轮探针已收口 A5（send-while-running）、A6（session/list 形态）；A2（多会话推送归因）、A4（read/messages 形态）仍未收。
-- `idleConversationTtlMs` 预留常量未接线（`lib/config.js:78`）；README:99「单 provider」文档已过时。
+- `idleConversationTtlMs` 预留常量未接线（`lib/config.js:78`）；README:99「单 provider」文档已过时——**两者均已在实施中解决（F2 删常量 / F3 顺修 README），本行保留为实施前现状快照**。
 - **workflow 线不走 runner 端口**：`lib/workflow/run-phase.js:98` 硬编码 `prepareRunEnv(modelRef,'spawn')` + `driver.runHeadless`。
 
 ### 2.2 协议面关键事实（调研文档 §2.1，本节只列影响设计的）
 
-1. **-32004 是常态不是异常**：引擎驻留池（targetCount=8 / highWater=16 / idleTimeout=10min）会驱逐空闲会话出内存；进程重启同理。被驱逐会话的恢复路径是 `session/resume`（从 SQLite 重建）——不恢复直接 send 就是 -32004。**F0 实证补充**：订阅会话免驱逐——zsw 现实形态（start 即 subscribe）下空闲驱逐几乎不可命中，-32004 的主来源是引擎进程死亡与 close；`idleTimeoutMs` 无 env/CLI/config 覆盖面（驻留池参数仅 GUI host 进程内注入），真机驱逐加速用 high_water_lru 洪泛（16+ 个 immediate 不订阅会话，秒级触发）。
-2. **resume 链已走通（F0 收口，推翻 P6/P6b 的无解印象）**：plain resume 成功返回完整快照（warning 在快照 `projection.lastError.message` 直接可见），但随后 plain send 必挂 `-32031`（ZCODE_RUNTIME_MODEL_UNAVAILABLE）。**F0 三线实证**：驱逐（进程存活）与崩溃（进程死亡）走同一冷恢复路径、**同设 restoreWarning**——「驱逐自愈、崩溃报错」的分支划分不存在。清除候选三可用一不可用：① `session/send` 直传 `runtimeModel`（硬闸前应用+清 warning）✓；② **`session/resume {sessionId, runtimeModel}` 最优**（warning 根本不设置；runtimeModel 是 resume params 的原生可选字段，与 create 无关）✓；③ `session/updateRuntimeModelConfig {sessionId, runtimeModel}` ✓；④ provider registry 就绪等待 ✗（独立无头引擎无 registry arrival 时机，等 12s 仍 -32031，等待线从恢复序删除）。runtimeModel 形态（schema strict 逐字段实测）：`{revision, generatedAt, model:{providerId,modelId}, provider:{providerId, kind:"anthropic"|"openai-compatible"|"openai", label?, source:"custom", baseURL, apiKey:{source:"inline",value}, models:[{modelId}…]}}`，provider 须忠实携带传输配置（会被注册进 workspaceModelCatalogs 成为后续 turn 的 overlay 配置来源）；构造器 `buildRuntimeModel()` 已随探针归档（test/e2e-tp1-recovery.test.js）。**附带事实（接种效应）**：runtimeModel 一旦在引擎进程内应用，同进程后续 plain resume 不再设 warning（随进程死亡消失）——恢复序应无条件每次 resume 带（runner 无法得知引擎是否被外部重启，构造成本为零）。
+1. **-32004 是常态不是异常**：引擎驻留池（targetCount=8 / highWater=16 / idleTimeout=10min）会驱逐空闲会话出内存；进程重启同理。被驱逐会话的恢复路径是 `session/resume`（从 SQLite 重建）——不恢复直接 send 就是 -32004。**F0 实证补充**：订阅会话免驱逐——zsw 现实形态（start 即 subscribe）下空闲驱逐几乎不可命中，-32004 的主来源是引擎进程死亡与 close；`idleTimeoutMs` 无 env/CLI/config 覆盖面（驻留池参数仅 GUI host 进程内注入），真机驱逐加速用 high_water_lru 洪泛（16+ 个 `persistence:immediate`、不订阅、**且 `titleGenerationEnabled:false`** 的会话——标题生成后台工作 hasResidencyBlockingWork 会阻止驱逐，缺此参数洪泛不生效，F0 附加实证 2）秒级触发。
+2. **resume 链已走通（F0 收口，推翻 P6/P6b 的无解印象）**：plain resume 成功返回完整快照（warning 在快照 `projection.lastError.message` 直接可见），但随后 plain send 必挂 `-32031`（ZCODE_RUNTIME_MODEL_UNAVAILABLE）。**F0 三线实证**：驱逐（进程存活）与崩溃（进程死亡）走同一冷恢复路径、**同设 restoreWarning**——「驱逐自愈、崩溃报错」的分支划分不存在。清除候选三可用一不可用：① `session/send` 直传 `runtimeModel`（硬闸前应用+清 warning）✓；② **`session/resume {sessionId, runtimeModel}` 最优**（warning 根本不设置；runtimeModel 是 resume params 的原生可选字段，与 create 无关）✓；③ `session/updateRuntimeModelConfig {sessionId, runtimeModel}` ✓；④ provider registry 就绪等待 ✗（独立无头引擎无 registry arrival 时机，等 12s 仍 -32031，等待线从恢复序删除）。runtimeModel 形态（schema strict 逐字段实测）：`{revision, generatedAt, model:{providerId,modelId}, provider:{providerId, kind:"anthropic"|"openai-compatible"|"openai", label?, source:"custom", baseURL, apiKey:{source:"inline",value}, models:[{modelId}…]}}`（另含可选 `thoughtLevel?`——zsw 恢复序不消费该字段），provider 须忠实携带传输配置（会被注册进 workspaceModelCatalogs 成为后续 turn 的 overlay 配置来源）；构造器 `buildRuntimeModel()` 已随探针归档（test/e2e-tp1-recovery.test.js）。**附带事实（接种效应）**：runtimeModel 一旦在引擎进程内应用，同进程后续 plain resume 不再设 warning（随进程死亡消失）——恢复序应无条件每次 resume 带（runner 无法得知引擎是否被外部重启，构造成本为零）。
 3. **send-while-running 是硬错误**（探针 P3）：`-32010 "A prompt is already running"`，不排队不打断。GUI 的边跑边打字走的是 v4 输入准入层（引擎 turn-steer），RPC 面没有。**结论：message/steering 能力两通道等价，apc 优势清单不含此项**。`session/stop` 是唯一绕过请求串行队列的方法（运行期取消可靠）。
 4. **thoughtLevel 合法值按模型动态**：来自 model catalog（GLM-5.3 = `low|high|max`，**默认 max**，budget 8k/16k/32k）；运行时校验源 = `workspace/readState` 的 `thoughtLevel.available`。create 的 `thoughtLevel` 入参生效路径走 `setThoughtLevel`，**副作用是写 user 级全局设置**（探针 P1：池 HOME db 出现 `reasoningLevel={"level":"high"}`）——隔离 HOME 内无害。
 5. **协议无版本协商**：漂移只以 -32601/-32602 出现；另有 -32004（不活跃）/ -32009（revision 冲突）/ -32010 / -32031（恢复失败）。
@@ -75,10 +75,10 @@ zsw 是 zcode 的外挂编排插件（无进程内 extension API，能力经 CLI
 
 | # | 失败模式 | 触发条件 | 现状后果 |
 |---|----------|----------|----------|
-| F1 | 空闲驱逐断链 | `ZSW_RUNNER=appserver` + conversation 两轮间隔 >10min（或引擎进程重启；F0 补注：订阅会话免驱逐，现实主触发是进程死亡/close） | 第二轮 send 收 -32004，runner 直接报错；无 resume 尝试（`runner-appserver.js:834-839` 只提示重新 start） |
-| F2 | 协议漂移伪装成任务失败 | ZCode 升级改了方法名/参数 | probe 可能仍通过（create/close 未变而 send 变形）→ 任务以 -32602「内部错误」面目失败，用户不知道该跑升级冒烟 |
+| F1 | 空闲驱逐断链 | `ZSW_RUNNER=appserver` + conversation 两轮间隔 >10min（或引擎进程重启；F0 补注：订阅会话免驱逐，现实主触发是进程死亡/close） | 第二轮 send 收 -32004，runner 直接报错；无 resume 尝试（`runner-appserver.js:834-839` 只提示重新 start）——**已由 F2 恢复序解决** |
+| F2 | 协议漂移伪装成任务失败 | ZCode 升级改了方法名/参数 | probe 可能仍通过（create/close 未变而 send 变形）→ 任务以 -32602「内部错误」面目失败，用户不知道该跑升级冒烟——**已由 F1 漂移分类解决** |
 | F3 | 崩溃恢复不可用 | 引擎进程崩溃后旧会话续聊 | plain resume 后 send 卡 -32031（P6b）；**F0 已解**：恢复序 resume 携带 runtimeModel（见 §2.2 事实 2） |
-| F4 | thinking 不可调 + 默认档位无人知晓 | 用户想省预算跑 low 档（GLM 默认 max） | 无参数面；「apc 通道默认已 max」这一事实也无处沉淀 |
+| F4 | thinking 不可调 + 默认档位无人知晓 | 用户想省预算跑 low 档（GLM 默认 max） | 无参数面；「apc 通道默认已 max」这一事实也无处沉淀——**已由 F4 单元解决（--thinking 接线）** |
 
 **根因**：① 协议无公开契约，一切语义靠逆向沉淀（本仓已有头注/探针传统，但缺系统性漂移防线）；② 通道实现只做了 happy path（连接、create、send、收事件），「非活跃恢复」「版本漂移」两类常态异常无语义；③ 默认通道选型使 apc 能力面（thinking/工具白名单/零冷启动）从未被消费。
 
@@ -138,7 +138,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
       确认不兼容期间设 ZSW_RUNNER=spawn 回退。
 ```
 
-**busy 语义（-32010，负面行为）**：运行中的会话再投递 → 立即返回 busy 报错「上一轮仍在执行，等待完成或 zsw stop」——**不排队不打断**（探针 P3 实证），与 spawn 通道行为一致。
+**busy 语义（-32010，负面行为）**：运行中的会话再投递 → 立即返回 busy 报错「上一轮仍在执行，等待完成（zsw wait）或 zsw cancel 取消」（CLI 实际子命令为 cancel，无 stop——初稿「zsw stop」为笔误，一致性审查修复批次已按真实命令落地）——**不排队不打断**（探针 P3 实证），与 spawn 通道行为一致。
 
 ### 3.2 方案对比
 
@@ -164,13 +164,13 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 **D2：-32004 自愈恢复序（选定）**
 - **采用**：runner 内对 send/message 遇 `-32004` 自动执行四步恢复序——① **`session/resume {sessionId, runtimeModel}`**（F0 结论固化：resume 携带 runtimeModel 是最优形态——warning 根本不设置，驱逐与崩溃两类通吃；**每次无条件携带**，接种效应不可依赖，见 §2.2 事实 2）→ ② **重挂 `session/subscribe{sessionId, deliveryKind:"desktop-continuous"}`**（订阅是 per-session 的，连接重建/resume 不自动恢复订阅；缺此步则 send accepted 但 turn 终态事件不达，恢复变假死）→ ③ 重试一次原 send → ④ 断言恢复后事件流可达（收到 turn 终态推送；**等待窗口 = 该轮任务 timeoutMs 预算，窗口耗尽即判「终态不达」→ `session/stop` 清场**（stop 是唯一绕过请求串行队列的方法，§2.2 事实 3，防引擎侧 turn 继续跑成孤儿）**→ 按分支 B 收尾**，不留实施期自由裁量）。resume 或重试仍失败 → 按 D2 分支 B 收尾。-32010 不重试（busy 语义如实上报）。
 - **被否**：「永久 keep-alive 轮询防驱逐」——每会话心跳是把引擎驻留池策略顶在头上，多会话下浪费且仍防不了进程重启。
-- **证据**：-32004 常态性（引擎驻留池 8/16/10min，调研文档 §2.1；F0 补：订阅免驱逐，主来源为进程死亡/close）；resume 快照成功（探针 P6）；**F0 三线实测**（test/e2e-tp1-recovery.test.js）：plain resume 快照可见 warning 且 plain send 必挂 -32031、resume{runtimeModel} 后 send ok + turn.terminal 可达、updateRuntimeModelConfig 可用、registry 等待 12s 仍 -32031；订阅 per-session（`runner-appserver.js:752` start 订阅、`:815-817` resume 无订阅直接 send——同连接时可行，跨连接重建时是缺口）。
+- **证据**：-32004 常态性（引擎驻留池 8/16/10min，调研文档 §2.1；F0 补：订阅免驱逐，主来源为进程死亡/close）；resume 快照成功（探针 P6）；**F0 三线实测**（test/e2e-tp1-recovery.test.js）：plain resume 快照可见 warning 且 plain send 必挂 -32031、resume{runtimeModel} 后 send ok + turn.terminal 可达、updateRuntimeModelConfig 可用、registry 等待 12s 仍 -32031；订阅 per-session（设计时点 `runner-appserver.js:752` start 订阅、`:815-817` resume 无订阅直接 send——同连接时可行，跨连接重建时是缺口；**该缺口已由恢复序②修复**，实施后行号已漂移，现状见 lib 头注）。
 - **效果**：G2。**分支判定已收口（F0）**：解除条件已探明（resume 带 runtimeModel）→ **自愈覆盖驱逐与崩溃两类，无双分支**；分支 B 降级为兜底语义——仅在 resume{runtimeModel} 或重试仍失败时出现，报「会话弃用 + `zsw start` 重建指引 + record 历史保留说明」（§3.1 失败路径原文），**禁止裸错误码**。
-- **接管检查**：恢复序接管了「连接重建后旧会话续用」职责——原 `_ensureConnection` 只重建连接不认旧会话、不重挂订阅（`runner-appserver.js:534-546`），D2 在其上补会话层（resume+subscribe）；进程重启场景 = `_ensureConnection` 重建连接 + D2 四步叠加覆盖。
+- **接管检查**：恢复序接管了「连接重建后旧会话续用」职责——原 `_ensureConnection`（设计时点 `runner-appserver.js:534-546`，实施后行号已漂移）只重建连接不认旧会话、不重挂订阅，D2 在其上补会话层（resume+subscribe）；进程重启场景 = `_ensureConnection` 重建连接 + D2 四步叠加覆盖。
 - **多会话边界**：恢复序加 runner 级全局互斥（同一时刻至多一路恢复序在执行）——引擎崩溃时 N 个 running 会话同时被击落，N 路恢复并发打刚重启的引擎存在恢复风暴面；**F0 C 线实证**：串行化不解 -32031 本身（串行对照臂同样双双 -32031，warning 的唯一解是 resume 带 runtimeModel），互斥的价值是防风暴压垮刚重启的引擎、非防连坐——互斥保留，且每路恢复都必须带 runtimeModel。并发恢复行为列入 A-8 观察项。
 
 **D3：协议漂移显式分类 + 升级冒烟（选定）**
-- **采用**：runner 错误分类新增 `protocol-drift`（-32601 方法不存在 / -32602 参数校验失败），record 与 stderr 双落点，错误信息含恢复指引（冒烟命令 + 回退开关）；冒烟脚本 = probe 扩面（create + send 极小任务 + 关键响应字段断言：sessionId 路径/turn.terminal/response 非空/toolDenylist 生效），随插件发布、**升级后本地手动跑**——冒烟含真实模型调用，属真机 e2e 级，本仓 CI 明确排除 e2e（`.github/workflows/ci.yml:7-8` 注释「无凭据必挂且烧 token」、`:51-57` find 排除 `e2e*.test.js`），CI 化需凭据注入方案、超出本 scope 另行设计。「stderr 落点」的物理形态 = 引擎子进程 stderr **实时落盘** `~/.zcode/zsw/logs/`（对齐 logging-conventions）：现状仅内存滚动缓冲 `_stderrTail`、进程退出时输出尾部 400 字符（`lib/runner-appserver.js:323-324,328-330`），运行中日志无落盘面——该落盘同时是 A-5 thinking 档位的观测面与漂移 issues 的取证面，随 F2 建成。
+- **采用**：runner 错误分类新增 `protocol-drift`（-32601 方法不存在 / -32602 参数校验失败），record 与 stderr 双落点，错误信息含恢复指引（冒烟命令 + 回退开关）；冒烟脚本 = probe 扩面（create + send 极小任务 + 关键响应字段断言：sessionId 路径/turn.terminal/response 非空/toolDenylist 生效），随插件发布、**升级后本地手动跑**——冒烟含真实模型调用，属真机 e2e 级，本仓 CI 明确排除 e2e（`.github/workflows/ci.yml:7-8` 注释「无凭据必挂且烧 token」、`:51-57` find 排除 `e2e*.test.js`），CI 化需凭据注入方案、超出本 scope 另行设计。「stderr 落点」的物理形态 = 引擎子进程 stderr **实时落盘** `~/.zcode/zsw/logs/`（对齐 logging-conventions）：现状仅内存滚动缓冲 `_stderrTail`、进程退出时输出尾部 400 字符（设计时点 `lib/runner-appserver.js:323-324,328-330`，实施后行号已漂移），运行中日志无落盘面——该落盘同时是 A-5 thinking 档位的观测面与漂移 issues 的取证面，随 F2 建成。
 - **被否**：「把 -32602 当普通错误重试」——重试必然再失败且掩盖根因；「全量协议快照测试」——无公开契约，快照维护成本高于收益。
 - **证据**：无版本协商、strict schema、错误码全集（调研文档 §2.1 §8）。
 - **效果**：G3；A2/A4 假设随冒烟脚本建设顺带收口（send/read 路径被冒烟覆盖）。
@@ -230,7 +230,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 
 | 单元 | 内容 | 领地（预估） | 依赖 | 验收 |
 |------|------|--------------|------|------|
-| F0 | TP-1 探针（场景矩阵 + 排查线）：**A 线·同进程驱逐**（等 10min 或探明缩短 idleTimeout 的手段 → resume → 重挂订阅 → send → 断言终态事件可达）；**B 线·崩溃恢复**（kill → 重启 → resume → send 复现 -32031）；**C 线·多会话崩溃恢复**（N≥2 会话，kill 引擎 → 重启后并发 resume → 观察 -32031 连坐面与串行化效果，D2 互斥依据）；**排查候选四条**：send 直传 `runtimeModel` / create `runtimeModel` 参数 / `session/updateRuntimeModelConfig` / provider registry 就绪等待（协议源码已见 restoreWarning 三条清除路径，命中率高）。产出物：结论 + 复现脚本归档 test/（e2e 场景化），不再一次性丢弃 | test/ 新探针脚本（结论后归档 e2e） | 无 | **已收口**（2026-08-29 真机三线全绿，归档 test/e2e-tp1-recovery.test.js）：驱逐与崩溃同设 warning（双分支划分不成立）；清除三可用一不可用、resume{runtimeModel} 最优；串行化不解 -32031 但保留防风暴——结论已回填 §2.2 事实 1/2 与 D2 |
+| F0 | TP-1 探针（场景矩阵 + 排查线）：**A 线·同进程驱逐**（真机驱逐加速用洪泛手法：16+ 个 immediate 不订阅且 titleGenerationEnabled:false 的会话秒级触发，见 §2.2 事实 1 → resume → 重挂订阅 → send → 断言终态事件可达）；**B 线·崩溃恢复**（kill → 重启 → resume → send 复现 -32031）；**C 线·多会话崩溃恢复**（N≥2 会话，kill 引擎 → 重启后并发 resume → 观察 -32031 连坐面与串行化效果，D2 互斥依据）；**排查候选四条**：send 直传 `runtimeModel` / create `runtimeModel` 参数 / `session/updateRuntimeModelConfig` / provider registry 就绪等待（协议源码已见 restoreWarning 三条清除路径，命中率高）。产出物：结论 + 复现脚本归档 test/（e2e 场景化），不再一次性丢弃 | test/ 新探针脚本（结论后归档 e2e） | 无 | **已收口**（2026-08-29 真机三线全绿，归档 test/e2e-tp1-recovery.test.js）：驱逐与崩溃同设 warning（双分支划分不成立）；清除三可用一不可用、resume{runtimeModel} 最优；串行化不解 -32031 但保留防风暴——结论已回填 §2.2 事实 1/2 与 D2 |
 | F1 | 漂移分类 + 冒烟脚本：错误分类 protocol-drift（含指引文案）；probe 扩面为冒烟（send/read/toolDenylist 断言）；A2/A4 随之收口 | lib/runner-appserver.js、test/appserver.test.js、test/e2e.test.js | 无 | A-7 |
 | F2 | 恢复序 + create 显式化：-32004→**resume{runtimeModel}**→重挂订阅→重试（④ timeoutMs 窗口判据 + stop 清场、runner 级恢复互斥防风暴；registry 等待线已证伪删除；runtimeModel 构造器复用 F0 归档的 buildRuntimeModel）；引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`（D3 观测/取证面）；persistence:immediate；遥测 env；idle TTL 常量删除 | lib/runner-appserver.js、lib/config.js、test/appserver.test.js | F0 | A-2 |
 | F3 | 默认翻转 + 回退开关 + probe 缓存：assemble/ports 默认值；ZSW_RUNNER=spawn 语义；测试/文档翻转 | lib/assemble.js、lib/ports.js、test/assemble.test.js、test/e2e.test.js、README.md、CONTEXT.md | F1、F2 | A-1/A-3/A-4/A-8 |
@@ -241,7 +241,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 
 **待验证检查点（实施期门）**：
 1. TP-1（F0）：**已收口（2026-08-29）**——驱逐与崩溃同设 restoreWarning（分支划分不成立）；清除三可用一不可用，resume{runtimeModel} 为最优解并固化为 D2 恢复序①；registry 等待证伪删除；附「订阅免驱逐」「接种效应→每次无条件带」两事实（详见 §2.2 事实 1/2 与 test/e2e-tp1-recovery.test.js 头注）。
-2. 工具限制格式契约：裸工具名确定合法（源码证据）；括号 spec 形态（`Bash(git *)`）是否被引擎解析——冒烟脚本实测后决定是否放开。
+2. 工具限制格式契约：裸工具名确定合法（源码证据）；括号 spec 形态（`Bash(git *)`）是否被引擎解析、以及 denylist 引擎级拦截的行为面验证——**均归 A-6 真机验收收口**（裁决：不为此增加冒烟 token 成本——冒烟是升级后高频操作保持极小，行为面验证属一次性验收场景；E9 冒烟仅保留参数面无漂移断言）。
 3. 4+ 会话长事件流下 stdio 背压 + 引擎崩溃后多会话并发恢复行为（**F0 C 线已观察：串行化不解决 -32031 连坐、每路带 runtimeModel 才是解**；A-8 扩展观察项，非阻塞门）。
 
 ## 6. 变更历史
@@ -252,3 +252,4 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 | 2026-08-29 | 审查修订：D2 恢复序补订阅重挂步（缺则恢复变假死）与四步断言；§3.1 成功路径改「驱逐/崩溃」双分支并以 F0 结论为条件；probe 缓存改落盘（进程内缓存在一次性 CLI 与 daemon 两形态下均无命中面）、失败结果不落盘；A-2 拆驱逐/崩溃两场景、崩溃场景去掉设计外的「重启 daemon」动作；F0 补同进程驱逐线与四条排查候选（send 链 restoreWarning 硬闸 + 三条清除路径为审查新增源码证据）、产出物归档化；D6 改裸工具名保底 + spec 形态待冒烟、分隔符定义；A-6 并入 D8 遥测验收 | 对抗式审查 4 must-fix + 5 suggestion |
 | 2026-08-29 | 二审修订：D6 补 frontmatter `disallowedTools` → `toolDenylist` 接线（黑名单与 CLI flag 并集；`tools` 白名单显式决策维持软约束）+ A-6 补 frontmatter 场景 + D9 minor 论证挂接该前提（不接线须升 major）；§3.2 补 D workflow-first / E 等公开契约两变体否决记录、C 案否决理由改用 A 真实差异（冷启动对 A/C 等价）、推荐段补 zsub 先行的风险排序论证；D3/G3 冒烟改「升级后本地手动跑」（CI 排除真机 e2e，ci.yml:7-8,51-57）+ 新增引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`（G4/A-5 观测面 + 漂移取证面，F2 建成）；D2 ④ 补 timeoutMs 窗口判据 + session/stop 清场、新增恢复序 runner 级互斥（多会话恢复风暴）+ F0 补 C 线；D1 probe 缓存补命中后首败失效重探；§2.2 补事实 8（GUI 同构辨析 + spawn 同为逆向依赖）；README 行号按 d7b8c48 重定位 | 第二轮对抗式审查 1 must-fix + 8 suggestion |
 | 2026-08-29 | F0 探针结论回填：驱逐与崩溃**同设 restoreWarning**（「驱逐自愈+崩溃报错」双分支划分不成立，D2 固化为 resume{runtimeModel} 每次无条件携带，自愈覆盖两类）；清除候选三可用一不可用（registry 等待证伪，从恢复序删除）；D2 多会话边界按 C 线实证修正（串行化不解 -32031，互斥仅防风暴）；新增事实：订阅会话免驱逐（-32004 主来源为进程死亡/close，§2.2 事实 1）与 runtimeModel 接种效应（§2.2 事实 2）；A-2a 改探针复跑覆盖、A-2b 为链路级主验收；§5 检查点 1/3 收口；失败路径 1 降级为兜底场景 | F0 真机探针三线全绿（test/e2e-tp1-recovery.test.js） |
+| 2026-08-29 | 一致性审查文档修订：§2.2 事实 2 runtimeModel 形态补可选 `thoughtLevel?`；洪泛驱逐手法补 `titleGenerationEnabled:false` 前提（标题生成后台工作阻止驱逐，F0 附加实证）；§5 F0 行 A 线同步洪泛手法；D2/D3 行号引用加「设计时点」标注（实施后已漂移，订阅缺口已由恢复序②修复）；§2.3 失败模式 F1/F2/F4 行补已解决标注；§1 SCQA 补 -32031 已解指针；§2.4 残留项标注已解决；检查点 2 改记「spec 形态与拦截行为面归 A-6 真机收口」（冒烟保持极小不为此加 token） | 三区一致性审查（区 A 2 unreasonable+2 doc_errors、区 C 文档面） |

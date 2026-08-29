@@ -89,7 +89,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
 ├── logs/                appserver 引擎 stderr 实时落盘（漂移取证 / thinking 档位观测面）
 ├── probe-cache.json     appserver probe 结论缓存（键 = CLI 路径 + mtime，只缓存 ok）
-├── home-<model>/        per-model 隔离 HOME（spawn 回退通道模型路由）
+├── home-<provider>-<modelShort>/  per-model 隔离 HOME 池（spawn 回退通道模型路由）
 ├── home-appserver/      appserver 默认通道单一隔离 HOME（遥测已关闭）
 └── wt-<id>/             worktree 隔离目录（任务期存在）
 ```
@@ -97,9 +97,9 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ## 已知边界（如实声明）
 
 - **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI daemon）任务的完成唤醒唯一路径 = CLI 阻塞进程（`wait` / `start --wait`）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
-- **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议）**：`zsw start` 不带任何 env 即走常驻引擎，conversation 零冷启动续聊；组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
+- **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议）**：`zsw start` 不带任何 env 即走常驻引擎，conversation 零冷启动续聊；组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标；降级为**通道级**——daemon 生命周期内后续任务直接走 spawn 免重探，重启 ZCode 后重新组装、恢复探测。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
 - **`ZSW_RUNNER=spawn` 显式回退旧通道**：每轮 spawn 独立 zcode 进程（~1-2s 冷启动），故障隔离与翻转前一致。daemon 在进程启动时读一次 env——改 `ZSW_RUNNER` 后需重启 ZCode 生效。
-- **running 会话不可插话（busy，两通道同语义）**：message 投递到 running 中的会话立即返回 busy 报错（appserver 侧 `-32010` 硬错误，探针实证；不排队不打断），等待本轮完成或 `zsw stop`。
+- **running 会话不可插话（busy，两通道同语义）**：message 投递到 running 中的会话立即返回 busy 报错（appserver 侧 `-32010` 硬错误，探针实证；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递。
 - **工具黑名单是引擎级硬拦截（两来源并集），`tools` 白名单维持软约束**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`——默认 appserver 通道经 `session/create` 的 `toolDenylist` 引擎级拦截，spawn 回退通道维持 `--disallowed-tools` flag 硬拦截（frontmatter 来源生效，CLI 来源不消费）；`--allow-tools` 白名单同理落 `toolAllowlist`（仅 appserver）。frontmatter `tools` 白名单维持 prompt 软约束（两通道一致）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
 - **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 12 个 zcode 进程。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
@@ -115,4 +115,4 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 | M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt` 后 wait | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
 | M5 | 默认通道与回退 | 不设任何 env 跑 `node bin/zsw.js start` conversation 两轮；随后 `ZSW_RUNNER=spawn` 复跑同款任务 | 默认 record.runnerKind='appserver'，第二轮无进程重建（零冷启动续聊）；spawn 复跑 record.runnerKind='spawn'；probe 失败自动降级且 stderr 有降级日志、record 如实标注 |
 
-无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）。
+无头 e2e（E1-E10，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）。E9 为 apc-smoke 升级冒烟（create/send/close 极小任务），支持单场景入口 `node test/e2e.test.js --name apc-smoke`——zcode 升级后先跑它验证 apc 协议面（与「已知边界」的升级冒烟指引呼应）；E10 为 appserver 多会话并发。

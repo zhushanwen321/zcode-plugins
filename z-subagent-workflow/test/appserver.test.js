@@ -704,6 +704,8 @@ test('resume busy：同会话一轮进行中再 resume → 保守报 busy（A5�
     const r2 = await runner.resume(handle.exec, '趁轮在飞续聊', { timeoutMs: 15000 });
     assert.equal(r2.status, 'error');
     assert.match(r2.error, /busy/);
+    assert.match(r2.error, /等待当前轮完成/, 'A-9：busy 文案含等待指引');
+    assert.match(r2.error, /zsw cancel --id/, 'A-9：busy 文案含取消命令指引');
     const result = await handle.done;
     assert.equal(result.status, 'closed'); // 首轮不受 busy 尝试影响
     await runner.shutdown();
@@ -1140,6 +1142,8 @@ test('-32010 不重试：busy 如实上报，恢复序不触发（无 resume 请
     const r = await runner.resume({ kind: 'apc', sessionId: sid }, '趁忙投递', { timeoutMs: 15000 });
     assert.equal(r.status, 'error');
     assert.match(r.error, /-32010/);
+    assert.match(r.error, /等待当前轮完成/, 'A-9：-32010 兜底透传附加 busy 语境指引');
+    assert.match(r.error, /zsw cancel --id/, 'A-9：-32010 兜底透传附取消命令');
     assert.doesNotMatch(r.error || '', /会话恢复失败/, 'busy 不是恢复失败，不落分支 B');
     assert.equal(findEvs(stateFile, 'resume').length, 0, '-32010 不触发恢复序');
   } finally {
