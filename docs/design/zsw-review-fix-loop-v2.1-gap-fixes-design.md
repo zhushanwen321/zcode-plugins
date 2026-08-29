@@ -93,7 +93,7 @@
 | # | 场景 | 步骤 | 通过标准 | 回溯 |
 |---|------|------|----------|------|
 | FS1 | base 锁定（真机） | 临时仓：base commit → 分支上第二个 commit（含 bug）→ 未提交改动；`--target-type git-diff --target main` 跑 run | ① state.meta.baseHash == rev-parse main 的 hash（≠ HEAD）；② 行为级验证：分支 commit 引入的 bug 被报出（证明未漏审——runDir round-N/*.md 落盘的是 reviewer response 而非 prompt，指令级断言不在此测；指令拼装由单测级断言覆盖于 F1） | GF1 |
-| FS2 | escalate 闭环（单测探针） | fake：R1 issue → defer（minor）→ R2 reviewer 声明 escalate → 断言 R3 对账清单仍含该条目 → R4 reviewer 报 not-fixed → openStreak 累计；另构造全员 clean 但 open 残留 → 不断言 clean、循环继续 | 全链 status/清单断言 + 终态非 clean 直到条目 fixed | GF2 |
+| FS2 | escalate 闭环（单测探针） | fake：R1 issue → defer（minor）→ R2 reviewer 声明 escalate → 断言 R3 对账清单仍含该条目 → R4 reviewer 报 not-fixed → openStreak 累计；另两条分支：全员 clean 但 open 残留 → 不判 clean、循环继续；open 残留被 reconciliation 声明 fixed（带 evidence）→ 转 fixed、出口断言放行 | 全链 status/清单断言 + 终态非 clean 直到条目 fixed 或被声明 fixed | GF2 |
 | FS3a | fallback minor defer（单测探针） | FAKE_AGG_GARBAGE + reviewer 报 1 major + 1 minor → fixer 修 major、合法 defer minor（≥20 字理由） | 循环继续（非 fix-failed）；fix 队列 prompt 只含 major；minor 出现在 suggestion 段 | GF3 |
 | FS3b | 契约缺失输出（单测探针） | reviewer 围栏输出 `{"ok":true}` / `status:"maybe"` / issues 非数组 / `status:"clean"` 但 issues 有条目 四形态 | review-failed 终止，报告指明 reviewer 名与缺失/矛盾字段 | GF3 |
 | FS4 | 撞号（单测探针） | issues={MF-1,MF-2}+dormant 含 MF-3 → 下轮全新条目 | 新条目分得 MF-4；dormant MF-3 复活走原 id | GF4 |
