@@ -97,7 +97,10 @@ function writeProbeCacheEntry(cliPath, mtimeMs, protocolVersion, cacheFile = pro
   };
   try {
     fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    const tmp = `${cacheFile}.tmp`;
+    // tmp 名带 pid：daemon 与 --local CLI 多进程并发写同缓存时，固定 tmp 名会
+    // 互相踩踏（A 写 tmp → B 覆写 tmp → A rename 出 B 的内容），损坏虽被读取
+    // 侧容错为 miss 重探，仍属可避免面
+    const tmp = `${cacheFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
     fs.renameSync(tmp, cacheFile);
   } catch (e) {
@@ -111,7 +114,8 @@ function invalidateProbeCacheEntry(cliPath, cacheFile = probeCachePath()) {
     const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     if (data && data.entries && data.entries[cliPath]) {
       delete data.entries[cliPath];
-      const tmp = `${cacheFile}.tmp`;
+      // tmp 名带 pid（与 writeProbeCacheEntry 同理：多进程并发不踩同名 tmp）
+      const tmp = `${cacheFile}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, cacheFile);
     }

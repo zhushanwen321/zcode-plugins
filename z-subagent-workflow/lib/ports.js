@@ -23,7 +23,8 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @property {string} description
  * @property {string} filePath      绝对路径（唯一性来源）
  * @property {string} [model]       frontmatter model（解析链中间层）
- * @property {string[]} [tools]     白名单（prompt 约束 + --disallowed-tools 反向表达）
+ * @property {string[]} [tools]     白名单（仅 buildPrompt 软约束；D6 显式决策：
+ *                                  不升级为 toolAllowlist，无 flag 通道）
  * @property {string[]} [disallowedTools]
  * @property {string[]} [skills]    参考 skill 目录（prompt 参考段）
  * @property {number} [maxTurns]

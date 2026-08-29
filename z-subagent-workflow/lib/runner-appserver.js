@@ -73,15 +73,17 @@
  * exitReason——保留）外，**实时 append** 到 `~/.zcode/zsw/logs/<date>-appserver.log`
  * （logging-conventions 未约定专项日志文件命名，取单文件按日 append：同日多连接
  * （引擎崩溃重建）集中同一文件，跨日另起新文件；落盘失败静默，不影响主流程）。
- * 这是 A-5 thinking 档位观测面与漂移 issues 取证面。测试用 runner 构造 opts
- * stderrLogPath 注入隔离路径（默认路径经 ZSW_ROOT env 已随测试根隔离）。
+ * 这是异常诊断面（引擎异常退出/zod issues 取证）；thinking 档位权威取证面为
+ * 引擎自有日志 home-appserver/.zcode/cli/log/<date>.jsonl。测试用 runner 构造
+ * opts stderrLogPath 注入隔离路径（默认路径经 ZSW_ROOT env 已随测试根隔离）。
  *
  * ## 协议假设收口状态（真机探针随 apc-smoke 冒烟沉淀；失败时的单点修改位置不变）
  * A2 推送帧的会话归属（单会话面已收口，2026-08-29 apc-smoke 真机）：会话级推送
  *    帧全部携带 params.sessionId 且归因正确；但存在引擎级非会话帧（实测
  *    process/mcpTelemetry 的 MCP 进程遥测帧）不带 sessionId——_lookupSession 的
  *    「无 sid 且唯一会话时兜底归因」对这类帧单会话下无害（无文本/usage 数据面），
- *    多会话下按宁丢勿错丢弃，策略成立。多会话并发归因留 A-8（4 并发）验收。
+ *    多会话下按宁丢勿错丢弃，策略成立。多会话并发归因已经 A-8（4 并发）真机
+ *    验收无串线（Gate B 2026-08-29）；更大并发/背压为长线观察项。
  *    → 只改 extractPushSessionId() 与 _lookupSession()/_lookupTurn()
  * A4 session/read 返回形态（已收口，2026-08-29 apc-smoke 真机全量抓包）：
  *    实测形态 {messages:[{info:{role,...}, parts:[{type:'text',text},
@@ -111,8 +113,9 @@
  * create.toolAllowlist = CLI --allow-tools 原样。裸工具名形态（D6 源码证据）。
  * frontmatter `tools` 白名单维持 prompt-builder 软约束不升级（D6 显式决策）；
  * spawn 通道行为不变（denylist 走 --disallowed-tools 既有路径，CLI 来源不消费）。
- * A5 send 对 running 会话的行为（排队 or 拒绝）未实测：设计 optimistic（send 后
- *    等一轮完成）；但本 runner 内同会话已有进行中的一轮时保守报 busy。
+ * A5 已收口（P3 实证）：send 对 running 会话 = -32010 硬错误，不排队不打断；
+ *    RPC 面无 steering——runner 内 busy 门禁与引擎行为对齐，steering 'none'
+ *    为终态。
  *    → 只改 resume() 的 busy 分支
  * A6 session/list 返回形态：按 result.sessions[].sessionId|id 提取；解析不出
  *    数组或请求失败时保守按「存在」处理。
@@ -778,9 +781,10 @@ class AppServerRunner {
     return {
       kind: 'appserver',
       // INFO-15：声明必须与实际暴露面一致——manager 的 message 门禁是
-      // idle-only，runner 内 A5（running 中 session/send 投递）也未实测，
-      // running 投递从未对外可达，故报 'none'（SpawnRunner 同款正例）。
-      // A5 实测通过、门禁放开后再升回 'session-send'。
+      // idle-only，runner 内 busy 门禁（A5）与之对齐，running 投递从未对外
+      // 可达，故报 'none'（SpawnRunner 同款正例）。
+      // P3 实证 send-while-running 恒 -32010，不存在升回 session-send 的
+      // 路径；steering 'none' 为终态。
       steering: 'none',
       coldStartMs: 0,           // 长驻进程 + 常驻会话，续聊零冷启动
     };
@@ -1286,8 +1290,9 @@ class AppServerRunner {
 
   /**
    * 续聊一轮：session/send 后等同一会话的下一轮终态（判定同 start）。
-   * A5 单点：send-while-running 语义未实测——本 runner 内同会话仍有进行中的一轮
-   * 时保守报 busy；W3 真机探针若确认服务端接受 running 投递，只改这里。
+   * A5 单点（已收口，P3 实证）：send-while-running = 引擎 -32010 硬错误，
+   * 不排队不打断——本 runner 内同会话仍有进行中的一轮时先报 busy 门禁，与
+   * 引擎行为对齐；steering 'none' 为终态（引擎行为漂移时只改这里）。
    * @param {object} exec record.exec（{kind:'apc', sessionId}）
    * @param {string} message 续聊消息
    * @param {object} [opts] {timeoutMs?}

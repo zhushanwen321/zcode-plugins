@@ -232,7 +232,8 @@ class ModelRouter {
   /**
    * 准备运行环境（runner 启动前必须调用，结果放进 taskCtx.runEnv）。
    * @param {string} modelRef  resolve() 的产物
-   * @param {'spawn'|'appserver'} [runnerKind='spawn']
+   * @param {'spawn'|'appserver'} runnerKind 执行通道（必填，无缺省值——调用方
+   *        按 capabilities().kind 显式传，与 ports.js ModelRouterPort 契约一致）
    * @param {object} [sessionOpts] per-session 能力参数（F4：仅 appserver 消费，
    *        经 createParams 合入 session/create；spawn 分支整体忽略——spawn 无
    *        对应 flag 通道，行为不变）

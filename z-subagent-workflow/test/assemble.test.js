@@ -105,6 +105,20 @@ function setFakeRunHeadless() {
   return { count: () => calls, restore: () => { driver.runHeadless = orig; } };
 }
 
+/**
+ * patch process.stderr.write 收集输出（assemble.log 的出声通道就是 stderr），
+ * 断言降级转换点出声用；restore 必须放 finally，防吞掉后续测试的输出。
+ */
+function captureStderr() {
+  const orig = process.stderr.write;
+  const chunks = [];
+  process.stderr.write = function (chunk) {
+    chunks.push(String(chunk));
+    return true;
+  };
+  return { chunks, restore: () => { process.stderr.write = orig; } };
+}
+
 after(() => {
   delete process.env.ZSW_RUNNER;
   delete process.env.ZSW_ZCODE_CLI;
@@ -306,11 +320,13 @@ test('缓存命中后首次 create 失败 + 重探失败 → 降级 spawn 重跑
   const probe = setProbe(() => ({ ok: false, reason: 'unit: 环境已变坏' })); // 重探失败
   const failStart = setFailingStart();
   const fakeRun = setFakeRunHeadless();
+  const stderrCap = captureStderr(); // 降级转换点出声断言（assemble.log → process.stderr.write）
   try {
     const a = await assembleManager();
     assert.equal(a.runnerKind, 'appserver');
     const res = await a.manager.start(
-      { task: '单元测试', slug: 'asm-invalidate-degrade', model: 'GLM-5.3', wait: true },
+      // thinking/denyTools 显式请求：降级后 spawn 通道无对应通道，终态标注面断言依据
+      { task: '单元测试', slug: 'asm-invalidate-degrade', model: 'GLM-5.3', wait: true, thinking: 'low', denyTools: ['Bash'] },
       { cwd: TMP },
     );
     assert.equal(res.status, 'closed', '本任务由 spawn 重跑并完成');
@@ -318,11 +334,20 @@ test('缓存命中后首次 create 失败 + 重探失败 → 降级 spawn 重跑
     assert.equal(probe.count(), 1, '重探恰好一次（失败即降级，不再反复）');
     assert.equal(fakeRun.count(), 1, '降级重跑恰好一次 spawn 执行体');
     assert.equal(readProbeCacheEntry(FAKE_CLI, fakeCliMtime()), null, '重探失败：坏结论不写回');
+    // 降级转换点 stderr 出声：文案须同时含「降级」与「后续任务免重探」承诺
+    const stderrText = stderrCap.chunks.join('');
+    assert.ok(stderrText.includes('降级'), '降级转换必须 stderr 出声（含「降级」）');
+    assert.ok(stderrText.includes('后续任务免重探'), '降级出声必须含「后续任务免重探」承诺');
     const rec = a.manager.status(res.subagentId);
     assert.equal(rec.runnerKind, 'spawn', 'record 如实标注实际通道');
     assert.equal(rec.exec && rec.exec.kind, 'spawn', 'exec 句柄随降级切换为 spawn 形态');
+    // thinking/tools 降级标注（manager._completeRun 判定源 before.runnerKind：
+    // relabelRecord 先于 done settle 改标 spawn——对齐 manager.test.js 标注矩阵②）
+    assert.equal(rec.thinking, 'null (spawn 降级)', '请求了 thinking 但终通道 spawn → 降级标注如实可见');
+    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', '请求了 tools 但终通道 spawn → toolsNote 如实可见');
     assert.equal(a.manager.runner.capabilities().kind, 'spawn', '通道级降级：capabilities 翻转 spawn');
   } finally {
+    stderrCap.restore();
     probe.restore();
     failStart.restore();
     fakeRun.restore();

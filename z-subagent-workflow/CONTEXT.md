@@ -20,7 +20,7 @@
 
 1. 指代**插件整体**（安装单元）→ 人读场合用全名；机器读场合（env/路径/命令）用 `zsw`。
 2. 指代 **zsub/zflow 语义面**（action 语境；1.0.0 起无实际 MCP tool）→ 只能用 `zsub` 或 `zflow`，且与该面的 action 语义一致。
-3. 指代**数据/运行时产物** → `zsw`（数据根下）或语义前缀（record id：`sa-` subagent / `wf-` workflow run；worktree 目录 `wt-<id>`；home 池 `home-<provider>-<model>`）。
+3. 指代**数据/运行时产物** → `zsw`（数据根下）或语义前缀（record id：`sa-` subagent / `wf-` workflow run；worktree 目录 `wt-<id>`；home 池 `home-<provider>-<modelShort>`）。
 
 禁止混用：`zsub` 不再作为插件总品牌（旧用法）；`zsw` 不用于 tool 名；数据目录不出现 `zsub` 字样。
 
@@ -32,7 +32,7 @@
 ├── outputs/<id>.md               结果全文（worktree 任务另有 <id>.patch）
 ├── daemon.sock                   daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock              daemon 竞选锁文件（sockPath + '.lock'，O_EXCL 原子裁决）
-├── logs/                         appserver 引擎子进程 stderr 实时落盘（D3 观测/取证面）
+├── logs/                         appserver 引擎子进程 stderr 实时落盘（异常诊断面，引擎正常时零输出）
 ├── probe-cache.json              appserver probe 结论缓存（键 = CLI 路径 + mtime，只缓存 ok）
 ├── wt-<subagentId>/              worktree 隔离目录（listOrphans 按前缀认领）
 ├── home-<provider>-<modelShort>/ spawn per-model 隔离 HOME 池
