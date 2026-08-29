@@ -100,7 +100,11 @@ node z-subagent-workflow/bin/zsw.js workflow \
   --reviewers "arch-boundary,concurrency,business-logic,mcp-contract,test-coverage" \
   --review-target "git diff main...HEAD 的全部变更（分支整体，含 z-subagent-workflow/lib、bin、dist、test、skills 与 workspace 级 scripts/、.github/、.githooks/、docs/）" \
   --max-rounds 3
-# 大 diff 建议 --timeout-per-phase 1200000 --timeout-ms 7200000（默认 10min/30min）
+# [MANDATORY] 不传 --timeout-per-phase / --timeout-ms：体系默认无超时（config.DEFAULTS
+# .timeoutMs=null、timeoutMsPerPhase 缺省无、CLI 不传则无）。review/fix 是时长不可
+# 预测的 LLM 长任务，死线超时到期 = SIGKILL 毁掉全部在途工作（fix 半成品灾难，
+# 2026-08-29 run2 实证：20min 死线杀掉完成度 90% 的 fixer）。仅用户明确要求死线
+# （如 CI 硬预算）时才由用户显式传参
 # --model 不传：review/fix 是重量任务，跟随默认主模型（纪律见 zsub-zflow-orchestration skill）
 ```
 
@@ -124,12 +128,25 @@ node z-subagent-workflow/bin/zsw.js workflow \
 **Gate-2**（按 CLI 输出 JSON 摘要段的 `loop.status` 判读；markdown 报告段含轮次明细
 与剩余 must-fix）：
 
+**失败停机归因总则 [MANDATORY]**：workflow 以非 clean 终态（尤其 `review-failed` /
+`fix-failed`）退出时，**禁止直接重跑**——先停下做根因三分类，否则同类失败无限重放：
+
+1. **基础设施故障**（provider 错误/流中断/网络）：特征是 runFail 或输出截断（围栏未闭合）。
+   单 phase 级瞬时故障可重跑一次；重复出现说明是调用形态问题（如并发巨上下文会话），
+   归入第 3 类。
+2. **参数不适配**：特征是明确的参数错误。校准参数后重跑（注意：超时不在此列——
+   体系默认无超时，见阶段 2 参数纪律）。
+3. **脚本自身缺陷**：dogfooding 暴露的 zsw/review-fix-loop 缺陷（错误分类误导、
+   半成品无处置、上下文注入架构放大故障面等）。**停下来修脚本**——本仓跑 pr-cr-fix
+   的分支往往正是在修这条链路，workflow 的失败就是分支工作项的直接证据。修复后
+   从阶段 1 重来。
+
 | `loop.status` | 动作 |
 |---------------|------|
 | `clean`（exit 0） | 全审查者无 must-fix → 进阶段 3 |
 | `fixed-unverified` | 轮数耗尽且最后一步是修复成功、未复核 → 再跑一轮确认 |
 | `stuck` | must-fix 连续 2 轮不降 → 读报告逐条判定：误报人工 ack，真问题人工介入 |
-| `review-failed` / `fix-failed` | 环境问题（审查者全部执行/解析失败、修复阶段失败）：调大 `--timeout-per-phase` 重跑一次，再败走降级路径或上报用户 |
+| `review-failed` / `fix-failed` | 按上方「失败停机归因总则」三分类处置；禁止未归因直接重跑 |
 | `aborted` | 被 abort：确认是否有意为之，无意则重跑 |
 
 ### 降级路径（zsw CLI 链路不可用时）
@@ -293,7 +310,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | Gate-1 check-pack 包缺文件 | package.json `files` 白名单补齐后重跑 |
 | workflow run 环境错（zcode CLI 缺失/崩溃） | 读报告 error 字段恢复指引；重跑一次仍败走降级路径（引擎原生 subagent 手工编排） |
 | Gate-2 `stuck` | 看报告剩余 must-fix：误报人工 ack，真问题人工介入 |
-| Gate-2 `review-failed` / `fix-failed` | 调大 `--timeout-per-phase` 重跑一次；再败上报用户 |
+| Gate-2 `review-failed` / `fix-failed` | 按阶段 2「失败停机归因总则」三分类处置：基础设施故障重跑一次；重复出现或属脚本缺陷 → 停下修脚本后从阶段 1 重来 |
 | reviewer parseFail 告警（轮次摘要有「输出无法解析，按 clean 处理」） | 重跑该维度（输出格式漂移，检查 agent.md 输出契约节） |
 | 修复后测试回归 | 从阶段 1 重来（Gate-1 → 阶段 2） |
 | push 冲突 | `git fetch` 后按全局规范 merge（禁 rebase）重试；重写历史后重审未解决的 review 线程 |

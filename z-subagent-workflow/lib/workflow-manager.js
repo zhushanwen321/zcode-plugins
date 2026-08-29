@@ -90,9 +90,6 @@ const RECORD_TYPE = 'workflow';
  */
 const WORKFLOW_MAX_CONCURRENT = 2;
 
-/** workflow 整体超时默认 30min（单阶段默认 10min，多阶段链更长）。 */
-const DEFAULT_WORKFLOW_TIMEOUT_MS = 30 * 60_000;
-
 /** 脚本 ctx.log 的进度留痕上限：环形裁剪防长脚本把内存写爆。 */
 const PROGRESS_MAX_LINES = 50;
 
@@ -619,5 +616,4 @@ module.exports = {
   WorkflowManager,
   RECORD_TYPE,
   WORKFLOW_MAX_CONCURRENT,
-  DEFAULT_WORKFLOW_TIMEOUT_MS,
 };
