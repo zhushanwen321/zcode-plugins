@@ -35,6 +35,11 @@
  *    reconcileIssues 拆为壳函数 + 私有子函数，语义零变更（测试 100% 覆盖不变，字符串与
  *    注释逐字跟随）。上游同步时按 pi 源逻辑对齐子函数即可，或推动上游采用同款拆分
  *    恢复逐字对齐。
+ * 6. MF-1 原型链键消毒（pr-cr-fix 审查修复，2026-08-30）：findIssueKey 首行 truthy
+ *    查表改 Object.hasOwn 自有属性判定（空表 "__proto__"/"constructor" 不再命中原型
+ *    链）；addNewFinding 的 issues[id] 直写不改函数体，由调用侧入口消毒覆盖
+ *    （review-fix-loop.js safeIssueKey——reconciliation prev_id 与聚合/fixer id 三条
+ *    输入路径全部过消毒后才可达本模块写点）。
  */
 
 // ── 5.10 防注入（设计 D10 对齐 pi 三层防御第 1 层）────────────────
@@ -86,7 +91,10 @@ function normIssueId(s) {
  */
 function findIssueKey(issues, issueId) {
   if (!issues || typeof issueId !== "string" || !issueId) return undefined;
-  if (issues[issueId]) return issueId;
+  // MF-1 键消毒：首查必须判自有属性——truthy 查表会让空表传入的 "__proto__"/
+  // "constructor" 命中原型链（未追踪被误判已追踪，下游 issues[key].status 写入
+  // 污染原型）；漂移容忍语义不变，归一化回退照旧（分叉点 6）。
+  if (Object.hasOwn(issues, issueId)) return issueId;
   const norm = normIssueId(issueId);
   if (!norm) return undefined;
   for (const key of Object.keys(issues)) {

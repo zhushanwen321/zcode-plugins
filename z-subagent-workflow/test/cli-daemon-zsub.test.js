@@ -36,6 +36,7 @@ function run(args, extraEnv = {}) {
           ZCODE_MAILBOX_ROOT: path.join(TMP, 'mailbox'),
           HOME: path.join(TMP, 'home'),
           ZCODE_PROJECT_DIR: TMP,
+          ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖（对齐 cli.test.js——嵌套宿主下 message 子命令会被 ensureNotNested 拦截误红）
           ZSW_SOCK: NO_DAEMON_SOCK,
           ...extraEnv,
         },

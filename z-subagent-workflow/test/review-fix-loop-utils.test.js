@@ -145,6 +145,22 @@ test('findIssueKey: 边界——空入参/非 string/null issues → undefined�
   assert.equal(u.findIssueKey(drifted, 'mf-1 (by design)'), 'MF-1 (fixed)');
 });
 
+test('findIssueKey: 原型链保留键不判追踪（MF-1）——修复前空表 "__proto__" 命中 Object.prototype', () => {
+  // 修复前：首行 truthy 查表让 ({})['__proto__'] 命中 Object.prototype 返回 '__proto__'，
+  // 未追踪条目被误判已追踪，下游 issues[key].status 写入污染原型
+  assert.equal(u.findIssueKey({}, '__proto__'), undefined);
+  assert.equal(u.findIssueKey({}, 'constructor'), undefined);
+
+  const issues = { 'MF-1': { severity: 'major' } };
+  assert.equal(u.findIssueKey(issues, '__proto__'), undefined);
+  assert.equal(u.findIssueKey(issues, 'constructor'), undefined);
+  assert.equal(u.findIssueKey(issues, 'prototype'), undefined);
+  // 原型链无污染、漂移容忍不受影响（"只换首行查表"的回归护栏）
+  assert.equal(Object.keys(issues).length, 1);
+  assert.equal(u.findIssueKey(issues, 'mf-1'), 'MF-1');
+  assert.equal(u.findIssueKey(issues, 'MF-1 (fixed)'), 'MF-1');
+});
+
 test('normIssueId: 大小写/尾注/trim 归一；空与非字符串兜底', () => {
   assert.equal(u.normIssueId('MF-1 (fixed)'), 'mf-1');
   assert.equal(u.normIssueId('MF-1(fixed)'), 'mf-1'); // 尾注紧贴无空格
@@ -202,6 +218,15 @@ test('reconcileIssues: 同一 ID 连续 N 轮 → stuck；新 ID 首现 → open
   assert.equal(churn.stuck, false);
   assert.equal(churn.issues['MF-3'].status, 'open');
   assert.equal(churn.issues['MF-3'].firstSeen, 2);
+});
+
+test('reconcileIssues: "__proto__" 入 seenIds 不产生自有键、不改写原型（MF-1）', () => {
+  // 常规路径由调用侧 safeIssueKey 入口消毒保证危险键不达此；本测试锁定 vendor 侧
+  // 兜底语义——普通对象表的原型链 truthy 读会跳过危险键，不得产生写点污染
+  const r = u.reconcileIssues({}, { seenIds: ['__proto__'], round: 1, stuckThreshold: 3 });
+  assert.deepEqual(Object.keys(r.issues), []);
+  assert.equal(Object.getPrototypeOf(r.issues), Object.prototype);
+  assert.equal(r.stuck, false);
 });
 
 test('reconcileIssues: deferred 留 known-remaining；escalate 声明 → 重新 open', () => {

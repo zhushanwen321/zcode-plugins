@@ -302,6 +302,34 @@ const AGGREGATOR_SCHEMA = {
   },
 };
 
+// ── MF-1 原型链键消毒（state.issues 键空间入口）────────────────────
+// LLM 产出的 issue id（聚合 must_fix_ids、fixer deferred[].issue_id、reviewer
+// reconciliation[].prev_id 三条输入路径）作 state.issues 键使用前一律过本函数：
+// '__proto__' 直写触发 setter（条目静默脱离追踪表 + 对象原型被改写），
+// 'constructor'/'prototype' 读侧命中原型链。重写必留痕（stderr WARN），不静默丢弃。
+const UNSAFE_ISSUE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** 危险键改写为尾部加下划线的安全键（'__proto__' → '__proto___'），其余原样返回。 */
+function safeIssueKey(id) {
+  if (!UNSAFE_ISSUE_KEYS.has(id)) return id;
+  const sanitized = `${id}_`;
+  process.stderr.write(`[zsw] WARN: issue id "${id}" 为原型链保留键，已消毒为 "${sanitized}" 入追踪表\n`);
+  return sanitized;
+}
+
+/**
+ * reviewer 维度名消毒（MF-1 同族，state.agentStatus 键空间入口）：机制同 safeIssueKey。
+ * reviewer 名来自用户入参（--reviewers/batchN），recordAgentClean/recordAgentDirty 是
+ * 「state.agentStatus[agentName] || {...} 读后写」——未消毒的 '__proto__'/'constructor'
+ * 读侧命中原型链（truthy 不走兜底分支），写侧直污染 Object.prototype/Object 构造器。
+ */
+function safeReviewerKey(name) {
+  if (!UNSAFE_ISSUE_KEYS.has(name)) return name;
+  const sanitized = `${name}_`;
+  process.stderr.write(`[zsw] WARN: reviewer 维度名 "${name}" 为原型链保留键，已消毒为 "${sanitized}" 入 skip 状态机\n`);
+  return sanitized;
+}
+
 /**
  * 聚合条目 ID 对齐（设计 §3.4「ID 对齐」，LLM 与 JS 两路径同规的后处理核心）：
  * 1) id 归一匹配（findIssueKey/normIssueId 语义，容忍大小写/尾注漂移）——聚合被指示
@@ -445,10 +473,13 @@ function buildIssueUpsert(prev, e, round) {
 
 function updateIssuesFromAggregation(state, entries, round, { reconCount = 0 } = {}) {
   for (const e of entries) {
-    const prev = state.issues[e.id];
-    reviveDormantHit(state, e.id, prev);
+    // MF-1：键消毒兜底——e.id 经 alignIssueToState 对齐后本应安全（自有键或 MF-N），
+    // 此处防御未来对齐逻辑回归导致危险键直达直写点
+    const key = safeIssueKey(e.id);
+    const prev = state.issues[key];
+    reviveDormantHit(state, key, prev);
     applyNoReconRegression(prev, round, reconCount);
-    state.issues[e.id] = buildIssueUpsert(prev, e, round);
+    state.issues[key] = buildIssueUpsert(prev, e, round);
   }
 }
 
@@ -1217,8 +1248,10 @@ async function runReviewFixLoop(raw = {}) {
           // prev_id 归一到追踪键（findIssueKey 语义，容忍大小写/尾注漂移）：漂移形态
           // 不归一会被 reconcileIssues 判为未追踪——fix-attempted 条目被误读为「未重报
           // = 已修复」转 fixed，同时幽灵新 ID 条目被创建。归一失败（追踪表确无此 id）
-          // 原样保留防丢声明，交由 reconcileIssues 的「新发现」分支处理
-          const reconKey = findIssueKey(state.issues, r.prev_id) || r.prev_id;
+          // 原样保留防丢声明，交由 reconcileIssues 的「新发现」分支处理；原型链保留键
+          // 经 safeIssueKey 消毒（MF-1：未消毒的 '__proto__' 到达 reconcileIssues 会被
+          // if(issues[id]) 的原型链 truthy 读静默吞掉，消毒后同走新发现分支且 WARN 留痕）
+          const reconKey = findIssueKey(state.issues, r.prev_id) || safeIssueKey(r.prev_id);
           if (r.status === 'escalate') escalate.add(reconKey);
           else if (r.status === 'fixed') {
             if (typeof r.evidence === 'string' && r.evidence.trim() !== '') fixed.add(reconKey);
@@ -1257,12 +1290,15 @@ async function runReviewFixLoop(raw = {}) {
     // dirty（D3 收紧后走到这里说明全部 reviewer 输出有效，失败不再到达）
     const recordRoundAgents = (parsed) => {
       for (const p of parsed) {
+        // MF-1 同族：agentStatus 键空间消毒——维度名经 safeReviewerKey 过一遍再入
+        // 「读后写」状态机，原型链保留键不得直达 recordAgentClean/Dirty 写点
+        const agentKey = safeReviewerKey(p.reviewer);
         if (agentAllClean(p)) {
-          recordAgentClean(state, p.reviewer, batchIndex);
+          recordAgentClean(state, agentKey, batchIndex);
         } else {
           const pMustFix = p.issues
             .filter((x) => MUST_FIX_SEVERITIES.includes(String(x?.severity || 'minor').toLowerCase())).length;
-          recordAgentDirty(state, p.reviewer, pMustFix, batchIndex);
+          recordAgentDirty(state, agentKey, pMustFix, batchIndex);
         }
       }
       for (const p of parsed) if (agentAllClean(p)) cleanNames.add(p.reviewer);
@@ -1721,6 +1757,13 @@ async function runReviewFixLoop(raw = {}) {
       let stuck = { stuck: false };
       if (round > 1 && (reconCount > 0 || hadFixAttempted)) {
         stuck = reconcileDrivenStuck(round, dormantPending);
+      } else if (prevMustFix === 0 && mustFixCount === 0) {
+        // MF-2：全程零 must-fix 的纯 suggestion 轮不计停滞——updateStuckState 的
+        // mustFix>=prevMustFix 判据在 0>=0 时恒真，会让「suggestion 不收敛」（按
+        // utils 头注决策由 maxRounds 硬顶兜底）抢在 maxRounds 前以 stuck 结构化终止
+        // （终报自相矛盾：stuckIds 空却报「修复停滞，人工接管」）。守卫只看 must-fix
+        // 计数：有追踪 must-fix 不收敛的真实停滞路径照常走下方计数分支，不受影响。
+        stuck = { stuck: false };
       } else {
         const s = updateStuckState(prevMustFix, stuckCount, mustFixCount, stuckThreshold);
         prevMustFix = s.prevMustFix;
@@ -1833,8 +1876,10 @@ async function runReviewFixLoop(raw = {}) {
           // 未追踪的 minor defer（S-x）：新建 deferred 条目（防幽灵条目——原条目
           // 漏建会让 knownRemaining 断链，pi 5.3-4 同构）。v2.1 D2 补齐 lastActiveRound/
           // openStreak（pi 同构结构缺这两个 zsw 字段）；title 回退 reason 首段截断
-          // ——对账清单/报告渲染需要 title，fixer deferred 契约无标题字段
-          state.issues[d.issue_id] = {
+          // ——对账清单/报告渲染需要 title，fixer deferred 契约无标题字段。
+          // MF-1：d.issue_id 是 fixer 自由字符串，作键前消毒（'__proto__' 直写会
+          // 触发 setter，条目静默脱离追踪 + 原型改写）
+          state.issues[safeIssueKey(d.issue_id)] = {
             firstSeen: round, severity: 'minor', status: 'deferred',
             title: reason.trim().slice(0, 40) || '(未命名延期条目)',
             deferredReason: reason,
@@ -2090,7 +2135,7 @@ function buildAbortedFinalText(ctx) {
 }
 
 function buildReviewFailedFinalText(ctx) {
-  return `## 审查阶段失败\n\n共 ${ctx.totalRounds} 轮，以下审查者无效，按 D3 结构化终止（任一 reviewer 无效即终止——对账契约下缺席者会被误读为「已修复」制造假收敛，且聚合口径不完整）：\n${(ctx.failureReviewers || []).map((f) => `- ${f.reviewer}：${f.reason === 'runFail' ? '审查执行失败（CLI 崩溃/超时）' : f.detail ? `输出解析失败（${f.detail}）` : '输出解析失败（无有效 json 围栏）'}`).join('\n')}\n\n没有任何可信审查结论——不能按 clean 处理。恢复指引：runFail → 检查该 reviewer 的模型 CLI 可用性并调大 timeoutMsPerPhase；parseFail → 检查该 reviewer 的输出契约遵循（status 取 clean/issues、issues 为数组、clean 时不得携带条目、suggestion_count 须可数值化）；处理后重跑。`;
+  return `## 审查阶段失败\n\n共 ${ctx.totalRounds} 轮，以下审查者无效，按 D3 结构化终止（任一 reviewer 无效即终止——对账契约下缺席者会被误读为「已修复」制造假收敛，且聚合口径不完整）：\n${(ctx.failureReviewers || []).map((f) => `- ${f.reviewer}：${f.reason === 'runFail' ? '审查执行失败（CLI 崩溃/超时）' : f.detail ? `输出解析失败（${f.detail}）` : '输出解析失败（无有效 json 围栏）'}`).join('\n')}\n\n没有任何可信审查结论——不能按 clean 处理。恢复指引：runFail → 检查该 reviewer 的模型 CLI 可用性（体系缺省无超时，仅用户显式要求死线时才调 timeoutMsPerPhase）；parseFail → 检查该 reviewer 的输出契约遵循（status 取 clean/issues、issues 为数组、clean 时不得携带条目、suggestion_count 须可数值化）；处理后重跑。`;
 }
 
 function buildAggregatorFailureFinalText(ctx) {
@@ -2204,4 +2249,13 @@ function lastActiveBatch(summaries, batchTotal) {
   return withRounds.length ? withRounds[withRounds.length - 1].batch : batchTotal;
 }
 
-module.exports = { runReviewFixLoop, DEFAULT_REVIEWERS };
+module.exports = {
+  runReviewFixLoop,
+  DEFAULT_REVIEWERS,
+  // 测试触达面（review-fix-loop-utils.test.js 同构）：MF-1 键消毒原语与追踪表
+  // 直写点——编排层闭包（consumeFixResults/recordRoundAgents 等）不可直接
+  // require，经这几处覆盖
+  safeIssueKey,
+  safeReviewerKey,
+  updateIssuesFromAggregation,
+};

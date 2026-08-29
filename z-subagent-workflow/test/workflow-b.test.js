@@ -375,6 +375,11 @@ fs.writeFileSync(FAKE_CLI, [
   "      objG = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
   '    }',
   "    reply(F + 'json\\n' + JSON.stringify(objG) + '\\n' + F);",
+  // FAKE_SUGGEST_ONLY（MF-2）：全程零 must-fix——每轮恒报 1 条 minor + suggestion_count=1
+  // （不 clean、无对账对象）→ 聚合 must_fix=0/suggestion=1。守卫回归驱动源：修复前
+  // R2+ 落入 updateStuckState 计数分支 0>=0 恒真连计，R4 抢在 maxRounds 前以 stuck 终止
+  "  } else if (process.env.FAKE_SUGGEST_ONLY === '1' && prompt.includes('审查者「correctness」')) {",
+  "    reply(F + 'json\\n' + JSON.stringify({ status: 'issues', issues: [{ id: 'A1', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }], suggestion_count: 1, reconciliation: [] }) + '\\n' + F);",
   // FS3a（v2.1 D3a）：R1 报 1 major + 1 minor（suggestion_count 1）；R2 clean + 对 MF-1
   // 声明 fixed（rawAllClean 回填转 fixed → 批 clean）
   "  } else if (process.env.FAKE_FALLBACK_MINOR === '1' && prompt.includes('审查者「correctness」')) {",
@@ -1814,6 +1819,35 @@ test('review-fix-loop v2 U3：修复范围全等级（D6）——suggestion 未�
     assert.equal(st.batches[0].rounds[1].suggestion, 1);
   } finally {
     delete process.env.FAKE_SUGGEST;
+  }
+});
+
+test('review-fix-loop v2 U3：全程零 must-fix 的纯 suggestion 轮不触发计数式 stuck（MF-2）——suggestion 不收敛由 maxRounds 硬顶', async () => {
+  writeV2Config();
+  resetCalls();
+  process.env.FAKE_SUGGEST_ONLY = '1';
+  try {
+    // 每轮 reviewer 报 1 条 minor + suggestion_count=1（恒不 clean、无对账对象）→
+    // 聚合恒 must_fix=0/suggestion=1。修复前：R2+ 门控（reconCount=0 且无 fix-attempted）
+    // 落入 updateStuckState 计数分支，0>=0 恒真连计 1/2/3，R4 抢在 maxRounds 前以
+    // stuck（终报自相矛盾：stuckIds 空、「剩余 must-fix 0 个」却报人工接管）终止；
+    // 修复后：守卫跳过计数，跑满 maxRounds=4 由轮数硬顶收尾（末轮为 suggestion 修复
+    // → fixed-unverified）
+    const result = await runReviewFixLoop({
+      task: '纯建议级轮次', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-suggest-only'), runId: 'wf-utest-suggest-only',
+      maxRounds: 4,
+    });
+    assert.notEqual(result.loop.status, 'stuck');
+    assert.equal(result.loop.status, 'fixed-unverified');
+    assert.equal(result.loop.rounds, 4);
+    // 4 轮 × 3 阶段（review+聚合+fix）全部跑满，无 stuck 提前 stop
+    assert.equal(result.phases.length, 12);
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-suggest-only', 'state.json'), 'utf8'));
+    assert.deepEqual(Object.keys(st.issues), []); // 全程零 must-fix 追踪（纯 suggestion 不入表）
+    assert.equal(st.meta.terminated, 'fixed-unverified');
+  } finally {
+    delete process.env.FAKE_SUGGEST_ONLY;
   }
 });
 
