@@ -5,7 +5,7 @@
  * 这是 zsub 的「决策可换」地基：manager.js 与上层入口（MCP server / CLI）
  * 只依赖本文件声明的接口，不依赖任何具体实现。三个正交决策位：
  *
- *   决策位① 执行引擎  RunnerPort     : spawn（基线）| appserver（长线）
+ *   决策位① 执行引擎  RunnerPort     : appserver（默认，D1 翻转）| spawn（显式回退）
  *   决策位② 回流通道  NotifierPort   : mailbox（主）| polling（兜底）| task-notification（预留）
  *   决策位③ 入口形态  （MCP / CLI）   : dist/mcp/server.js 与 bin/zsw.js 都只是 manager 的薄壳
  *
@@ -122,12 +122,12 @@ const DEFAULTS = require('./config').DEFAULTS;
 /**
  * registry：按配置组装运行时。上层唯一入口。
  * @param {object} opts
- * @param {'spawn'|'appserver'} [opts.runnerKind='spawn']
+ * @param {'spawn'|'appserver'} [opts.runnerKind='appserver']   缺省 appserver（D1 翻转）
  * @param {'mailbox'|'polling'} [opts.notifyMode]   缺省按 env 自动探测
  */
 function createRuntime(opts = {}) {
   // 实现在 W1/W2 接线；本函数是唯一允许 import 具体实现的地方。
-  const runnerKind = opts.runnerKind || 'spawn';
+  const runnerKind = opts.runnerKind || 'appserver';
   let notifyMode = opts.notifyMode;
   if (!notifyMode) {
     const { mailboxEnabled } = require('./config');

@@ -97,6 +97,8 @@ graph TD
 | 2026-08-29 | F0 | 驱逐加速手段：idleTimeoutMs 无 env/CLI/config 覆盖面（驻留池参数仅 GUI host 进程内注入），改用 high_water_lru 洪泛（16+ immediate 不订阅会话秒级触发真驱逐），保留 10min 真实等待回退（ZSW_TP1_FLOOD_ONLY 门控） | 源码证实无覆盖面；洪泛为真驱逐语义等价物 | 设计文档 §2.2 事实 1 已回填 |
 | 2026-08-29 | F2 | -32010 出口细化：设计只写「不重试」；实现明确「恢复序重试 send 遇 -32010 = 恢复已成功，按 busy 如实上抛、不落分支 B」（落分支 B 会误报会话弃用），独立用例钉住 | 设计 D2 未覆盖此出口语义，实现选择与 busy 诚实语义一致 | 无需改设计（实现层语义，头注已沉淀）；一致性审查复核 |
 | 2026-08-29 | F2 | README:103 仍引用 idleConversationTtlMs（F2 领地外），删除移交 F3 文档翻转面 | README 本就是 F3 领地 | F3 单元行已补 |
+| 2026-08-29 | F3 | e2e 钉 spawn 采用文件顶部统一 `process.env.ZSW_RUNNER='spawn'`（一处声明覆盖 E1-E6/E8），未逐场景重复设置 | 等效于 D9「逐场景显式钉 spawn」，一处声明更可维护；E7/E10 显式注入不受 env 影响 | 无需改设计（实现形态等价） |
+| 2026-08-29 | F3 | 缓存命中首败+重探失败的降级落地为「通道级降级」：本任务转 spawn 重跑 + records 改标 + wrapper.capabilities() 翻转，daemon 生命周期内后续任务走 spawn 免重探（重启即恢复探测） | 设计 D1 只写「降级 spawn」，未指明任务级/通道级；通道级避免每任务重复付「撞错→重探→失败」成本，且 daemon 重启自然回探 | 一致性审查复核该语义（后续任务静默 spawn 需 stderr 出声一次） |
 
 ## 6 状态表
 
@@ -105,7 +107,7 @@ graph TD
 | F0 | committed | 1 | 探针归档 `test/e2e-tp1-recovery.test.js`（头注含全部结论）；真机三线一次全绿（A 22.7s/B 37.6s/C 30.1s）；结论已回填设计文档 §2.2 事实 1/2、D2、§5 检查点 1/3；无门控默认 skip 3 场景（CI 安全）复验 |
 | F1 | committed | 1 | commit（本轮）；单测 36/36、全量非 e2e 358/358 复跑绿；真机 apc-smoke pass（token 1 次调用）；A2/A4 收口，A4 牵出提取链修复（见偏差登记表） |
 | F2 | committed | 1 | commit（本轮）；单测 50/50、全量非 e2e 372/372 复跑绿；恢复序全链/互斥/④窗口/分支 B/persistence/遥测 env/stderr 落盘全覆盖；idle TTL 声明已删（仅剩注释） |
-| F3 | pending | 0 | — |
+| F3 | committed | 1 | commit（本轮）；assemble 12/12、全量非 e2e 380/380 复跑绿；真机最小验证：默认通道 runnerKind='appserver' + probe-cache 命中跳探 + ZSW_RUNNER=spawn 回退三连过；真机抓出并修复 resolveCliPath 引用 bug（config.ZCODE_CLI 非 DEFAULTS.ZCODE_CLI） |
 | F4 | pending | 0 | — |
 | F5 | pending | 0 | — |
 
@@ -115,7 +117,9 @@ graph TD
 1. F0 结论可能判定崩溃分支不可自愈（-32031 无解）→ D2 走分支 B（驱逐自愈 + 崩溃诚实报错），不阻塞翻转（设计已预案）。
 2. 工具限制 spec 形态（`Bash(git *)`）支持性待 F1 冒烟实测；先按裸工具名落地。
 3. stdio 背压 + 多会话并发恢复（A-8/F0 C 线）为观察项非阻塞门。
-4. 复审 INFO×2（实施期留白）：D2 ④ 失败场景的分支 B 文案措辞需适配「事件流不可达」语义；D1 缓存重探 ok 后的重试动作由 D3 漂移分类兜底。
+4. 复审 INFO×2（实施期留白）：D2 ④ 失败场景的分支 B 文案措辞需适配「事件流不可达」语义（F2 已按此实现）；D1 缓存重探 ok 后的重试动作由 D3 漂移分类兜底（F3 已按此实现）。
+5. F3 观察项（非 F3 引入，阶段 5 观察）：`--local` CLI 进程任务 closed 后偶发收尾慢（5 次真机 1 次，最终 exit 0）——F3 未改 runner/CLI 收尾逻辑，如需根治属独立问题。
+6. README「tools 白名单软约束/denylist 硬约束」条目翻转后仍真（F4 frontmatter 接线后再更新表述，F5 复核）。
 
 | 日期 | 事件 |
 |------|------|

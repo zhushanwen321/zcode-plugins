@@ -11,7 +11,8 @@
  *   所有模型调用必挂）。user 级 agent 根的隔离改走 resolver 注入临时 homeDir。
  * - ZCODE_MESSAGE_ENABLED=1：激活 mailbox 档（E2/E3 投递断言的前提）。
  *
- * 成本纪律：task 文本极简；每场景 1-2 次真实调用封顶；E4/E6/E8 零调用。
+ * 成本纪律：task 文本极简；每场景 1-2 次真实调用封顶（E10 多会话并发 4 次封顶）；
+ * E4/E6/E8 零调用。
  * 大模型侧账户级限流（429/1302）会让 CLI 长退避重试、表现为 timeout——
  * startWithRetry 对可重试失败统一退避重试，实际重试次数在结尾汇总输出。
  */
@@ -29,6 +30,10 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-e2e-'));
 process.env.ZSW_ROOT = path.join(TMP, 'zsub-root');
 process.env.ZCODE_MAILBOX_ROOT = path.join(TMP, 'mailbox');
 process.env.ZCODE_MESSAGE_ENABLED = '1';
+// F3 默认翻转后的场景钉面（D9）：E1-E6/E8 断言的是 spawn 通道行为（E4 pid 探活、
+// E6 exec.pid 崩溃恢复均为 spawn 专有概念），显式钉回退通道保持原语义；E7/E10 的
+// appserver 通道走显式注入（opts.runnerKind + runner），不受本 env 影响。
+process.env.ZSW_RUNNER = 'spawn';
 
 // env 隔离完成后才 require lib（config.js 模块加载期冻结 V2_CONFIG_PATH）
 const { assembleManager } = require('../lib/assemble');
@@ -684,3 +689,35 @@ test('E9 apc-smoke 升级冒烟（D3/G3）：create(toolDenylist+persistence) �
       await runner.shutdown(); // 内部 close 已 close 的会话失败为 allSettled，不炸收尾
     }
   });
+
+// ------------------------------------------------------------------ E10
+
+test('E10 appserver 多会话并发（A-8/G1）：4 并发任务全完成、响应不串线', scenarioOpts('E10'), async () => {
+  // D9 新增：默认通道扩到 4 并发（slots=3，第 4 个排队），验证串行链背压与
+  // A2 多会话推送归因——单 runner 实例承载 4 会话（与 daemon 真实形态一致）。
+  // 显式注入 appserver runner（跳过组装期 probe），真机执行归阶段 5 验收。
+  const ModelRouter = require('../lib/model-router');
+  const router = new ModelRouter();
+  await router.prepareRunEnv(router.resolve(MODEL), 'appserver');
+  const runner = new AppServerRunner(); // 单连接承载全部会话
+  const e10proj = path.join(TMP, 'e10-proj');
+  fs.mkdirSync(e10proj, { recursive: true });
+  const SECRETS = ['茄子紫', '冬瓜绿', '南瓜橙', '萝卜白'];
+  const { manager } = await buildManager({ runnerKind: 'appserver', runner });
+  try {
+    const results = await Promise.all(SECRETS.map((secret, i) => startWithRetry(manager, {
+      task: `直接回复文本：${secret}。禁止使用任何工具，禁止搜索。`,
+      slug: `e10-concurrent-${i}`,
+      model: MODEL,
+      timeoutMs: CALL_MS,
+    }, { cwd: e10proj, targetSessionId: `sess_e10_${i}` })));
+    results.forEach((res, i) => {
+      assert.equal(res.status, 'closed', `#${i} 终态: ${res.status} ${res.error || ''}`);
+      assert.ok((res.result || '').includes(SECRETS[i]),
+        `#${i} 响应串线信号：期望含「${SECRETS[i]}」，实际 ${JSON.stringify((res.result || '').slice(0, 120))}`);
+    });
+  } finally {
+    await runner.shutdown();
+  }
+  await sleep(GAP_MS);
+});
