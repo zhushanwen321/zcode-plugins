@@ -42,6 +42,14 @@
  *   FAKE_MF_COLLIDE（v2.1 D4/FS4：R1 双 major + 聚合臆测条目落 dormant MF-3；R2 'new'
  *   报全新独有问题（验证 dormant 占号不被复用 → 分得 MF-4）/ 'revive' 重报 dormant
  *   同题（验证复活走原 id + revived 置位）；聚合复用 FAKE_DORMANT_REVIVE 段）。
+ *   FAKE_FS6（v2.1 D6/FS6：R1 报 1 major；修复者修 MF-1 并幽灵 defer S-1；R2+ clean +
+ *   对 MF-1 声明 not-fixed → regressed 残留与 deferred 条目并存的终态——max-rounds /
+ *   fixed-unverified 两终态终报清单（runDir/残留/deferred）断言数据源）、
+ *   FAKE_CONV_LIFT（v2.1 D8：R1 issue→fix；R2 臆测(降级)+MF-1 not-fixed→regressed；
+ *   R3 新 issue（1 条新发现驱动收敛 streak）；R4 臆测(降级)+对 MF-1/MF-3 声明 fixed →
+ *   converged。convergeNewIssues=0 抬到 1 的行为断言数据源：字面 0 会在 R3 重置
+ *   streak，本序列只能以 clean 收场）、FAKE_AGG_BADSEV（v2.1 D8：聚合回包 severity
+ *   非契约枚举 → 编排层归一回落 major）。
  *   fake 聚合者按 v2 契约汇总：must_fix_ids 只收 critical/major（minor 计入
  *   suggestion）、标题含「臆测」的条目裁决 downgraded（噪声裁决路径）。
  * - fake 修复者按 v2 契约回包：从 prompt 的 aggregated-issues untrusted 块提取全部
@@ -84,6 +92,8 @@ const DRIFT_FILE = path.join(TMP, 'drift-count.txt');
 const ESCALATE_FILE = path.join(TMP, 'escalate-count.txt');
 const FALLBACK_MINOR_FILE = path.join(TMP, 'fallback-minor-count.txt');
 const MF_COLLIDE_FILE = path.join(TMP, 'mf-collide-count.txt');
+const FS6_FILE = path.join(TMP, 'fs6-count.txt');
+const CONV_LIFT_FILE = path.join(TMP, 'conv-lift-count.txt');
 
 // ---- fake zcode CLI：按 prompt 关键词分支（围栏反引号放普通字符串，避免嵌套模板）----
 const FAKE_CLI = path.join(TMP, 'fake-zcode.cjs');
@@ -130,8 +140,23 @@ fs.writeFileSync(FAKE_CLI, [
   // 轮改判 evidence（复活 = 重新确证），并在首轮补一条臆测条目（对齐 FAKE_AGG_DEMOTE
   // 的注入形态，供 R1 落 dormant）。FAKE_MF_COLLIDE 复用本段：R1 同样产出
   // issues={MF-1,MF-2}+dormant MF-3 的前置状态（FS4 的撞号/复活双分支数据源）
-  "    const majors = all.filter((it) => ['critical', 'major'].includes(String(it.severity || '').toLowerCase()));",
-  "    if (process.env.FAKE_DORMANT_REVIVE === '1' || process.env.FAKE_MF_COLLIDE) {",
+"    const majors = all.filter((it) => ['critical', 'major'].includes(String(it.severity || '').toLowerCase()));",
+"    if (process.env.FAKE_CONV_LIFT === '1') {",
+// D8 收敛下限场景聚合段：按 state-issues 清单同题沿用 id、未命中编新号；臆测条目
+// 裁决 downgraded（降级条目不入追踪表，R3 的真实新条目在编排层联合计数分得新号）
+"      const mPL = /<untrusted source=\"state-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
+"      let priorL = [];",
+"      try { priorL = mPL ? JSON.parse(mPL[1]) : []; } catch (e) { priorL = []; }",
+"      const byTL = {}; let mxL = 0;",
+"      for (const x of priorL) { byTL[String(x.title)] = x.id; const mNL = /^MF-(\\d+)$/.exec(String(x.id)); if (mNL) mxL = Math.max(mxL, Number(mNL[1])); }",
+"      const idsL = majors.map((it) => ({ id: byTL[String(it.title)] || 'MF-' + (++mxL), severity: it.severity || 'major', title: it.title, files: it.file ? [it.file] : [], evidence: it.detail || '', guidance: '', adjudication: String(it.title).includes('臆测') ? 'downgraded' : 'evidence', note: String(it.title).includes('臆测') ? '无证据臆测' : '' }));",
+"      reply(F + 'json\\n' + JSON.stringify({ must_fix: idsL.filter((x) => x.adjudication === 'evidence').length, suggestion: sugg, must_fix_ids: idsL, fixes_caution: [] }) + '\\n' + F);",
+"    } else if (process.env.FAKE_AGG_BADSEV === '1') {",
+// D8 畸形 severity：severity 非契约枚举 → 编排层归一须回落 major（must-fix 保守方向）。
+// evidence 等自由文本不得含「聚合者/审查者/循环中的修复者」路由关键词——该文本会随
+// aggregated-issues 块进入 fixer prompt，触发 fake CLI 误路由（探针实证）
+"      reply(F + 'json\\n' + JSON.stringify({ must_fix: 1, suggestion: 0, must_fix_ids: [{ id: 'MF-1', severity: '紧急', title: '畸形等级条目', files: ['a.js'], evidence: 'severity 非契约枚举（测试注入）', guidance: '', adjudication: 'evidence', note: '' }], fixes_caution: [] }) + '\\n' + F);",
+"    } else if (process.env.FAKE_DORMANT_REVIVE === '1' || process.env.FAKE_MF_COLLIDE) {",
   "      const fV = process.env.FAKE_REVIVE_AGG_FILE;",
   "      const nV = Number(fs.existsSync(fV) ? fs.readFileSync(fV, 'utf8') : '0') + 1;",
   "      fs.writeFileSync(fV, String(nV));",
@@ -193,8 +218,12 @@ fs.writeFileSync(FAKE_CLI, [
   "      ? [{ issue_id: minorFM.id, reason: '该 minor 修复涉及多处调用点重构，本轮集中处理 must-fix，放到下一批统一处理' }]",
   "      : [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续批次处理' }];",
   "    reply('## 修复结果\\n' + fixesFM.map((f3) => f3.issue_id + ' → 已修复（测试模拟修复）。').join('\\n') + '\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: fixesFM.length, fixes: fixesFM, deferred: deferredFM }) + '\\n' + F);",
-  '  } else {',
-  "    const mF = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
+"  } else if (process.env.FAKE_FS6 === '1') {",
+// FS6 修复者：修 MF-1（自报 affected_files）+ 幽灵 defer 未追踪 minor S-1——终态
+// 「残留 + deferred 双清单并存」的数据源（D6 终报渲染断言用）
+"    reply('## 修复结果\\nMF-1 → 已修复（测试模拟修复）。\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: 1, fixes: [{ issue_id: 'MF-1', description: '测试修复 MF-1', self_check: 'grep ok', affected_files: ['a.js'] }], deferred: [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续重构批次处理' }] }) + '\\n' + F);",
+'  } else {',
+"    const mF = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
   "    let ids = [];",
   "    try { ids = mF ? JSON.parse(mF[1]).map((x) => x.id) : []; } catch (e) { ids = []; }",
   "    const fixes = (ids.length ? ids : ['S-1']).map((id) => ({ issue_id: id, description: '测试修复 ' + id, self_check: 'grep ok', affected_files: ['a.js'] }));",
@@ -344,8 +373,38 @@ fs.writeFileSync(FAKE_CLI, [
   "    } else {",
   "      objC2 = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [] };",
   '    }',
-  "    reply(F + 'json\\n' + JSON.stringify(objC2) + '\\n' + F);",
-  "  } else if (process.env.FAKE_DECLINE === '1') {",
+"    reply(F + 'json\\n' + JSON.stringify(objC2) + '\\n' + F);",
+"  } else if (process.env.FAKE_FS6 === '1' && prompt.includes('审查者「correctness」')) {",
+// FS6：R1 报顽固问题；R2+ clean + 对 MF-1 声明 not-fixed（regressed 残留常驻到终态）
+"    const f6 = process.env.FAKE_FS6_FILE;",
+"    const n6 = Number(fs.existsSync(f6) ? fs.readFileSync(f6, 'utf8') : '0') + 1;",
+"    fs.writeFileSync(f6, String(n6));",
+"    let obj6;",
+"    if (n6 === 1) {",
+"      obj6 = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '顽固问题', detail: '边界条件', file: 'a.js' }], suggestion_count: 0, reconciliation: [] };",
+"    } else {",
+"      obj6 = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'not-fixed', evidence: '仍然存在' }] };",
+'    }',
+"    reply(F + 'json\\n' + JSON.stringify(obj6) + '\\n' + F);",
+"  } else if (process.env.FAKE_CONV_LIFT === '1' && prompt.includes('审查者「correctness」')) {",
+// D8 收敛下限场景：R1 issue→fix；R2 臆测(降级)+MF-1 not-fixed→regressed（残留续命）；
+// R3 新 issue（新发现 1，抬到 1 后 streak 连计）；R4 臆测(降级)+对 MF-1/MF-3 声明 fixed
+// → converged（字面 0 时 R3 重置 streak → 本序列只能以 clean 收场，断言可判别）
+"    const fL = process.env.FAKE_CONV_LIFT_FILE;",
+"    const nL = Number(fs.existsSync(fL) ? fs.readFileSync(fL, 'utf8') : '0') + 1;",
+"    fs.writeFileSync(fL, String(nL));",
+"    let objL;",
+"    if (nL === 1) {",
+"      objL = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }], suggestion_count: 0, reconciliation: [] };",
+"    } else if (nL === 2) {",
+"      objL = { status: 'issues', issues: [{ id: 'A2', severity: 'major', title: '臆测竞态', detail: '可能存在竞态', file: 'x.js' }], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'not-fixed', evidence: '仍然存在' }] };",
+"    } else if (nL === 3) {",
+"      objL = { status: 'issues', issues: [{ id: 'A3', severity: 'major', title: '第二处空指针', detail: '空引用风险', file: 'b.js' }], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'not-fixed', evidence: '仍然存在' }] };",
+"    } else {",
+"      objL = { status: 'issues', issues: [{ id: 'A4', severity: 'major', title: '臆测竞态', detail: '可能存在竞态', file: 'x.js' }], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }, { prev_id: 'MF-3', status: 'fixed', evidence: '已修复未再现' }] };",
+'    }',
+"    reply(F + 'json\\n' + JSON.stringify(objL) + '\\n' + F);",
+"  } else if (process.env.FAKE_DECLINE === '1') {",
   "    const f = process.env.FAKE_STATE_FILE;",
   "    const n = Number(fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '0') + 1;",
   "    fs.writeFileSync(f, String(n));",
@@ -400,6 +459,8 @@ process.env.FAKE_DRIFT_FILE = DRIFT_FILE;
 process.env.FAKE_ESCALATE_FILE = ESCALATE_FILE;
 process.env.FAKE_FALLBACK_MINOR_FILE = FALLBACK_MINOR_FILE;
 process.env.FAKE_MF_COLLIDE_FILE = MF_COLLIDE_FILE;
+process.env.FAKE_FS6_FILE = FS6_FILE;
+process.env.FAKE_CONV_LIFT_FILE = CONV_LIFT_FILE;
 
 // env 隔离完成后才允许 require lib（见文件头注释）
 const config = require('../lib/config');
@@ -1698,8 +1759,8 @@ test('review-fix-loop v2 U3：state.json 字段全集 + meta.terminated 权威�
   // terminated 权威源：state.meta.terminated 与 loop.status 一致（S5 不变量）
   assert.equal(st.meta.terminated, 'clean');
   assert.equal(st.meta.terminated, result.loop.status);
-  // 顶层字段全集（§3.4 + zsw 特有 abortedAtPhase）
-  for (const k of ['agentStatus', 'issues', 'dormant', 'knownRemaining', 'convergeStreak', 'lastModifiedFiles', 'fixCount', 'batches', 'abortedAtPhase']) {
+  // 顶层字段全集（§3.4 + zsw 特有 abortedAtPhase + v2.1 D7 fixImpactFiles）
+  for (const k of ['agentStatus', 'issues', 'dormant', 'knownRemaining', 'convergeStreak', 'lastModifiedFiles', 'fixImpactFiles', 'fixCount', 'batches', 'abortedAtPhase']) {
     assert.ok(k in st, `state.${k} 缺失`);
   }
   // issues 条目字段（对账转换链全程可查：open → fix-attempted → fixed）
@@ -1711,9 +1772,9 @@ test('review-fix-loop v2 U3：state.json 字段全集 + meta.terminated 权威�
   assert.equal(issue.fixAttempts, 0);
   assert.ok('openStreak' in issue);
   assert.ok(Array.isArray(issue.history) && issue.history.length >= 3);
-  // rounds 字段（S1 批次时序 + 轮记录骨架）
+  // rounds 字段（S1 批次时序 + 轮记录骨架 + v2.1 D8 phaseTimings）
   const r1 = st.batches[0].rounds[0];
-  for (const k of ['round', 'startedAt', 'finishedAt', 'mustFix', 'suggestion', 'agents', 'modifiedFiles']) {
+  for (const k of ['round', 'startedAt', 'finishedAt', 'mustFix', 'suggestion', 'agents', 'modifiedFiles', 'phaseTimings']) {
     assert.ok(k in r1, `rounds[0].${k} 缺失`);
   }
   assert.equal(r1.mustFix, 1);
@@ -2133,4 +2194,154 @@ test('review-fix-loop v2.1 D5 (FS5)：双维度首轮全 clean → 零聚合调�
   assert.ok(!fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fs5', 'batch-1', 'round-1', 'aggregated.md')));
   // 轮次摘要标注「全员 clean，未聚合」
   assert.ok(result.sections[0].body.includes('全员 clean，未聚合'));
+});
+
+// ----------------- v2.1 D6：报告完备（FS6，M1）— runDir 行 + 终报残留/deferred 清单
+
+test('review-fix-loop v2.1 D6 (FS6)：max-rounds 终报——头部 runDir 行 + 残留清单（id/severity/title/status）+ deferred 清单', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FS6_FILE, { force: true });
+  process.env.FAKE_FS6 = '1';
+  try {
+    // R1 fix（MF-1 fix-attempted + 幽灵 defer S-1）；R2/R3 clean + not-fixed →
+    // MF-1 regressed 残留阻断 clean（v2.1 D2 出口断言）→ 走满 3 轮判 max-rounds。
+    // stuckThreshold 钉住对账 stuck 通道（MF-1 openStreak 峰值 3）
+    const result = await runReviewFixLoop({
+      task: '终报残留演示', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs6-max'), runId: 'wf-utest-fs6-max',
+      maxRounds: 3, stuckThreshold: 10,
+    });
+    assert.equal(result.loop.status, 'max-rounds');
+    // 机器数据：残留视图（pi 5.9 口径 = 非 fixed/deferred）与 deferred 视图（id/title/理由）
+    assert.deepEqual(result.loop.residualIssues, [
+      { id: 'MF-1', severity: 'major', title: '顽固问题', status: 'regressed' },
+    ]);
+    assert.equal(result.loop.deferredIssues.length, 1);
+    assert.equal(result.loop.deferredIssues[0].id, 'S-1');
+    assert.ok(result.loop.deferredIssues[0].reason.includes('重构批次'));
+
+    // 人读报告：头部元信息区含 runDir 行；终报段渲染残留 + deferred 双清单
+    const md = report.buildMarkdownReport(result);
+    assert.ok(md.includes(`- **runDir**: \`${result.runDir}\``));
+    assert.ok(md.indexOf('- **runDir**') < md.indexOf('## 阶段明细')); // 头部区
+    assert.ok(md.includes('## 残留 issue 清单'));
+    assert.ok(md.includes('| id | severity | title | status |'));
+    assert.ok(md.includes('| MF-1 | major | 顽固问题 | regressed |'));
+    assert.ok(md.includes('## deferred 清单'));
+    assert.ok(md.includes('| S-1 |'));
+    assert.ok(md.includes('统一放到后续重构批次处理')); // 延期理由（id/title/理由 三列齐全）
+  } finally {
+    delete process.env.FAKE_FS6;
+  }
+});
+
+test('review-fix-loop v2.1 D6 (FS6)：fixed-unverified 终报同构渲染（第二终态覆盖）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FS6_FILE, { force: true });
+  process.env.FAKE_FS6 = '1';
+  try {
+    // maxRounds=1：R1 fix 后轮数即耗尽 → fixed-unverified（zsw 特有终态，D6 四终报段之一）
+    const result = await runReviewFixLoop({
+      task: '待复核终报演示', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs6-fix'), runId: 'wf-utest-fs6-fix',
+      maxRounds: 1,
+    });
+    assert.equal(result.loop.status, 'fixed-unverified');
+    assert.deepEqual(result.loop.residualIssues, [
+      { id: 'MF-1', severity: 'major', title: '顽固问题', status: 'fix-attempted' },
+    ]);
+    const md = report.buildMarkdownReport(result);
+    assert.ok(md.includes(`- **runDir**: \`${result.runDir}\``));
+    assert.ok(md.includes('## 残留 issue 清单'));
+    assert.ok(md.includes('| MF-1 | major | 顽固问题 | fix-attempted |'));
+    assert.ok(md.includes('## deferred 清单'));
+    assert.ok(md.includes('| S-1 |'));
+  } finally {
+    delete process.env.FAKE_FS6;
+  }
+});
+
+// ----------------------- v2.1 D7：recheck 模式补全（M2）— fixImpactFiles + scoped 对账段
+
+test('review-fix-loop v2.1 D7：fixImpactFiles 归并 + 限定复检 scope 并集 + scoped reviewer 对账清单段', async () => {
+  writeV2Config();
+  resetCalls();
+  // R1：correctness 报 issue → fix（fake 修复者自报 affected_files ['a.js']）；
+  // R2（recheckAfterFix=true）：R1 clean 的 robustness 走限定复检。工作目录非 git
+  // （git 实测为空）——scope 并集仍须含 fixer 自报的 a.js（并集语义的直接证明）
+  const result = await runReviewFixLoop({
+    task: 'recheck scope 并集', workdir: makeWorkdir('rfl-recheck-d7'), runId: 'wf-utest-recheck-d7',
+    recheckAfterFix: true,
+  });
+  assert.equal(result.loop.status, 'clean');
+  // fix 消费处归并：fixes[].affected_files → state.fixImpactFiles（随 state 持久化）
+  const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-recheck-d7', 'state.json'), 'utf8'));
+  assert.deepEqual(st.fixImpactFiles, ['a.js']);
+  const robustnessCalls = readCalls().filter((c) => c.prompt.includes('审查者「robustness」'));
+  assert.equal(robustnessCalls.length, 2);
+  const scopedPrompt = robustnessCalls[1].prompt;
+  // scope = lastModifiedFiles ∪ fixImpactFiles：非 git 目录下并集仍含自报触碰面
+  assert.ok(scopedPrompt.includes('## 本轮 fix 改动文件（git 实测 ∪ fixer 契约 affected_files）'));
+  assert.ok(scopedPrompt.includes('- a.js'));
+  // scoped reviewer 同样拿到对账清单段并须产出 reconciliation（v2.1 D7；其判定经
+  // 消费端统一收集进 reconcileIssues 链，收集口径与常规 reviewer 相同）
+  assert.ok(scopedPrompt.includes('上一轮活跃问题清单'));
+  assert.ok(scopedPrompt.includes('<untrusted source="state-issues">'));
+  assert.ok(scopedPrompt.includes('MF-1'));
+  assert.ok(scopedPrompt.includes('reconciliation 对账'));
+});
+
+// --------------------- v2.1 D8：参数与防御（M3）— convergeNewIssues 下限/severity/phaseTimings
+
+test('review-fix-loop v2.1 D8：convergeNewIssues=0 抬到 1 + 畸形 severity 回落 major + phaseTimings 结构', async () => {
+  writeV2Config();
+  // (a) convergeNewIssues=0 → clamp 到 1：R3 恰有 1 条新发现（MF-3）——抬到 1 时 streak
+  // 连计至 R4 converged；字面 0 会在 R3 重置 streak，本序列只能以 A4-clean 收场，
+  // 断言 converged 即证 0 被抬到 1。stuckThreshold 钉住对账通道（MF-1 openStreak 峰值 3）
+  resetCalls();
+  fs.rmSync(CONV_LIFT_FILE, { force: true });
+  process.env.FAKE_CONV_LIFT = '1';
+  try {
+    const r = await runReviewFixLoop({
+      task: '收敛下限抬升', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-conv-lift'), runId: 'wf-utest-conv-lift',
+      convergeNewIssues: 0, maxRounds: 4, stuckThreshold: 10,
+    });
+    assert.equal(r.loop.status, 'converged');
+    assert.equal(r.loop.rounds, 4);
+  } finally {
+    delete process.env.FAKE_CONV_LIFT;
+  }
+
+  // (b) 聚合回包畸形 severity（'紧急'）→ 活跃追踪条目回落 major（pi normalizeSeverity
+  // 保守方向）；R2 rawAllClean 轮的 aggregate/fix 相位为 null（跳过的相位不造假数据）
+  resetCalls();
+  process.env.FAKE_AGG_BADSEV = '1';
+  try {
+    const r2 = await runReviewFixLoop({
+      task: '畸形 severity 回落', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-badsev'), runId: 'wf-utest-badsev',
+    });
+    assert.equal(r2.loop.status, 'clean');
+    const st2 = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-badsev', 'state.json'), 'utf8'));
+    assert.equal(st2.issues['MF-1'].title, '畸形等级条目');
+    assert.equal(st2.issues['MF-1'].severity, 'major');
+    // phaseTimings 结构：R1 三相全为非负整数毫秒；R2（全员 clean 零聚合零 fix）
+    const r1rec = st2.batches[0].rounds[0];
+    assert.ok(Number.isInteger(r1rec.phaseTimings.review) && r1rec.phaseTimings.review >= 0);
+    assert.ok(Number.isInteger(r1rec.phaseTimings.aggregate) && r1rec.phaseTimings.aggregate >= 0);
+    assert.ok(Number.isInteger(r1rec.phaseTimings.fix) && r1rec.phaseTimings.fix >= 0);
+    const r2rec = st2.batches[0].rounds[1];
+    assert.ok(Number.isInteger(r2rec.phaseTimings.review) && r2rec.phaseTimings.review >= 0);
+    assert.equal(r2rec.phaseTimings.aggregate, null);
+    assert.equal(r2rec.phaseTimings.fix, null);
+    // D6 门控：clean 终态不渲染终报清单段（四种终报段之外）
+    const md = report.buildMarkdownReport(r2);
+    assert.ok(!md.includes('残留 issue 清单'));
+    assert.ok(!md.includes('## deferred 清单'));
+  } finally {
+    delete process.env.FAKE_AGG_BADSEV;
+  }
 });

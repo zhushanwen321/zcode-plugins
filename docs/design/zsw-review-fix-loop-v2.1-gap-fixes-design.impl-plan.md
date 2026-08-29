@@ -86,6 +86,12 @@ graph LR
 | F3 | T7「聚合阶段 abort」场景重写（挂 R1 非 clean 轮 aggregate running） | 原场景挂 R2 全员 clean 轮聚合 phase，D5 后该轮无聚合、场景结构性消失；检查点断言语义原样 | 接受 |
 | F3 | FS3b 覆盖六形态（任务书四形态 + D3c ⑤全畸形 title + 围栏解析失败回归断言） | D3c 决策文本共 5 个命中条件，逐一测入 | 接受（超集覆盖） |
 | F3 | FS3a「队列只含 major」以 aggregated-issues 块级断言表达 | 整 prompt 负断言与「minor 在 suggestion 段」自相矛盾 | 接受 |
+| F4 | convergeNewIssues 下限语义取 clamp（0 抬 1）而非报错 | 与 zsw coerceInt 既有 clamp 惯例一致（maxRounds 同款）；pi 仅声明 schema minimum=1，报错行为不可证实 | 接受 |
+| F4 | phaseTimings.review 记整批墙钟时长（runWithLimit 起止差），非各 reviewer 耗时和 | 与 phases 阶段表耗时口径一致；pi 为 [t0,t1] 时间戳对，zsw 按设计文本「Date.now 差值毫秒」 | 接受 |
+| F4 | fixImpactFiles 批内累积去重 + 批启动重置（pi 为每次 fix 整体替换） | 设计文本明确「归并入第二清单」；批作用域隔离与 issues/dormant/convergeStreak 同模式，跨批陈旧触碰面会误导后续批复检范围 | 接受（批作用域为 zsw 模式一致性选择） |
+| F4 | deferred 清单数据源取 state.issues 中 status=deferred 条目（id/title/deferredReason）而非 knownRemaining 字符串数组 | knownRemaining 形态「ID: reason」无 title，任务要求三元组；两源由 computeKnownRemaining 保持同步信息等价 | 接受 |
+| F4 | README 仅 1 处 aggregated.md 措辞修正（「状态与目录」树行），无「各轮齐全」原文 | README 全文 grep 仅此一处（设计措辞基于 v2 设计 S5 的推测表述）；该处已条件化 | 接受 |
+| F4 | impl-plan F4 行「S2/S5 断言改条件断言」经核查为 no-op | F3 偏差表已随行为变更改毕 10 处；现存断言均落非全员 clean 轮语义自洽 | 接受（计划行冗余，无代码动作） |
 
 ## 6 状态表
 
@@ -94,7 +100,7 @@ graph LR
 | F1 | committed | 1 | 47/47 workflow-b 绿（44 既有零回归 + 3 新增）；核验 2026-08-29 主 agent 复跑相符 |
 | F2 | committed | 1 | 51/51 workflow-b 绿（47 零回归 + 4 新增，实现前红态 4 fail 实证）；核验 2026-08-29 主 agent 复跑相符 |
 | F3 | committed | 1 | 55/55 workflow-b（51 零回归 + 4 新增，红态 14 fail 实证）；非 e2e 全量 431/431；核验 2026-08-29 主 agent 复跑相符 |
-| F4 | pending | 0 | — |
+| F4 | committed | 1 | 59/59 workflow-b（55 零回归 + 4 新增，红态 0/4 实证）；非 e2e 全量 435/435；check-sync/check-pack 双绿；核验 2026-08-29 主 agent 复跑相符 |
 
 ## 7 残留风险与变更历史
 

@@ -30,6 +30,8 @@ function buildMarkdownReport(result) {
   lines.push(`- **状态**: ${ok ? '✅ 成功' : `❌ 失败${result.error ? ` — ${result.error}` : ''}`}`);
   lines.push(`- **任务**: ${clip(result.task, 300)}`);
   lines.push(`- **工作目录**: \`${result.workdir}\``);
+  // v2.1 D6（M1/GF5）：人读报告头部带 runDir 指针（review-fix-loop 注入；有值才渲染）
+  if (result.runDir) lines.push(`- **runDir**: \`${result.runDir}\``);
   lines.push(`- **模型**: ${result.model || '-'}`);
   lines.push(`- **总耗时**: ${((Date.parse(result.finishedAt) - Date.parse(result.startedAt)) / 1000).toFixed(1)}s · **总 tokens**: ${sumTokens(result.phases)} · **阶段数**: ${result.phases.length}`);
 
@@ -46,6 +48,27 @@ function buildMarkdownReport(result) {
 
   if (result.final) {
     lines.push('', '## 最终结论', '', clip(result.final, 4000));
+  }
+  // v2.1 D6（M1）：review-fix-loop 四种终报段（fixed-unverified/max-rounds/stuck/
+  // converged）附残留 issue 清单与 deferred 清单——数据由 review-fix-loop 塞进
+  // result.loop（state.issues 终态视图）；其他 workflow / 早期失败路径无字段不渲染
+  const loopStatus = result.loop && result.loop.status;
+  if (loopStatus === 'fixed-unverified' || loopStatus === 'max-rounds'
+    || loopStatus === 'stuck' || loopStatus === 'converged') {
+    const residual = Array.isArray(result.loop.residualIssues) ? result.loop.residualIssues : [];
+    if (residual.length > 0) {
+      lines.push('', '## 残留 issue 清单', '', '| id | severity | title | status |', '|----|----------|-------|--------|');
+      for (const it of residual) {
+        lines.push(`| ${escapeCell(it.id)} | ${escapeCell(it.severity)} | ${escapeCell(it.title)} | ${escapeCell(it.status)} |`);
+      }
+    }
+    const deferred = Array.isArray(result.loop.deferredIssues) ? result.loop.deferredIssues : [];
+    if (deferred.length > 0) {
+      lines.push('', '## deferred 清单', '', '| id | title | 理由 |', '|----|-------|------|');
+      for (const it of deferred) {
+        lines.push(`| ${escapeCell(it.id)} | ${escapeCell(it.title)} | ${escapeCell(it.reason)} |`);
+      }
+    }
   }
   if (!ok && result.error) {
     lines.push('', '## 失败原因', '', result.error);
