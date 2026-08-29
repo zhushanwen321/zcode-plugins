@@ -37,6 +37,9 @@
  *        run 恒本地同步形态（执行体 = CLI 进程，bg 包裹即原生通知——设计
  *        v5 决策，无 daemon 化形态）、lint 恒本地（纯文件校验无状态）；
  *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
+ *   node bin/zsw.js hook session-start
+ *        （SessionStart hook 入口，恒本地不经 daemon：stdout 输出资源快照
+ *         协议 JSON；嵌套环境或任一异常降级 {} + exit 0，绝不阻断会话启动）
  *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
  *
  * wait exit code（MF4）：partial（等待超时未全完成）→ 2；results 任一条为
@@ -71,6 +74,7 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
     + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
     + '  node bin/zsw.js models                        # 可用模型清单（路由决策前查）\n'
+    + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
     + '  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
     + '  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
     + '                                                   # daemon 侧挂起等待；部分完成 exit 2\n'
@@ -395,6 +399,68 @@ async function runWorkflowCommand(rest) {
   }
 }
 
+// ------------------------------------------------------ hook 子命令（SessionStart）
+
+/**
+ * SessionStart hook 入口（恒本地执行，不经 daemon——hook 在会话启动内联跑，
+ * daemon 前置会把「daemon 不在」变成「会话无注入」，且冷启动须 < 500ms）。
+ * 三条硬约束（设计 D4/D5，docs/design/zsw-session-start-injection-design.md）：
+ *   1. 嵌套守卫独立于 ensureNotNested：ZSW_NESTED=1 → stdout {} + exit 0。
+ *      绝不复用 ensureNotNested 的 exit 1 路径——hook 非零退出会在会话启动
+ *      时 raise error 阻断会话（D5）。
+ *   2. stdout 是协议通道：引擎按 stdout 解析 hookSpecificOutput，输出严格
+ *      单行 JSON；人读诊断走 stderr（与 MCP server 的 stdout 纪律同构）。
+ *   3. 数据读取/渲染任一异常（文件缺失/JSON 坏/渲染抛错）→ stdout {} +
+ *      exit 0 + stderr 一行 [zsw:hook] 诊断——降级即现状，注入是纯增益通道。
+ * 数据源（D6，与 CLI 查询同一批纯读模块，无 daemon 依赖）：
+ *   v2 config（models 段主源）+ cli config（默认标记）+ agent-md-resolver
+ *   四根发现 + workflow-script 脚本发现 + BUILTIN_WORKFLOW_INFO 内置名单。
+ *   projectDir 解析链 = ZCODE_PROJECT_DIR > process.cwd()（与 :366/:596
+ *   workflow 惯例同源）；v2 config 读失败整体降级 {}（§3.1 失败路径 2），
+ *   cli config 读失败仅默认标记缺席（null），块仍渲染。
+ */
+function runHookCommand(rest) {
+  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用都零开销退出）
+  if (process.env.ZSW_NESTED === '1') {
+    process.stdout.write('{}\n');
+    return; // 自然退出 = exit 0；不用 process.exit 防 stdout 未 flush
+  }
+  if (rest[0] !== 'session-start') {
+    process.stderr.write(`未知 hook 事件: ${rest[0] || '(未指定)'}，支持: session-start\n`);
+    usage(1);
+  }
+  try {
+    const fs = require('node:fs');
+    const { V2_CONFIG_PATH, CLI_CONFIG_PATH } = require('../lib/config');
+    const { renderResourcesBlock } = require('../lib/hook-inject');
+    const { AgentMdResolver } = require('../lib/agent-md-resolver');
+    const { listScripts } = require('../lib/workflow-script');
+
+    const projectDir = process.env.ZCODE_PROJECT_DIR || process.cwd();
+    const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
+    let cliModelMain = null;
+    try {
+      const cli = JSON.parse(fs.readFileSync(CLI_CONFIG_PATH, 'utf8'));
+      cliModelMain = (cli && cli.model && cli.model.main) || null;
+    } catch { /* cli config 缺失/坏：默认标记缺席，快照块仍渲染 */ }
+
+    const text = renderResourcesBlock({
+      v2,
+      cliModelMain,
+      agents: new AgentMdResolver().list(projectDir),
+      scripts: listScripts(projectDir).map((s) => s.name),
+      builtinWorkflows: BUILTIN_WORKFLOW_INFO.map((w) => w.name), // 与 scripts action 同源
+      nowIso: new Date().toISOString(),
+    });
+    process.stdout.write(`${JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
+    })}\n`);
+  } catch (e) {
+    process.stdout.write('{}\n');
+    process.stderr.write(`[zsw:hook] ${e && e.message || e}\n`);
+  }
+}
+
 // ------------------------------------------- daemon thin client（1.0.0 起默认形态）
 
 /**
@@ -565,6 +631,9 @@ async function main() {
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）
   if (cmd === 'workflow') return runWorkflowCommand(rest);
+  // hook 子命令同理在 manager 组装之前分流：恒本地零 daemon 依赖（见
+  // runHookCommand 头注），不走 parseArgs/daemon/assembleManager 任一路径
+  if (cmd === 'hook') return runHookCommand(rest);
   const args = parseArgs(rest);
 
   // 1.0.0（M1，DESIGN-v4 D5/D7）：默认 = daemon thin client；
