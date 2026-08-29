@@ -153,8 +153,8 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 - **证据**：z-tool-finder 同款降级先例（`catch → {}` + 会话照常）；官方契约「hooks always run inline」（hook 延迟直接计入会话启动，故 500ms 性能门 + 5s 超时上限均有必要）。
 - **效果**：G4 成立；§3.1 失败路径 2 的行为保证。
 
-**D6：数据读取复用现有纯读模块；项目级根以 `ZCODE_PROJECT_DIR` 定位（选定）**
-- **采用**：models 段读 v2 config（复用 model-router 的读取与默认模型解析口径）；agents 段调 `agent-md-resolver.list(projectDir)`；workflows 段调 `workflow-script.listScripts(projectDir)` + 内置五名常量。三者均为纯文件读，无 daemon 依赖（本机实测可独立运行）。**projectDir 解析链：环境变量 `ZCODE_PROJECT_DIR`（官方 hook 契约确认模板变量「also injected as environment variables」，hook 进程内可用）→ 回退 `process.cwd()`**。cwd 回退仅保底——hook 由引擎 spawn，其 cwd 无契约保证，靠 cwd 定位项目级四根（`<cwd>/.agents/agents/` 等两根 + ws 侧 script 两根）会静默漏条目或混入错误目录。
+**D6：数据读取复用现有纯读模块；项目级根以 `ZCODE_PROJECT_DIR` 定位；hook 走自包含薄入口（选定）**
+- **采用**：models 段读 v2 config（复用 model-router 的读取与默认模型解析口径，默认标记谓词 `defaultModelFor` 单一导出、与 `zsw models` 同消费）；agents 段调 `agent-md-resolver.list(projectDir)`；workflows 段调 `workflow-script.listScriptNames(projectDir)`（**name-only：readdir 四根取名，绝不 require 脚本**——hook 消费脚本名不需要 description，加载描述即执行脚本顶层代码，把「打开仓库」变成静默执行仓内代码，跨过信任边界）+ 内置五名常量。四者均为纯文件读，无 daemon 依赖。**hook 入口为 `bin/zsw-hook.js` 薄入口 + `lib/hook-source.js` 组装模块**：所有依赖 require 在函数体内 try 包裹，任一模块缺失 → `{}` + exit 0 降级（不受 `bin/zsw.js` 顶层 require 连累——否则插件文件损坏时 hook exit 1，每会话启动 raise error，违反 D5）；`bin/zsw.js hook session-start` 保留为等价 CLI 调试面（delegator）。**projectDir 解析链：环境变量 `ZCODE_PROJECT_DIR`（官方 hook 契约确认模板变量「also injected as environment variables」，hook 进程内可用）→ 回退 `process.cwd()`**。cwd 回退仅保底——hook 由引擎 spawn，其 cwd 无契约保证，靠 cwd 定位项目级四根（`<cwd>/.agents/agents/` 等两根 + ws 侧 script 两根）会静默漏条目或混入错误目录。stderr 输出一行可观测性诊断（projectDir 与来源/计数/耗时），stdout 保持纯协议 JSON。
 - **被否**：① hook 内独立实现一遍扫描——两套口径必然漂移（正是失败模式 B 的翻版）；② 仅用 `process.cwd()`——cwd 无契约，项目级发现不可靠（错数据比缺数据更难察觉）。
 - **证据**：三个模块本机直跑成功（6 agents / 0 script / 5 可运行 provider）；官方契约 SKILL.md:35 确认 `${ZCODE_PROJECT_DIR}` 会以环境变量形式注入 hook 进程；本仓生产代码已依赖该注入——bin/zsw.js:366、596 两处 `process.env.ZCODE_PROJECT_DIR || process.cwd()`（workflow 本地路径的 ws 侧根定位依赖它）；「注入确实发生」的直接观测由探针 P-cwd 闭环验证。
 - **效果**：「注入块与 CLI 查询同一数据源」的单一事实来源；hook 冷启动 < 500ms（纯本地读）；项目级 agent/script 在 hook 环境下定位正确。
@@ -171,14 +171,15 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 [ZCode 会话启动]
    │ SessionStart 事件（startup/resume/clear/compact）
    ▼
-[zsw hooks/hooks.json] ──spawn──► node bin/zsw.js hook session-start  （ZSW_NESTED=1 ? → 输出 {} 退出）
+[zsw hooks/hooks.json] ──spawn──► node bin/zsw-hook.js（薄入口；ZSW_NESTED=1 ? → 输出 {} 退出）
+   │                                  │  lib/hook-source.js（依赖 require 全部 try 包裹，缺任一模块 → {} + exit 0）
    │                                  │  项目目录 = env ZCODE_PROJECT_DIR（契约注入）> process.cwd() 回退
    │                                  ├─ 读 ~/.zcode/v2/config.json（apiKey + 模型清单过滤）
    │                                  ├─ 读 ~/.zcode/cli/config.json（model.main → 默认标记；
-   │                                  │    标记解析与 zsw models 同源走 defaultModelRef 回退链：
-   │                                  │    cli.main 可解析 → v2 顶层 model.main → 内置回退）
+   │                                  │    标记解析与 zsw models 同源走 defaultModelRef/defaultModelFor）
    │                                  ├─ agent-md-resolver.list(projectDir)（四根 .md 发现）
-   │                                  └─ workflow-script.listScripts(projectDir) + 内置五名
+   │                                  └─ workflow-script.listScriptNames(projectDir)（name-only，零 require）
+   │                                     + 内置五名常量
    │                                  ▼
    │                            lib/hook-inject.js 渲染（预算 ≤45 行，超限截断）
    │                                  ▼
@@ -247,4 +248,4 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 | 标签形态 | 三个独立标签 | 单块三段 | 平台差异（多 hook 拼接顺序无契约） |
 | 数据新鲜度 | 事件触发时读 | 会话启动时快照 + CLI 兜底 | pi 略新鲜；zcode 会话生命周期内快照 |
 
-（变更历史：v1 初稿 2026-08-29；v2 同日——第一轮对抗审查后修复：默认模型档位示例反转（must-fix）、hook cwd 来源以 ZCODE_PROJECT_DIR 闭合（must-fix）、models 段两层展示与一致性口径对齐（must-fix）、验收 S1/S5 前置与故障注入窗口收窄、注册面收敛两件套、规模数字修正为实测值（5 可运行 provider / 7 模型）。v3 同日——第二轮对抗审查后修复：G4 改写为可实现表述并如实声明「装了插件未用 zsw 的会话也付 token」代价（must-fix）、S1 一致性比对粒度定义为名单+默认标记、U2 警示嵌套守卫不得复用 ensureNotNested 的 exit 1 路径、D3 截断序措辞澄清与默认段 apiKey 口径补充、D6 补引仓内 ZCODE_PROJECT_DIR 生产惯例（bin/zsw.js:366、596）、U4 纳入 model-router.js:218 同源失真注释对齐。v3.1 同日——第三轮验证审查（must-fix 清零）后修完 3 suggestion + 1 info：G1 一致性措辞对齐 D3/S1 口径、P-nested-guard 补 exit code 0 断言、D3 截断标注按被截段指向对应查询命令（zsw agents / zsw workflow --action scripts）、D6 证据措辞降为「生产代码依赖 + 契约承诺，注入事实由 P-cwd 闭环」。三轮累计：must-fix 3+1+0，全部闭环。）
+（变更历史：v1 初稿 2026-08-29；v2 同日——第一轮对抗审查后修复：默认模型档位示例反转（must-fix）、hook cwd 来源以 ZCODE_PROJECT_DIR 闭合（must-fix）、models 段两层展示与一致性口径对齐（must-fix）、验收 S1/S5 前置与故障注入窗口收窄、注册面收敛两件套、规模数字修正为实测值。v3 同日——第二轮对抗审查后修复：G4 改写为可实现表述并如实声明「装了插件未用 zsw 的会话也付 token」代价（must-fix）、S1 一致性比对粒度定义为名单+默认标记、U2 警示嵌套守卫不得复用 ensureNotNested 的 exit 1 路径、D3 截断序措辞澄清与默认段 apiKey 口径补充、D6 补引仓内 ZCODE_PROJECT_DIR 生产惯例、U4 纳入 model-router.js:218 同源失真注释对齐。v3.1 同日——第三轮验证审查（must-fix 清零）后修完 3 suggestion + 1 info。v3.2 同日——实施后双视角架构审查（1 high + 2 major + 4 medium + 6 minor）修复：hook 对 workflow 脚本改 name-only 零 require（安全面：不再于会话启动执行仓内代码）、hook 抽自包含薄入口 bin/zsw-hook.js + lib/hook-source.js（插件文件缺失全降级 {} + exit 0，D5 闭合）、默认标记谓词收敛为 model-router.defaultModelFor 单一导出（消双实现矛盾）+ 块内恒显「当前默认」行、models --all 跨 provider 兜底、--local zsub 嵌套盲区修补、三纯谓词导出收敛、截断码点安全、README/SKILL 权威序与监控点声明。）

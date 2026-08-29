@@ -96,6 +96,7 @@ graph TD
 | 13 | u5：手册额外收录 P-nested-guard 复跑命令（u5 领地承诺两条探针） | 与 §3.5 逐字一致，提升验收覆盖 | 已固化（一致性审查 R1 doc-error 修复） |
 | 14 | u4/u5 补强：SKILL.md agents 面查询句加快照优先条件限定；README S1 通过标准加 ④ 项目级 agent 断言（P-cwd GUI 侧落点）与设计文档仓库定位前缀 | 一致性审查 R1 修复：快照优先两级纪律全文一致；P-cwd 断言原无场景承载 | 已固化（一致性审查 R1 修复批） |
 | 15 | u2 修复批：默认标记改用 model-router 导出的 defaultModelRef（回退链与 zsw models 同口径），cli config 直读从 hook 分支移除；头注/行号锚点/≤45 行断言随批修正。定向复审再修 4 minor：hook-inject JSDoc 来源描述、偏差 #8 翻转更新、README S1 ④ 步骤变体说明、README:76 既有裸相对路径统一为源仓库前缀形态（全局规则 4：同文件两模式并存，触达时统一） | R1 审查 unreasonable 3 条 + doc_error 若干 + 复审 4 minor 全闭环 | 已固化（R1 修复批 + 复审批） |
+| 16 | 架构修复批（双视角审查 1 high + 2 major + 4 medium + 6 minor 全修，commit 6118660/14fbbbb/1e821f3）：① scripts 发现改 listScriptNames name-only 零 require（安全面：会话启动不再执行仓内脚本顶层代码）；② hook 抽 bin/zsw-hook.js 薄入口 + lib/hook-source.js（依赖 require 全 try 包裹，插件文件缺失全降级 {} + exit 0）；③ 默认标记谓词收敛 defaultModelFor 单一导出 + 块内恒显「当前默认」行；④ zsw models --all 跨 provider 兜底；⑤ zsub start --local 嵌套盲区修补（pre-existing F-A7）；⑥ 三纯谓词导出（availableModels/splitModelRef/hasProviderCredentials）；⑦ 截断码点安全；⑧ README/SKILL 权威序声明与超时/PATH/stdout 截断监控点。实现偏差：hasProviderCredentials 权威定义在 driver.js（避 require 环）由 model-router 转口；defaultModelFor 第三参可选 ref 字符串（保 hook-inject 零 IO）；内置五名在 hook-source 常量（权威源 workflow-manager，避免拉全链） | 架构审查修复；dist/mcp/server.js 为 models --all 落点（vendor 面） | 已固化（架构修复批） |
 
 ## 6 状态表
 

@@ -33,7 +33,7 @@ node bin/zsw.js cancel --id <id>              → 取消（SIGTERM→SIGKILL）
 node bin/zsw.js close --id <id>               → 关闭会话并清理 worktree
 node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]  → 聚合等待到完成（终态，或 conversation 的 idle 本轮完成；partial → exit 2）
 node bin/zsw.js agents                        → 可用 agent .md 清单（name/description/when/file/source，四根发现）
-node bin/zsw.js models                        → 可用模型清单（短名/上下文窗口/推理档位/默认标记）
+node bin/zsw.js models [--all]                   → 可用模型清单（默认 provider 明细：短名/上下文窗口/推理档位/默认标记；--all = 全部带凭据 provider 全名视图）
 ```
 
 （`--local` 后门走一次性本地执行，仅调试用——无续聊/限流，CLI 退出即丢执行体。）
@@ -70,7 +70,7 @@ node bin/zsw.js list
 2. **禁止轮询**：异步启动后不要反复查 list/status 等结果，不要发明 `sleep N && status` 循环。完成唤醒走「CLI 模式（默认，1.0.0 起）」节姿势：`Bash(run_in_background=true)` 包裹 `zsw wait` / `zsw start --wait`，完成即引擎原生 task-notification 自动唤醒（不依赖 mailbox——那是 MCP 工具面时代的 legacy 投递通道，CLI/daemon 面恒无投递目标）。未包裹等待就结束 turn 的任务典型运行 3-10 分钟，先做别的，稍后做一次性 status 查询（`node bin/zsw.js status --id <id>`）。
 3. **通知即确认**：收到 `[subagent 完成]` 消息后直接处理结果，不要再调 status"二次确认"。
 4. **并发克制**：默认上限 3。嵌套 subagent 深度越深可用并发越少（自动分层），不要试图绕过。
-5. **模型路由（环境无关）**：模型引用优先取自会话上下文的 `<zsw-resources>` 快照（SessionStart 注入；models 分两层——默认 provider 列短名、其他 provider 只列全名 `<provider>/<model>`，默认模型带标记；另含 agents / workflows 清单），免查询直接派发。默认档位以块内默认标记为准，**不假设「不传 model = 重量」**：默认是轻量模型时，重量任务（设计/架构/深度调研/复杂修复）必须显式传重量模型短名；简单任务（探索/计数/格式转换/测试）跟随默认即可。模型名不要凭记忆硬编码。快照缺失或疑似过期（GUI 中途改过配置）时走两条兜底：优先直接尝试——传错模型名会在报错中收到可用清单，按清单重传（零依赖权威兜底）；或主动现查 `node bin/zsw.js models`（短名/上下文窗口/推理档位/默认标记；需 daemon 在跑——任一启用插件的 zcode 会话）。
+5. **模型路由（环境无关）**：模型引用优先取自会话上下文的 `<zsw-resources>` 快照（SessionStart 注入；models 分两层——默认 provider 列短名、其他 provider 只列全名 `<provider>/<model>`，默认模型带标记；另含 agents / workflows 清单），免查询直接派发。默认档位以块内默认标记为准，**不假设「不传 model = 重量」**：默认是轻量模型时，重量任务（设计/架构/深度调研/复杂修复）必须显式传重量模型短名；简单任务（探索/计数/格式转换/测试）跟随默认即可。模型名不要凭记忆硬编码。快照缺失或疑似过期（GUI 中途改过配置）时走两条兜底：优先直接尝试——传错模型名会在报错中收到可用清单，按清单重传（零依赖权威兜底）；或主动现查 `node bin/zsw.js models`（默认 provider 明细；跨 provider 用 `--all` 全名视图；需 daemon 在跑——任一启用插件的 zcode 会话）。模型名以快照与报错内清单为准，静态路由表（AGENTS.md 等）中的具体名字可能过期。
 6. **worktree 任务收到完成通知后**：通知里含 `patchFile` 路径——需要落地改动时执行 `git apply <patchFile>`；不需要则明确告知用户改动保留在 patch 中未应用。
 7. **嵌套不支持**：zsub 不支持嵌套派发（子任务的 subagent 会被防递归门禁拒绝）；树形/多层的深度任务改用 zflow（review-fix-loop / scatter-gather），它们的阶段是编排不是嵌套。
 
