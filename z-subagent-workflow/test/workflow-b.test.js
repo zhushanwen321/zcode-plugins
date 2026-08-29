@@ -37,6 +37,9 @@
  *   FAKE_FALLBACK_MINOR（v2.1 D3a/FS3a：R1 报 1 major + 1 minor + FAKE_AGG_GARBAGE 走
  *   JS 聚合降级链；修复者只修 critical/major、合法 defer minor（≥20 字理由）→ 验证
  *   fallback 队列只收 must-fix 等级、minor 走 suggestion 明细段、循环继续非 fix-failed）、
+ *   FAKE_FALLBACK_BADSEV（v2.1 D8 降级轮归一：R1 报 1 畸形 severity（'blocker'）+ 1 minor +
+ *   FAKE_AGG_GARBAGE 走降级链 → 验证畸形条目归一回落 major 进 fix 队列（不静默丢弃）、
+ *   minor 仍走 suggestion 通道）、
  *   FAKE_BAD_CONTRACT（v2.1 D3c/FS3b：reviewer 输出六种契约缺失/矛盾形态——okonly/
  *   maybe/nonarray/cleanplus/badcount/malformed → 全部 parseFail 结构化终止）、
  *   FAKE_MF_COLLIDE（v2.1 D4/FS4：R1 双 major + 聚合臆测条目落 dormant MF-3；R2 'new'
@@ -44,7 +47,9 @@
  *   同题（验证复活走原 id + revived 置位）；聚合复用 FAKE_DORMANT_REVIVE 段）。
  *   FAKE_FS6（v2.1 D6/FS6：R1 报 1 major；修复者修 MF-1 并幽灵 defer S-1；R2+ clean +
  *   对 MF-1 声明 not-fixed → regressed 残留与 deferred 条目并存的终态——max-rounds /
- *   fixed-unverified 两终态终报清单（runDir/残留/deferred）断言数据源）、
+ *   fixed-unverified / stuck 三终态终报清单（runDir/残留/deferred）断言数据源；
+ *   FAKE_STUCK_DEFER 让修复者复用 FAKE_FS6 同款回包，供 FAKE_STUCK_RECON 场景构造
+ *   deferred 清单非空的 stuck 终态）、
  *   FAKE_CONV_LIFT（v2.1 D8：R1 issue→fix；R2 臆测(降级)+MF-1 not-fixed→regressed；
  *   R3 新 issue（1 条新发现驱动收敛 streak）；R4 臆测(降级)+对 MF-1/MF-3 声明 fixed →
  *   converged。convergeNewIssues=0 抬到 1 的行为断言数据源：字面 0 会在 R3 重置
@@ -91,6 +96,7 @@ const REVIVE_AGG_FILE = path.join(TMP, 'revive-agg-count.txt');
 const DRIFT_FILE = path.join(TMP, 'drift-count.txt');
 const ESCALATE_FILE = path.join(TMP, 'escalate-count.txt');
 const FALLBACK_MINOR_FILE = path.join(TMP, 'fallback-minor-count.txt');
+const FALLBACK_BADSEV_FILE = path.join(TMP, 'fallback-badsev-count.txt');
 const MF_COLLIDE_FILE = path.join(TMP, 'mf-collide-count.txt');
 const FS6_FILE = path.join(TMP, 'fs6-count.txt');
 const CONV_LIFT_FILE = path.join(TMP, 'conv-lift-count.txt');
@@ -218,9 +224,10 @@ fs.writeFileSync(FAKE_CLI, [
   "      ? [{ issue_id: minorFM.id, reason: '该 minor 修复涉及多处调用点重构，本轮集中处理 must-fix，放到下一批统一处理' }]",
   "      : [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续批次处理' }];",
   "    reply('## 修复结果\\n' + fixesFM.map((f3) => f3.issue_id + ' → 已修复（测试模拟修复）。').join('\\n') + '\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: fixesFM.length, fixes: fixesFM, deferred: deferredFM }) + '\\n' + F);",
-"  } else if (process.env.FAKE_FS6 === '1') {",
-// FS6 修复者：修 MF-1（自报 affected_files）+ 幽灵 defer 未追踪 minor S-1——终态
-// 「残留 + deferred 双清单并存」的数据源（D6 终报渲染断言用）
+"  } else if (process.env.FAKE_FS6 === '1' || process.env.FAKE_STUCK_DEFER === '1') {",
+// FS6 修复者（FAKE_STUCK_DEFER 复用同款回包）：修 MF-1（自报 affected_files）+ 幽灵
+// defer 未追踪 minor S-1——终态「残留 + deferred 双清单并存」的数据源（D6 终报渲染
+// 断言用；stuck 终态借它使 deferred 清单非空，与 max-rounds/fixed-unverified 同构）
 "    reply('## 修复结果\\nMF-1 → 已修复（测试模拟修复）。\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: 1, fixes: [{ issue_id: 'MF-1', description: '测试修复 MF-1', self_check: 'grep ok', affected_files: ['a.js'] }], deferred: [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续重构批次处理' }] }) + '\\n' + F);",
 '  } else {',
 "    const mF = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
@@ -343,6 +350,21 @@ fs.writeFileSync(FAKE_CLI, [
   "      objF = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }] };",
   '    }',
   "    reply(F + 'json\\n' + JSON.stringify(objF) + '\\n' + F);",
+  // D8 降级轮畸形 severity（v2.1 D8 + D3a 对照）：R1 报 1 条畸形 severity（'blocker'，
+  // 非契约枚举）+ 1 条合法 minor（suggestion_count 1）；R2 clean + 对 MF-1 声明 fixed。
+  // 配合 FAKE_AGG_GARBAGE 走 JS 聚合降级链：畸形条目应归一回落 major 进 fix 队列
+  // （旧行为被静默丢弃 → 假 clean），minor 仍走 suggestion 明细通道（D3a 不变）
+  "  } else if (process.env.FAKE_FALLBACK_BADSEV === '1' && prompt.includes('审查者「correctness」')) {",
+  "    const fFB = process.env.FAKE_FALLBACK_BADSEV_FILE;",
+  "    const nFB = Number(fs.existsSync(fFB) ? fs.readFileSync(fFB, 'utf8') : '0') + 1;",
+  "    fs.writeFileSync(fFB, String(nFB));",
+  "    let objFB;",
+  "    if (nFB === 1) {",
+  "      objFB = { status: 'issues', issues: [{ id: 'A1', severity: 'blocker', title: '阻塞级缺陷', detail: '畸形等级条目', file: 'a.js' }, { id: 'A2', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }], suggestion_count: 1, reconciliation: [] };",
+  "    } else {",
+  "      objFB = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '已修复未再现' }] };",
+  '    }',
+  "    reply(F + 'json\\n' + JSON.stringify(objFB) + '\\n' + F);",
   // FS3b（v2.1 D3c）：六种契约缺失/矛盾形态（围栏解析都成功）——{"ok":true}（status
   // 缺失）/ status:"maybe"（非法枚举）/ issues 非数组 / clean+条目（矛盾输出）/
   // suggestion_count 非数值 / 条目全无 title（剔除后有效 0）。全部应 parseFail 终止
@@ -458,6 +480,7 @@ process.env.FAKE_REVIVE_AGG_FILE = REVIVE_AGG_FILE;
 process.env.FAKE_DRIFT_FILE = DRIFT_FILE;
 process.env.FAKE_ESCALATE_FILE = ESCALATE_FILE;
 process.env.FAKE_FALLBACK_MINOR_FILE = FALLBACK_MINOR_FILE;
+process.env.FAKE_FALLBACK_BADSEV_FILE = FALLBACK_BADSEV_FILE;
 process.env.FAKE_MF_COLLIDE_FILE = MF_COLLIDE_FILE;
 process.env.FAKE_FS6_FILE = FS6_FILE;
 process.env.FAKE_CONV_LIFT_FILE = CONV_LIFT_FILE;
@@ -2041,7 +2064,6 @@ test('review-fix-loop v2.1 D3a/b (FS3a)：fallback 轮 minor 不进 fix 队列�
     });
     // 循环继续（非 fix-failed）：R1 fix → R2 clean → 批 clean
     assert.equal(result.loop.status, 'clean');
-    assert.ok(result.loop.status !== 'fix-failed');
     assert.equal(result.loop.rounds, 2);
 
     // fix 队列 prompt 只含 major：aggregated-issues 块内无 minor 条目（D3a 拆分面）
@@ -2074,6 +2096,61 @@ test('review-fix-loop v2.1 D3a/b (FS3a)：fallback 轮 minor 不进 fix 队列�
   } finally {
     delete process.env.FAKE_AGG_GARBAGE;
     delete process.env.FAKE_FALLBACK_MINOR;
+  }
+});
+
+test('review-fix-loop v2.1 D8：JS 降级轮畸形 severity（blocker）归一回落 major 进 fix 队列——不静默丢弃（对照 minor 仍走 suggestion）', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(FALLBACK_BADSEV_FILE, { force: true });
+  // FAKE_AGG_GARBAGE：LLM 聚合失效 → JS 聚合降级链；reviewer R1 报 1 条畸形 severity
+  //（'blocker'，非契约枚举）+ 1 条合法 minor。旧行为：降级链 severity 过滤缺省 minor /
+  // 非枚举一律 continue 静默丢弃——条目到不了 normalizeAggregated 的 D8 归一层，畸形
+  // must-fix 条目凭空消失（fixQueue 空 + suggestion 归零可构成假 clean），与 LLM 聚合
+  // 路径（缺失/非枚举回落 major 进活跃追踪）行为分叉。修复后：与 LLM 路径同款归一前移
+  // ——缺失/非枚举回落 major 进队列，归一后 minor 才排除（D3a 语义不变）
+  process.env.FAKE_AGG_GARBAGE = '1';
+  process.env.FAKE_FALLBACK_BADSEV = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: '降级轮畸形 severity 归一', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fallback-badsev'), runId: 'wf-utest-fallback-badsev',
+    });
+    // R1 fix（MF-1 归一 major 进队列被修复）→ R2 clean + recon fixed → 批 clean
+    assert.equal(result.loop.status, 'clean');
+    assert.equal(result.loop.rounds, 2);
+
+    // 畸形条目进 fix 队列且 severity 归一为 major（未被静默丢弃的直接证据）：
+    // aggregated-issues 块只含 MF-1（major）——minor 不进队列（D3a 对照面）
+    const fixCall = readCalls().find((c) => c.prompt.includes('循环中的修复者'));
+    assert.ok(fixCall);
+    const queueBlock = /<untrusted source="aggregated-issues">\n([\s\S]*?)\n<\/untrusted>/.exec(fixCall.prompt);
+    assert.ok(queueBlock);
+    const queueItems = JSON.parse(queueBlock[1]);
+    assert.deepEqual(queueItems.map((x) => x.id), ['MF-1']);
+    assert.deepEqual(queueItems.map((x) => x.severity), ['major']);
+    assert.ok(fixCall.prompt.includes('阻塞级缺陷'));
+    // 合法 minor 条目仍走 suggestion 明细段（D3a 行为不变）
+    assert.ok(fixCall.prompt.includes('<untrusted source="suggestion-issues">'));
+    assert.ok(fixCall.prompt.includes('建议重命名变量'));
+
+    // aggregated.md 同口径：降级链报告含畸形条目（归一 major），minor 不入表
+    const aggMd = fs.readFileSync(
+      path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fallback-badsev', 'batch-1', 'round-1', 'aggregated.md'), 'utf8');
+    assert.ok(aggMd.includes('degraded: js-dedup'));
+    assert.ok(aggMd.includes('| MF-1 | major | 阻塞级缺陷 |'));
+    assert.ok(!aggMd.includes('建议重命名变量'));
+
+    // 状态机：MF-1 活跃追踪（severity=major）且 R2 rawAllClean 回填转 fixed；
+    // minor 未占 MF-2 号
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-fallback-badsev', 'state.json'), 'utf8'));
+    assert.equal(st.issues['MF-1'].severity, 'major');
+    assert.equal(st.issues['MF-1'].title, '阻塞级缺陷');
+    assert.equal(st.issues['MF-1'].status, 'fixed');
+    assert.ok(!st.issues['MF-2']);
+  } finally {
+    delete process.env.FAKE_AGG_GARBAGE;
+    delete process.env.FAKE_FALLBACK_BADSEV;
   }
 });
 
@@ -2260,6 +2337,46 @@ test('review-fix-loop v2.1 D6 (FS6)：fixed-unverified 终报同构渲染（第�
     assert.ok(md.includes('| S-1 |'));
   } finally {
     delete process.env.FAKE_FS6;
+  }
+});
+
+test('review-fix-loop v2.1 D6 (FS6)：stuck 终报同构渲染（第三终态覆盖）', async () => {
+  writeV2Config();
+  resetCalls();
+  // stuck 构造：FAKE_STUCK_RECON reviewer 恒报 issues（不触发 rawAllClean 上移——
+  // 该路径在聚合前 break，stuck 检测不可达）+ FAKE_STUCK_DEFER 修复者幽灵 defer S-1
+  //（deferred 清单非空，与既有两终态同构断言）+ stuckThreshold=2（低阈值：R2 recon
+  // not-fixed → MF-1 regressed openStreak 2 ≥ 2 → stuck）
+  process.env.FAKE_STUCK_RECON = '1';
+  process.env.FAKE_STUCK_DEFER = '1';
+  try {
+    const result = await runReviewFixLoop({
+      task: 'stuck 终报演示', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-fs6-stuck'), runId: 'wf-utest-fs6-stuck',
+      maxRounds: 5, stuckThreshold: 2,
+    });
+    assert.equal(result.loop.status, 'stuck');
+    // 机器数据：残留（MF-1 regressed）与 deferred（S-1）双清单并存，口径同既有两终态
+    assert.deepEqual(result.loop.residualIssues, [
+      { id: 'MF-1', severity: 'major', title: '顽固问题', status: 'regressed' },
+    ]);
+    assert.equal(result.loop.deferredIssues.length, 1);
+    assert.equal(result.loop.deferredIssues[0].id, 'S-1');
+    assert.ok(result.loop.deferredIssues[0].reason.includes('重构批次'));
+
+    // 人读报告：runDir 行 + 残留/deferred 双清单渲染，与 max-rounds/fixed-unverified 同构
+    const md = report.buildMarkdownReport(result);
+    assert.ok(md.includes(`- **runDir**: \`${result.runDir}\``));
+    assert.ok(md.indexOf('- **runDir**') < md.indexOf('## 阶段明细')); // 头部区
+    assert.ok(md.includes('## 残留 issue 清单'));
+    assert.ok(md.includes('| id | severity | title | status |'));
+    assert.ok(md.includes('| MF-1 | major | 顽固问题 | regressed |'));
+    assert.ok(md.includes('## deferred 清单'));
+    assert.ok(md.includes('| S-1 |'));
+    assert.ok(md.includes('统一放到后续重构批次处理'));
+  } finally {
+    delete process.env.FAKE_STUCK_RECON;
+    delete process.env.FAKE_STUCK_DEFER;
   }
 });
 

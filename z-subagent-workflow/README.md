@@ -108,7 +108,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ~/.zcode/zsw/
 ├── records.jsonl        append-only 事件流（崩溃后重放恢复）
 ├── outputs/             结果全文 + patch
-├── rfl/<runId>/         review-fix-loop v2 run 目录（state.json + 各轮 reviewer 报告；非全员 clean 轮另有该轮 aggregated.md/fix 结果，全员 clean 轮不产 aggregated.md、轮摘要标注未聚合）
+├── rfl/<runId>/         review-fix-loop v2 run 目录（state.json + 各轮 reviewer 报告；非全员 clean 轮另有该轮 aggregated.md，发生修复的轮另有 fix 结果；全员 clean 轮不产 aggregated.md、轮摘要标注未聚合）
 ├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
 ├── home-<model>/        per-model 隔离 HOME（spawn runner 模型路由）

@@ -78,7 +78,7 @@ graph LR
 | F1 | rev-parse「退出 0 无输出」分支无端到端断言 | 真实 git 无法构造该场景；防御分支与非零退出共用同一降级+WARN 路径，非零路径已断言 | 接受 |
 | F1 | 非 git-diff 类型 baseHash 维持 gitHead(workdir) 而非 pi 的置空 | D1 条款限定 rev-parse 仅 git-diff 执行；v2 既有行为与断言依赖此值，改动扩大领地面 | 接受（D1 范围内） |
 | F1 | 锁定成功不加 pi 的 INFO 行 | 可追溯性由 state.meta.baseHash 承担（设计 §3.1）；最小改动 | 接受 |
-| F2 | 出口断言 fall-through 轮 `cleanNames.clear()` | 探针实证：残留轮 reviewer 已记 clean，skipCleanAgents 默认语义下轮全跳 → active 空直接假 clean 从 skip-clean 门漏出；「继续轮」隐含 reviewer 须被派发 | 实现层必要配套，接受 |
+| F2 | 出口断言 fall-through 轮 `cleanNames.clear()` | 主 agent 行级裁决（一致性审查 R1/R2 分歧）：skip-clean 默认不清空时下轮 `active.length===0`（review-fix-loop.js:920-921）在轮逻辑与出口断言之前直接 `status='clean'; break`——假 clean 真实可达；清空保证残留轮 reviewer 真实重派（FS2a calls.length=4 承载） | 实现层必要配套，接受（裁决后原释成立） |
 | F2 | 既有 FAKE_RECON_DRIFT 用例终态断言修正（clean → max-rounds 钉轮） | 原断言编码的正是 D2 要消除的假终态（regressed 残留判 clean）；核心断言（regressed 链/fixAttempts）原样保留 | 既有断言随行为修正，接受 |
 | F2 | 幽灵 defer 建条目额外补 title（reason 首段截断 40 字） | 对账清单条目与报告渲染需要 title；fixer deferred 契约无标题字段（pi 同构亦无） | 接受 |
 | F2 | deferred 抑制标注落条目独立 note 字段而非拼接 title（文案逐字保留设计原文） | 聚合 prompt 复用清单做「ID 权威」提示，拼接 title 会污染 dedupKey 标题对账 | 接受 |
@@ -92,6 +92,7 @@ graph LR
 | F4 | deferred 清单数据源取 state.issues 中 status=deferred 条目（id/title/deferredReason）而非 knownRemaining 字符串数组 | knownRemaining 形态「ID: reason」无 title，任务要求三元组；两源由 computeKnownRemaining 保持同步信息等价 | 接受 |
 | F4 | README 仅 1 处 aggregated.md 措辞修正（「状态与目录」树行），无「各轮齐全」原文 | README 全文 grep 仅此一处（设计措辞基于 v2 设计 S5 的推测表述）；该处已条件化 | 接受 |
 | F4 | impl-plan F4 行「S2/S5 断言改条件断言」经核查为 no-op | F3 偏差表已随行为变更改毕 10 处；现存断言均落非全员 clean 轮语义自洽 | 接受（计划行冗余，无代码动作） |
+| 修复批次 | stuck 终态构造未用 FAKE_FS6，改用 FAKE_STUCK_RECON + 新开关 FAKE_STUCK_DEFER | FAKE_FS6 的 R2+ reviewer 为 clean，走 D5 rawAllClean 上移路径到不了 stuck 终态；FAKE_STUCK_RECON + stuckThreshold:2 使残留/deferred 双清单非空，与既有两终态断言同构 | 接受 |
 
 ## 6 状态表
 
@@ -115,3 +116,5 @@ graph LR
 | 日期 | 变更 | 触发 |
 |------|------|------|
 | 2026-08-29 | 计划创建（基线 commit 见 git log 本文档首次提交） | dev-flow 阶段 1 |
+| 2026-08-29 | 一致性审查 round 1（2 分区并行）：R1 核心机制区 1 medium（jsAggregateFallback 归一前过滤丢畸形 severity 条目→降级轮假 clean 缺口）+ 1 doc_error（D5 README 引用失实）；R2 测试文档区 2 low（stuck 终态渲染无断言、FS3a 冗余断言）+ 2 low doc_error（README 树行 A4 轮措辞、登记表机理表述）。R1/R2 对 cleanNames.clear 机理分歧由主 agent 读 :920-921 行级裁决（R1 成立） | dev-flow 阶段 3 |
+| 2026-08-29 | 修复批次清零：severity 归一前移（红态实证假 clean 机理）+ stuck 终报断言 + 冗余断言删除（dev subagent，61/61）；doc_errors 4 处由主 agent 修订（v2.1 设计 D5 勘误/D2 补注/§6 记录、README 树行、本表机理锚点） | dev-flow 阶段 4 |

@@ -488,7 +488,9 @@ function postReconcile(state, { reconFixedIds, round }) {
  * v2.1 D3a（GF3）：按 severity 拆分——只收 critical/major（MUST_FIX_SEVERITIES），
  * 与 LLM 聚合契约同形；minor 不进 fixQueue（走既有 suggestion 明细通道，fix prompt
  * 的 suggestion-issues 段从 parsedReviews 汇总）。旧行为把 minor 一并塞队列，fixer
- * 对其合法 defer 即误判 must-fix-not-fixed → 假 fix-failed 终态
+ * 对其合法 defer 即误判 must-fix-not-fixed → 假 fix-failed 终态。
+ * v2.1 D8：severity 归一在过滤前完成（与 LLM 路径 normalizeAggregated 同款）——缺失/
+ * 非枚举回落 major 进队列，杜绝降级轮静默丢条目的假 clean 面
  */
 function jsAggregateFallback(parsedReviews) {
   const map = new Map(); // dedupKey -> {title, severity, files, evidence}
@@ -496,8 +498,14 @@ function jsAggregateFallback(parsedReviews) {
     for (const it of issues || []) {
       const title = String(it?.title || '').trim();
       if (!title) continue;
-      const severity = String(it?.severity || 'minor').toLowerCase();
-      if (!MUST_FIX_SEVERITIES.includes(severity)) continue; // minor 不进修复队列（D3a）
+      // v2.1 D8：归一前移（与 LLM 聚合路径 normalizeAggregated 同款）——severity 缺失
+      // 与非枚举值一律回落 major（must-fix 保守方向）。旧行为缺省 minor / 非枚举直接
+      // continue：降级轮 reviewer 明确报出的畸形 severity 条目被静默丢弃，到不了下游
+      // 归一层，可构成假 clean（与 LLM 路径「畸形回落 major 进活跃追踪」行为分叉）。
+      // 归一后 === minor 才排除（D3a：走 suggestion 明细通道，不进修复队列）
+      let severity = String(it?.severity ?? 'major').toLowerCase();
+      if (!SEVERITIES.includes(severity)) severity = 'major';
+      if (severity === 'minor') continue; // minor 不进修复队列（D3a）
       const key = dedupKey(title);
       if (!map.has(key)) {
         map.set(key, {
