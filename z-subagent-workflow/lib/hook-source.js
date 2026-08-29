@@ -50,8 +50,7 @@ function countUsableProviders(v2) {
 }
 
 /**
- * 执行 SessionStart hook：组装资源快照并输出协议 JSON；异常降级 {}。
- * 恒不调 process.exit——入口自然退出即 exit 0（降级路径同样零非零退出）。
+ * hook 选项与 IO 通道解析（全部副作用注入点，缺省回落 process.*）。
  *
  * @param {object} [opts]
  *   - env {object}      环境变量（缺省 process.env；读 ZSW_NESTED / ZCODE_PROJECT_DIR）
@@ -59,14 +58,77 @@ function countUsableProviders(v2) {
  *   - stdout {{write}}  协议输出通道（缺省 process.stdout）
  *   - stderr {{write}}  诊断输出通道（缺省 process.stderr）
  *   - now {() => Date}  快照时间戳时钟（缺省 () => new Date()）
+ * @returns {{env, cwd, out, err, now, startMs}} startMs = 流程起点时钟采样（诊断耗时基准）
  */
-function runSessionStartHook(opts) {
+function resolveHookIO(opts) {
   const env = (opts && opts.env) || process.env;
   const cwd = opts && opts.cwd !== undefined ? opts.cwd : process.cwd();
   const out = (opts && opts.stdout) || process.stdout;
   const err = (opts && opts.stderr) || process.stderr;
   const now = (opts && opts.now) || (() => new Date());
   const startMs = Date.now();
+  return { env, cwd, out, err, now, startMs };
+}
+
+/**
+ * 定位/装载注入源并渲染两行输出文本：require 链、fs 读取、资源列举、渲染
+ * 全部在此——任一异常向上抛，由 runSessionStartHook 的 catch 统一降级 {}。
+ *
+ * @returns {{protocolLine, diagLine}}
+ *   - protocolLine：stdout 协议通道的严格单行 JSON（hookSpecificOutput）
+ *   - diagLine：stderr 人读诊断行（providers/agents/scripts 计数 + 耗时）
+ */
+function assembleSessionStartOutput({ env, cwd, now, startMs }) {
+  // 依赖全部函数体内 require（顶层零 require 纪律见文件头注）：任一模块
+  // 缺失/损坏在 require 阶段即抛 → 上层 catch 统一 {} 降级
+  const fs = require('node:fs');
+  const { V2_CONFIG_PATH } = require('./config');
+  const { defaultModelRef } = require('./model-router');
+  const { renderResourcesBlock } = require('./hook-inject');
+  const { AgentMdResolver } = require('./agent-md-resolver');
+  const { listScriptNames } = require('./workflow-script');
+
+  // projectDir 解析链与 bin/zsw.js workflow 子命令同源：ZCODE_PROJECT_DIR > cwd
+  const source = env.ZCODE_PROJECT_DIR ? 'env' : 'cwd';
+  const projectDir = env.ZCODE_PROJECT_DIR || cwd;
+
+  // v2 config fs 直读（models 段主源）：缺失/不可读/坏 JSON 抛错 → 整体
+  // 降级 {}（§3.1 失败路径 2）；cli config 缺失不降级——defaultModelRef
+  // 内部回退链兜底（cli.main 可解析 → v2 顶层 model.main → 内置回退）
+  const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
+
+  const agents = new AgentMdResolver().list(projectDir);
+  // name-only 发现：绝不 require 脚本——脚本体顶层副作用（任意用户代码）
+  // 不得在会话启动的 hook 内联路径上触发，这正是 listScriptNames 的存在理由
+  const scripts = listScriptNames(projectDir);
+
+  const text = renderResourcesBlock({
+    v2,
+    cliModelMain: defaultModelRef(v2),
+    agents,
+    scripts,
+    builtinWorkflows: BUILTIN_WORKFLOW_NAMES,
+    nowIso: now().toISOString(),
+  });
+  const protocolLine = `${JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
+  })}\n`;
+  // 成功可观测性诊断走 stderr（stdout 保持纯协议通道）；providers = 带非空
+  // 模型清单的 provider 数（与 zsw models 的可用 provider 口径一致）
+  const diagLine =
+    `[zsw:hook] projectDir=${projectDir} source=${source}`
+    + ` providers=${countUsableProviders(v2)} agents=${agents.length}`
+    + ` scripts=${scripts.length} elapsed=${Date.now() - startMs}ms\n`;
+  return { protocolLine, diagLine };
+}
+
+/**
+ * 执行 SessionStart hook：组装资源快照并输出协议 JSON；异常降级 {}。
+ * 恒不调 process.exit——入口自然退出即 exit 0（降级路径同样零非零退出）。
+ * 参数/IO 注入点见 resolveHookIO，装载与渲染见 assembleSessionStartOutput。
+ */
+function runSessionStartHook(opts) {
+  const { env, cwd, out, err, now, startMs } = resolveHookIO(opts);
 
   // 嵌套守卫最前（守卫优先于一切 IO；嵌套下任何 hook 调用零开销退出）
   if (env.ZSW_NESTED === '1') {
@@ -75,47 +137,9 @@ function runSessionStartHook(opts) {
   }
 
   try {
-    // 依赖全部函数体内 require（顶层零 require 纪律见文件头注）：任一模块
-    // 缺失/损坏在 require 阶段即抛 → 下方 catch 统一 {} 降级
-    const fs = require('node:fs');
-    const { V2_CONFIG_PATH } = require('./config');
-    const { defaultModelRef } = require('./model-router');
-    const { renderResourcesBlock } = require('./hook-inject');
-    const { AgentMdResolver } = require('./agent-md-resolver');
-    const { listScriptNames } = require('./workflow-script');
-
-    // projectDir 解析链与 bin/zsw.js workflow 子命令同源：ZCODE_PROJECT_DIR > cwd
-    const source = env.ZCODE_PROJECT_DIR ? 'env' : 'cwd';
-    const projectDir = env.ZCODE_PROJECT_DIR || cwd;
-
-    // v2 config fs 直读（models 段主源）：缺失/不可读/坏 JSON 抛错 → 整体
-    // 降级 {}（§3.1 失败路径 2）；cli config 缺失不降级——defaultModelRef
-    // 内部回退链兜底（cli.main 可解析 → v2 顶层 model.main → 内置回退）
-    const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
-
-    const agents = new AgentMdResolver().list(projectDir);
-    // name-only 发现：绝不 require 脚本——脚本体顶层副作用（任意用户代码）
-    // 不得在会话启动的 hook 内联路径上触发，这正是 listScriptNames 的存在理由
-    const scripts = listScriptNames(projectDir);
-
-    const text = renderResourcesBlock({
-      v2,
-      cliModelMain: defaultModelRef(v2),
-      agents,
-      scripts,
-      builtinWorkflows: BUILTIN_WORKFLOW_NAMES,
-      nowIso: now().toISOString(),
-    });
-    out.write(`${JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
-    })}\n`);
-    // 成功可观测性诊断走 stderr（stdout 保持纯协议通道）；providers = 带非空
-    // 模型清单的 provider 数（与 zsw models 的可用 provider 口径一致）
-    err.write(
-      `[zsw:hook] projectDir=${projectDir} source=${source}`
-      + ` providers=${countUsableProviders(v2)} agents=${agents.length}`
-      + ` scripts=${scripts.length} elapsed=${Date.now() - startMs}ms\n`,
-    );
+    const { protocolLine, diagLine } = assembleSessionStartOutput({ env, cwd, now, startMs });
+    out.write(protocolLine);
+    err.write(diagLine);
   } catch (e) {
     out.write('{}\n');
     err.write(`[zsw:hook] ${e && e.message || e}\n`);
