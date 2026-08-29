@@ -51,15 +51,23 @@ function providersUsable(v2) {
     .map(([id]) => id);
 }
 
-function modelShort(ref) {
+/**
+ * 引用切分（唯一实现，hook-inject 复用同一导出防双源漂移）：含 "/" 按
+ * lastIndexOf 切出 provider（provider id 本身可含 ":"，如 builtin:*），否则
+ * 短名归默认 provider。
+ * @returns {{provider: string, short: string}}
+ */
+function splitModelRef(ref) {
   const s = String(ref);
-  return s.slice(s.lastIndexOf('/') + 1);
+  return s.includes('/')
+    ? { provider: s.slice(0, s.lastIndexOf('/')), short: s.slice(s.lastIndexOf('/') + 1) }
+    : { provider: DEFAULT_PROVIDER_ID, short: s };
 }
 
 /** 引用能否被 v2 清单解析：全名查对应 provider、短名查默认 provider，模型须在清单内。 */
 function resolvableInV2(v2, ref) {
-  const provider = ref.includes('/') ? ref.slice(0, ref.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-  return availableModels(v2, provider).includes(modelShort(ref));
+  const { provider, short } = splitModelRef(ref);
+  return availableModels(v2, provider).includes(short);
 }
 
 /** 默认模型：cli config 的当前主模型（须可被 v2 清单解析），否则回退 v2 → 内置。 */
@@ -81,6 +89,31 @@ function defaultModelRef(v2) {
   // 回退到 v2 config 的 model.main
   const main = v2?.model?.main;
   return (typeof main === 'string' && main.trim()) ? main.trim() : FALLBACK_DEFAULT_MODEL;
+}
+
+/**
+ * 指定 provider 下的默认模型短名——默认标记的唯一谓词（zsw models 与
+ * SessionStart hook 注入共用，禁止调用方复刻比对逻辑防两套口径漂移）。
+ *
+ * provider 感知（2026-08 修复）：main 指向非目标 provider 时必须返回 null，
+ * 而不是按纯短名在目标 provider 清单上错标——旧 listModels 实现曾因忽略
+ * ref 的 provider，在 cli main 切到别的 provider 时给默认 provider 的同名
+ * 模型错标「默认」。
+ *
+ * @param {object|null} v2         v2 config 对象
+ * @param {string} providerId      目标 provider
+ * @param {string} [ref]           默认模型引用；缺省 = defaultModelRef(v2) 回退链
+ *   产物。显式传入（可为 null/''）供零 IO 的纯函数调用方使用（hook-inject
+ *   由调用方预算好传入，本函数不再触 fs）。
+ * @returns {string|null} 命中返回短名；provider 不匹配、短名不在该 provider
+ *   清单内、或引用为空 → null
+ */
+function defaultModelFor(v2, providerId, ref) {
+  const r = arguments.length >= 3 ? ref : defaultModelRef(v2);
+  if (typeof r !== 'string' || !r.trim()) return null;
+  const { provider, short } = splitModelRef(r.trim());
+  if (provider !== providerId) return null;
+  return availableModels(v2, providerId).includes(short) ? short : null;
 }
 
 function trimToNull(v) {
@@ -160,8 +193,7 @@ class ModelRouter {
       return target;
     }
 
-    const provider = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-    const short = modelShort(target);
+    const { provider, short } = splitModelRef(target);
     const pModels = availableModels(v2, provider);
     if (!pModels.length) {
       const known = providersWithModels.join(', ');
@@ -200,7 +232,8 @@ class ModelRouter {
         `恢复指引：改用上述 provider 之一，或先在 ZCode 桌面端为该 provider 配置模型后重试。`
       );
     }
-    const defShort = modelShort(defaultModelRef(v2));
+    // 默认标记走单一谓词（provider 感知）：main 指向别的 provider 时本清单不错标
+    const defShort = defaultModelFor(v2, provider);
     return models.map((name) => {
       const def = v2.provider[provider].models[name] || {};
       const entry = { name };
@@ -235,8 +268,7 @@ class ModelRouter {
     }
     // modelRef 已是 resolve() 的规范化产物（provider/model 全名）；防御性兜底：
     // 裸短名按默认 provider 解析，与 resolve() 的短名语义一致
-    const provider = modelRef.includes('/') ? modelRef.slice(0, modelRef.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-    const short = modelShort(modelRef);
+    const { provider, short } = splitModelRef(modelRef);
     if (runnerKind === 'appserver') {
       // 模型走 session/create 参数，无 per-model HOME 池（D5「单一隔离 HOME」）；
       // 但 app-server 进程的 provider 凭据同样读 $HOME/.zcode/cli/config.json，
@@ -264,3 +296,10 @@ module.exports.FALLBACK_DEFAULT_MODEL = FALLBACK_DEFAULT_MODEL;
 // hook 默认标记复用同一回退链（bin/zsw.js hook 分支），与 zsw models 同口径（D3），
 // 禁止调用方复刻回退逻辑防两套口径漂移
 module.exports.defaultModelRef = defaultModelRef;
+// 纯谓词单一导出（hook-inject / 测试消费，禁复刻）：清单、引用切分、
+// 默认标记判定、provider 凭据判定（权威实现定义在 driver.js——判定语义
+// 源自 bootstrap 的「只写带凭据 provider」，且放那里无 require 环）
+module.exports.availableModels = availableModels;
+module.exports.splitModelRef = splitModelRef;
+module.exports.defaultModelFor = defaultModelFor;
+module.exports.hasProviderCredentials = driver.hasProviderCredentials;

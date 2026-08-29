@@ -6,13 +6,12 @@
  * agent 清单 / 脚本名 / 内置 workflow 名 / 快照时间戳），文件读取在
  * bin/zsw.js hook session-start 侧完成。本模块不触碰任何 IO。
  *
- * 渲染口径与 lib/model-router.js 严格同源：
- * - 默认 provider = model-router 的 PROVIDER_ID（即其内部 DEFAULT_PROVIDER_ID，
- *   短名解析的 target）；
- * - 模型清单 = provider.models 对象键集（availableModels 同款语义）；
- * - 默认标记 = cliModelMain 按全名/短名口径可被默认 provider 清单解析时才标
- *   （resolvableInV2 同款切分：含 "/" 按 lastIndexOf 切 provider，否则归默认 provider）；
- * - apiKey 判定 = e.options.apiKey truthy（driver.js bootstrapIsolatedHome 同款）。
+ * 渲染口径与 lib/model-router.js 单源：模型清单（availableModels）、默认标记
+ * 判定（defaultModelFor，内部含 splitModelRef 引用切分；provider 感知——main
+ * 指向非默认 provider 时不得在默认清单上错标）、apiKey 判定
+ * （hasProviderCredentials，权威实现定义在 driver.js bootstrap 侧）全部直接
+ * require model-router 的导出消费，本模块零复刻（防双实现语义漂移）。
+ * cliModelMain 由调用方传 defaultModelRef(v2) 回退链产物，因此本模块保持零 fs。
  *
  * 两层 models（D3）：默认 provider 段只渲染模型名单 + 默认标记，且不筛
  * apiKey（锚定 zsw models 口径，凭据缺失属快照过期由报错兜底覆盖）；其余
@@ -30,7 +29,12 @@
  * G4 的 token 预算意图。
  */
 
-const { PROVIDER_ID } = require('./model-router');
+const {
+  PROVIDER_ID,
+  availableModels,
+  defaultModelFor,
+  hasProviderCredentials,
+} = require('./model-router');
 
 const HARD_BUDGET_LINES = 45;
 const SNAPSHOT_HEADER = 'zsw 可用资源快照（会话启动时生成，GUI 中途改动后可能过期）';
@@ -41,28 +45,6 @@ const AGENTS_HEADER = 'agents（四根发现，同名高优先级根胜出）：
 const OTHER_PROVIDERS_HEADER = '  其他可运行 provider（跨 provider 必须用全名 <provider>/<model>）：';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** provider 下模型名单（model-router.availableModels 同款：models 对象键集）。 */
-function availableModelsOf(v2, provider) {
-  const e = v2 && v2.provider && v2.provider[provider];
-  return Object.keys((e && e.models) || {});
-}
-
-/** 模型引用切分（resolvableInV2 同款：含 "/" 按 lastIndexOf 切，短名归默认 provider）。 */
-function splitModelRef(ref) {
-  const s = String(ref);
-  return s.includes('/')
-    ? { provider: s.slice(0, s.lastIndexOf('/')), model: s.slice(s.lastIndexOf('/') + 1) }
-    : { provider: PROVIDER_ID, model: s };
-}
-
-/** 默认标记的模型短名：cliModelMain 可被默认 provider 清单解析时返回短名，否则 null。 */
-function defaultMarkerShort(v2, cliModelMain) {
-  if (typeof cliModelMain !== 'string' || !cliModelMain.trim()) return null;
-  const { provider, model } = splitModelRef(cliModelMain.trim());
-  if (provider !== PROVIDER_ID) return null;
-  return availableModelsOf(v2, provider).includes(model) ? model : null;
-}
-
 /**
  * 其余可运行 provider 行（每 provider 一行）：apiKey 非空且模型清单非空才列；
  * 模型以全名 <provider>/<model> 列出；UUID 形态 provider 缩写为前 8 位并附
@@ -72,7 +54,7 @@ function otherProviderLines(v2) {
   const lines = [];
   for (const [id, e] of Object.entries((v2 && v2.provider) || {})) {
     if (id === PROVIDER_ID) continue;
-    if (!(e && e.options && e.options.apiKey)) continue; // driver.js:167 同款判定
+    if (!hasProviderCredentials(e)) continue; // 单一谓词（driver.js 权威实现的转口导出）
     const models = Object.keys((e && e.models) || {});
     if (!models.length) continue;
     const isUuid = UUID_RE.test(id);
@@ -84,13 +66,15 @@ function otherProviderLines(v2) {
   return lines;
 }
 
-/** agents 条目：name（description 截 20 字）；无描述只列 name；无名条目丢弃。 */
+/** agents 条目：name（description 截 20 码点）；无描述只列 name；无名条目丢弃。 */
 function agentEntries(agents) {
   const out = [];
   for (const a of Array.isArray(agents) ? agents : []) {
     const name = a && String(a.name || '').trim();
     if (!name) continue;
-    const desc = a && String(a.description || '').trim().slice(0, 20);
+    // 码点安全截断：slice 按 UTF-16 单元切会把 surrogate 对（emoji 等）切成
+    // 孤立代理产生乱码尾字符，Array.from 按码点枚举后截断
+    const desc = Array.from(String((a && a.description) || '').trim()).slice(0, 20).join('');
     out.push(desc ? `${name}（${desc}）` : name);
   }
   return out;
@@ -141,7 +125,7 @@ function workflowLine(builtinWorkflows, scripts, truncated) {
  * 渲染 <zsw-resources> 注入块。
  * @param {object} input
  *   - v2 {object|null}      解析后的 ~/.zcode/v2/config.json 对象（可缺省/畸形，降级渲染）
- *   - cliModelMain {string} 默认模型引用（调用方传 model-router.defaultModelRef(v2) 回退链产物：cli.main 可解析 → v2 顶层 model.main → 内置回退；与 zsw models 默认标记同口径，可缺省）
+ *   - cliModelMain {string} 默认模型引用（调用方传 model-router.defaultModelRef(v2) 回退链产物：cli.main 可解析 → v2 顶层 model.main → 内置回退；与 zsw models 默认标记同口径，可缺省）。两处消费：models 段头部「当前默认：」恒显全名行（指向任意 provider 都显示；空/缺省不加）+ 默认标记（defaultModelFor provider 感知判定）
  *   - agents {Array}        [{name, description}]
  *   - scripts {Array}       自定义 workflow 脚本名
  *   - builtinWorkflows {Array} 内置 workflow 名（内置五名由调用方传）
@@ -161,9 +145,15 @@ function renderResourcesBlock(input) {
   lines.push(SNAPSHOT_HEADER);
   lines.push('models：');
 
+  // 当前默认恒显全名行（计入 45 行预算）：默认标记只语义化「默认 provider 清单
+  // 内的短名」，main 指向其他 provider 时标记缺席，此行保证「当前默认是什么」
+  // 恒不丢；无任何可解析默认（cliModelMain 空或缺省）时不加
+  const defRef = typeof cliModelMain === 'string' ? cliModelMain.trim() : '';
+  if (defRef) lines.push(`  当前默认：${defRef}`);
+
   // 默认 provider 段：名单 + 默认标记，不筛 apiKey
-  const defModels = availableModelsOf(v2, PROVIDER_ID);
-  const defShort = defaultMarkerShort(v2, cliModelMain);
+  const defModels = availableModels(v2, PROVIDER_ID);
+  const defShort = defaultModelFor(v2, PROVIDER_ID, cliModelMain);
   const defList = defModels.length
     ? defModels.map((m) => (m === defShort ? `${m}（默认）` : m)).join(', ')
     : '（无可用模型清单）';
