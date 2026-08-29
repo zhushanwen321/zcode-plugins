@@ -1,6 +1,6 @@
 # zsw appserver 主通道化 实施计划
 
-基线: TBD（本文件首次 commit，hash 于 commit 后回填） | 来源设计: [docs/design/zsw-appserver-promotion-design.md](zsw-appserver-promotion-design.md)（三轮对抗式审查通过，must_fix==0） | 日期: 2026-08-29
+基线: 225930d | 来源设计: [docs/design/zsw-appserver-promotion-design.md](zsw-appserver-promotion-design.md)（三轮对抗式审查通过，must_fix==0） | 日期: 2026-08-29
 
 ## 0 章节映射
 
@@ -42,7 +42,7 @@ u-foundation 缺席说明：本项目 plain Node CJS 无跨单元共享类型/�
 | F1 | 协议漂移分类 protocol-drift + 升级冒烟脚本（probe 扩面）；A2/A4 假设收口 | `lib/runner-appserver.js`、`test/appserver.test.js`、`test/e2e.test.js` | 无 | plain | 单测：fake server 返回 -32601/-32602 时错误分类为 protocol-drift、record 与 stderr 双落点、错误信息含冒烟命令与 `ZSW_RUNNER=spawn` 回退指引；冒烟脚本（create + send 极小任务 + sessionId 路径/turn.terminal/response 非空/toolDenylist 生效断言）本地手动跑通；对应设计 A-7 |
 | F2 | -32004 四步恢复序（含 ④ timeoutMs 窗口 + stop 清场 + runner 级恢复互斥）；引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`；create 显式化（persistence:immediate）；遥测 env；idle TTL 常量删除 | `lib/runner-appserver.js`、`lib/config.js`、`test/appserver.test.js` | F0（恢复序分支结论） | plain | 单测（fake server 驱动）：-32004→resume→重挂 subscribe→重试 send 链路、④ 超时→stop→分支 B、恢复互斥串行化、订阅重挂（缺则终态不达）均覆盖；create 携带 persistence:"immediate"；子进程 env 含 `ZCODE_MODEL_TELEMETRY_ENABLED=false`；stderr 实时写 `~/.zcode/zsw/logs/`；`lib/config.js:78` idleConversationTtlMs 删除且全仓 grep 无引用；对应设计 A-2a/A-2b 的单测面 |
 | F3 | 默认翻转 + 显式回退 + probe 落盘缓存（含命中后首败失效重探）+ 测试/文档翻转 | `lib/assemble.js`、`lib/ports.js`、`test/assemble.test.js`、`test/e2e.test.js`、`README.md`、`CONTEXT.md` | F1、F2 | plain | `assemble.js:64-65`/`ports.js:130` 缺省翻转为 appserver，`ZSW_RUNNER=spawn` 显式回退；probe 结果落盘 `~/.zcode/zsw/probe-cache.json`（键=CLI 路径+mtime；只缓存 ok；命中后首次 create -32603/-32601/-32602 失效重探一次）；assemble.test.js 缺省断言反转 + 回退用例；e2e E1-E6/E8 显式钉 spawn、E7 升主链路；README（:99-103 重写+顺修）/CONTEXT.md（补 ZSW_RUNNER）更新；翻转点为独立最小 diff 可回滚 |
-| F4 | 能力增量：`--thinking`（readState 校验源缓存）+ 工具限制双来源（CLI flag + frontmatter disallowedTools → toolDenylist 并集；tools 白名单维持软约束）；record 标注 | `bin/zsw.js`、`lib/manager.js`、`lib/model-router.js`、`lib/runner-appserver.js`、`test/cli.test.js`、`test/manager.test.js`、`test/appserver.test.js` | F3 | plain | `zsw start --thinking low` 映射 create.thoughtLevel（readState.thoughtLevel.available 连接级缓存校验，非法值 warn 跳过不失败）；`--allow-tools/--deny-tools` 逗号分隔 → toolAllowlist/toolDenylist；`taskCtx.disallowedTools`（frontmatter）与 CLI deny 并集去重入 create.toolDenylist；不调用 session/setThoughtLevel；record 标注 thinking 实际档位（spawn 降级轮 thinking:null）；对应设计 A-5/A-6 单测面 |
+| F4 | 能力增量：`--thinking`（readState 校验源缓存）+ 工具限制双来源（CLI flag + frontmatter disallowedTools → toolDenylist 并集；tools 白名单维持软约束）；record 标注；**record errorKind 透传**（`lib/manager.js` `_completeRun` transition patch 加一行 `errorKind: result && result.errorKind`——F1 blocker 移交，F1 已完成 runner 侧双落点但 record 独立字段需此透传） | `bin/zsw.js`、`lib/manager.js`、`lib/model-router.js`、`lib/runner-appserver.js`、`test/cli.test.js`、`test/manager.test.js`、`test/appserver.test.js` | F3 | plain | `zsw start --thinking low` 映射 create.thoughtLevel（readState.thoughtLevel.available 连接级缓存校验，非法值 warn 跳过不失败）；`--allow-tools/--deny-tools` 逗号分隔 → toolAllowlist/toolDenylist；`taskCtx.disallowedTools`（frontmatter）与 CLI deny 并集去重入 create.toolDenylist；不调用 session/setThoughtLevel；record 标注 thinking 实际档位（spawn 降级轮 thinking:null）；protocol-drift 错误以独立 errorKind 字段落 record；对应设计 A-5/A-6 单测面 |
 | F5 | 发版与收尾：minor release + 发布说明（重启生效）+ skill/command 文档复核 | 版本三件套（`package.json`、`.zcode-plugin/plugin.json`、根 `marketplace.json`，经 `scripts/release.js`）；发布说明随 tag | F1-F4 | plain | `node scripts/release.js z-subagent-workflow minor` 完成三处版本同步 + commit + tag（不 push，push 另行授权）；仓根 `node scripts/check-sync.js`、`node scripts/check-pack.js` 绿；`node scripts/check-release-needed.js` 对本插件清零；发布说明含「重启 ZCode 生效」与升级冒烟指引 |
 
 ## 3 DAG 图
@@ -91,14 +91,15 @@ graph TD
 
 | 日期 | 单元 | 偏差 | 裁决理由 | 设计侧动作 |
 |------|------|------|----------|------------|
-| （空） | | | | |
+| 2026-08-29 | F1 | record 的 errorKind 独立字段透传（manager._completeRun 固定字段集不透传）移交 F4 | F4 领地本含 manager.js 与 record 标注验收；F1 runner 侧双落点已完成 | 计划 F4 单元行已补职责 |
+| 2026-08-29 | F1 | A4 真机实测牵出 extractAssistantText 对真实 read 形态失效的修复 + 新增 extractReadUsage（原被 payload.response 帧兜底掩盖） | 设计头注 A4 预留单点（「→ 只改 extractAssistantText()」）的收口职责；新旧双形态单测钉住；顺带沉淀 settings.thoughtLevel 随 read 应答可见（F4 直接消费） | 无需改设计文档；lib 头注 A2/A4 已由 F1 更新为收口结论 |
 
 ## 6 状态表
 
 | Unit | 状态(pending/in-progress/committed/blocked) | 轮次 | 证据指针 |
 |------|------|------|------|
 | F0 | pending | 0 | — |
-| F1 | pending | 0 | — |
+| F1 | committed | 1 | commit（本轮）；单测 36/36、全量非 e2e 358/358 复跑绿；真机 apc-smoke pass（token 1 次调用）；A2/A4 收口，A4 牵出提取链修复（见偏差登记表） |
 | F2 | pending | 0 | — |
 | F3 | pending | 0 | — |
 | F4 | pending | 0 | — |

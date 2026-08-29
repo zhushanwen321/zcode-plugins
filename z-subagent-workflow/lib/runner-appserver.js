@@ -37,16 +37,29 @@
  *   携带 usage；同内容的 content+stopReason:"stop" 形态也出现）。
  * - 错误码：-32602 ZodError（error.data 带完整 zod 诊断）、-32004 Session not
  *   active、-32022 反向请求超时、-32603 内部错误（含 Model config missing）。
+ *   D3 漂移分类：-32601（方法不存在）/ -32602（参数校验失败）经
+ *   classifyApcError 归 protocol-drift（错误文案含升级冒烟命令与
+ *   ZSW_RUNNER=spawn 回退指引），start/resume 错误出口双落点
+ *   （RunResult.errorKind + stderr 出声）；其余错误码不归该类，互斥不遮蔽。
  *
- * ## 剩余未实测假设（W3 后续真机探针；失败时的单点修改位置不变）
- * A2 推送帧的会话归属：按 params.sessionId ?? params.session.id 提取；取不到且
- *    仅一个活跃会话时按唯一会话归因。（e2e 抓包中全部帧都带 params.sessionId，
- *    多会话并发归因仍未实证）
+ * ## 协议假设收口状态（真机探针随 apc-smoke 冒烟沉淀；失败时的单点修改位置不变）
+ * A2 推送帧的会话归属（单会话面已收口，2026-08-29 apc-smoke 真机）：会话级推送
+ *    帧全部携带 params.sessionId 且归因正确；但存在引擎级非会话帧（实测
+ *    process/mcpTelemetry 的 MCP 进程遥测帧）不带 sessionId——_lookupSession 的
+ *    「无 sid 且唯一会话时兜底归因」对这类帧单会话下无害（无文本/usage 数据面），
+ *    多会话下按宁丢勿错丢弃，策略成立。多会话并发归因留 A-8（4 并发）验收。
  *    → 只改 extractPushSessionId() 与 _lookupSession()/_lookupTurn()
- * A4 session/read 兜底可用性与返回形态（本进程 active 会话可用，非 -32004）：
- *    e2e 中 read 的返回形态未单独抓包验证（response 帧兜底先命中）；降级链
- *    read → messages → response 帧 → chunk 聚合的顺序保留。
- *    → 只改 extractAssistantText() 与 _fetchFinalResponse() 的降级链
+ * A4 session/read 返回形态（已收口，2026-08-29 apc-smoke 真机全量抓包）：
+ *    实测形态 {messages:[{info:{role,...}, parts:[{type:'text',text},
+ *    {type:'step-finish',tokens}, ...]}], projection, settings, session, ...}：
+ *    - role 在 m.info.role（非 m.role），assistant 正文 = 最后一条 assistant 消息
+ *      parts 中 type:'text' 部件的 text 拼接（旧 m.role/m.content 形态保留兼容）；
+ *    - tokens 在最后 assistant 消息 parts 的 step-finish 部件 tokens 字段
+ *      （{input,output,reasoning,cache, total}），非顶层 usage；
+ *    - settings.thoughtLevel:{available:[low|high|max], current, defaultLevel}
+ *      同帧可见（F4 thinking 校验可直接消费 read 的这一面）。
+ *    extractAssistantText()/extractReadUsage() 已按实测形态实现并保留旧形态兼容。
+ *    → 只改 extractAssistantText()/extractReadUsage() 与 _fetchFinalResponse() 的降级链
  * A5 send 对 running 会话的行为（排队 or 拒绝）未实测：设计 optimistic（send 后
  *    等一轮完成）；但本 runner 内同会话已有进行中的一轮时保守报 busy。
  *    → 只改 resume() 的 busy 分支
@@ -176,8 +189,11 @@ function extractPushSessionId(params) {
 
 /**
  * 从 session/read / session/messages 的返回中提取最后一条 assistant 文本
- * （假设 A4 的单点之一）：兼容 messages 数组、content 三形态（字符串/{text}/块数组）
- * 与顶层直给 text/response/content/message 的退化形态。
+ * （假设 A4 的单点之一）。已收口（2026-08-29 真机 apc-smoke 抓包）：
+ *   实测主形态 {messages:[{info:{role,...}, parts:[{type:'text', text}, ...]}]}
+ *   —— role 在 m.info.role、正文在 text parts；旧形态（m.role + m.content）保留兼容。
+ * 兼容 messages 数组、content 三形态（字符串/{text}/块数组）与顶层直给
+ * text/response/content/message 的退化形态。
  */
 function extractAssistantText(readResult) {
   if (typeof readResult === 'string') return readResult;
@@ -186,16 +202,51 @@ function extractAssistantText(readResult) {
     : Array.isArray(readResult) ? readResult : null;
   if (messages) {
     const last = [...messages].reverse().find((m) => m && typeof m === 'object'
-      && (m.role === 'assistant' || m.role === undefined));
+      && (messageRole(m) === 'assistant' || messageRole(m) === undefined));
     if (last) {
       const t = contentToText(last.content);
       if (t != null) return t;
+      const p = partsToText(last.parts);
+      if (p != null) return p;
     }
   }
   for (const k of ['text', 'response', 'content', 'message']) {
     if (typeof readResult[k] === 'string') return readResult[k];
   }
   return null;
+}
+
+/** 消息条目的 role：实测形态在 m.info.role，旧形态在 m.role。 */
+function messageRole(m) {
+  if (typeof m.role === 'string') return m.role;
+  if (m.info && typeof m.info.role === 'string') return m.info.role;
+  return undefined;
+}
+
+/** 实测形态的正文提取：parts[] 中 type:'text' 部件的 text 拼接（无 text 部件 → null）。 */
+function partsToText(parts) {
+  if (!Array.isArray(parts)) return null;
+  const texts = parts
+    .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+    .map((p) => p.text);
+  return texts.length ? texts.join('') : null;
+}
+
+/**
+ * 从 session/read 返回提取 tokens（实测 2026-08-29 真机 apc-smoke）：usage 在
+ * 最后一条 assistant 消息 parts 的 step-finish 部件 tokens 字段；顶层 usage
+ * （旧假设形态）保留兜底。都没有 → undefined。
+ */
+function extractReadUsage(readResult) {
+  if (!readResult || typeof readResult !== 'object') return undefined;
+  const messages = Array.isArray(readResult.messages) ? readResult.messages : [];
+  for (const m of [...messages].reverse()) {
+    if (!m || typeof m !== 'object' || messageRole(m) !== 'assistant' || !Array.isArray(m.parts)) continue;
+    const finish = [...m.parts].reverse()
+      .find((p) => p && p.type === 'step-finish' && p.tokens && typeof p.tokens === 'object');
+    if (finish) return finish.tokens;
+  }
+  return readResult.usage && typeof readResult.usage === 'object' ? readResult.usage : undefined;
 }
 
 function contentToText(content) {
@@ -208,6 +259,35 @@ function contentToText(content) {
     return joined || null;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// 协议漂移分类（D3/G3：协议无版本协商，漂移只以 -32601/-32602 出现）
+// ---------------------------------------------------------------------------
+
+/** 升级冒烟命令（与 e2e.test.js 的 apc-smoke 场景名对齐；--name 过滤见该文件头注）。 */
+const DRIFT_SMOKE_CMD = 'node test/e2e.test.js --name apc-smoke';
+/** 显式回退开关（D1）。 */
+const DRIFT_FALLBACK_ENV = 'ZSW_RUNNER=spawn';
+
+/**
+ * 把 apc 错误分类为 protocol-drift。
+ * 只认 -32601（方法不存在）/ -32602（参数校验失败）；其余错误码（-32004 不活跃、
+ * -32010 busy、-32031 恢复失败、-32022 反向请求超时、-32603 内部错误）返回 null
+ * 走原有错误路径——互斥不遮蔽，且不给漂移加重试（D3 被否项：重试必然再失败并
+ * 掩盖根因）。
+ * @param {Error & {code?: number}} err _onResponse 挂载了 code 的错误（或任意值）
+ * @returns {{kind: 'protocol-drift', hint: string}|null} null = 非漂移类
+ */
+function classifyApcError(err) {
+  const code = err && typeof err === 'object' ? err.code : undefined;
+  if (code !== -32601 && code !== -32602) return null;
+  return {
+    kind: 'protocol-drift',
+    hint: `协议漂移（protocol-drift）: ${err && err.message}。`
+      + '这通常意味着 ZCode 版本更新改了 apc 协议（协议无版本协商，漂移以 -32601/-32602 出现）。'
+      + `恢复指引: 跑升级冒烟 \`${DRIFT_SMOKE_CMD}\` 核对漂移面；确认不兼容期间设 ${DRIFT_FALLBACK_ENV} 回退。`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -692,9 +772,9 @@ class AppServerRunner {
         const result = await conn.request(method, { sessionId }, { timeoutMs: READ_TIMEOUT_MS });
         const text = extractAssistantText(result);
         if (text != null) {
-          const usage = (result && typeof result === 'object' && !Array.isArray(result)
-            && result.usage && typeof result.usage === 'object') ? result.usage : undefined;
-          return { response: text, usage };
+          // A4 收口（2026-08-29 实测）：read 的 tokens 在 step-finish parts，
+          // extractReadUsage 内含顶层 usage 兜底
+          return { response: text, usage: extractReadUsage(result) };
         }
         stderrLog(`${method} 成功但未提取到 assistant 文本，继续降级`);
       } catch (err) {
@@ -765,6 +845,13 @@ class AppServerRunner {
           }
           return { status: 'cancelled', sessionId: exec.sessionId };
         }
+        const drift = classifyApcError(err);
+        if (drift) {
+          // D3 双落点：stderr 出声 + RunResult.errorKind（错误分类随结果上行，
+          // record 物理落点由上层 _completeRun 透传）
+          stderrLog(drift.hint);
+          return { status: 'error', errorKind: drift.kind, error: drift.hint, sessionId: exec.sessionId };
+        }
         return { status: 'error', error: err && err.message, sessionId: exec.sessionId };
       }
     })();
@@ -831,6 +918,11 @@ class AppServerRunner {
       }
       return await turn.promise;
     } catch (err) {
+      const drift = classifyApcError(err);
+      if (drift) {
+        stderrLog(drift.hint); // D3 双落点：stderr + RunResult.errorKind（同 start）
+        return { status: 'error', errorKind: drift.kind, sessionId: exec.sessionId, error: drift.hint };
+      }
       const inactive = err && err.code === -32004;
       return {
         status: 'error',
@@ -880,3 +972,8 @@ module.exports = AppServerRunner;
 module.exports.createFrameDispatcher = createFrameDispatcher;
 module.exports.interpretEvent = interpretEvent;
 module.exports.RUNTIME_PREFERENCES = RUNTIME_PREFERENCES;
+module.exports.classifyApcError = classifyApcError;
+module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
+module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
+module.exports.extractAssistantText = extractAssistantText;
+module.exports.extractReadUsage = extractReadUsage;

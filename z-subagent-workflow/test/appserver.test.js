@@ -29,7 +29,10 @@ process.env.ZSW_ZCODE_CLI = path.join(__dirname, '..', 'fixtures', 'fake-appserv
 
 // env 隔离完成后才允许 require lib（见文件头注释）
 const AppServerRunner = require('../lib/runner-appserver');
-const { createFrameDispatcher, interpretEvent, RUNTIME_PREFERENCES } = require('../lib/runner-appserver');
+const {
+  createFrameDispatcher, interpretEvent, RUNTIME_PREFERENCES, classifyApcError,
+  extractAssistantText, extractReadUsage,
+} = require('../lib/runner-appserver');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RUNNERS = [];
@@ -60,6 +63,56 @@ async function waitFor(cond, ms = 5000, step = 25) {
     await sleep(step);
   }
   return cond();
+}
+
+/** 临时接管 process.stderr.write 捕获 runner 出声（D3 stderr 落点断言用）。 */
+async function captureStderr(fn) {
+  const orig = process.stderr.write;
+  const lines = [];
+  process.stderr.write = (chunk) => { lines.push(String(chunk)); return true; };
+  try {
+    return { value: await fn(), lines };
+  } finally {
+    process.stderr.write = orig;
+  }
+}
+
+let errFakeSeq = 0;
+/**
+ * 最小错误注入 fake（写进测试 TMP，after 统一清理，不落仓库）：对
+ * FAKE_ERR_METHOD 指定的方法回 FAKE_ERR_CODE 错误帧（-32601/-32602 全链路
+ * 用——fixtures/fake-appserver.js 只有 fail-create(-32602) 开关且不在本单元
+ * 领地），其余 client 请求一律回 -32004。
+ */
+function writeErrFake() {
+  const p = path.join(TMP, `errfake-${++errFakeSeq}.cjs`);
+  fs.writeFileSync(p, [
+    "'use strict';",
+    "const rl = require('node:readline').createInterface({ input: process.stdin });",
+    'const CODE = Number(process.env.FAKE_ERR_CODE);',
+    "const METHOD = process.env.FAKE_ERR_METHOD || 'session/create';",
+    'const out = (f) => console.log(JSON.stringify(f));',
+    "out({ method: 'protocol', params: { name: 'ZCode Protocol', version: 1 } });",
+    "rl.on('line', (line) => {",
+    '  if (!line.trim()) return;',
+    '  let f;',
+    '  try { f = JSON.parse(line); } catch { return; }',
+    '  if (f && f.id != null && f.method) {',
+    '    if (f.method === METHOD) {',
+    "      out({ id: f.id, error: { code: CODE, message: 'drift-probe ' + CODE, data: [{ path: ['fake'], message: 'errfake' }] } });",
+    '    } else {',
+    "      out({ id: f.id, error: { code: -32004, message: 'not active (errfake)' } });",
+    '    }',
+    '  }',
+    '});',
+    "rl.on('close', () => process.exit(0));",
+  ].join('\n'));
+  return p;
+}
+
+/** 恢复默认 ZSW_ZCODE_CLI（errfake 用例的 finally 复位）。 */
+function restoreFakeCli() {
+  process.env.ZSW_ZCODE_CLI = path.join(__dirname, '..', 'fixtures', 'fake-appserver.js');
 }
 
 function baseTaskCtx(prompt, overrides = {}) {
@@ -547,6 +600,7 @@ test('resume 不活跃会话：-32004 错误追加「会话不活跃…重新 st
   assert.equal(r.status, 'error');
   assert.match(r.error, /会话不活跃/);
   assert.match(r.error, /重新 start/);
+  assert.equal(r.errorKind, undefined); // D3 互斥：-32004 不归 protocol-drift
   await runner.shutdown();
 });
 
@@ -571,4 +625,144 @@ test('resume 在飞轮可经 onHandle 句柄中止（S-6① 接线）：cancel �
   } finally {
     delete process.env.FAKE_TURN_DELAY_MS;
   }
+});
+
+// ------------------------------------------------- 协议漂移分类（D3/G3）
+
+test('classifyApcError：-32601/-32602 归 protocol-drift，文案含冒烟命令与回退开关', () => {
+  assert.equal(classifyApcError({ code: -32601, message: 'method not found' }).kind, 'protocol-drift');
+  assert.equal(classifyApcError({ code: -32602, message: 'ZodError' }).kind, 'protocol-drift');
+  for (const code of [-32601, -32602]) {
+    const d = classifyApcError({ code, message: `probe ${code}` });
+    assert.match(d.hint, /protocol-drift/);
+    assert.match(d.hint, /apc-smoke/, '文案含升级冒烟场景名');
+    assert.match(d.hint, /ZSW_RUNNER=spawn/, '文案含显式回退开关');
+    assert.match(d.hint, new RegExp(String(code)), '文案保留原始错误码便于取证');
+  }
+});
+
+test('classifyApcError：其他错误码互斥不遮蔽（-32004/-32010/-32031/-32022/-32603/无码 → null）', () => {
+  for (const code of [-32004, -32010, -32031, -32022, -32603]) {
+    assert.equal(classifyApcError({ code, message: 'x' }), null, String(code));
+  }
+  assert.equal(classifyApcError(new Error('no code')), null);
+  assert.equal(classifyApcError(null), null);
+  assert.equal(classifyApcError(undefined), null);
+});
+
+test('start 遇 -32602（create 参数漂移）：errorKind=protocol-drift + stderr 双落点 + 指引文案（fake fail-create）', async () => {
+  process.env.FAKE_MODE = 'fail-create';
+  try {
+    const { runner } = newRunner();
+    const { value: result, lines } = await captureStderr(async () => {
+      const handle = runner.start(baseTaskCtx('参数漂移任务'));
+      return await handle.done;
+    });
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'protocol-drift', 'record 落点：RunResult.errorKind');
+    assert.match(result.error, /-32602/);
+    assert.match(result.error, /apc-smoke/);
+    assert.match(result.error, /ZSW_RUNNER=spawn/);
+    const drift = lines.filter((l) => l.includes('[zsub:appserver]') && l.includes('protocol-drift'));
+    assert.ok(drift.length >= 1, `stderr 应出声漂移分类，捕获: ${lines.join(' | ').slice(0, 300)}`);
+    assert.match(drift[0], /apc-smoke/);
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_MODE;
+  }
+});
+
+test('start 遇 -32601（方法消失漂移）：errorKind=protocol-drift + stderr 双落点（inline errfake）', async () => {
+  process.env.FAKE_ERR_CODE = '-32601';
+  process.env.FAKE_ERR_METHOD = 'session/create';
+  process.env.ZSW_ZCODE_CLI = writeErrFake();
+  try {
+    const { runner } = newRunner();
+    const { value: result, lines } = await captureStderr(async () => {
+      const handle = runner.start(baseTaskCtx('方法消失任务'));
+      return await handle.done;
+    });
+    assert.equal(result.status, 'error');
+    assert.equal(result.errorKind, 'protocol-drift');
+    assert.match(result.error, /-32601/);
+    assert.match(result.error, /apc-smoke/);
+    assert.match(result.error, /ZSW_RUNNER=spawn/);
+    assert.ok(
+      lines.some((l) => l.includes('[zsub:appserver]') && l.includes('protocol-drift')),
+      `stderr 出声缺失，捕获: ${lines.join(' | ').slice(0, 300)}`,
+    );
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_ERR_CODE;
+    delete process.env.FAKE_ERR_METHOD;
+    restoreFakeCli();
+  }
+});
+
+test('resume 遇 -32602（send 参数漂移）：errorKind=protocol-drift + 指引（inline errfake）', async () => {
+  process.env.FAKE_ERR_CODE = '-32602';
+  process.env.FAKE_ERR_METHOD = 'session/send';
+  process.env.ZSW_ZCODE_CLI = writeErrFake();
+  try {
+    const { runner } = newRunner();
+    const { value: r1 } = await captureStderr(() =>
+      runner.resume({ kind: 'apc', sessionId: 'sess_errfake' }, '漂移续聊', { timeoutMs: 15000 }));
+    assert.equal(r1.status, 'error');
+    assert.equal(r1.errorKind, 'protocol-drift');
+    assert.match(r1.error, /-32602/);
+    assert.match(r1.error, /apc-smoke/);
+    assert.match(r1.error, /ZSW_RUNNER=spawn/);
+    await runner.shutdown();
+  } finally {
+    delete process.env.FAKE_ERR_CODE;
+    delete process.env.FAKE_ERR_METHOD;
+    restoreFakeCli();
+  }
+});
+
+// ------------------------------------------------- A4 read 形态收口（2026-08-29 真机）
+
+test('extractAssistantText：真机实测形态（info.role + parts text）提取正文，timeline 事件不误取', () => {
+  // 2026-08-29 apc-smoke 真机抓包简版：首条是 timeline 事件（info.role=assistant
+  // 但 parts 无 text），末条才是真正回复
+  const realShape = {
+    messages: [
+      {
+        info: { role: 'assistant', semantics: { kind: 'timeline_event' }, tokens: { input: 0, output: 0 } },
+        parts: [{ type: 'timeline', timelineType: 'model_change', display: 'separator' }],
+      },
+      {
+        info: { role: 'user', semantics: { kind: 'user_prompt' } },
+        parts: [{ type: 'text', text: '只回复两个字：就绪。' }],
+      },
+      {
+        info: { role: 'assistant', finish: 'stop', tokens: { input: 15166, output: 5 } },
+        parts: [
+          { type: 'step-start' },
+          { type: 'text', text: '就绪。' },
+          { type: 'step-finish', reason: 'stop', tokens: { input: 15166, output: 5 } },
+        ],
+      },
+    ],
+    projection: { sessionId: 'sess_x', status: 'idle' },
+  };
+  assert.equal(extractAssistantText(realShape), '就绪。');
+  assert.deepEqual(extractReadUsage(realShape), { input: 15166, output: 5 }); // step-finish tokens
+});
+
+test('extractAssistantText/extractReadUsage：旧形态（m.role + m.content / 顶层 usage）兼容不回归', () => {
+  const oldShape = {
+    messages: [
+      { role: 'user', content: '问' },
+      { role: 'assistant', content: '答' },
+    ],
+    usage: { input_tokens: 10, output_tokens: 20 },
+  };
+  assert.equal(extractAssistantText(oldShape), '答');
+  assert.deepEqual(extractReadUsage(oldShape), { input_tokens: 10, output_tokens: 20 }); // 顶层 usage 兜底
+  // 无任何 usage 来源 → undefined（result.usage 缺失）
+  assert.equal(extractReadUsage({ messages: [{ role: 'assistant', content: '答' }] }), undefined);
+  assert.equal(extractReadUsage(null), undefined);
+  // content 块数组形态（历史兼容断言）
+  assert.equal(extractAssistantText({ messages: [{ role: 'assistant', content: [{ text: '块' }, { text: '拼接' }] }] }), '块拼接');
 });

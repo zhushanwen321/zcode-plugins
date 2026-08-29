@@ -53,6 +53,59 @@ const CALLS = { starts: 0, retries: 0, messages: 0, killedBeforeFlight: 0 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const mkEmptyUserHome = () => fs.mkdirSync(path.join(USER_HOME, '.agents', 'agents'), { recursive: true });
 
+// --name <pattern>：单场景冒烟入口（D3：ZCode 升级后本地手动跑
+// `node test/e2e.test.js --name apc-smoke`，真实模型、极小 token）。未命中场景
+// 注册为 skip；`node --test test/` 全量入口（不带 --name）行为不变。
+const NAME_ARG_IDX = process.argv.indexOf('--name');
+const NAME_FILTER = NAME_ARG_IDX >= 0 ? process.argv[NAME_ARG_IDX + 1] : null;
+
+/** --name 过滤：启用且未命中场景名时返回 skip 选项（test(name, opts, fn) 第二参）。 */
+function scenarioOpts(namePrefix) {
+  return NAME_FILTER && !namePrefix.includes(NAME_FILTER)
+    ? { skip: `--name ${NAME_FILTER} 未命中此场景` }
+    : {};
+}
+
+/** 推送帧的会话归属提取（冒烟自带，不 import 被测 lib 的同段逻辑——冒烟要独立核对协议面）。 */
+function pushSidOf(params) {
+  const sid = params ? (params.sessionId ?? (params.session ? params.session.id : undefined)) : undefined;
+  return sid === undefined ? null : sid;
+}
+
+/**
+ * 冒烟自带的 assistant 文本提取（不 import 被测 lib 同段逻辑——冒烟要独立核对
+ * 协议面）。已收口形态（2026-08-29 真机）：{messages:[{info:{role}, parts:[
+ * {type:'text',text}]}]}；旧形态（m.role + m.content）与顶层直给键保留兼容。
+ */
+function extractTextInline(readResult) {
+  if (typeof readResult === 'string') return readResult;
+  if (!readResult || typeof readResult !== 'object') return null;
+  const roleOf = (m) => (typeof m.role === 'string' ? m.role : (m.info && m.info.role));
+  const messages = Array.isArray(readResult.messages) ? readResult.messages
+    : Array.isArray(readResult) ? readResult : null;
+  if (messages) {
+    const last = [...messages].reverse().find((m) => m && typeof m === 'object'
+      && (roleOf(m) === 'assistant' || roleOf(m) === undefined));
+    if (last) {
+      if (Array.isArray(last.parts)) {
+        const text = last.parts
+          .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+          .map((p) => p.text).join('');
+        if (text) return text;
+      }
+      const c = last.content;
+      if (typeof c === 'string') return c;
+      if (Array.isArray(c)) {
+        return c.map((b) => (typeof b === 'string' ? b : (b && typeof b === 'object' && typeof b.text === 'string' ? b.text : ''))).join('');
+      }
+    }
+  }
+  for (const k of ['text', 'response', 'content', 'message']) {
+    if (typeof readResult[k] === 'string') return readResult[k];
+  }
+  return null;
+}
+
 /** 组装 manager：user 级 agent 根注入临时 HOME（四根发现的 3/4 根指向空目录）。 */
 async function buildManager(opts = {}) {
   return assembleManager({ resolver: new AgentMdResolver({ homeDir: USER_HOME }), ...opts }); // async：调用方需 await
@@ -188,7 +241,7 @@ after(() => {
 
 // ------------------------------------------------------------------ E1
 
-test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令「菠萝啤」', async () => {
+test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令「菠萝啤」', scenarioOpts('E1'), async () => {
   const { manager } = await buildManager();
   const res = await startWithRetry(manager, {
     task: '报告就绪',
@@ -206,7 +259,7 @@ test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令�
 
 // ------------------------------------------------------------------ E2
 
-test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', async () => {
+test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', scenarioOpts('E2'), async () => {
   const TARGET = 'sess_e2etest-abc'; // 匹配引擎 drain 的 /^sess_[A-Za-z0-9._-]+$/
   const { manager } = await buildManager();
   // bg + 429 容错：失败限流则重开一个 bg（计数进 CALLS）
@@ -255,7 +308,7 @@ test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', asy
 
 // ------------------------------------------------------------------ E3
 
-test('E3 conversation resume：两轮同 session，第二轮答出第一轮暗号', async () => {
+test('E3 conversation resume：两轮同 session，第二轮答出第一轮暗号', scenarioOpts('E3'), async () => {
   const { manager } = await buildManager();
   const ctxv = { cwd: path.join(TMP, 'e1-proj'), targetSessionId: 'sess_e2etest-abc' }; // 与 E2 同 target：顺带验证跨投递文件名单调
   const res = await startWithRetry(manager, {
@@ -288,7 +341,7 @@ test('E3 conversation resume：两轮同 session，第二轮答出第一轮暗�
 
 // ------------------------------------------------------------------ E4
 
-test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', async () => {
+test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', scenarioOpts('E4'), async () => {
   const { manager } = await buildManager();
   const h = await manager.start(
     { task: '从 1 逐个数到 1000000，不要停', slug: 'e4-cancel', model: MODEL, timeoutMs: 120_000 },
@@ -330,7 +383,7 @@ function psCommandOf(pid) {
 
 // ------------------------------------------------------------------ E5
 
-test('E5 worktree：主树干净、patch 可 apply、close 后无 worktree 残留', async () => {
+test('E5 worktree：主树干净、patch 可 apply、close 后无 worktree 残留', scenarioOpts('E5'), async () => {
   const repo = path.join(TMP, 'e5-repo');
   fs.mkdirSync(repo, { recursive: true });
   await git(repo, ['init', '-q']);
@@ -367,7 +420,7 @@ test('E5 worktree：主树干净、patch 可 apply、close 后无 worktree 残�
 
 // ------------------------------------------------------------------ E6
 
-test('E6 崩溃恢复：server 进程死亡后 recover 把死 pid running record 标 lost', async () => {
+test('E6 崩溃恢复：server 进程死亡后 recover 把死 pid running record 标 lost', scenarioOpts('E6'), async () => {
   const script = writeE6ServerScript();
   const server = spawn(process.execPath, [script], {
     env: { ...process.env }, // 继承 ZSW_ROOT/ZCODE_MAILBOX_ROOT 等隔离 env
@@ -406,7 +459,7 @@ test('E6 崩溃恢复：server 进程死亡后 recover 把死 pid running record
 
 // ------------------------------------------------------------------ E7
 
-test('E7 appserver 全链路：probe → start（真实模型）→ message 续聊（A1-A5 实证）', async () => {
+test('E7 appserver 全链路：probe → start（真实模型）→ message 续聊（A1-A5 实证）', scenarioOpts('E7'), async () => {
   // 与 server.js main 的真实链路一致：probe 前先经 model-router bootstrap 隔离 HOME
   // （app-server 启动即要求 $HOME 有模型配置，否则 create -32603 Model config is missing）
   const ModelRouter = require('../lib/model-router');
@@ -460,7 +513,7 @@ test('E7 appserver 全链路：probe → start（真实模型）→ message 续�
 
 // ------------------------------------------------------------------ E8
 
-test('E8 防递归轻验证：ZSW_NESTED=1 真实 env 下 tools/list 空', async () => {
+test('E8 防递归轻验证：ZSW_NESTED=1 真实 env 下 tools/list 空', scenarioOpts('E8'), async () => {
   const code = `
     'use strict';
     (async () => {
@@ -484,3 +537,150 @@ test('E8 防递归轻验证：ZSW_NESTED=1 真实 env 下 tools/list 空', async
   });
   assert.match(out, /^RESULT true 0$/m, `期望 NESTED=true 且 tools 数为 0，实际输出: ${out}`);
 });
+
+// ------------------------------------------------------- E9 apc-smoke（D3）
+
+test('E9 apc-smoke 升级冒烟（D3/G3）：create(toolDenylist+persistence) → send 极小任务 → 响应面断言 → close',
+  scenarioOpts('apc-smoke'), async () => {
+    // 升级后本地手动跑：node test/e2e.test.js --name apc-smoke（before 的配额窗口
+    // 探测照常前置）。定位是「协议面漂移核对」（业务链路回归归 E7）：
+    //   ① probe 基础面 ② create 扩面（toolDenylist 裸工具名 = D6 保底形态；
+    //      persistence:immediate = D4，strict schema 无 -32602 即无参数面漂移）
+    //   ③ sessionId 提取路径 ④ turn 终态事件可达 ⑤ A2 单会话帧归因
+    //   ⑥ A4 session/read 响应形态 ⑦ list 可见（D4 排障面）⑧ close
+    // token 纪律：模型最便宜档（ZSW_SMOKE_MODEL 可覆盖）+ 单次极小 prompt；
+    // 手动跑无重试钩子，撞限流（429/1302 长退避）直接重跑本命令。
+    const ModelRouter = require('../lib/model-router');
+    const router = new ModelRouter();
+    const SMOKE_MODEL = process.env.ZSW_SMOKE_MODEL || 'GLM-5.3-Flash';
+    const { createParams: modelCreateParams } = await router.prepareRunEnv(
+      router.resolve(SMOKE_MODEL), 'appserver');
+    console.error(`[e2e] apc-smoke 模型: ${SMOKE_MODEL}`);
+
+    const runner = new AppServerRunner(); // homeDir=config.appserverHomeDir()，与 bootstrap 同源
+    try {
+      // ① probe 基础面
+      const probe = await runner.probe();
+      assert.ok(probe.ok, `probe 失败（基础面漂移或环境不可用）: ${probe.reason}`);
+
+      const smokeProj = path.join(TMP, 'apc-smoke-proj');
+      fs.mkdirSync(smokeProj, { recursive: true });
+      const conn = runner._ensureConnection(smokeProj);
+
+      // ② create 扩面（D4/D6 参数面）
+      const workspace = { workspacePath: smokeProj, workspaceKey: 'ws-apc-smoke' };
+      const created = await conn.request('session/create', {
+        workspace,
+        mode: 'yolo',
+        ...modelCreateParams,
+        toolDenylist: ['Bash'],
+        persistence: 'immediate',
+      }, { timeoutMs: 30_000 });
+      console.error(`[e2e] apc-smoke create 原始形态: ${JSON.stringify(created).slice(0, 800)}`);
+      // ③ sessionId 提取路径（内联宽松链，不依赖被测 lib 同段逻辑）
+      const sid = created && typeof created === 'object'
+        ? (created.sessionId ?? (created.session && (created.session.sessionId ?? created.session.id)))
+        : undefined;
+      assert.ok(typeof sid === 'string' && sid,
+        `sessionId 路径不存在（漂移信号），create 应答: ${JSON.stringify(created).slice(0, 300)}`);
+      // toolDenylist 回显面：strict schema 接受即无 -32602 漂移；回显非契约字段，
+      // 当前版本回显则断言值保留，不回显则留档供版本对比
+      const createdText = JSON.stringify(created);
+      if (createdText.includes('toolDenylist')) {
+        assert.ok(createdText.includes('Bash'), 'create 应答回显 toolDenylist 时值必须保留 Bash');
+        console.error('[e2e] apc-smoke: create 应答回显 toolDenylist ✓');
+      } else {
+        console.error('[e2e] apc-smoke: create 应答不回显 toolDenylist（非契约字段，留档供版本对比）');
+      }
+
+      // 推送面观测（A2 材料）：start 前注册
+      const pushFrames = [];
+      conn.onPush((method, params) => pushFrames.push({ method, params }));
+      const isTerminalFrame = (f) => {
+        if (f.method === 'v4/telemetry/event' && f.params && f.params.kind === 'turn.terminal') return true;
+        if (f.method === 'state.updated' && f.params) {
+          const st = (f.params.patch && f.params.patch.status) || f.params.status
+            || (f.params.state && f.params.state.status);
+          return typeof st === 'string' && /idle|completed|done|finished|waiting/i.test(st);
+        }
+        return false;
+      };
+      const frameLabel = (f) => f.method + (f.params && f.params.kind ? `(${f.params.kind})` : '');
+
+      // ④ subscribe + send 极小任务
+      await conn.request('session/subscribe', { sessionId: sid, deliveryKind: 'desktop-continuous' },
+        { timeoutMs: 15_000 });
+      const sent = await conn.request('session/send', {
+        sessionId: sid,
+        content: '只回复两个字：就绪。不要使用任何工具，不要搜索。',
+      }, { timeoutMs: 15_000 });
+      assert.ok(!(sent && sent.accepted === false), `send 被拒: ${JSON.stringify(sent)}`);
+
+      const t0 = Date.now();
+      const TURN_WAIT_MS = Number(process.env.ZSW_SMOKE_TURN_WAIT_MS || CALL_MS);
+      try {
+        await waitFor(() => pushFrames.some(isTerminalFrame), TURN_WAIT_MS, 200);
+      } catch { /* 超时细节由下方断言给出帧序，不吞断言 */ }
+      assert.ok(pushFrames.some(isTerminalFrame),
+        `turn 终态事件不可达（${TURN_WAIT_MS}ms 无 turn.terminal/state 终态帧，漂移或假死信号），帧序: ${pushFrames.map(frameLabel).join(' | ') || '（无推送帧）'}`);
+      console.error(`[e2e] apc-smoke 终态耗时 ~${Date.now() - t0}ms，帧序: ${pushFrames.map(frameLabel).join(' | ')}`);
+
+      // ⑤ A2 收口（单会话面）：会话级推送帧必须归因到本会话 id（串线/他人会话
+      // id = fail）；引擎级非会话帧允许无 sessionId 但计数留档——实测
+      // （2026-08-29 真机抓包）process/mcpTelemetry 等 MCP 进程遥测帧不带
+      // sessionId，runner 侧按 A2 宁丢勿错策略处理（sid=null 多会话丢弃）。
+      // 多会话并发归因不在本冒烟，归 A-8 验收。
+      const attributed = [];
+      const noSidFrames = [];
+      const foreign = [];
+      for (const f of pushFrames) {
+        if (f.method === 'protocol') continue; // 协议自报非会话帧
+        const fsid = pushSidOf(f.params);
+        if (fsid === sid) attributed.push(f);
+        else if (fsid === null) noSidFrames.push(frameLabel(f));
+        else foreign.push({ frame: frameLabel(f), sid: fsid });
+      }
+      assert.equal(foreign.length, 0,
+        `推送帧携带非本会话 id（串线/漂移信号）: ${JSON.stringify(foreign)}`);
+      assert.ok(attributed.length >= 3,
+        `会话帧归因数异常少（${attributed.length}/${pushFrames.length}），帧序: ${pushFrames.map(frameLabel).join(' | ')}`);
+      console.error(`[e2e] apc-smoke A2 单会话归因 ✓（${attributed.length} 帧归因 sessionId=${sid}；无 sessionId 引擎帧 ${noSidFrames.length} 个: ${noSidFrames.join(', ') || '无'}）`);
+
+      // response 非空：优先 session/event 的 payload.response 帧（A3 实测形态），
+      // 有则从严断言；主断言在 ⑥ read 提取
+      const respFrame = pushFrames.find((f) => f.method === 'session/event' && f.params
+        && f.params.payload && typeof f.params.payload.response === 'string' && f.params.payload.response !== '');
+      if (respFrame) console.error('[e2e] apc-smoke: session/event payload.response 帧已捕获 ✓');
+
+      // ⑥ A4 收口：session/read 响应形态（已按 2026-08-29 实测收紧断言；
+      // 完整形态结论记录在 lib/runner-appserver.js 头注 A4）
+      const readResult = await conn.request('session/read', { sessionId: sid }, { timeoutMs: 15_000 });
+      console.error(`[e2e] apc-smoke session/read 形态: ${JSON.stringify(readResult).slice(0, 1200)}`);
+      assert.ok(readResult && Array.isArray(readResult.messages) && readResult.messages.length >= 2,
+        'session/read 应返回含 user+assistant 的 messages 数组（实测形态漂移信号）');
+      const lastAssistant = [...readResult.messages].reverse()
+        .find((m) => m && ((m.info && m.info.role) === 'assistant' || m.role === 'assistant'));
+      assert.ok(lastAssistant, 'messages 中应有 assistant 条目');
+      const partsText = (lastAssistant.parts || [])
+        .filter((p) => p && p.type === 'text' && typeof p.text === 'string')
+        .map((p) => p.text).join('');
+      const readText = partsText || extractTextInline(readResult);
+      assert.ok(readText && readText.trim() !== '',
+        `session/read 无法提取 assistant 文本（A4 漂移信号），形态: ${JSON.stringify(readResult).slice(0, 400)}`);
+      console.error(`[e2e] apc-smoke response 非空 ✓（read 提取 ${readText.trim().length} 字符: ${JSON.stringify(readText.trim().slice(0, 80))}）`);
+
+      // ⑦ persistence:immediate 可见面：session/list 能看到本会话（D4 排障面）
+      const listResult = await conn.request('session/list', { workspace, limit: 50 }, { timeoutMs: 15_000 });
+      const listArr = listResult && Array.isArray(listResult.sessions) ? listResult.sessions : null;
+      assert.ok(listArr, `session/list 形态异常（A6 漂移信号）: ${JSON.stringify(listResult).slice(0, 300)}`);
+      assert.ok(listArr.some((s) => s && (s.sessionId === sid || s.id === sid)),
+        `persistence:immediate 会话未出现在 session/list: ${JSON.stringify(listArr).slice(0, 300)}`);
+      console.error('[e2e] apc-smoke session/list 可见 ✓');
+
+      // ⑧ close（冒烟收尾显式面）
+      const closed = await conn.request('session/close', { sessionId: sid }, { timeoutMs: 15_000 });
+      console.error(`[e2e] apc-smoke close 应答: ${JSON.stringify(closed).slice(0, 200)}`);
+    } finally {
+      await runner.shutdown(); // 内部 close 已 close 的会话失败为 allSettled，不炸收尾
+    }
+  });
