@@ -11,6 +11,8 @@
     ".zcode-plugin/plugin.json",
     ".mcp.json",
     "bin/",
+    "commands/",
+    "hooks/",
     "lib/",
     "dist/",
     "skills/",

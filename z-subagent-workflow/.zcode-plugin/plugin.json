@@ -10,6 +10,7 @@
     "name": "zhushanwen",
     "url": "https://github.com/zhushanwen321"
   },
+  "commands": "commands",
   "keywords": [
     "subagent",
     "orchestration",

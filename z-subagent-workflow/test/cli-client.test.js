@@ -107,7 +107,7 @@ test('ok:false 帧 → 正常 resolve {ok:false,error}（业务失败不是传�
 test('connect 失败（sock 不存在，ENOENT）→ throw 文案含恢复指引', async () => {
   const absent = path.join(TMP, 'absent.sock');
   await assert.rejects(
-    () => callDaemon({ sockPath: absent, tool: 'zsub', params: { action: 'list' }, connectTimeoutMs: 2000 }),
+    () => callDaemon({ sockPath: absent, tool: 'zsub', params: { action: 'list' } }),
     (err) => /daemon 未运行/.test(err.message)
       && /稍候重试/.test(err.message)
       && /插件已启用/.test(err.message)
@@ -131,7 +131,7 @@ test('connect 失败（SIGKILL 残留的 sock 文件，ECONNREFUSED）→ 同款
   await new Promise((resolve) => holder.on('exit', resolve));
   assert.equal(fs.existsSync(stale), true);
   await assert.rejects(
-    () => callDaemon({ sockPath: stale, tool: 'zsub', params: { action: 'list' }, connectTimeoutMs: 2000 }),
+    () => callDaemon({ sockPath: stale, tool: 'zsub', params: { action: 'list' } }),
     (err) => /daemon 未运行/.test(err.message) && /ECONNREFUSED/.test(err.message),
   );
 });
@@ -143,7 +143,7 @@ test('connect 失败（sock 路径被普通文件占用）→ 同款可操作文
   // ECONNREFUSED——cli-client 对三种 errno 给同款可操作文案，断言验文案
   // 形态（daemon 未运行 + 恢复指引）即可
   await assert.rejects(
-    () => callDaemon({ sockPath: plain, tool: 'zsub', params: { action: 'list' }, connectTimeoutMs: 2000 }),
+    () => callDaemon({ sockPath: plain, tool: 'zsub', params: { action: 'list' } }),
     (err) => /daemon 未运行/.test(err.message) && /恢复指引/.test(err.message)
       && /(ENOTSOCK|ECONNREFUSED)/.test(err.message),
   );

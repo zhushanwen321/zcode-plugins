@@ -51,15 +51,39 @@ function providersUsable(v2) {
     .map(([id]) => id);
 }
 
-function modelShort(ref) {
+/**
+ * 「合格 provider」判定与枚举（单一实现，models --all 视图与 SessionStart 注入块
+ * 的「其他可运行 provider」段共同消费，禁复刻防多出口径漂移）：带凭据
+ * （hasProviderCredentials，driver.js 权威谓词）且模型清单非空——无凭据的列了也
+ * 跑不起来（spawn 池只复制带凭据 provider），兜底链视图必须是「真正可运行」的
+ * 全集。与 providersUsable 的差异：多了凭据维度——错误提示要列「有清单的」
+ * （帮助修正引用），可运行视图只列「真正跑得起来的」。默认 provider 不在此排除
+ * （是否单列属展示层决策）。
+ * @returns {string[]} 合格 provider id（v2 config 声明顺序）
+ */
+function qualifiedProviders(v2) {
+  return Object.entries((v2 && v2.provider) || {})
+    .filter(([, e]) => driver.hasProviderCredentials(e) && Object.keys((e && e.models) || {}).length > 0)
+    .map(([id]) => id);
+}
+
+/**
+ * 引用切分（唯一实现，hook-inject 复用同一导出防双源漂移）：含 "/" 按
+ * lastIndexOf 切出 provider（provider id 本身可含 ":"，如 builtin:*），否则
+ * 短名归默认 provider。
+ * @returns {{provider: string, short: string}}
+ */
+function splitModelRef(ref) {
   const s = String(ref);
-  return s.slice(s.lastIndexOf('/') + 1);
+  return s.includes('/')
+    ? { provider: s.slice(0, s.lastIndexOf('/')), short: s.slice(s.lastIndexOf('/') + 1) }
+    : { provider: DEFAULT_PROVIDER_ID, short: s };
 }
 
 /** 引用能否被 v2 清单解析：全名查对应 provider、短名查默认 provider，模型须在清单内。 */
 function resolvableInV2(v2, ref) {
-  const provider = ref.includes('/') ? ref.slice(0, ref.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-  return availableModels(v2, provider).includes(modelShort(ref));
+  const { provider, short } = splitModelRef(ref);
+  return availableModels(v2, provider).includes(short);
 }
 
 /** 默认模型：cli config 的当前主模型（须可被 v2 清单解析），否则回退 v2 → 内置。 */
@@ -83,10 +107,63 @@ function defaultModelRef(v2) {
   return (typeof main === 'string' && main.trim()) ? main.trim() : FALLBACK_DEFAULT_MODEL;
 }
 
+/**
+ * 指定 provider 下的默认模型短名——默认标记的唯一谓词（zsw models 与
+ * SessionStart hook 注入共用，禁止调用方复刻比对逻辑防两套口径漂移）。
+ *
+ * provider 感知（2026-08 修复）：main 指向非目标 provider 时必须返回 null，
+ * 而不是按纯短名在目标 provider 清单上错标——旧 listModels 实现曾因忽略
+ * ref 的 provider，在 cli main 切到别的 provider 时给默认 provider 的同名
+ * 模型错标「默认」。
+ *
+ * @param {object|null} v2         v2 config 对象
+ * @param {string} providerId      目标 provider
+ * @param {string} [ref]           默认模型引用；缺省 = defaultModelRef(v2) 回退链
+ *   产物。显式传入（可为 null/''）供零 IO 的纯函数调用方使用（hook-inject
+ *   由调用方预算好传入，本函数不再触 fs）。
+ * @returns {string|null} 命中返回短名；provider 不匹配、短名不在该 provider
+ *   清单内、或引用为空 → null
+ */
+function defaultModelFor(v2, providerId, ref) {
+  const r = arguments.length >= 3 ? ref : defaultModelRef(v2);
+  if (typeof r !== 'string' || !r.trim()) return null;
+  const { provider, short } = splitModelRef(r.trim());
+  if (provider !== providerId) return null;
+  return availableModels(v2, providerId).includes(short) ? short : null;
+}
+
 function trimToNull(v) {
   if (v == null) return null;
   const s = String(v).trim();
   return s || null;
+}
+
+/**
+ * v2 条目 → 结构化模型条目（listModels 的映射体，allProviders() 复用同一实现
+ * 防两份字段提取漂移）。字段全部可选透出：config 里没有的维度不造默认值（如
+ * 本机实测条目无 label），避免误导路由。默认标记走单一谓词（provider 感知）：
+ * main 指向别的 provider 时本清单不错标。前置条件：该 provider 清单已验非空
+ * （调用方负责，listModels / allProviders 均如此）。
+ */
+function modelEntries(v2, provider) {
+  const defShort = defaultModelFor(v2, provider);
+  return availableModels(v2, provider).map((name) => {
+    const def = v2.provider[provider].models[name] || {};
+    const entry = { name };
+    const label = trimToNull(def.label);
+    if (label) entry.label = label;
+    const ctx = def.limit && def.limit.context;
+    if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
+    const r = def.reasoning;
+    if (r && Array.isArray(r.variants) && r.variants.length > 0) {
+      entry.reasoning = { variants: r.variants };
+      if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
+        entry.reasoning.defaultVariant = r.defaultVariant;
+      }
+    }
+    if (name === defShort) entry.default = true; // 默认标记：省略 model 时即用它；档位轻重随环境配置，重任务应显式指定
+    return entry;
+  });
 }
 
 /**
@@ -160,8 +237,7 @@ class ModelRouter {
       return target;
     }
 
-    const provider = target.includes('/') ? target.slice(0, target.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-    const short = modelShort(target);
+    const { provider, short } = splitModelRef(target);
     const pModels = availableModels(v2, provider);
     if (!pModels.length) {
       const known = providersWithModels.join(', ');
@@ -200,24 +276,31 @@ class ModelRouter {
         `恢复指引：改用上述 provider 之一，或先在 ZCode 桌面端为该 provider 配置模型后重试。`
       );
     }
-    const defShort = modelShort(defaultModelRef(v2));
-    return models.map((name) => {
-      const def = v2.provider[provider].models[name] || {};
-      const entry = { name };
-      const label = trimToNull(def.label);
-      if (label) entry.label = label;
-      const ctx = def.limit && def.limit.context;
-      if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
-      const r = def.reasoning;
-      if (r && Array.isArray(r.variants) && r.variants.length > 0) {
-        entry.reasoning = { variants: r.variants };
-        if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
-          entry.reasoning.defaultVariant = r.defaultVariant;
-        }
-      }
-      if (name === defShort) entry.default = true; // 默认标记：重量任务省略 model 即用它
-      return entry;
-    });
+    return modelEntries(v2, provider);
+  }
+
+  /**
+   * models --all 的全 provider 结构化视图（zsub models --all 数据源；「合格
+   * provider 判定 + 全 provider 模型视图」收拢于本模块单一实现，dist/mcp/server.js
+   * 入口薄壳层只消费不复制，SessionStart 注入块经 qualifiedProviders 同口径）。
+   * 只列合格 provider（qualifiedProviders：带凭据且清单非空），模型名升格为全名
+   * <provider>/<model>——跨 provider 引用必须全名，这是视图存在的理由。
+   * 清单不可读抛可操作错误（与 listModels 失败口径一致，不静默回空数组）；读
+   * 成功但无合格 provider 返回空数组（合法状态：本机未配置任何可运行 provider）。
+   * @returns {Array<{provider: string, models: Array<object>}>}
+   */
+  allProviders() {
+    const v2 = readV2Config();
+    if (!v2) {
+      throw new Error(
+        `无法从 ${config.V2_CONFIG_PATH} 读取模型清单。`
+        + '恢复指引：确认 ZCode 桌面端已登录并配置 provider 后重试。',
+      );
+    }
+    return qualifiedProviders(v2).map((id) => ({
+      provider: id,
+      models: modelEntries(v2, id).map((m) => ({ ...m, name: `${id}/${m.name}` })),
+    }));
   }
 
   /**
@@ -235,8 +318,7 @@ class ModelRouter {
     }
     // modelRef 已是 resolve() 的规范化产物（provider/model 全名）；防御性兜底：
     // 裸短名按默认 provider 解析，与 resolve() 的短名语义一致
-    const provider = modelRef.includes('/') ? modelRef.slice(0, modelRef.lastIndexOf('/')) : DEFAULT_PROVIDER_ID;
-    const short = modelShort(modelRef);
+    const { provider, short } = splitModelRef(modelRef);
     if (runnerKind === 'appserver') {
       // 模型走 session/create 参数，无 per-model HOME 池（D5「单一隔离 HOME」）；
       // 但 app-server 进程的 provider 凭据同样读 $HOME/.zcode/cli/config.json，
@@ -261,3 +343,18 @@ class ModelRouter {
 module.exports = ModelRouter;
 module.exports.PROVIDER_ID = PROVIDER_ID;
 module.exports.FALLBACK_DEFAULT_MODEL = FALLBACK_DEFAULT_MODEL;
+// hook 默认标记复用同一回退链（bin/zsw.js hook 分支），与 zsw models 同口径（D3），
+// 禁止调用方复刻回退逻辑防两套口径漂移
+module.exports.defaultModelRef = defaultModelRef;
+// 纯谓词单一导出（hook-inject / 测试消费，禁复刻）：清单、引用切分、
+// 默认标记判定、provider 凭据判定（权威实现定义在 driver.js——判定语义
+// 源自 bootstrap 的「只写带凭据 provider」，且放那里无 require 环）
+module.exports.availableModels = availableModels;
+module.exports.splitModelRef = splitModelRef;
+module.exports.defaultModelFor = defaultModelFor;
+module.exports.hasProviderCredentials = driver.hasProviderCredentials;
+// 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
+// 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻（全 provider
+// 结构化视图经 ModelRouter#allProviders 消费，视图本身不经模块级导出——
+// 读 V2 config 的入口只在端口实现内，入口薄壳层零复制）
+module.exports.qualifiedProviders = qualifiedProviders;

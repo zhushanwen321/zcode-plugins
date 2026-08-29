@@ -47,6 +47,16 @@ const PROVIDER_ID = 'builtin:bigmodel-coding-plan';
 /** 错误信息里保留的 stdout 尾部长度：够诊断、不刷屏。 */
 const ERROR_TAIL_CHARS = 2000;
 
+/**
+ * provider 条目凭据判定（唯一权威实现，model-router 转口导出供 hook-inject
+ * 等消费——防「各自复刻一份判定」漂移）。定义在本模块的原因：判定语义源自
+ * bootstrap 的「只写带凭据 provider」，且 driver 不 require model-router，
+ * 放这里无 require 环。
+ */
+function hasProviderCredentials(entry) {
+  return Boolean(entry && entry.options && entry.options.apiKey);
+}
+
 /** 每次 spawn 时重读 env：ZSW_ZCODE_CLI 的测试覆盖与运行时更换 CLI 都能生效。 */
 function resolveZcodeCli() {
   return process.env.ZSW_ZCODE_CLI || config.ZCODE_CLI;
@@ -164,7 +174,7 @@ function bootstrapIsolatedHome(home, modelRef, opts = {}) {
     v2 = JSON.parse(fs.readFileSync(config.V2_CONFIG_PATH, 'utf8'));
   } catch { v2 = null; }
   const allEntries = Object.entries(v2?.provider || {})
-    .filter(([, e]) => e && e.options && e.options.apiKey);
+    .filter(([, e]) => hasProviderCredentials(e));
   let providerSection;
   if (opts.allProviders) {
     if (!allEntries.length) {
@@ -360,5 +370,6 @@ module.exports = {
   bootstrapIsolatedHome,
   createBoundedLineBuffer,
   resolveZcodeCli,
+  hasProviderCredentials,
   PROVIDER_ID,
 };

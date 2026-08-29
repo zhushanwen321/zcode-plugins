@@ -73,7 +73,7 @@ function resolveMaxConcurrent() {
 
 const DEFAULTS = {
   timeoutMs: null,          // 不设超时限制（用户可按需填写）
-  killGraceMs: 5_000,      // SIGTERM 后等这么久再 SIGKILL
+  killGraceMs: 30_000,     // SIGTERM 后等这么久再 SIGKILL（终止宽限非任务死线；30s 给被杀执行体留优雅落盘窗口）
   maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
   idleConversationTtlMs: 30 * 60_000, // apc conversation 会话空闲回收
 };
