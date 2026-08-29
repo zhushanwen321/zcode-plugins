@@ -11,13 +11,35 @@
 
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
+const { PROVIDER_ID } = require('../lib/model-router');
+
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-cli-'));
 const BIN = path.join(__dirname, '..', 'bin', 'zsw.js');
+const HOOK_BIN = path.join(__dirname, '..', 'bin', 'zsw-hook.js'); // delegator 一致性对照入口
+const HOOK_HOME = path.join(TMP, 'hook-home'); // hook 用例 fixture home（不动默认 HOME）
+
+fs.mkdirSync(path.join(HOOK_HOME, '.zcode', 'v2'), { recursive: true });
+fs.mkdirSync(path.join(HOOK_HOME, '.zcode', 'cli'), { recursive: true });
+fs.writeFileSync(
+  path.join(HOOK_HOME, '.zcode', 'v2', 'config.json'),
+  JSON.stringify({
+    model: { main: `${PROVIDER_ID}/GLM-5.3-Flash` },
+    provider: {
+      [PROVIDER_ID]: { models: { 'GLM-5.3': {}, 'GLM-5.3-Flash': {} } },
+      'prov-a': { options: { apiKey: 'k-a' }, models: { m1: {} } },
+    },
+  }),
+);
+fs.writeFileSync(
+  path.join(HOOK_HOME, '.zcode', 'cli', 'config.json'),
+  JSON.stringify({ model: { main: `${PROVIDER_ID}/GLM-5.3-Flash` } }),
+);
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -30,6 +52,51 @@ function run(args, extraEnv = {}) {
           ZSW_ROOT: path.join(TMP, 'zsw-root'),
           ZCODE_MAILBOX_ROOT: path.join(TMP, 'mailbox'),
           HOME: path.join(TMP, 'home'),
+          ZCODE_PROJECT_DIR: TMP,
+          ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖
+          ...extraEnv,
+        },
+      },
+      (error, stdout, stderr) => {
+        resolve({ code: error ? error.code : 0, stdout, stderr });
+      },
+    );
+  });
+}
+
+/** 起假 daemon：记录全部请求帧，onFrame(req) 返回响应对象（不含 id）。写法同 cli-daemon-zsub.test.js。 */
+function startFakeDaemon(onFrame) {
+  return new Promise((resolve) => {
+    const sockPath = path.join(TMP, `fake-${process.pid}.sock`);
+    const seen = [];
+    const server = net.createServer((conn) => {
+      let buf = Buffer.alloc(0);
+      conn.on('data', (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        const nl = buf.indexOf(0x0a);
+        if (nl === -1) return; // 半截请求帧：等下一段 data
+        const req = JSON.parse(buf.subarray(0, nl).toString('utf8'));
+        buf = Buffer.alloc(0);
+        seen.push(req);
+        conn.write(`${JSON.stringify({ id: req.id, ...onFrame(req) })}\n`);
+      });
+    });
+    server.listen(sockPath, () => resolve({ server, sockPath, seen }));
+  });
+}
+
+/** 真跑任一 hook 入口（bin 参数化），返回 {code, stdout, stderr}。 */
+function runHook(binPath, args, extraEnv = {}) {
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [binPath, ...args],
+      {
+        cwd: TMP,
+        env: {
+          ...process.env,
+          HOME: HOOK_HOME,
+          ZSW_NESTED: '',
           ZCODE_PROJECT_DIR: TMP,
           ...extraEnv,
         },
@@ -224,4 +291,72 @@ test('v2 冒烟：透传的未知键被 review-fix-loop 入口白名单拒绝（
   assert.equal(r.code, 1);
   assert.match(r.stdout, /收到未知参数/); // 报错文案随 error 报告落 stdout 双段
   assert.match(r.stdout, /stuckThreshld/); // 指向透传后的实际键名（可操作）
+});
+
+// ------------------------------------------- F-A7：--local 嵌套盲区（MF2 补洞）
+
+test('ZSW_NESTED=1：start --local 被拒（exit 1 + 恢复指引），与 daemon 路径同文案', async () => {
+  // 修复前：仅 runDaemonCommand / runWorkflowCommand 有 ensureNotNested，
+  // 嵌套子会话内 --local start 绕过防递归边界 spawn 真实引擎进程
+  const local = await run(['start', '--local', '--task', 'x', '--slug', 'y'], { ZSW_NESTED: '1' });
+  assert.equal(local.code, 1);
+  assert.match(local.stderr, /嵌套环境禁止编排/);
+  assert.match(local.stderr, /恢复指引/);
+  // 对照 daemon 路径（既有守卫）：同 env 同文案同退出码——两路径共用
+  // ensureNotNested，防递归边界无旁路（ensureNotNested 在 callDaemon 之前，
+  // 无需 daemon 在场）
+  const daemon = await run(['list'], { ZSW_NESTED: '1' });
+  assert.equal(daemon.code, 1);
+  assert.match(daemon.stderr, /嵌套环境禁止编排/);
+});
+
+// ------------------------------------------------- models --all（跨 provider 视图）
+
+test('models --all → 请求带 all:true 透传 daemon，结果原样打印', async () => {
+  const d = await startFakeDaemon(() => ({
+    ok: true,
+    result: {
+      all: true,
+      providers: [{ provider: 'prov-a', models: [{ name: 'prov-a/m1' }] }],
+      guidance: '跨 provider 用全名',
+    },
+  }));
+  const r = await run(['models', '--all'], { ZSW_SOCK: d.sockPath });
+  assert.equal(r.code, 0);
+  assert.deepEqual(d.seen[0].params, { action: 'models', all: true });
+  assert.equal(JSON.parse(r.stdout).providers[0].models[0].name, 'prov-a/m1');
+  d.server.close();
+});
+
+// ------------------------------------- hook 子命令 delegator（批 A2b 收敛验证）
+
+test('hook 未知事件 → usage + exit 1（人类调试入口的可操作报错）', async () => {
+  const r = await run(['hook', 'frobnicate']);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /未知 hook 事件: frobnicate/);
+});
+
+test('hook session-start 嵌套守卫：{} + exit 0（delegator 路径，先于事件名校验）', async () => {
+  // 嵌套下即使事件名错误也零开销 {} 退出（守卫优先——D5：hook 绝不阻断会话）
+  const r = await run(['hook', 'frobnicate'], { ZSW_NESTED: '1', HOME: HOOK_HOME });
+  assert.equal(r.code, 0, `exit code 须为 0，实际 ${r.code}，stderr: ${r.stderr}`);
+  assert.deepEqual(JSON.parse(r.stdout), {});
+});
+
+test('hook session-start（delegator）输出与 bin/zsw-hook.js 新入口一致', async () => {
+  const viaCli = await runHook(BIN, ['hook', 'session-start']);
+  const viaEntry = await runHook(HOOK_BIN, []);
+  assert.equal(viaCli.code, 0, `stderr: ${viaCli.stderr}`);
+  assert.equal(viaEntry.code, 0, `stderr: ${viaEntry.stderr}`);
+  // 两入口共享 lib/hook-source 单一实现：剥掉每次运行必然不同的快照时间戳
+  // 后 stdout 全等（最强一致性断言——文案/字段/默认标记任一漂移即红）。
+  // 剥 ISO 值本身而非引号形态：stdout 是 JSON 文本，引号在字节流里是 \" 转义
+  const strip = (s) => s.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, 'TIMESTAMP');
+  assert.equal(strip(viaCli.stdout), strip(viaEntry.stdout));
+  // delegator 正常路径协议形态健全性（fixture 同 cli-hook.test.js 口径）
+  const out = JSON.parse(viaCli.stdout);
+  assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
+  const ctx = out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /^<zsw-resources snapshot="/);
+  assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'cli config model.main → 默认标记链路经 delegator 生效');
 });

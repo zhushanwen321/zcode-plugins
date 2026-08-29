@@ -387,6 +387,63 @@ test('tools/call models：清单不可读可操作错误；modelRouter 缺失可
   assert.match(noPort.content[0].text, /恢复指引/);
 });
 
+test('tools/call models --all：全 provider 视图（凭据+非空清单筛、全名、default 按 provider 感知）', async (t) => {
+  // fixture 四种 provider 形态：合格（默认 provider + prov-a）、无凭据（筛掉）、
+  // 清单空（筛掉）——口径与注入块「其他可运行 provider」段一致
+  const v2Path = require('../lib/config').V2_CONFIG_PATH;
+  fs.mkdirSync(path.dirname(v2Path), { recursive: true });
+  fs.writeFileSync(v2Path, JSON.stringify({
+    model: { main: 'builtin:bigmodel-coding-plan/GLM-5.3' },
+    provider: {
+      'builtin:bigmodel-coding-plan': {
+        options: { apiKey: 'k-def' },
+        models: {
+          'GLM-5.3': { limit: { context: 1000000 } },
+          'GLM-4.7-Flash': {},
+        },
+      },
+      'prov-a': { options: { apiKey: 'k-a' }, models: { m1: {} } },
+      'prov-nokey': { models: { n1: {} } }, // 无凭据：不列
+      'prov-empty': { options: { apiKey: 'k-e' }, models: {} }, // 清单空：不列
+    },
+  }));
+  t.after(() => { fs.rmSync(v2Path, { force: true }); });
+
+  const ModelRouter = require('../lib/model-router');
+  const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const result = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
+  assert.equal(result.isError, undefined);
+  const payload = JSON.parse(result.content[0].text);
+  assert.equal(payload.all, true);
+  // 无凭据 / 清单空两组被筛掉，只剩合格两 provider（fixture 字面序）
+  assert.deepEqual(payload.providers.map((p) => p.provider), [
+    'builtin:bigmodel-coding-plan',
+    'prov-a',
+  ]);
+  // 条目 = listModels 结构化逻辑升格全名（contextWindow 透出、default 按
+  // provider 感知：main 指默认 provider → 仅其 GLM-5.3 标记）
+  assert.deepEqual(payload.providers[0].models, [
+    { name: 'builtin:bigmodel-coding-plan/GLM-5.3', contextWindow: 1000000, default: true },
+    { name: 'builtin:bigmodel-coding-plan/GLM-4.7-Flash' },
+  ]);
+  assert.deepEqual(payload.providers[1].models, [{ name: 'prov-a/m1' }]);
+  assert.match(payload.guidance, /全名/);
+
+  // 合格 provider 零个（config 可读但无条目）→ 空 providers 成功响应（合法状态）
+  fs.writeFileSync(v2Path, JSON.stringify({ provider: {} }));
+  const empty = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
+  assert.equal(empty.isError, undefined);
+  assert.deepEqual(JSON.parse(empty.content[0].text).providers, []);
+
+  // v2 config 不可读 → 可操作错误（与默认视图失败口径一致，不静默回空）
+  fs.rmSync(v2Path, { force: true });
+  const err = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
+  assert.equal(err.isError, true);
+  assert.match(err.content[0].text, /模型清单/);
+  assert.match(err.content[0].text, /恢复指引/);
+});
+
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）
 
 test('buildTools：返回数组形态，含 zsub 与 zflow，与单 tool 定义完全一致', () => {

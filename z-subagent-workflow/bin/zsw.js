@@ -74,7 +74,8 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）\n'
     + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
     + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
-    + '  node bin/zsw.js models                        # 可用模型清单（路由决策前查）\n'
+    + '  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）\n'
+    + '  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
     + '  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar\n'
     + '  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]\n'
@@ -405,22 +406,18 @@ async function runWorkflowCommand(rest) {
 /**
  * SessionStart hook 入口（恒本地执行，不经 daemon——hook 在会话启动内联跑，
  * daemon 前置会把「daemon 不在」变成「会话无注入」，且冷启动须 < 500ms）。
- * 三条硬约束（设计 D4/D5，docs/design/zsw-session-start-injection-design.md）：
- *   1. 嵌套守卫独立于 ensureNotNested：ZSW_NESTED=1 → stdout {} + exit 0。
- *      绝不复用 ensureNotNested 的 exit 1 路径——hook 非零退出会在会话启动
- *      时 raise error 阻断会话（D5）。
- *   2. stdout 是协议通道：引擎按 stdout 解析 hookSpecificOutput，输出严格
- *      单行 JSON；人读诊断走 stderr（与 MCP server 的 stdout 纪律同构）。
- *   3. 数据读取/渲染任一异常（文件缺失/JSON 坏/渲染抛错）→ stdout {} +
- *      exit 0 + stderr 一行 [zsw:hook] 诊断——降级即现状，注入是纯增益通道。
- * 数据源（D6，与 CLI 查询同一批纯读模块，无 daemon 依赖）：
- *   v2 config（models 段主源）+ 默认标记（model-router 导出的 defaultModelRef
- *   三层回退：cli.main 可解析 → v2 顶层 model.main → 内置回退，与 zsw models
- *   同口径 D3）+ agent-md-resolver 四根发现 + workflow-script 脚本发现 +
- *   BUILTIN_WORKFLOW_INFO 内置名单。
- *   projectDir 解析链 = ZCODE_PROJECT_DIR > process.cwd()（与 workflow 子命令
- *   及本地模式的 projectDir 解析同源）；v2 config 读失败整体降级 {}（§3.1
- *   失败路径 2），cli config 读失败经 defaultModelRef 回退后默认标记仍呈现。
+ * 旧内联组装实现已收敛到 lib/hook-source.js 的 runSessionStartHook（批 A2a：
+ * 与 hooks/hooks.json 指向的 bin/zsw-hook.js 极薄入口同源，防双实现漂移），
+ * 本函数只剩 CLI 面职责：
+ *   - 参数形态兼容既有文档（`hook session-start`；未知事件 usage exit 1——
+ *     人类调试入口给可操作报错，不同于引擎 hook 面的恒 0 降级）。
+ *   - 嵌套守卫仍在事件名校验之前（嵌套下任何 hook 调用零开销 {} + exit 0；
+ *     与 runSessionStartHook 内部守卫同语义，此处提前退出省函数体内 require）。
+ *     独立于 ensureNotNested：绝不走其 exit 1 路径——hook 非零退出会在会话
+ *     启动时 raise error 阻断会话（设计 D5）。
+ *   - CLI 级最外层 try 兜 hook-source 模块级损坏（bin/zsw-hook.js 同构）：
+ *     任何失败 stdout {} + 自然退出 exit 0，绝不阻断会话启动。
+ * 数据组装/渲染/降级语义（D4/D5/D6 三条硬约束与口径）见 lib/hook-source.js 头注。
  */
 function runHookCommand(rest) {
   // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用都零开销退出）
@@ -433,33 +430,12 @@ function runHookCommand(rest) {
     usage(1);
   }
   try {
-    const fs = require('node:fs');
-    const { V2_CONFIG_PATH } = require('../lib/config');
-    // 默认标记与 `zsw models` 同口径（D3）：复用 model-router 导出的 defaultModelRef
-    // 三层回退（cli.main 可解析 → v2 顶层 model.main → 内置回退），禁止在 CLI 侧
-    // 复刻回退逻辑防两套口径漂移；cli config 缺失/不可解析由其内部吞掉继续回退
-    const { defaultModelRef } = require('../lib/model-router');
-    const { renderResourcesBlock } = require('../lib/hook-inject');
-    const { AgentMdResolver } = require('../lib/agent-md-resolver');
-    const { listScripts } = require('../lib/workflow-script');
-
-    const projectDir = process.env.ZCODE_PROJECT_DIR || process.cwd();
-    const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
-
-    const text = renderResourcesBlock({
-      v2,
-      cliModelMain: defaultModelRef(v2),
-      agents: new AgentMdResolver().list(projectDir),
-      scripts: listScripts(projectDir).map((s) => s.name),
-      builtinWorkflows: BUILTIN_WORKFLOW_INFO.map((w) => w.name), // 与 scripts action 同源
-      nowIso: new Date().toISOString(),
-    });
-    process.stdout.write(`${JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
-    })}\n`);
+    require('../lib/hook-source').runSessionStartHook();
   } catch (e) {
-    process.stdout.write('{}\n');
-    process.stderr.write(`[zsw:hook] ${e && e.message || e}\n`);
+    // hook-source 加载/执行本身的意外抛出（正常降级路径在其内部已消化）：
+    // stdout 是协议通道，必须给引擎一个合法帧；诊断尽力写 stderr
+    try { process.stdout.write('{}\n'); } catch { /* stdout 不可写则无从协议 */ }
+    try { process.stderr.write(`[zsw:hook] entry failure: ${e && e.message || e}\n`); } catch { /* 尽力 */ }
   }
 }
 
@@ -523,8 +499,11 @@ async function runDaemonCommand(cmd, args, rest) {
       params = { action: 'agents' };
       break;
     case 'models':
-      // 模型路由清单（provider 已启用的模型 + 上下文窗口/推理档位）
+      // 模型路由清单（provider 已启用的模型 + 上下文窗口/推理档位）；
+      // --all 透传给 daemon 侧 handler 出全 provider 视图（跨 provider 必须
+      // 全名 <provider>/<model>，兜底链闭合），缺省行为不变
       params = { action: 'models' };
+      if (args.all === true) params.all = true;
       break;
     case 'status':
       params = { action: 'status', subagentId: args.id };
@@ -652,6 +631,12 @@ async function main() {
     process.exit(1);
   }
   if (args.local !== true) return runDaemonCommand(cmd, args, rest);
+
+  // MF2：--local 本地路径同拒嵌套（F-A7 盲区修补：此前仅 runDaemonCommand
+  // 与 runWorkflowCommand 有守卫，嵌套子会话内 `start --local` 会绕过防递归
+  // 边界 spawn 真实引擎进程——本地跑同样递归）。先例同款（共用 ensureNotNested
+  // 防文案漂移）；wait --local 保留其上方的精确报错，不被嵌套文案遮蔽。
+  ensureNotNested();
 
   const { manager } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
