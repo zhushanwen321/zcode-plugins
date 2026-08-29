@@ -81,13 +81,17 @@ graph TD
 
 | # | 偏差 | 理由 | 状态 |
 |---|------|------|------|
-| （空） | | | |
+| 1 | u1：agents 段为「段头 + 每 agent 一行」，非 §3.1 样例的单行 ` · ` 连接 | D3 证据「两层渲染约 15-20 行」（6 agents 每行一条 = 19 行落区间）；单行形态行数不随数量增长，与截断机制矛盾；超长单行违背 G4 token 意图 | 已固化 |
+| 2 | u1：其余 provider 每 provider 一行（模型 ` · ` 连接） | 样例折行无确定性规则属文档示意；每 provider 一行可确定渲染 | 已固化 |
+| 3 | u1：models 极端超常（40+ provider）时可击穿 45 行上限 | D3「models 永不截」与硬上限极端下不可兼得，取 models 优先；现实 GUI 配置个位数量级不触发 | 已固化 |
+| 4 | u1：UUID 对照在每个 UUID provider 首次出现处附一次 | D3 语义；样例中二次出现无对照视为示意省略 | 已固化 |
+| 5 | u1：require model-router 的 PROVIDER_ID 作默认 provider 常量（未以 DEFAULT_PROVIDER_ID 名义导出，值同源） | model-router.js:30 直接赋值同值，口径同源 | 已固化 |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| u1-foundation | pending | 0 | — |
+| u1-foundation | committed | 1 | `node --test test/hook-inject.test.js` 10/10 绿（主 agent 复跑确认）；偏差 5 条登记 §5 |
 | u2-hook-cli | pending | 0 | — |
 | u3-hooks-register | pending | 0 | — |
 | u4-routing-discipline | pending | 0 | — |
