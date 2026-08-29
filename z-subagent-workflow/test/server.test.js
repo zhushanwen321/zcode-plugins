@@ -444,6 +444,20 @@ test('tools/call models --all：全 provider 视图（凭据+非空清单筛、�
   assert.match(err.content[0].text, /恢复指引/);
 });
 
+test('tools/call models --all：modelRouter 缺 allProviders 实现 → 可操作错误而非 TypeError（端口守卫与 listModels 同口径）', async () => {
+  // 换实现防御：端口实现缺 allProviders 方法时，--all 给含恢复指引的可操作错误
+  //（契约声明见 lib/ports.js ModelRouterPort），缺省视图（listModels）不受影响
+  const manager = { ...makeFakeManager(), modelRouter: { listModels: () => [{ name: 'stub-model' }] } };
+  const handlers = server.buildToolHandlers({ manager, nested: false });
+  const noAll = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
+  assert.equal(noAll.isError, true);
+  assert.match(noAll.content[0].text, /allProviders/);
+  assert.match(noAll.content[0].text, /恢复指引/);
+  const defaults = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
+  assert.equal(defaults.isError, undefined);
+  assert.deepEqual(JSON.parse(defaults.content[0].text).models, [{ name: 'stub-model' }]);
+});
+
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）
 
 test('buildTools：返回数组形态，含 zsub 与 zflow，与单 tool 定义完全一致', () => {

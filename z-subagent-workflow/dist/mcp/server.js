@@ -103,7 +103,7 @@ function buildToolDefinition() {
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
       + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
-      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。\n'
+      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。all=true 出全 provider 视图（跨 provider 引用须全名 <provider>/<model>）。\n'
       + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
       + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
       + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
@@ -131,6 +131,7 @@ function buildToolDefinition() {
         subagentId: { type: 'string', description: 'status/cancel/message/close 必填。start 返回的任务 id' },
         ids: { type: 'array', items: { type: 'string' }, description: 'wait 必填。要等待的 subagentId 数组（来自 start 返回 / list 查询）' },
         text: { type: 'string', description: 'message 必填。续聊消息文本' },
+        all: { type: 'boolean', description: 'models 可选。true = 全 provider 视图（模型为全名 <provider>/<model>），缺省仅默认 provider' },
       },
       required: ['action'],
     },
@@ -451,6 +452,14 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
           // --all 数据源 = router.allProviders()（下沉后的单一实现，本入口
           // 零复制）；清单不可读的可操作错误由外层 catch 原样透传。
           if (args.all === true) {
+            // allProviders 端口守卫（与 listModels 同口径）：换实现缺该方法时给
+            // 可操作错误，而非 TypeError 崩溃（契约声明见 lib/ports.js ModelRouterPort）
+            if (typeof router.allProviders !== 'function') {
+              return errContent(
+                'models --all 需要 modelRouter 端口实现 allProviders()（跨 provider 模型清单），当前实现未提供。'
+                + '恢复指引：缺省 models（不带 all）仍可查默认 provider 视图；排障查 lib/model-router.js 的 allProviders 与 lib/assemble.js 的 modelRouter 组装。'
+              );
+            }
             return okContent({
               all: true,
               providers: router.allProviders(),

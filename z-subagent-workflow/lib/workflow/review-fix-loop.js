@@ -1546,6 +1546,17 @@ async function runReviewFixLoop(raw = {}) {
         return { stop: true };
       }
       let outcome = normalizeAggOutput(agg);
+      // MF-7：聚合输出结构合法（must_fix_ids 是数组）但 entries 为空、而 reviewer
+      // 原始报告存在 must-fix 级上报时，聚合与输入矛盾（AGGREGATOR_SCHEMA 不校验
+      // must_fix/must_fix_ids 与输入的一致性，空数组是合法解析结果不触发降级链）——
+      // 视为聚合不可用走 JS 降级链。放行的话 handleAllDowngraded 会在无残留时把被
+      // 聚合器静默丢弃的 must-fix 判成 clean（连 dormant 痕迹都没有）。合法 clean
+      // 路径不受影响：reviewer 原始全 clean 在聚合前已被 rawAllClean 短路；原始仅
+      // minor 上报不命中守卫（severity 按 recordRoundAgents 同口径缺失视为 minor）。
+      const aggDroppedMustFix = !!outcome && outcome.entries.length === 0
+        && parsedReviews.some((p) => (p.issues || []).some((x) =>
+          MUST_FIX_SEVERITIES.includes(String(x?.severity || 'minor').toLowerCase())));
+      if (aggDroppedMustFix) outcome = null;
       if (!outcome) {
         try {
           const fallback = jsAggregateFallback(parsedReviews);
@@ -1557,7 +1568,7 @@ async function runReviewFixLoop(raw = {}) {
           };
           process.stderr.write(
             `[zsw] WARN: aggregator fallback to js-dedup（batch${batchIndex} round${round}，` +
-            `${isAborted(signal) ? '聚合阶段已中止（abort）' : agg.ok ? '聚合输出无法解析' : '聚合阶段执行失败'}）——该轮无裁决/降级数据，循环继续\n`);
+            `${isAborted(signal) ? '聚合阶段已中止（abort）' : aggDroppedMustFix ? '聚合输出与原始上报矛盾（reviewer 有 must-fix 上报而聚合零条目）' : agg.ok ? '聚合输出无法解析' : '聚合阶段执行失败'}）——该轮无裁决/降级数据，循环继续\n`);
         } catch (aggErr) {
           status = 'aggregator-failure';
           aggregateError = aggErr?.message || String(aggErr);
@@ -1617,8 +1628,20 @@ async function runReviewFixLoop(raw = {}) {
     // 不降）。dormant 未复活条目不进对账通道（pi filterDormantFromRecon：复活唯一入口
     // = 聚合活跃重报）
     const reconcileDrivenStuck = (round, dormantPending) => {
+      // MF-6：本轮聚合重报进 fixQueue、且追踪状态仍为 fix-attempted/fixed 的条目 =
+      // 聚合面的「再现」信号，须并入 seenIds 走 vendor 的再现转换（fix-attempted→
+      // regressed / fixed→regressed，与 reconCount===0 时 applyNoReconRegression 的
+      // 处置同口径）。否则 reviewer 对账声明部分缺失时（D3c 不校验 issues 与
+      // reconciliation 的覆盖一致性），vendor 的「未再现 → fixed」通道会把仍在修复
+      // 队列的条目误翻 fixed——convergenceReached 只数 open/regressed，可据此假
+      // converged 提前终止，重报的 must-fix 未修即丢（residual 终报同样漏计）。
+      // reconCount===0 轮无此问题：applyNoReconRegression 在聚合 merge 处已先转
+      // regressed，此处按 status 过滤天然不重复计。
+      const rearmedIds = fixQueue
+        .filter((e) => ['fix-attempted', 'fixed'].includes(state.issues[e.id]?.status))
+        .map((e) => e.id);
       const rec = reconcileIssues(state.issues || {}, {
-        seenIds: [...reconSeen].filter((id) => !dormantPending.has(id)),
+        seenIds: [...new Set([...reconSeen, ...rearmedIds])].filter((id) => !dormantPending.has(id)),
         escalateIds: [...reconEscalate].filter((id) => !dormantPending.has(id)),
         round, stuckThreshold,
       });
