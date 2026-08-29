@@ -38,9 +38,11 @@ const {
 
 const HARD_BUDGET_LINES = 45;
 const SNAPSHOT_HEADER = 'zsw 可用资源快照（会话启动时生成，GUI 中途改动后可能过期）';
+// 与 README.md 注入块样例的兜底行同文案（样例描述的是本常量的产物，改文案两处同改防漂移）
 const FALLBACK_LINE =
-  '兜底：传错模型名时报错自带可用清单（零依赖权威兜底）；主动现查 zsw models / zsw agents' +
-  '（需 daemon 在跑——任一启用插件的会话）';
+  '兜底：传错模型名时报错自带可用清单（零依赖权威兜底）；主动现查 zsw models / zsw models --all（跨 provider）'
+  + '/ zsw agents（需 daemon 在跑——任一启用插件的会话）。模型名以本块与报错内清单为准'
+  + '（AGENTS.md 等静态路由表中的具体模型名可能过期）';
 const AGENTS_HEADER = 'agents（四根发现，同名高优先级根胜出）：';
 const OTHER_PROVIDERS_HEADER = '  其他可运行 provider（跨 provider 必须用全名 <provider>/<model>）：';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

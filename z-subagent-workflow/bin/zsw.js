@@ -41,7 +41,7 @@
  *   node bin/zsw.js hook session-start
  *        （SessionStart hook 入口，恒本地不经 daemon，不适用 --local：stdout
  *         输出资源快照协议 JSON；嵌套环境或任一异常降级 {} + exit 0，绝不
- *         阻断会话启动）
+ *         阻断会话启动。引擎注册面用 bin/zsw-hook.js；本子命令仅调试）
  *
  * wait exit code（MF4）：partial（等待超时未全完成）→ 2；results 任一条为
  * 失败终态（cancelled/error/timeout/lost）→ 1；全完成 → 0（closed，或
@@ -415,8 +415,12 @@ async function runWorkflowCommand(rest) {
  *     与 runSessionStartHook 内部守卫同语义，此处提前退出省函数体内 require）。
  *     独立于 ensureNotNested：绝不走其 exit 1 路径——hook 非零退出会在会话
  *     启动时 raise error 阻断会话（设计 D5）。
- *   - CLI 级最外层 try 兜 hook-source 模块级损坏（bin/zsw-hook.js 同构）：
- *     任何失败 stdout {} + 自然退出 exit 0，绝不阻断会话启动。
+ *   - CLI 级最外层 try 兜 hook-source 模块级损坏：任何失败 stdout {} + 自然
+ *     退出 exit 0。注意这是 CLI 调试面的兜底，不与 bin/zsw-hook.js 等价——
+ *     本入口顶层依赖全链（assemble/cli-client/record-store 等），插件文件
+ *     不完整时模块加载即 exit 1，此 try 无从生效（惰性 require 降加载面为
+ *     后续优化项）。引擎会话启动面必须走 hooks.json 指向的 bin/zsw-hook.js
+ *     （自包含薄入口，加载面兜底同语义）。
  * 数据组装/渲染/降级语义（D4/D5/D6 三条硬约束与口径）见 lib/hook-source.js 头注。
  */
 function runHookCommand(rest) {

@@ -167,3 +167,25 @@ test('v2 config 坏 JSON → 整体降级 {} + 诊断（跑后恢复 fixture）'
     fs.writeFileSync(p, good);
   }
 });
+
+// ---------------------------------------------------- 内置五名权威源锚定
+
+test('BUILTIN_WORKFLOW_NAMES 与 workflow-manager 内置注册键集相等（第三副本防漂移锚）', () => {
+  // 权威源：lib/workflow-manager 的 defaultWorkflows() 键集（未导出）。可访问
+  // 等价结构 = WorkflowManager 缺省装配产物 this.workflows（构造器 opts.workflows
+  // 缺省时即 defaultWorkflows()）。限制：若 defaultWorkflows 改名/删除或缺省
+  // 装配形态变化，本用例需随之更新。测试期 require 全依赖树无碍——刻意不
+  // 从 workflow-manager require 的是运行时 hook 链路（降级面，见 hook-source.js
+  // 头注），非测试进程。
+  const { WorkflowManager } = require('../lib/workflow-manager');
+  const manager = new WorkflowManager({
+    records: {},
+    outputs: {},
+    notifier: { capabilities: () => ({ mode: 'mailbox' }) },
+  });
+  assert.deepEqual(
+    [...BUILTIN_WORKFLOW_NAMES].sort(),
+    Object.keys(manager.workflows).sort(),
+    'hook 注入块的内置 workflow 名单必须与 workflow 引擎实际注册的内置集合一致',
+  );
+});

@@ -382,7 +382,10 @@ test('空输入/畸形 v2 降级渲染不抛错：块结构完整、默认段降
       lines.some((l) => l.includes(`默认 provider ${PROVIDER_ID}`) && l.includes('（无可用模型清单）')),
       '默认 provider 无清单时降级占位'
     );
-    assert.ok(lines.some((l) => l.startsWith('兜底：传错模型名时报错自带可用清单')), '兜底行恒在');
+    const fallback = lines.find((l) => l.startsWith('兜底：传错模型名时报错自带可用清单'));
+    assert.ok(fallback, '兜底行恒在');
+    assert.ok(fallback.includes('zsw models --all'), '兜底行含 --all 跨 provider 现查指引（与 README 样例同步）');
+    assert.ok(fallback.includes('以本块与报错内清单为准'), '兜底行含权威序声明（与 README 样例同步）');
     assert.ok(lines.some((l) => l.startsWith('agents（四根发现，同名高优先级根胜出）：（无）')), '空 agents 降级');
     assert.match(lines.find((l) => l.startsWith('workflows：')), /内置 chain/); // builtinWorkflows 仍为 BUILTINS
   }
