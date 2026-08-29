@@ -105,6 +105,7 @@ graph TD
 | 2026-08-29 | F5 | 观察项（未改，不在领地）：model-router.js:235 runnerKind JSDoc 缺省注释仍写 'spawn'（F3 翻转后未同步）；实际调用方恒显式传，无行为影响 | 纯注释漂移，无行为面 | 随下次触及 model-router.js 的单元顺修；一致性审查登记 |
 | 2026-08-29 | 修复批次 | 检查点 2（spec 形态实测）改记归 A-6 真机收口：不为冒烟增加 token 成本（升级后高频操作保持极小），E9 仅保留参数面无漂移断言，行为面验证归一次性验收场景 A-6 | 冒烟 token 成本 vs 一次性验证；设计文档检查点 2 已同步改记 | 设计文档已改记 |
 | 2026-08-29 | 修复批次 | 区 B 观察项不修裁决：降级重跑 `await runSpawnRound` 秒级窗口内 cancel 丢失（终态仍落盘不悬挂，仅 cancel 语义弱化） | 窗口极窄 + 无悬挂后果，修复属过度工程 | 登记为已知边界；后续若报告实际影响再修 |
+| 2026-08-29 | 定向复审 | 复审 pass（R1-R8 全过、非降级分支零回归、测试 101/101 复跑绿）；2 条 suggestion 随后微修（MCP inputSchema 改 array 类型、cancel 窗口注释如实化，commit aac864f）；2 条 info 不修登记：① relabelRecord 兜底路径（实际不可达）中 runnerKind 残留与标注判定源不一致；② 降级后第二任务 prepareRunEnv 幂等冗余调用一次 | info 级无行为面/不可达路径/幂等无影响 | 已在此登记 |
 
 ## 6 状态表
 
@@ -131,7 +132,8 @@ graph TD
 |------|------|
 | 2026-08-29 | 计划创建（设计文档自 /tmp 归位 docs/design/；DAG 沿用设计 §5 F0-F5，F0 领地精确化为新文件 test/e2e-tp1-recovery.test.js） |
 | 2026-08-29 | F0 探针结论回填设计文档（D2 固化 resume{runtimeModel}、双分支划分不成立）；F2/F3/F4 期间新增移交项与偏差均记入 §5 |
-| 2026-08-29 | W1-W5 全部 committed；F5 发版 1.2.0（tag z-subagent-workflow@1.2.0，未 push） |
+| 2026-08-29 | W1-W5 全部 committed；F5 发版 1.2.0（tag z-subagent-workflow@1.2.0 后经 re-tag 重指——见下） |
+| 2026-08-29 | 阶段3 三区一致性审查（9 unreasonable + 7 doc_errors）；阶段4 修复批次 R1-R8 commit 83453db + doc_errors 主 agent 修订 + 定向复审 pass + 微修 aac864f；tag `z-subagent-workflow@1.2.0` re-tag 至 aac864f（版本号不变，1.2.0 从未 push 曝光）；阶段4 清零 | dev-flow 一致性审查与修复循环 |
 
 ## 8 发布说明（z-subagent-workflow 1.2.0，随 tag 分发）
 
