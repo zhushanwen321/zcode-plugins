@@ -119,3 +119,5 @@ graph LR
 | 2026-08-29 | 一致性审查 round 1（2 分区并行）：R1 核心机制区 1 medium（jsAggregateFallback 归一前过滤丢畸形 severity 条目→降级轮假 clean 缺口）+ 1 doc_error（D5 README 引用失实）；R2 测试文档区 2 low（stuck 终态渲染无断言、FS3a 冗余断言）+ 2 low doc_error（README 树行 A4 轮措辞、登记表机理表述）。R1/R2 对 cleanNames.clear 机理分歧由主 agent 读 :920-921 行级裁决（R1 成立） | dev-flow 阶段 3 |
 | 2026-08-29 | 修复批次清零：severity 归一前移（红态实证假 clean 机理）+ stuck 终报断言 + 冗余断言删除（dev subagent，61/61）；doc_errors 4 处由主 agent 修订（v2.1 设计 D5 勘误/D2 补注/§6 记录、README 树行、本表机理锚点） | dev-flow 阶段 4 |
 | 2026-08-29 | 定向复审：4 项修复全部闭环；新增 2 low（缺失 severity 子路径无断言→续聊原 dev 补；登记表锚点 920-921→921-922 已修） | dev-flow 阶段 4 定向复审 |
+| 2026-08-29 | Gate A 双绿：全量 450/450（fail/skipped/todo/cancelled 全零，含 e2e 真机 13 场景真跑）+ check-sync/check-pack 双绿 + 语法三过；覆盖矩阵无缺口（D9 文档措辞无单测承载属正常形态）；AGENTS.md `node --test test/` 漂移再实证（glob 口径） | dev-flow 阶段 5 |
+| 2026-08-29 | Gate B 7 pass / 0 fail / 0 blocked：FS1 真机 run wf-a8a8af18（391.7s，2 轮收敛 clean，meta.baseHash == rev-parse main 逐字符一致且 ≠ HEAD，分支 commit 的 off-by-one bug 被报出→修复→R2 clean+reconciliation fixed）；FS2-FS6 定向单测 10/10；FS7 引用 Gate A。计划状态表 F1-F4 全 committed，交付完成 | dev-flow 阶段 5 |
