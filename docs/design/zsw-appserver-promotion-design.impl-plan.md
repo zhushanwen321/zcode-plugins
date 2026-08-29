@@ -101,6 +101,8 @@ graph TD
 | 2026-08-29 | F3 | 缓存命中首败+重探失败的降级落地为「通道级降级」：本任务转 spawn 重跑 + records 改标 + wrapper.capabilities() 翻转，daemon 生命周期内后续任务走 spawn 免重探（重启即恢复探测） | 设计 D1 只写「降级 spawn」，未指明任务级/通道级；通道级避免每任务重复付「撞错→重探→失败」成本，且 daemon 重启自然回探 | 一致性审查复核该语义（后续任务静默 spawn 需 stderr 出声一次） |
 | 2026-08-29 | F4 | thinking 校验源两级：优先 session/read 应答 settings.thoughtLevel 顺带沉淀（F1 实测面），无缓存退 workspace/readState（params 形态无实测记录，按最小空 params 发起，任何失败缓存「不可用」+ 透传档位给引擎 P2 容错兜底） | 设计 D5 只写「readState 校验源」，read 顺带沉淀是 F1 新发现的面（更省一次请求）；真机校准单点收敛在 runner-appserver._resolveThinking | A-5 真机验收时校准；一致性审查复核 |
 | 2026-08-29 | F4 | record.thinking 标注矩阵细化：生效=档位字符串；非法跳过=null；spawn 通道请求了='null (spawn 降级)'（设计字面）；未请求=不落字段；resume 轮不改写首轮标注（thinking 会话级驻留，续聊无 create 面）；「不改写」用条件携带键实现（record-store 内存 fold 的 Object.assign 会用 undefined 覆盖，行为事实沉淀 manager.js 头注） | 设计只给 spawn 降级字面；矩阵与 Object.assign 行为是实现层必要语义 | 无需改设计；一致性审查复核 |
+| 2026-08-29 | F5 | TaskCtx JSDoc 补字段超出任务点名清单（多补 runEnv 与 disallowedTools）——「以 lib 实际实现为准逐字段核对」的产物（manager.js:233-239 组装、两 runner 均消费，原 JSDoc 缺失） | 领地内（ports.js 仅 JSDoc）；契约完整性 | 无 |
+| 2026-08-29 | F5 | 观察项（未改，不在领地）：model-router.js:235 runnerKind JSDoc 缺省注释仍写 'spawn'（F3 翻转后未同步）；实际调用方恒显式传，无行为影响 | 纯注释漂移，无行为面 | 随下次触及 model-router.js 的单元顺修；一致性审查登记 |
 
 ## 6 状态表
 
@@ -111,7 +113,7 @@ graph TD
 | F2 | committed | 1 | commit（本轮）；单测 50/50、全量非 e2e 372/372 复跑绿；恢复序全链/互斥/④窗口/分支 B/persistence/遥测 env/stderr 落盘全覆盖；idle TTL 声明已删（仅剩注释） |
 | F3 | committed | 1 | commit（本轮）；assemble 12/12、全量非 e2e 380/380 复跑绿；真机最小验证：默认通道 runnerKind='appserver' + probe-cache 命中跳探 + ZSW_RUNNER=spawn 回退三连过；真机抓出并修复 resolveCliPath 引用 bug（config.ZCODE_CLI 非 DEFAULTS.ZCODE_CLI） |
 | F4 | committed | 1 | commit（本轮）；增量 106/106、全量非 e2e 395/395 复跑绿；setThoughtLevel 零调用核实；thinking 双级校验源/工具双来源并集/errorKind 透传全覆盖；A-5/A-6 真机归阶段 5 |
-| F5 | pending | 0 | — |
+| F5 | committed | 1 | 收尾三移交项 commit（本轮）+ release.js minor 发版（见下）；server.test.js 31/31、check-sync/check-pack 绿、三件套 1.1.0→1.2.0；发布说明全文见本计划 §8 |
 
 ## 7 残留风险与变更历史
 
@@ -126,3 +128,35 @@ graph TD
 | 日期 | 事件 |
 |------|------|
 | 2026-08-29 | 计划创建（设计文档自 /tmp 归位 docs/design/；DAG 沿用设计 §5 F0-F5，F0 领地精确化为新文件 test/e2e-tp1-recovery.test.js） |
+| 2026-08-29 | F0 探针结论回填设计文档（D2 固化 resume{runtimeModel}、双分支划分不成立）；F2/F3/F4 期间新增移交项与偏差均记入 §5 |
+| 2026-08-29 | W1-W5 全部 committed；F5 发版 1.2.0（tag z-subagent-workflow@1.2.0，未 push） |
+
+## 8 发布说明（z-subagent-workflow 1.2.0，随 tag 分发）
+
+### 默认执行通道翻转为 appserver（常驻引擎）
+- `zsw start` 不带任何 env 即走常驻 `zcode app-server` 引擎（与 ZCode GUI 底层同架构）：每轮 1-2s 的冷启动开销消失，conversation 续聊零进程重建。
+- 断链自愈：会话被引擎回收（空闲驱逐或引擎进程崩溃）后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」，不再是裸错误码。
+- 协议漂移防线：ZCode 升级改了 apc 协议时，相关错误被分类为 protocol-drift 并附恢复指引，不伪装成普通任务失败。
+
+### 回退开关
+- `ZSW_RUNNER=spawn` 显式回退旧通道（每轮独立 zcode 进程，行为与翻转前一致）。注意：daemon 在进程启动时读一次 env——修改该变量后需重启 ZCode 生效。
+- probe 健康检查失败自动降级 spawn（结论落盘 `~/.zcode/zsw/probe-cache.json`，只缓存成功结论，CLI 更新即失效重探）。
+
+### 新参数：--thinking / --allow-tools / --deny-tools
+- `zsw start --thinking <low|high|max>`：appserver 通道映射会话思考档位（合法值按模型动态，GLM 默认 max；省预算场景显式传 low）。非法档位 warn 跳过，任务不失败。
+- `--allow-tools <逗号分隔裸工具名>` / `--deny-tools <逗号分隔裸工具名>`：per-session 工具白/黑名单（appserver 通道引擎级生效）。
+
+### agent .md 工具黑名单升级为引擎级拦截
+- frontmatter `disallowedTools` 在 appserver 默认通道同样走引擎级硬拦截（与 CLI `--deny-tools` 并集去重），与原 spawn 通道 `--disallowed-tools` 行为等价。
+- frontmatter `tools` 白名单维持 prompt 软约束（两通道一致）。
+
+### 升级 ZCode 后的冒烟指引
+apc 协议无版本协商，ZCode 升级后建议本地手动跑一次冒烟（含真实模型调用，注意 token 消耗）：
+
+    cd <插件目录> && node test/e2e.test.js --name apc-smoke
+
+出现 protocol-drift 错误时按错误信息指引核对漂移面；确认不兼容期间设 `ZSW_RUNNER=spawn` 回退（重启 ZCode 生效）。
+
+### 已知边界
+- spawn 回退通道（含 probe 降级轮）thinking 不可用——请求了会在 record 中如实标注 `null (spawn 降级)`。
+- daemon 进程启动时读一次 env：任何 `ZSW_RUNNER` / `ZSW_ZCODE_CLI` 变更需重启 ZCode 后生效。

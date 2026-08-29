@@ -39,6 +39,21 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @property {string} modelRef      ModelRouterPort.resolve 的结果（provider/model 全名）
  * @property {number} timeoutMs
  * @property {boolean} conversation 允许续聊（record 保留会话句柄）
+ * @property {object} runEnv        prepareRunEnv 产物：spawn 场景 {env:{HOME,ZSW_NESTED}} /
+ *                                  appserver 场景 {createParams:{model,thoughtLevel?,...}}
+ * @property {string[]} [disallowedTools]  agent .md frontmatter 来源的工具黑名单（裸工具名）：
+ *                                  spawn 落 --disallowed-tools flag、appserver 并入
+ *                                  create.toolDenylist（与 CLI 来源并集去重，D6）
+ * @property {string} [thinking]    thinking 档位请求值（F4/D5）：appserver 经
+ *                                  prepareRunEnv → create.thoughtLevel（runner 连接级校验，
+ *                                  非法档位 warn 跳过不失败）；spawn 无对应 flag 通道，
+ *                                  请求了也不生效（record 如实标注 spawn 降级）
+ * @property {string[]} [toolAllowlist] CLI --allow-tools 来源（F4/D6）：仅 appserver 消费
+ *                                  （经 prepareRunEnv → create.toolAllowlist）；spawn
+ *                                  无 flag 通道，行为不变
+ * @property {string[]} [toolDenylist]  CLI --deny-tools 来源（F4/D6）：仅 appserver 消费
+ *                                  （经 prepareRunEnv → 与 disallowedTools 并集去重入
+ *                                  create.toolDenylist）；spawn 无 flag 通道，行为不变
  */
 
 /**
@@ -48,6 +63,13 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @property {object} [usage]       {input_tokens, output_tokens, ...}
  * @property {string} [sessionId]   zcode session id（conversation 续聊依据）
  * @property {string} [error]
+ * @property {string|null} [thinking] thinking 实际档位标注（F4/D5，appserver start 恒回填）：
+ *                                  生效=档位 string；非法跳过=null；未请求=undefined
+ *                                  （resume 轮不带——会话级设置随会话驻留）。spawn 无回填，
+ *                                  record 面由 manager 透传时标注 'null (spawn 降级)'
+ * @property {'protocol-drift'} [errorKind] 错误分类（F1/D3）：-32601（方法不存在）/
+ *                                  -32602（参数校验失败）归 protocol-drift（协议漂移 =
+ *                                  ZCode 版本问题，非任务失败）；其余错误不落该字段
  */
 
 /** 端口实现必须在启动/注册时自检并声明能力，manager 据此分流与降级。 */
@@ -93,8 +115,12 @@ const DEFAULTS = require('./config').DEFAULTS;
  *
  * 契约：
  *   resolve(requested?, agentDefault?) -> modelRef   未知模型抛可操作错误（列可用清单）
- *   prepareRunEnv(modelRef, runnerKind) -> spawn 场景 {env:{HOME,...}}；
- *                                          appserver 场景 {createParams:{model,...}}
+ *   prepareRunEnv(modelRef, runnerKind='appserver', sessionOpts?) ->
+ *       spawn     场景 {env:{HOME, ZSW_NESTED}}   per-model 隔离 HOME；sessionOpts 整体忽略
+ *       appserver 场景 {createParams:{model, thoughtLevel?, toolAllowlist?, toolDenylist?}}
+ *     第三参 sessionOpts（F4 per-session 能力参数，仅 appserver 分支消费）：
+ *       {thinking?: string, toolAllowlist?: string[], toolDenylist?: string[]}
+ *       —— 各值规范化（trim / 清洗空项）后仅在非空时设键（create schema strict，空键不占面）
  */
 
 /**
