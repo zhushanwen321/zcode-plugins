@@ -26,10 +26,6 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
-/** connect 超时兜底：unix socket 的常态失败（ENOENT/ECONNREFUSED）是立即的，
- *  超时只覆盖「sock 存在但对端卡死」的极端场景，5s 足够区分两者。 */
-const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
-
 /** daemon sock 缺省路径（DESIGN-v4 D2）。 */
 function defaultSockPath() {
   return process.env.ZSW_SOCK || path.join(os.homedir(), '.zcode', 'zsw', 'daemon.sock');
@@ -79,9 +75,8 @@ function toResult(resp) {
  * - 连接中断未收到响应帧 → throw 可操作错误（§5.2 第 3 行：wait 挂起期间
  *   daemon 随宿主会话死亡的恢复指引）。
  */
-async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}) {
+async function callDaemon({ sockPath, tool, params, cwd } = {}) {
   const sock = sockPath || defaultSockPath();
-  const timeout = Number.isFinite(connectTimeoutMs) ? connectTimeoutMs : DEFAULT_CONNECT_TIMEOUT_MS;
   const frameCwd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
   const request = `${JSON.stringify({ id: 1, tool, params, cwd: frameCwd })}\n`;
 
@@ -90,26 +85,17 @@ async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}
     let buffer = Buffer.alloc(0);
     let settled = false;
 
-    const connectTimer = setTimeout(() => {
-      settle(() => reject(new Error(
-        `daemon 连接超时（connect ${sock}，${timeout}ms 无应答）。`
-        + '恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；'
-        + '仍失败则在任一 zcode 会话确认插件已启用（改插件配置后需重启 ZCode 才生效）。',
-      )));
-      socket.destroy();
-    }, timeout);
-
+    // 无 connect 超时（2026-08-29 超时取消决策）：unix socket 的常态失败
+    // （ENOENT/ECONNREFUSED/ENOTSOCK）由 error 分支立即接住；wait 类挂起
+    // 请求的总时长无上限（--timeout-ms 的 partial 语义在 daemon 侧控制），
+    // connect 后的异常断连由 close/error 分支处理（§5.2 第 3 行）
     const settle = (fn) => {
       if (settled) return;
       settled = true;
-      clearTimeout(connectTimer);
       fn();
     };
 
-    // connect 超时只覆盖 TCP connect 阶段：连上即清——wait 类挂起请求的总
-    // 时长无上限（由 --timeout-ms 的 partial 语义在 daemon 侧控制），connect
-    // 后的异常断连由 close/error 分支处理（§5.2 第 3 行）
-    socket.on('connect', () => { clearTimeout(connectTimer); socket.write(request); });
+    socket.on('connect', () => { socket.write(request); });
     socket.on('error', (err) => {
       // 三种 errno 都是「daemon 不在场/sock 路径形态损坏」：文件不存在
       // （ENOENT）、监听者已死但文件残留（ECONNREFUSED，daemon 异常死亡）、
@@ -146,4 +132,4 @@ async function callDaemon({ sockPath, tool, params, cwd, connectTimeoutMs } = {}
   });
 }
 
-module.exports = { callDaemon, defaultSockPath, DEFAULT_CONNECT_TIMEOUT_MS };
+module.exports = { callDaemon, defaultSockPath };

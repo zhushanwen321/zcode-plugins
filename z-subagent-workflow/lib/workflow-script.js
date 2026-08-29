@@ -55,7 +55,6 @@ const modelRouter = new ModelRouter();
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** lint 的 node --check 子进程超时：正常语法检查毫秒级，10s 只防子进程挂死。 */
-const LINT_CHECK_TIMEOUT_MS = 10_000;
 
 /** 四根优先级文案（错误信息复用，与 scriptRoots 保持同一顺序）。 */
 const ROOTS_DESC = '<ws>/.agents/workflows > <ws>/.zsw/workflows > ~/.agents/workflows > ~/.zsw/workflows';
@@ -320,7 +319,7 @@ async function lintScript(file) {
   // ① 语法层
   const syntaxErr = await new Promise((resolve) => {
     execFile(
-      process.execPath, ['--check', abs], { timeout: LINT_CHECK_TIMEOUT_MS },
+      process.execPath, ['--check', abs],
       (err, _stdout, stderr) => resolve(err ? String(stderr || err.message).trim() : null),
     );
   });
