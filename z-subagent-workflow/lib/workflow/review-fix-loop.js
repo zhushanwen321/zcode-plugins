@@ -89,7 +89,9 @@ const { runWithLimit } = require('../pool');
 const { extractJsonObject } = require('../jsonout');
 const ModelRouter = require('../model-router');
 const config = require('../config');
-const { execSync } = require('node:child_process');
+// git 出口一律 execFileSync 参数数组（不经 shell，对齐 lib/worktree.js 不变量——
+// target 等外部输入做 argv 元素传给 git，杜绝元字符在 shell 层被解释）
+const { execFileSync } = require('node:child_process');
 const {
   shouldSkipAgent,
   recordAgentClean,
@@ -214,7 +216,7 @@ function parseDims(v, name) {
 /** 非 git 目录（或 rev-parse 失败）→ null；run 起点取 baseHash（state.meta，U3 base 锁定）。 */
 function gitHead(workdir) {
   try {
-    return execSync('git rev-parse HEAD', { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
   } catch { return null; }
 }
 
@@ -227,7 +229,7 @@ function gitHead(workdir) {
 function gitModifiedSince(prevHead, workdir) {
   if (!prevHead) return [];
   try {
-    const out = execSync(`git diff --name-only ${prevHead}`, { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
+    const out = execFileSync('git', ['diff', '--name-only', prevHead], { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
     return out ? out.split('\n').map((s) => s.trim()).filter(Boolean) : [];
   } catch { return []; }
 }
@@ -243,7 +245,7 @@ function gitModifiedSince(prevHead, workdir) {
 function lockReviewBase(targetType, target, workdir) {
   if (targetType !== 'git-diff') return { base: target, hash: '' };
   try {
-    const hash = execSync(`git rev-parse ${target}`, { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
+    const hash = execFileSync('git', ['rev-parse', target], { encoding: 'utf-8', cwd: workdir, timeout: 10_000 }).trim();
     if (!hash) return { base: target, hash: '' }; // 退出 0 但无输出同按失败降级（D1）
     return { base: hash, hash };
   } catch { return { base: target, hash: '' }; }
@@ -678,14 +680,14 @@ function normalizeTargetParams(raw, warnings) {
   if (!TARGET_TYPES.includes(targetType)) {
     throw new Error(
       `targetType 非法: ${JSON.stringify(raw.targetType)}（合法值: ${TARGET_TYPES.join(' / ')}）。`
-      + '恢复指引：--target-type git-diff|file|dir|text。'
+      + '恢复指引：传 targetType=git-diff|file|dir|text（CLI flag: --target-type）。'
     );
   }
   if (typeof target !== 'string' || target.trim() === '') {
     if (targetType !== 'text') {
       throw new Error(
         `targetType=${targetType} 时 target 必填（git-diff: base ref 如 main / HEAD~1；file: 文件路径；dir: 目录路径），收到空值。`
-        + '恢复指引：补传 --target <值>；或省略 --target-type 走 text 审查任务（全缺省即审查 git 未提交改动）。'
+        + '恢复指引：补传 target 参数（CLI flag: --target <值>）；或省略 targetType 走 text 审查任务（全缺省即审查 git 未提交改动）。'
       );
     }
     target = DEFAULT_TARGET_TEXT; // D5 显式映射：text 语义的空 target 回退 v1 缺省文案
@@ -790,7 +792,7 @@ function normalizeParams(raw) {
   if (fallowScan && targetType !== 'git-diff') {
     throw new Error(
       `fallowScan=true 仅在 targetType=git-diff 时合法（当前 ${targetType}）。`
-      + '恢复指引：改传 --target-type git-diff，或去掉 --fallow-scan。'
+      + '恢复指引：传 targetType=git-diff（CLI flag: --target-type git-diff），或去掉 fallowScan 参数（CLI flag: --fallow-scan）。'
     );
   }
 
@@ -847,7 +849,10 @@ function normalizeParams(raw) {
 async function runReviewFixLoop(raw = {}) {
   const P = normalizeParams(raw); // 非法参数在此可操作报错（含白名单/缺号/fallowScan 约束）
   const { task, workdir, signal, onPhase, onPlan } = raw;
-  const maxConcurrent = raw.maxConcurrent === undefined ? 3 : raw.maxConcurrent; // v1 缺省 3
+  // maxConcurrent 缺省 3（v1）；边界与 run_workflow schema（minimum 1 / maximum 6）对齐：
+  // zsw 无引擎层 schema 校验，等价实现为 clamp 静默修正（convergeNewIssues 同款惯例），
+  // 防 runWithLimit 按超限值开满 worker 造成资源压力
+  const maxConcurrent = coerceInt(raw.maxConcurrent, 'maxConcurrent', { min: 1, max: 6, clamp: true, fallback: 3 });
   const timeoutMsPerPhase = raw.timeoutMsPerPhase;
   const modelRef = modelRouter.resolve(raw.model);
   // 聚合 phase 模型（D7）：aggregatorModel 显式传入时解析（U1 已校验可解析性），
@@ -2139,7 +2144,7 @@ function buildReviewFailedFinalText(ctx) {
 }
 
 function buildAggregatorFailureFinalText(ctx) {
-  return `## 聚合链路失效\n\n共 ${ctx.totalRounds} 轮，LLM 聚合不可用后 JS 降级聚合自身异常（${ctx.aggregateError || '未知错误'}），无法产出修复队列。恢复指引：用 --aggregator-model 指定更强的聚合模型后重跑。`;
+  return `## 聚合链路失效\n\n共 ${ctx.totalRounds} 轮，LLM 聚合不可用后 JS 降级聚合自身异常（${ctx.aggregateError || '未知错误'}），无法产出修复队列。恢复指引：用 aggregatorModel 参数（CLI flag: --aggregator-model）指定更强的聚合模型后重跑。`;
 }
 
 function buildNeedsRedesignFinalText(ctx) {
