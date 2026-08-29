@@ -115,6 +115,143 @@ function restoreFakeCli() {
   process.env.ZSW_ZCODE_CLI = path.join(__dirname, '..', 'fixtures', 'fake-appserver.js');
 }
 
+// ------------------------------------------- D2 恢复序测试环境（v2 config fixture）
+
+// runtimeModel 构造源（F2 适配自 F0 buildRuntimeModel：provider 传输配置唯一权威源
+// = v2 config）。V2_CONFIG_PATH 在 config.js 模块加载期冻结为 $HOME/.zcode/v2/config.json
+//（HOME 已指 TMP）——写入 fixture 即完成隔离，绝不触真实 ~/.zcode。
+const V2_FIXTURE_PATH = path.join(process.env.HOME, '.zcode', 'v2', 'config.json');
+const V2_FIXTURE = {
+  model: { main: 'prov-fake/GLM-5.3' },
+  provider: {
+    'prov-fake': {
+      kind: 'anthropic',
+      name: 'Prov Fake',
+      models: { 'GLM-5.3': {}, 'GLM-5.3-Flash': {} },
+      options: { baseURL: 'https://fake.example/api', apiKey: 'sk-fake-secret-123' },
+    },
+  },
+};
+fs.mkdirSync(path.dirname(V2_FIXTURE_PATH), { recursive: true });
+fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify(V2_FIXTURE, null, 2));
+
+/**
+ * 恢复序专用 fake（写进测试 TMP，after 统一清理；fixtures/fake-appserver.js 不在本
+ * 单元领地且无 session/resume 方法，故按 errfake 先例 inline）。协议面对齐
+ * lib/runner-appserver.js 头注实测事实，并内置两条真实语义（恢复序反向断言的前提）：
+ *  - 订阅是 per-session 的：create/resume 后 subscribed=false，未订阅会话 send accepted
+ *    但不推终态（真实引擎缺订阅即恢复假死）；
+ *  - resume 不自动恢复订阅（F0/源码双证）。
+ * env 开关（spawn 时固化；逗号分隔组合）：
+ *   FAKE_R_MODE = evict                  每会话首次终态推送后立即驱逐（delete，模拟引擎重启/驻留池驱逐；
+ *                                        disk 保留 content 模拟 sqlite，resume 可回）
+ *                | resume-fails          session/resume 回 -32031（ZCODE_RUNTIME_MODEL_UNAVAILABLE）
+ *                | send-still-fails      resume 后的 send 回 -32031（恢复序 ③ 失败）
+ *                | no-terminal-after-recover resume 后 send accepted 但不推终态（恢复序 ④ 窗口耗尽）
+ *                | busy                  send 回 -32010（busy 语义）
+ *   FAKE_R_STDERR=1                      启动时往 stderr 写两行（实时落盘测试取证）
+ * 启动时落盘 env 事件（telemetry/nested）——D8 遥测关闭断言取真实子进程 env。
+ */
+let recFakeSeq = 0;
+function writeRecoveryFake() {
+  const p = path.join(TMP, `recfake-${++recFakeSeq}.cjs`);
+  fs.writeFileSync(p, [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    "const rl = require('node:readline').createInterface({ input: process.stdin });",
+    "const MODES = new Set((process.env.FAKE_R_MODE || '').split(',').map((s) => s.trim()).filter(Boolean));",
+    "const STATE = process.env.FAKE_STATE_FILE;",
+    "let seq = 0;",
+    "let sessSeq = 0;",
+    "const live = new Map();   // sid -> {content, amSeq, subscribed}",
+    "const disk = new Map();   // sid -> content（驱逐不清，模拟引擎 sqlite 持久化）",
+    "const resumed = new Set();",
+    "const log = (ev, data = {}) => { if (!STATE) return; try { fs.appendFileSync(STATE, JSON.stringify({ seq: ++seq, ev, ...data }) + '\\n'); } catch {} };",
+    "const out = (f) => process.stdout.write(JSON.stringify(f) + '\\n');",
+    "const reply = (id, result) => out({ id, result });",
+    "const replyErr = (id, code, message) => out({ id, error: { code, message } });",
+    "out({ method: 'protocol', params: { name: 'ZCode Protocol', version: 1 } });",
+    "log('env', { telemetry: process.env.ZCODE_MODEL_TELEMETRY_ENABLED, nested: process.env.ZSW_NESTED });",
+    "if (process.env.FAKE_R_STDERR === '1') process.stderr.write('rfake-stderr-line-A\\nrfake-stderr-line-B\\n');",
+    "function simulate(sid) {",
+    "  setTimeout(() => {",
+    "    const s = live.get(sid);",
+    "    if (!s) return;",
+    "    out({ method: 'v4/telemetry/event', params: { kind: 'turn.terminal', status: 'success', sessionId: sid } });",
+    "    out({ method: 'session/event', params: { sessionId: sid, payload: { response: 'FAKE_TURN:' + s.content, usage: { inputTokens: 3, outputTokens: 1 } } } });",
+    "    if (MODES.has('evict')) { live.delete(sid); log('evict', { sessionId: sid }); }",
+    "  }, Number(process.env.FAKE_R_DELAY_MS) || 15);",
+    "}",
+    "rl.on('line', (line) => {",
+    "  if (!line.trim()) return;",
+    "  let f;",
+    "  try { f = JSON.parse(line); } catch { return; }",
+    "  if (!(f && f.id != null && f.method)) return; // 本 fake 不发反向请求",
+    "  const { id, method, params = {} } = f;",
+    "  if (method === 'session/create') {",
+    "    const sid = 'sess_r_' + (++sessSeq);",
+    "    live.set(sid, { content: '', amSeq: 0, subscribed: false });",
+    "    disk.set(sid, '');",
+    "    log('create', { params });",
+    "    return reply(id, { session: { sessionId: sid } });",
+    "  }",
+    "  if (method === 'session/subscribe') {",
+    "    const s = live.get(params.sessionId);",
+    "    if (s) s.subscribed = true;",
+    "    log('subscribe', { sessionId: params.sessionId, deliveryKind: params.deliveryKind });",
+    "    return reply(id, { subscribed: true });",
+    "  }",
+    "  if (method === 'session/send') {",
+    "    const sid = params.sessionId;",
+    "    if (!live.has(sid)) { log('send-err', { sessionId: sid, code: -32004 }); return replyErr(id, -32004, 'Session not active (recfake)'); }",
+    "    if (MODES.has('busy')) { log('send-err', { sessionId: sid, code: -32010 }); return replyErr(id, -32010, 'A prompt is already running (recfake)'); }",
+    "    if (MODES.has('send-still-fails') && resumed.has(sid)) { log('send-err', { sessionId: sid, code: -32031 }); return replyErr(id, -32031, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE (recfake)'); }",
+    "    const content = String(params.content ?? '');",
+    "    live.get(sid).content = content;",
+    "    disk.set(sid, content);",
+    "    log('send', { sessionId: sid, content });",
+    "    reply(id, { accepted: true });",
+    "    if (MODES.has('no-terminal-after-recover') && resumed.has(sid)) return; // 恢复后事件流不可达",
+    "    if (live.get(sid).subscribed) simulate(sid); // 未订阅不推终态（per-session 订阅语义）",
+    "    return;",
+    "  }",
+    "  if (method === 'session/resume') {",
+    "    if (MODES.has('resume-fails')) { log('resume-err', { sessionId: params.sessionId, code: -32031 }); return replyErr(id, -32031, 'ZCODE_RUNTIME_MODEL_UNAVAILABLE (recfake resume)'); }",
+    "    const sid = params.sessionId;",
+    "    resumed.add(sid);",
+    "    live.set(sid, { content: disk.get(sid) || '', amSeq: 0, subscribed: false }); // resume 不恢复订阅",
+    "    log('resume', { sessionId: sid, runtimeModel: params.runtimeModel });",
+    "    return reply(id, { session: { sessionId: sid } });",
+    "  }",
+    "  if (method === 'session/stop') { log('stop', { sessionId: params.sessionId }); return reply(id, { stopped: true }); }",
+    "  if (method === 'session/read') {",
+    "    const c = disk.get(params.sessionId) || '';",
+    "    log('read', { sessionId: params.sessionId });",
+    "    return reply(id, { messages: [{ role: 'user', content: c }, { role: 'assistant', content: 'FAKE_READ:' + c }], usage: { input_tokens: 1, output_tokens: 2 } });",
+    "  }",
+    "  if (method === 'session/list') return reply(id, { sessions: [...live.keys()].map((x) => ({ sessionId: x })) });",
+    "  return replyErr(id, -32601, 'method not found (recfake): ' + method);",
+    "});",
+    "rl.on('close', () => process.exit(0));",
+  ].join('\n'));
+  return p;
+}
+
+/** 恢复序用例专用 runner：ZSW_ZCODE_CLI 指向 recovery fake（finally 必须 restoreFakeCli）。 */
+function newRecoveryRunner(fakePath, runnerOpts = {}) {
+  const stateFile = path.join(TMP, `state-${++stateSeq}.jsonl`);
+  process.env.FAKE_STATE_FILE = stateFile;
+  process.env.ZSW_ZCODE_CLI = fakePath;
+  const runner = new AppServerRunner(runnerOpts);
+  RUNNERS.push(runner);
+  return { runner, stateFile };
+}
+
+/** 事件流水便捷查询。 */
+function findEvs(file, ev) {
+  return readState(file).filter((e) => e.ev === ev);
+}
+
 function baseTaskCtx(prompt, overrides = {}) {
   return {
     subagentId: 'sa-test',
@@ -593,14 +730,18 @@ test('send-reject：start 与 resume 的 accepted:false 均报错且带恢复指
   }
 });
 
-test('resume 不活跃会话：-32004 错误追加「会话不活跃…重新 start」恢复提示', async () => {
+test('resume 不活跃会话：-32004 触发恢复序，fake 无 resume 方法（-32601）原样上抛归 drift 不吞', async () => {
+  // fixtures fake 不认识 session/resume（default -32601）——恰好覆盖 D3 互斥衔接：
+  // 恢复序中收 -32601/-32602 不吞不重试，交既有分类路径出 protocol-drift
   const { runner } = newRunner();
-  // 从未 create 过的 sessionId（fake 对未知会话回 -32004）
-  const r = await runner.resume({ kind: 'apc', sessionId: 'sess_fake_never' }, '幽灵会话', { timeoutMs: 15000 });
+  const { value: r, lines } = await captureStderr(() =>
+    runner.resume({ kind: 'apc', sessionId: 'sess_fake_never' }, '幽灵会话', { timeoutMs: 15000 }));
   assert.equal(r.status, 'error');
-  assert.match(r.error, /会话不活跃/);
-  assert.match(r.error, /重新 start/);
-  assert.equal(r.errorKind, undefined); // D3 互斥：-32004 不归 protocol-drift
+  assert.equal(r.errorKind, 'protocol-drift'); // -32004 → 恢复序 → resume -32601 → drift（不吞）
+  assert.match(r.error, /-32601/);
+  assert.match(r.error, /apc-smoke/);
+  assert.match(r.error, /ZSW_RUNNER=spawn/);
+  assert.ok(lines.some((l) => l.includes('[zsub:appserver]') && l.includes('protocol-drift')), 'stderr 双落点');
   await runner.shutdown();
 });
 
@@ -765,4 +906,346 @@ test('extractAssistantText/extractReadUsage：旧形态（m.role + m.content / �
   assert.equal(extractReadUsage(null), undefined);
   // content 块数组形态（历史兼容断言）
   assert.equal(extractAssistantText({ messages: [{ role: 'assistant', content: [{ text: '块' }, { text: '拼接' }] }] }), '块拼接');
+});
+
+// ------------------------------------------------- -32004 四步恢复序（D2/F0）
+
+/** 恢复序主路径用例的 taskCtx：runEnv.createParams.model 是 runtimeModel 目标解析主路径。 */
+function recoveryTaskCtx(prompt, overrides = {}) {
+  return baseTaskCtx(prompt, {
+    runEnv: { createParams: { model: { providerId: 'prov-fake', modelId: 'GLM-5.3' } } },
+    ...overrides,
+  });
+}
+
+test('恢复序全链：-32004 → resume{runtimeModel} → 重挂 subscribe → send 重试成功 → 终态可达', async () => {
+  process.env.FAKE_R_MODE = 'evict';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    // 首轮正常（evict 模式：终态推送后立即驱逐，模拟引擎重启/驻留池驱逐）
+    const handle = runner.start(recoveryTaskCtx('第一轮'));
+    const r1 = await handle.done;
+    assert.equal(r1.status, 'closed');
+
+    // 第二轮 send → -32004 → 四步恢复序
+    const r2 = await runner.resume(handle.exec, '恢复暗号', { timeoutMs: 15000 });
+    assert.equal(r2.status, 'closed', `恢复后应正常完成: ${JSON.stringify(r2).slice(0, 200)}`);
+    assert.equal(r2.response, 'FAKE_READ:恢复暗号');
+
+    const evs = readState(stateFile);
+    const resumeEvs = evs.filter((e) => e.ev === 'resume');
+    assert.equal(resumeEvs.length, 1, '恰好一次恢复序');
+    const rt = resumeEvs[0].runtimeModel;
+    // runtimeModel 形态（F0 schema strict 实测）：model 目标 = 会话登记的 create model；
+    // provider 忠实携带 v2 config 传输配置（会被引擎注册进 workspaceModelCatalogs）
+    assert.match(rt.revision, /^zsw-recover-/);
+    assert.equal(typeof rt.generatedAt, 'number');
+    assert.deepEqual(rt.model, { providerId: 'prov-fake', modelId: 'GLM-5.3' });
+    assert.equal(rt.provider.providerId, 'prov-fake');
+    assert.equal(rt.provider.kind, 'anthropic');
+    assert.equal(rt.provider.label, 'Prov Fake');
+    assert.equal(rt.provider.source, 'custom');
+    assert.equal(rt.provider.baseURL, 'https://fake.example/api');
+    assert.deepEqual(rt.provider.apiKey, { source: 'inline', value: 'sk-fake-secret-123' }); // 仅回传引擎
+    assert.deepEqual(rt.provider.models, [{ modelId: 'GLM-5.3' }, { modelId: 'GLM-5.3-Flash' }]);
+
+    // 四步时序（seq 单调）：resume → 重挂 subscribe → 重试 send → 终态可达（closed 本身）
+    const after = evs.filter((e) => e.seq > resumeEvs[0].seq);
+    const sub = after.find((e) => e.ev === 'subscribe' && e.sessionId === handle.exec.sessionId);
+    assert.ok(sub, '恢复序重挂了 session/subscribe');
+    assert.equal(sub.deliveryKind, 'desktop-continuous');
+    const retry = after.find((e) => e.ev === 'send' && e.sessionId === handle.exec.sessionId);
+    assert.ok(retry, '恢复序重试了原 send');
+    assert.equal(retry.content, '恢复暗号');
+    assert.ok(sub.seq < retry.seq, '先重挂订阅再重试 send');
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('恢复序凭据脱敏：stderr 出声含模型目标摘要，不含 apiKey', async () => {
+  process.env.FAKE_R_MODE = 'evict';
+  const { runner } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('脱敏检查'));
+    await handle.done;
+    const { value: r2, lines } = await captureStderr(() => runner.resume(handle.exec, '续', { timeoutMs: 15000 }));
+    assert.equal(r2.status, 'closed');
+    const joined = lines.join('');
+    assert.match(joined, /-32004/, '恢复序出声含触发错误码');
+    assert.match(joined, /prov-fake\/GLM-5\.3/, '出声含模型目标摘要（describeModelTarget）');
+    assert.ok(!joined.includes('sk-fake-secret-123'), 'stderr 绝不落 apiKey');
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('反向断言（订阅重挂缺失时终态不达）：未订阅会话 send accepted 但无终态推送', async () => {
+  // fake 的「未订阅不推终态」语义是恢复序全链用例有判别力的前提：若 runner 漏了
+  // 重挂订阅，恢复后的轮必然挂到 ④ 窗口耗尽（假死），不可能 closed
+  const { runner } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const conn = runner._ensureConnection(TMP);
+    const pushes = [];
+    conn.onPush((method) => pushes.push(method));
+    const created = await conn.request('session/create', {
+      workspace: { workspacePath: TMP, workspaceKey: 'rev-sub-check' },
+      mode: 'yolo',
+      persistence: 'immediate',
+    }, { timeoutMs: 5000 });
+    const sid = created.session.sessionId;
+    await conn.request('session/send', { sessionId: sid, content: '未订阅投递' }, { timeoutMs: 5000 });
+    await sleep(300);
+    assert.ok(!pushes.includes('v4/telemetry/event'), '未订阅 → send accepted 但终态不达（真实 per-session 订阅语义）');
+    await conn.request('session/subscribe', { sessionId: sid, deliveryKind: 'desktop-continuous' }, { timeoutMs: 5000 });
+    await conn.request('session/send', { sessionId: sid, content: '订阅后投递' }, { timeoutMs: 5000 });
+    assert.ok(await waitFor(() => pushes.includes('v4/telemetry/event'), 3000), '订阅后终态可达');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D2 ④：恢复后事件流不可达（窗口耗尽）→ session/stop 清场 + 分支 B 收尾', async () => {
+  process.env.FAKE_R_MODE = 'evict,no-terminal-after-recover';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('窗口耗尽首轮'));
+    await handle.done;
+    const { value: r, lines } = await captureStderr(() =>
+      runner.resume(handle.exec, '恢复后无终态', { timeoutMs: 500 }));
+    assert.equal(r.status, 'error');
+    // 分支 B 文案（复审 INFO-1：语境适配「事件流不可达」）——禁止裸错误码
+    assert.match(r.error, /会话恢复失败/);
+    assert.match(r.error, /事件流不可达/);
+    assert.match(r.error, /session\/stop 清场/);
+    assert.match(r.error, /zsw start 重建任务/);
+    assert.match(r.error, /record 已保留历史输出/);
+    assert.match(r.error, /ZSW_RUNNER=spawn/);
+    assert.equal(r.errorKind, undefined); // 分支 B 不是 protocol-drift
+    assert.ok(lines.some((l) => l.includes('[zsub:appserver]') && l.includes('会话恢复失败')), '分支 B stderr 双落点');
+    // ④ 清场：stop 已发出（防引擎侧孤儿轮）
+    assert.ok(
+      await waitFor(() => findEvs(stateFile, 'stop').some((e) => e.sessionId === handle.exec.sessionId)),
+      '窗口耗尽后 session/stop 已发出',
+    );
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D2 ①失败：resume 回 -32031 → 分支 B（无重试 send）', async () => {
+  process.env.FAKE_R_MODE = 'evict,resume-fails';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('resume失败首轮'));
+    await handle.done;
+    const { value: r } = await captureStderr(() => runner.resume(handle.exec, '续', { timeoutMs: 15000 }));
+    assert.equal(r.status, 'error');
+    assert.match(r.error, /会话恢复失败/);
+    assert.match(r.error, /-32031/, '错误码随语境带出做取证（非裸错误码：有完整指引）');
+    assert.match(r.error, /zsw start 重建任务/);
+    assert.match(r.error, /record 已保留历史输出/);
+    assert.match(r.error, /ZSW_RUNNER=spawn/);
+    assert.equal(r.errorKind, undefined);
+    // 恢复序在 ① 失败即中止：无 subscribe 重挂、无重试 send
+    const evs = readState(stateFile);
+    assert.equal(evs.filter((e) => e.ev === 'resume').length + evs.filter((e) => e.ev === 'resume-err').length, 1, '一次 resume 尝试');
+    assert.equal(evs.filter((e) => e.ev === 'send').length, 1, '只有首轮 send，无重试');
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D2 ③失败：resume+subscribe 成功但重试 send 仍 -32031 → 分支 B', async () => {
+  process.env.FAKE_R_MODE = 'evict,send-still-fails';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('重试失败首轮'));
+    await handle.done;
+    const { value: r } = await captureStderr(() => runner.resume(handle.exec, '续', { timeoutMs: 15000 }));
+    assert.equal(r.status, 'error');
+    assert.match(r.error, /会话恢复失败/);
+    assert.match(r.error, /重试 send 失败/);
+    assert.match(r.error, /-32031/);
+    assert.match(r.error, /zsw start 重建任务/);
+    assert.match(r.error, /ZSW_RUNNER=spawn/);
+    // 恢复序走到了 ③：resume 与 subscribe 重挂都发生过
+    assert.equal(findEvs(stateFile, 'resume').length, 1);
+    assert.equal(findEvs(stateFile, 'subscribe').length, 2, '首轮 + 恢复序重挂');
+    assert.equal(findEvs(stateFile, 'send').length, 1, '无成功重试 send');
+    assert.ok(findEvs(stateFile, 'send-err').some((e) => e.code === -32031), '重试 send 的 -32031 留痕');
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('恢复互斥：两路并发 -32004 恢复串行化（第二路在第一路恢复序落定后才开始）', async () => {
+  process.env.FAKE_R_MODE = 'evict';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const h1 = runner.start(recoveryTaskCtx('互斥甲'));
+    const h2 = runner.start(recoveryTaskCtx('互斥乙'));
+    await Promise.all([h1.done, h2.done]); // 两会话均已 evict
+    const [r1, r2] = await Promise.all([
+      runner.resume(h1.exec, '甲恢复', { timeoutMs: 15000 }),
+      runner.resume(h2.exec, '乙恢复', { timeoutMs: 15000 }),
+    ]);
+    assert.equal(r1.status, 'closed');
+    assert.equal(r2.status, 'closed');
+    // 时序断言：第二路的 resume 晚于第一路恢复序的（重试）send——F0 C 线：互斥防恢复风暴
+    const evs = readState(stateFile);
+    const resumes = evs.filter((e) => e.ev === 'resume');
+    assert.equal(resumes.length, 2);
+    const first = resumes[0];
+    const second = resumes[1];
+    assert.notEqual(first.sessionId, second.sessionId);
+    const firstRetrySend = evs
+      .filter((e) => e.ev === 'send' && e.sessionId === first.sessionId)
+      .pop();
+    assert.ok(firstRetrySend, '第一路重试 send 存在');
+    assert.ok(
+      second.seq > firstRetrySend.seq,
+      `第二路 resume(seq=${second.seq}) 应晚于第一路恢复序落定（重试 send seq=${firstRetrySend.seq}）`,
+    );
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('-32010 不重试：busy 如实上报，恢复序不触发（无 resume 请求）', async () => {
+  process.env.FAKE_R_MODE = 'busy';
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    // -32010 的真实语义要求会话在引擎内存中存活且在跑：先 create 一个活会话再投递
+    const conn = runner._ensureConnection(TMP);
+    const created = await conn.request('session/create', {
+      workspace: { workspacePath: TMP, workspaceKey: 'busy-check' },
+      mode: 'yolo',
+      persistence: 'immediate',
+    }, { timeoutMs: 5000 });
+    const sid = created.session.sessionId;
+    const r = await runner.resume({ kind: 'apc', sessionId: sid }, '趁忙投递', { timeoutMs: 15000 });
+    assert.equal(r.status, 'error');
+    assert.match(r.error, /-32010/);
+    assert.doesNotMatch(r.error || '', /会话恢复失败/, 'busy 不是恢复失败，不落分支 B');
+    assert.equal(findEvs(stateFile, 'resume').length, 0, '-32010 不触发恢复序');
+  } finally {
+    delete process.env.FAKE_R_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('runtimeModel 幽灵恢复兜底：会话登记无 model → v2 config model.main 解析', async () => {
+  // daemon 重启后 _sessions 无登记（A-2b 变体）：model 目标回退 v2 model.main
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const r = await runner.resume({ kind: 'apc', sessionId: 'sess_ghost' }, '幽灵恢复', { timeoutMs: 15000 });
+    assert.equal(r.status, 'closed', `幽灵恢复应走通: ${JSON.stringify(r).slice(0, 200)}`);
+    const rt = findEvs(stateFile, 'resume')[0].runtimeModel;
+    assert.deepEqual(rt.model, { providerId: 'prov-fake', modelId: 'GLM-5.3' }); // v2 model.main
+    assert.equal(rt.provider.baseURL, 'https://fake.example/api');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('runtimeModel 构造失败（v2 config 无凭据）→ 恢复序①前中止，分支 B 诚实报错', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  const backup = fs.readFileSync(V2_FIXTURE_PATH, 'utf8');
+  try {
+    fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify({ provider: { 'prov-fake': { models: { 'GLM-5.3': {} } } } }));
+    const { value: r } = await captureStderr(() =>
+      runner.resume({ kind: 'apc', sessionId: 'sess_ghost_nov2' }, '无凭据恢复', { timeoutMs: 15000 }));
+    assert.equal(r.status, 'error');
+    assert.match(r.error, /会话恢复失败/);
+    assert.match(r.error, /无法构造 runtimeModel/);
+    assert.match(r.error, /zsw start 重建任务/);
+    // 构造失败不发盲请求：无 resume / subscribe 请求到达 fake
+    assert.equal(findEvs(stateFile, 'resume').length, 0);
+    assert.equal(findEvs(stateFile, 'resume-err').length, 0);
+  } finally {
+    fs.writeFileSync(V2_FIXTURE_PATH, backup);
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+// ------------------------------------------------- D4 create 显式化 / D8 遥测 / D3 落盘
+
+test('D4：create 固定携带 persistence:"immediate"，上游 createParams 不可覆盖', async () => {
+  const { runner, stateFile } = newRunner();
+  const handle = runner.start(baseTaskCtx('持久化显式化', {
+    runEnv: { createParams: { model: { providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-5.3' }, persistence: 'deferred' } }, // 恶意覆盖尝试
+  }));
+  const result = await handle.done;
+  assert.equal(result.status, 'closed');
+  const create = readState(stateFile).find((e) => e.ev === 'create');
+  assert.equal(create.params.persistence, 'immediate', 'runner 固定 immediate（可恢复 + list 可见，D4）');
+  await runner.shutdown();
+});
+
+test('D8：引擎子进程 env 注入 ZCODE_MODEL_TELEMETRY_ENABLED=false（fake 端到端取证）', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeRecoveryFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('遥测关闭'));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    const env = findEvs(stateFile, 'env')[0];
+    assert.ok(env, 'fake 启动 env 事件已落盘');
+    assert.equal(env.telemetry, 'false', '真实子进程 env 中遥测已关');
+    assert.equal(env.nested, '1', 'ZSW_NESTED 防递归标记仍在（不回归）');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D3：引擎 stderr 实时落盘（注入路径），退出摘要行为保留', async () => {
+  process.env.FAKE_R_STDERR = '1';
+  const injectLog = path.join(TMP, 'logs-inject', 'engine.log');
+  const { runner } = newRecoveryRunner(writeRecoveryFake(), { stderrLogPath: injectLog });
+  try {
+    const handle = runner.start(recoveryTaskCtx('落盘取证'));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    assert.ok(
+      await waitFor(() => {
+        try { return fs.readFileSync(injectLog, 'utf8').includes('rfake-stderr-line-A'); } catch { return false; }
+      }),
+      'stderr 实时 append 到注入路径',
+    );
+    const content = fs.readFileSync(injectLog, 'utf8');
+    assert.match(content, /rfake-stderr-line-A/);
+    assert.match(content, /rfake-stderr-line-B/);
+    // 退出摘要（既有行为）：进程退出 reason 仍带 stderr 尾部
+    const conn = runner._conn;
+    await conn.shutdown();
+    assert.match(conn.exitReason, /stderr 尾部/);
+  } finally {
+    delete process.env.FAKE_R_STDERR;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D7：config 不再含 idleConversationTtlMs（会话回收职责归引擎驻留池）', () => {
+  const configLib = require('../lib/config');
+  assert.equal('idleConversationTtlMs' in configLib.DEFAULTS, false);
+  assert.equal(typeof configLib.logsDir, 'function', 'logsDir() 已就位（D3 落盘路径单一事实源）');
+  assert.ok(configLib.logsDir().endsWith(path.join('logs')));
 });

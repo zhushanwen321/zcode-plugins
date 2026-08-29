@@ -42,6 +42,40 @@
  *   ZSW_RUNNER=spawn 回退指引），start/resume 错误出口双落点
  *   （RunResult.errorKind + stderr 出声）；其余错误码不归该类，互斥不遮蔽。
  *
+ * ## -32004 四步恢复序（D2，F0 真机结论固化，探针归档 test/e2e-tp1-recovery.test.js）
+ * send/message 遇 -32004（会话被引擎驱逐/进程重启/close 后不在内存）自动执行：
+ *   ① session/resume {sessionId, runtimeModel}——**每次无条件携带 runtimeModel**
+ *     （F0 实证：驱逐与崩溃同设 restoreWarning，plain resume 后 send 必挂 -32031；
+ *     resume 带 runtimeModel 则 warning 根本不设置。「接种效应」（runtimeModel 一旦
+ *     在引擎进程内应用，同进程后续 plain resume 不再设 warning）不可依赖——runner
+ *     无法得知引擎是否被外部重启，且构造成本为零）。runtimeModel 构造见
+ *     _buildRuntimeModel()（model 目标 = 会话登记的 create model → v2 config
+ *     model.main 兜底；provider 传输配置唯一权威源 = v2 config，与 model-router
+ *     bootstrap 同源；apiKey 仅回传引擎，不落日志）。
+ *   ② 重挂 session/subscribe {sessionId, deliveryKind:"desktop-continuous"}——
+ *     订阅是 per-session 的，resume 不自动恢复订阅（F0/源码双证）；缺此步则
+ *     send accepted 但 turn 终态事件不达，恢复变假死。
+ *   ③ 重试一次原 send。-32010（busy）不重试——恢复序只由 -32004 触发，
+ *     重试中遇 -32010 说明会话已恢复且有轮在跑，按 busy 如实上报不落分支 B。
+ *   ④ 终态事件等待窗口 = 该轮任务 timeoutMs（_createTurn 超时判据）；窗口耗尽
+ *     判「恢复后事件流不可达」→ session/stop 清场（stop 是唯一绕过请求串行
+ *     队列的方法，防引擎侧孤儿轮）→ 分支 B 收尾。
+ * resume/重试仍失败 → **分支 B**（branchBMessage：「会话弃用 + zsw start 重建指引
+ * + record 历史保留 + ZSW_RUNNER=spawn 回退」，禁止裸错误码）。恢复序中遇
+ * -32601/-32602 不吞不重试，原样上抛交 classifyApcError 出 protocol-drift
+ * （D3 互斥：漂移是「版本问题」不是「会话问题」）。
+ * **runner 级恢复互斥**：同一时刻至多一路恢复序在执行（单例 promise 链）——
+ * 引擎崩溃时 N 个会话同被击落，N 路恢复并发会形成恢复风暴；F0 C 线实证串行化
+ * 不解 -32031 本身（每路带 runtimeModel 才是解），互斥只防风暴。
+ *
+ * ## 引擎 stderr 实时落盘（D3 观测/取证面）
+ * 引擎子进程 stderr 除内存滚动缓冲（_stderrTail，进程退出时尾部 400 字符进
+ * exitReason——保留）外，**实时 append** 到 `~/.zcode/zsw/logs/<date>-appserver.log`
+ * （logging-conventions 未约定专项日志文件命名，取单文件按日 append：同日多连接
+ * （引擎崩溃重建）集中同一文件，跨日另起新文件；落盘失败静默，不影响主流程）。
+ * 这是 A-5 thinking 档位观测面与漂移 issues 取证面。测试用 runner 构造 opts
+ * stderrLogPath 注入隔离路径（默认路径经 ZSW_ROOT env 已随测试根隔离）。
+ *
  * ## 协议假设收口状态（真机探针随 apc-smoke 冒烟沉淀；失败时的单点修改位置不变）
  * A2 推送帧的会话归属（单会话面已收口，2026-08-29 apc-smoke 真机）：会话级推送
  *    帧全部携带 params.sessionId 且归因正确；但存在引擎级非会话帧（实测
@@ -74,6 +108,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const config = require('./config');
+const { PROVIDER_ID } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）
+
+const DEFAULT_PROVIDER_ID = PROVIDER_ID;
 
 const REQUEST_TIMEOUT_MS = 15_000;   // 控制面请求默认超时（create/subscribe/send 等）
 const PROBE_BUDGET_MS = 10_000;      // probe 全程预算（启动+往返+关闭）
@@ -291,6 +328,97 @@ function classifyApcError(err) {
 }
 
 // ---------------------------------------------------------------------------
+// 分支 B（D2 兜底）+ runtimeModel 构造（F0 buildRuntimeModel 的生产适配）
+// ---------------------------------------------------------------------------
+
+const DRIFT_FALLBACK_HINT = '或设 ZSW_RUNNER=spawn 走旧通道（每轮独立进程，无此恢复问题）';
+
+/**
+ * D2 分支 B 兜底文案（复审 INFO-1：语境适配「事件流不可达/恢复失败」）。
+ * 语义三要素：会话弃用 + zsw start 重建指引 + record 历史保留；禁止裸错误码
+ * （错误码随 reason 带出做取证，但必须伴随语境与恢复指引）。
+ */
+function branchBMessage(reason) {
+  return `会话恢复失败（${reason}），该会话已弃用。`
+    + '恢复指引: 该会话不可续；用 zsw start 重建任务（record 已保留历史输出），'
+    + DRIFT_FALLBACK_HINT + '。';
+}
+
+/** 分支 B 错误：start/resume 错误出口据 .branchB 标记识别（不走 drift 分类）。 */
+function branchBError(reason, code) {
+  const err = new Error(branchBMessage(reason));
+  err.branchB = true;
+  if (code !== undefined) err.code = code;
+  return err;
+}
+
+/** v2 config 每次恢复时重读（apiKey/模型清单随桌面端操作变化，与 model-router 同纪律）。 */
+function readV2Config() {
+  try { return JSON.parse(fs.readFileSync(config.V2_CONFIG_PATH, 'utf8')); } catch { return null; }
+}
+
+/**
+ * 从 v2 config 构造 apc runtimeModel（D2 恢复序①；schema strict 逐字段实测见
+ * F0 探针头注：{revision, generatedAt(epochMs), model{providerId,modelId},
+ * provider{providerId, kind, label?, source:"custom", baseURL,
+ * apiKey:{source:"inline",value}, models:[{modelId}…]}}）。
+ * provider 条目忠实携带传输配置——引擎会把它注册进 workspaceModelCatalogs、
+ * 成为恢复后 turn 的 overlay 配置来源，缺凭据会让恢复后的轮挂在 provider 层。
+ * 凭据脱敏纪律：本函数只被恢复序调用、返回值只进请求帧；任何日志/stderr
+ * 不得输出其全文（出声只用 providerId/modelId 摘要）。
+ * @param {{providerId?: string, modelId?: string}} [sessionModel] 会话登记的 create model
+ * @returns {object} runtimeModel 请求帧字段
+ * @throws 无法确定模型目标 / provider 条目无凭据（调用方转分支 B）
+ */
+function buildRuntimeModel(sessionModel) {
+  const v2 = readV2Config();
+  let providerId = sessionModel && sessionModel.providerId;
+  let modelId = sessionModel && sessionModel.modelId;
+  if (!providerId || !modelId) {
+    // 幽灵恢复兜底（daemon 重启后 _sessions 无登记）：v2 config 的当前主模型
+    //（与 model-router defaultModelRef 的 v2 回退段同语义，避免引入其依赖）
+    const main = v2 && v2.model && typeof v2.model.main === 'string' ? v2.model.main.trim() : '';
+    if (main) {
+      if (main.includes('/')) {
+        providerId = providerId || main.slice(0, main.lastIndexOf('/'));
+        modelId = modelId || main.slice(main.lastIndexOf('/') + 1);
+      } else {
+        modelId = modelId || main;
+      }
+    }
+    providerId = providerId || DEFAULT_PROVIDER_ID;
+  }
+  if (!providerId || !modelId) {
+    throw new Error('无法确定恢复目标模型（会话登记与 v2 config model.main 均未提供 provider/model）');
+  }
+  const entry = v2 && v2.provider && v2.provider[providerId];
+  if (!entry || !entry.options || !entry.options.apiKey) {
+    throw new Error(`v2 config 无 ${providerId} 的可用 provider 条目（含 apiKey）`);
+  }
+  const modelIds = Object.keys(entry.models || {});
+  return {
+    revision: `zsw-recover-${Date.now()}`,
+    generatedAt: Date.now(),
+    model: { providerId, modelId },
+    provider: {
+      providerId,
+      kind: entry.kind || 'anthropic',
+      ...(entry.name ? { label: entry.name } : {}),
+      source: 'custom',
+      baseURL: entry.options.baseURL,
+      apiKey: { source: 'inline', value: entry.options.apiKey },
+      models: (modelIds.length ? modelIds : [modelId]).map((id) => ({ modelId: id })),
+    },
+  };
+}
+
+/** 恢复序出声用摘要（凭据脱敏：只报模型目标，不报 runtimeModel 全文）。 */
+function describeModelTarget(runtimeModel) {
+  const m = runtimeModel && runtimeModel.model;
+  return m ? `${m.providerId}/${m.modelId}` : '(unknown)';
+}
+
+// ---------------------------------------------------------------------------
 // 帧分发器（纯逻辑，便于不 spawn 进程直接单测三路分发）
 // ---------------------------------------------------------------------------
 
@@ -353,13 +481,20 @@ function createFrameDispatcher(handlers = {}) {
 // ---------------------------------------------------------------------------
 
 class AppServerConnection {
-  constructor({ cliPath, cwd, homeDir, reverseHandlers = REVERSE_HANDLERS, nodeCmd = 'node', env = {} }) {
+  constructor({ cliPath, cwd, homeDir, reverseHandlers = REVERSE_HANDLERS, nodeCmd = 'node', env = {}, stderrLogPath }) {
     this._cliPath = cliPath;
     this._cwd = cwd;
     this._homeDir = homeDir;
     this._reverseHandlers = reverseHandlers;
     this._nodeCmd = nodeCmd;
     this._extraEnv = env;
+    // D3 引擎 stderr 实时落盘：显式注入 > 默认 ~/.zcode/zsw/logs/<date>-appserver.log
+    //（ZSW_ROOT env 已使测试默认路径随测试根隔离）。文件 lazy 打开：首条 stderr
+    // 才建，无 stderr 的短连接（probe）零文件。
+    this._stderrLogPath = stderrLogPath
+      || path.join(config.logsDir(), `${new Date().toISOString().slice(0, 10)}-appserver.log`);
+    this._stderrStream = null;
+    this._stderrStreamFailed = false;
     this._child = null;
     this._exited = false;
     this._exitReason = null;
@@ -393,15 +528,26 @@ class AppServerConnection {
     fs.mkdirSync(this._homeDir, { recursive: true });
     const child = spawn(this._nodeCmd, [this._cliPath, 'app-server', '--cwd', this._cwd], {
       // HOME 权威值来自 homeDir（隔离 HOME，D10 第二重门禁随隔离配置生效）；
-      // ZSW_NESTED 是防递归硬性注入（D10 第一重门禁）
-      env: { ...process.env, ...this._extraEnv, HOME: this._homeDir, ZSW_NESTED: '1' },
+      // ZSW_NESTED 是防递归硬性注入（D10 第一重门禁）；
+      // ZCODE_MODEL_TELEMETRY_ENABLED=false 是隔离环境遥测关闭（D8：隔离 HOME
+      // 内不写遥测标识，维持「隔离目录只含运行必需数据」的排障预期）
+      env: {
+        ...process.env,
+        ...this._extraEnv,
+        HOME: this._homeDir,
+        ZSW_NESTED: '1',
+        ZCODE_MODEL_TELEMETRY_ENABLED: 'false',
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this._child = child;
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (d) => this._dispatcher.handleChunk(d));
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (d) => { this._stderrTail = (this._stderrTail + d).slice(-2048); });
+    child.stderr.on('data', (d) => {
+      this._stderrTail = (this._stderrTail + d).slice(-2048);
+      this._appendStderrLog(d);
+    });
     // 子进程死后的残留写会以 EPIPE 冒泡到 stdin 流，不吞会让宿主进程崩
     child.stdin.on('error', () => {});
     child.on('error', (err) => this._handleExit(`spawn 失败: ${err.message}`));
@@ -410,11 +556,33 @@ class AppServerConnection {
     ));
   }
 
+  /** 引擎 stderr 实时 append 落盘（D3）。失败静默：取证面不能拖垮主通道。 */
+  _appendStderrLog(chunk) {
+    if (this._stderrStreamFailed) return;
+    if (!this._stderrStream) {
+      try {
+        fs.mkdirSync(path.dirname(this._stderrLogPath), { recursive: true });
+        this._stderrStream = fs.createWriteStream(this._stderrLogPath, { flags: 'a' });
+        this._stderrStream.on('error', () => { this._stderrStreamFailed = true; });
+      } catch {
+        this._stderrStreamFailed = true;
+        return;
+      }
+    }
+    this._stderrStream.write(chunk);
+  }
+
   _handleExit(reason) {
     if (this._exited) return;
     this._exited = true;
     this._exitReason = reason;
     if (this._killTimer) { clearTimeout(this._killTimer); this._killTimer = null; }
+    if (this._stderrStream) {
+      // 实时落盘流收尾（退出摘要仍经 exitReason 出声——保留既有行为）
+      const s = this._stderrStream;
+      this._stderrStream = null;
+      s.end();
+    }
     for (const [, p] of this._pending) {
       clearTimeout(p.timer);
       p.reject(new Error(`app-server ${reason}`));
@@ -549,6 +717,12 @@ class AppServerRunner {
     // sessionId -> {workspace, chunks:[{assistantMessageId,text}], lastUsage, closed}
     this._sessions = new Map();
     this._turns = new Map(); // sessionId -> 本会话进行中的一轮（控制器）
+    // D2 恢复互斥：单例 promise 链（model-router poolMutex 同款），同一时刻至多
+    // 一路恢复序在执行——防引擎崩溃后 N 会话并发恢复风暴（F0 C 线：不解 -32031，
+    // 每路带 runtimeModel 才是解；互斥只防风暴）
+    this._recoveryChain = Promise.resolve();
+    // D3 stderr 落盘路径注入（测试隔离用；缺省由连接层按 config.logsDir() 自算）
+    this._stderrLogPath = opts.stderrLogPath;
   }
 
   capabilities() {
@@ -618,6 +792,7 @@ class AppServerRunner {
       cliPath: resolveZcodeCli(),
       cwd: this._cwd,
       homeDir: this._homeDir,
+      stderrLogPath: this._stderrLogPath,
     });
     conn.onPush((method, params) => this._handlePush(method, params));
     conn.onClose((reason) => this._failAllTurns(reason));
@@ -693,8 +868,11 @@ class AppServerRunner {
   /**
    * 注册并跟踪「一轮」：终态判定只认 interpretEvent 的 done（推送驱动）；
    * 超时走 session/stop，stop 失败才 kill 共享进程（会拖死其他会话，最后手段）。
+   * @param {object} [opts] {recovered?: boolean} D2 ④：恢复序重试成功后的轮，
+   *   timeoutMs 窗口耗尽即判「恢复后事件流不可达」→ stop 清场 + 分支 B 收尾
+   *   （不是普通 timeout——普通 timeout 只对本轮负责，recovered 轮耗尽说明恢复未达成）。
    */
-  _createTurn(sessionId, timeoutMs, conn) {
+  _createTurn(sessionId, timeoutMs, conn, opts = {}) {
     let settle;
     const promise = new Promise((resolve) => { settle = resolve; });
     let settled = false;
@@ -711,13 +889,22 @@ class AppServerRunner {
     // 与 driver.js 的 spawn 侧防护同源；turn 依赖终态信号收尾，无超时是安全语义
     const timer = (Number.isFinite(timeoutMs) && timeoutMs > 0)
       ? setTimeout(() => {
-        finish({
-          status: 'timeout',
-          response: aggregated(),
-          // INFO-16：E7 后权威终态信号是 turn.terminal，state.updated 是兼容信号，
-          // 并列表述避免误导诊断
-          error: `一轮未在 ${timeoutMs}ms 内观察到终态（turn.terminal / state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
-        });
+        if (opts.recovered) {
+          // D2 ④：恢复后的轮窗口耗尽 = 事件流不可达 → 分支 B（stderr 双落点同 drift/分支 B 先例）
+          const msg = branchBMessage(
+            `恢复后事件流不可达（重试 send 已接受，但一轮未在 ${timeoutMs}ms 窗口内观察到终态；已发 session/stop 清场，防引擎侧孤儿轮）`
+          );
+          stderrLog(msg);
+          finish({ status: 'error', response: aggregated(), error: msg });
+        } else {
+          finish({
+            status: 'timeout',
+            response: aggregated(),
+            // INFO-16：E7 后权威终态信号是 turn.terminal，state.updated 是兼容信号，
+            // 并列表述避免误导诊断
+            error: `一轮未在 ${timeoutMs}ms 内观察到终态（turn.terminal / state.updated）。已发 session/stop；stop 失败将 kill app-server 进程兜底。`,
+          });
+        }
         stopBestEffort().then(
           () => {},
           () => { stderrLog('session/stop 失败 → kill app-server 进程兜底'); conn.killChain(); }
@@ -790,6 +977,82 @@ class AppServerRunner {
     return { response: '', failed: true };
   }
 
+  // ------------------------------------------------------------- -32004 恢复序（D2）
+
+  /** runtimeModel 构造（模块级 buildRuntimeModel 的 runner 侧包装：带会话登记）。 */
+  _buildRuntimeModel(sessionId) {
+    const session = this._sessions.get(sessionId);
+    return buildRuntimeModel(session && session.model);
+  }
+
+  /**
+   * send 统一入口：正常投递；遇 -32004 自动进四步恢复序（见文件头「-32004 四步
+   * 恢复序」）。其余错误（含 -32010 busy、-32601/-32602 漂移、超时）原样上抛。
+   * @returns {Promise<{sent: object, recovered: boolean}>} recovered=本轮经恢复序重试送达
+   */
+  async _sendWithRecovery(conn, sessionId, content, { ctlTimeout }) {
+    try {
+      return { sent: await conn.request('session/send', { sessionId, content }, { timeoutMs: ctlTimeout }), recovered: false };
+    } catch (err) {
+      if (!err || err.code !== -32004) throw err;
+      stderrLog(`会话 ${sessionId} send 遇 -32004（会话不在引擎内存：驱逐/进程重启/close），启动四步恢复序`);
+      const sent = await this._recoverExclusive(() => this._doRecoverAndResend(conn, sessionId, content, { ctlTimeout }));
+      return { sent, recovered: true };
+    }
+  }
+
+  /** 恢复互斥：链尾排队，前序失败不阻塞后续（与 model-router poolMutex 同款）。 */
+  _recoverExclusive(fn) {
+    const run = this._recoveryChain.then(fn, fn);
+    this._recoveryChain = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * 四步恢复序本体（互斥区内执行）：
+   * ① resume{sessionId, runtimeModel}（每次无条件带，F0 结论）
+   * ② 重挂 subscribe（订阅 per-session，resume 不自动恢复；缺则终态不达假死）
+   * ③ 重试一次原 send（遇 -32010 不重试——恢复已成功，busy 如实上抛）
+   * ④ 由 _createTurn({recovered:true}) 的 timeoutMs 窗口判据承接。
+   * 任一步失败：-32601/-32602 原样上抛交 drift 分类（不吞不重试）；其余 → 分支 B。
+   */
+  async _doRecoverAndResend(conn, sessionId, content, { ctlTimeout }) {
+    // ① resume（构造失败 = 无法重建恢复模型 → 分支 B，诚实报错不发盲请求）
+    let runtimeModel;
+    try {
+      runtimeModel = this._buildRuntimeModel(sessionId);
+    } catch (err) {
+      throw branchBError(`无法构造 runtimeModel：${err && err.message}`);
+    }
+    stderrLog(`恢复序① session/resume ${sessionId}（runtimeModel: ${describeModelTarget(runtimeModel)}）`);
+    try {
+      await conn.request('session/resume', { sessionId, runtimeModel }, { timeoutMs: ctlTimeout });
+    } catch (err) {
+      if (classifyApcError(err)) throw err; // 漂移不吞：交既有分类路径出（D3 互斥）
+      throw branchBError(`resume 失败: ${err && err.message}`, err && err.code);
+    }
+    // ② 重挂订阅
+    try {
+      await conn.request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' }, { timeoutMs: ctlTimeout });
+    } catch (err) {
+      if (classifyApcError(err)) throw err;
+      throw branchBError(`订阅重挂失败（事件流不可达风险）: ${err && err.message}`, err && err.code);
+    }
+    // ③ 重试原 send（一次）
+    let sent;
+    try {
+      sent = await conn.request('session/send', { sessionId, content }, { timeoutMs: ctlTimeout });
+    } catch (err) {
+      if (err && err.code === -32010) throw err; // busy：会话已恢复且有轮在跑，如实上报不落分支 B
+      if (classifyApcError(err)) throw err;
+      throw branchBError(`恢复后重试 send 失败: ${err && err.message}`, err && err.code);
+    }
+    if (sent && sent.accepted === false) {
+      throw branchBError('恢复后重试 send 返回 accepted:false（投递未被接受）');
+    }
+    return sent;
+  }
+
   // ------------------------------------------------------------- RunnerPort
 
   /**
@@ -811,8 +1074,14 @@ class AppServerRunner {
     const conn = this._ensureConnection(cwd);
     const timeoutMs = taskCtx.timeoutMs ?? config.DEFAULTS.timeoutMs;
     const workspace = { workspacePath: cwd, workspaceKey: stableWorkspaceKey(cwd) };
-    // model 等 per-session 设置经 runEnv.createParams 合入（spawn 模式的 HOME 池在此整体不存在）
-    const createParams = { workspace, mode: 'yolo', ...((taskCtx.runEnv && taskCtx.runEnv.createParams) || {}) };
+    // model 等 per-session 设置经 runEnv.createParams 合入（spawn 模式的 HOME 池在此整体不存在）；
+    // persistence:"immediate" 由 runner 固定携带（D4：可恢复 + session/list 可见，上游不可覆盖）
+    const createParams = {
+      workspace,
+      mode: 'yolo',
+      ...((taskCtx.runEnv && taskCtx.runEnv.createParams) || {}),
+      persistence: 'immediate',
+    };
     const exec = { kind: 'apc', sessionId: undefined };
     // setup 阶段的取消标记：cancel 在 create/subscribe/send 任一步之间到达都能落地
     const ctl = { cancelled: false, turn: null };
@@ -827,16 +1096,25 @@ class AppServerRunner {
           throw new Error(`session/create 未返回 sessionId: ${JSON.stringify(created).slice(0, 300)}`);
         }
         exec.sessionId = sessionId; // 可变引用回填，record 持同一对象
-        this._sessions.set(sessionId, { workspace, chunks: [], lastUsage: undefined, closed: false });
+        // 登记带 create model（D2 恢复序的 runtimeModel 目标解析主路径）
+        this._sessions.set(sessionId, {
+          workspace,
+          chunks: [],
+          lastUsage: undefined,
+          closed: false,
+          model: createParams.model && typeof createParams.model === 'object'
+            ? { providerId: createParams.model.providerId, modelId: createParams.model.modelId }
+            : undefined,
+        });
         if (ctl.cancelled) throw new Error('cancelled');
         await conn.request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' }, { timeoutMs: ctlTimeout });
         if (ctl.cancelled) throw new Error('cancelled');
-        const sent = await conn.request('session/send', { sessionId, content: String(prompt) }, { timeoutMs: ctlTimeout });
+        const { sent, recovered } = await this._sendWithRecovery(conn, sessionId, String(prompt), { ctlTimeout });
         if (sent && sent.accepted === false) {
           throw new Error('session/send 返回 accepted:false（投递未被接受）');
         }
         if (ctl.cancelled) throw new Error('cancelled');
-        ctl.turn = this._createTurn(sessionId, timeoutMs, conn);
+        ctl.turn = this._createTurn(sessionId, timeoutMs, conn, { recovered });
         return await ctl.turn.promise;
       } catch (err) {
         if (ctl.cancelled) {
@@ -851,6 +1129,10 @@ class AppServerRunner {
           // record 物理落点由上层 _completeRun 透传）
           stderrLog(drift.hint);
           return { status: 'error', errorKind: drift.kind, error: drift.hint, sessionId: exec.sessionId };
+        }
+        if (err && err.branchB) {
+          stderrLog(err.message); // 分支 B 同样双落点（stderr 取证 + error 文案上行）
+          return { status: 'error', error: err.message, sessionId: exec.sessionId };
         }
         return { status: 'error', error: err && err.message, sessionId: exec.sessionId };
       }
@@ -901,7 +1183,7 @@ class AppServerRunner {
     }
     const conn = this._ensureConnection();
     try {
-      const sent = await conn.request('session/send', { sessionId: exec.sessionId, content: String(message) }, { timeoutMs: controlTimeout(timeoutMs) });
+      const { sent, recovered } = await this._sendWithRecovery(conn, exec.sessionId, String(message), { ctlTimeout: controlTimeout(timeoutMs) });
       if (sent && sent.accepted === false) {
         return {
           status: 'error',
@@ -909,7 +1191,8 @@ class AppServerRunner {
           error: 'session/send 返回 accepted:false（会话可能不接受投递或已失效）。恢复指引：稍后重试或重新 start。',
         };
       }
-      const turn = this._createTurn(exec.sessionId, timeoutMs, conn);
+      // recovered：本轮经 -32004 恢复序重试送达——终态窗口耗尽走分支 B（D2 ④）
+      const turn = this._createTurn(exec.sessionId, timeoutMs, conn, { recovered });
       // S-6① 接线：把 turn.cancel 经 onHandle 暴露给上层（manager 的 handles
       // 表），cancel(action) 即可中止在飞轮（finish cancelled + session/stop），
       // 不再空等 timeoutMs 白耗 token
@@ -923,12 +1206,12 @@ class AppServerRunner {
         stderrLog(drift.hint); // D3 双落点：stderr + RunResult.errorKind（同 start）
         return { status: 'error', errorKind: drift.kind, sessionId: exec.sessionId, error: drift.hint };
       }
-      const inactive = err && err.code === -32004;
-      return {
-        status: 'error',
-        sessionId: exec.sessionId,
-        error: `${err && err.message}${inactive ? '（会话不活跃：原进程可能已退出/会话已关闭；恢复指引：重新 start 一轮）' : ''}`,
-      };
+      if (err && err.branchB) {
+        stderrLog(err.message); // 分支 B 双落点（同 start）
+        return { status: 'error', sessionId: exec.sessionId, error: err.message };
+      }
+      // 其余错误如实上报（-32010 busy 等已有语境；-32004 已被恢复序消费，不再直达此处）
+      return { status: 'error', sessionId: exec.sessionId, error: err && err.message };
     }
   }
 
@@ -973,6 +1256,8 @@ module.exports.createFrameDispatcher = createFrameDispatcher;
 module.exports.interpretEvent = interpretEvent;
 module.exports.RUNTIME_PREFERENCES = RUNTIME_PREFERENCES;
 module.exports.classifyApcError = classifyApcError;
+module.exports.branchBMessage = branchBMessage;
+module.exports.buildRuntimeModel = buildRuntimeModel;
 module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
 module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
 module.exports.extractAssistantText = extractAssistantText;
