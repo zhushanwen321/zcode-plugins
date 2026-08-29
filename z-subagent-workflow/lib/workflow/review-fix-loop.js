@@ -124,6 +124,10 @@ const DEFAULT_CONVERGE_ROUNDS = 2;
 const DEFAULT_MAX_FIX_ATTEMPTS = 2;
 const TARGET_TYPES = ['git-diff', 'file', 'dir', 'text'];
 const DEFAULT_TARGET_TEXT = 'git 未提交改动';
+// 审查材料尺寸护栏阈值（材料注入设计 §3.3 D2）：材料总字符超过即不整块注入，改为
+// 按文件分组轮转分配（组数 = 活跃 reviewer 数）。约 40 万 tokens，为 GLM 上下文留
+// ≥4 倍余量；硬编码不可配（v1 不加参数，YAGNI——实测需要时再加）。
+const MATERIAL_CHAR_LIMIT = 1_500_000;
 // D7：fallowScan 前置批的保留维度名（不占 batchN，批名 fallow-scan）
 const FALLOW_DIM = 'fallow-scan';
 
