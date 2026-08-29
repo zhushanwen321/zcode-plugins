@@ -90,6 +90,15 @@ function trimToNull(v) {
 }
 
 /**
+ * 规范化 per-session 工具名清单（裸工具名形态，D6：引擎以 new Set(裸名) 匹配）。
+ * 过滤非字符串/空白项并 trim；非数组入参 → 空数组（调用方按长度决定是否设键）。
+ */
+function cleanToolNames(v) {
+  if (!Array.isArray(v)) return [];
+  return v.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim());
+}
+
+/**
  * per-model HOME 池互斥链：同 home 的重入按序执行。
  * 为什么需要：bootstrap 是「读源 → 比对 → 写池」多步操作，若未来实现变
  * 异步（如 fs/promises），无互斥会交错；同时把「并发 start 同一模型只
@@ -224,9 +233,17 @@ class ModelRouter {
    * 准备运行环境（runner 启动前必须调用，结果放进 taskCtx.runEnv）。
    * @param {string} modelRef  resolve() 的产物
    * @param {'spawn'|'appserver'} [runnerKind='spawn']
+   * @param {object} [sessionOpts] per-session 能力参数（F4：仅 appserver 消费，
+   *        经 createParams 合入 session/create；spawn 分支整体忽略——spawn 无
+   *        对应 flag 通道，行为不变）
+   * @param {string} [sessionOpts.thinking]      thinking 档位请求值 → create.thoughtLevel
+   *        （合法性校验在 runner 侧连接级做——此处无连接，透传原始值）
+   * @param {string[]} [sessionOpts.toolAllowlist] CLI --allow-tools 来源 → create.toolAllowlist
+   * @param {string[]} [sessionOpts.toolDenylist]  CLI --deny-tools 来源 → create.toolDenylist
+   *        （与 frontmatter taskCtx.disallowedTools 的并集去重在 runner 组 create 时做）
    * @returns {Promise<{env?: {HOME: string, ZSW_NESTED: string}, createParams?: {model: string}}>}
    */
-  async prepareRunEnv(modelRef, runnerKind) {
+  async prepareRunEnv(modelRef, runnerKind, sessionOpts = {}) {
     if (!modelRef || typeof modelRef !== 'string') {
       throw new Error(
         `ModelRouter.prepareRunEnv: modelRef 必填（收到 ${JSON.stringify(modelRef)}）。` +
@@ -250,7 +267,16 @@ class ModelRouter {
       // session/create 的 model 是 strict 对象（e2e 实测 2026-08-23，zcode.cjs
       // schema C1t/hc）：{providerId, modelId, variant?}——字符串会被 -32602
       // ZodError 拒收（expected object, received string）。
-      return { createParams: { model: { providerId: provider, modelId: short } } };
+      const createParams = { model: { providerId: provider, modelId: short } };
+      // F4 per-session 能力参数（D5/D6）：仅在调用方显式提供时设键——create
+      // schema strict，空键不占面；各值规范化后再落（防御直接构造的入参）
+      const thinking = typeof sessionOpts.thinking === 'string' ? sessionOpts.thinking.trim() : '';
+      if (thinking) createParams.thoughtLevel = thinking;
+      const allow = cleanToolNames(sessionOpts.toolAllowlist);
+      if (allow.length > 0) createParams.toolAllowlist = allow;
+      const deny = cleanToolNames(sessionOpts.toolDenylist);
+      if (deny.length > 0) createParams.toolDenylist = deny;
+      return { createParams };
     }
     const home = config.homePoolDir(short, provider);
     await ensureHomePool(home, `${provider}/${short}`);
@@ -261,3 +287,4 @@ class ModelRouter {
 module.exports = ModelRouter;
 module.exports.PROVIDER_ID = PROVIDER_ID;
 module.exports.FALLBACK_DEFAULT_MODEL = FALLBACK_DEFAULT_MODEL;
+module.exports.cleanToolNames = cleanToolNames;

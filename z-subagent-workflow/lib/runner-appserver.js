@@ -94,6 +94,23 @@
  *      同帧可见（F4 thinking 校验可直接消费 read 的这一面）。
  *    extractAssistantText()/extractReadUsage() 已按实测形态实现并保留旧形态兼容。
  *    → 只改 extractAssistantText()/extractReadUsage() 与 _fetchFinalResponse() 的降级链
+ *
+ * ## D5 thinking 接线（F4）
+ * `--thinking <level>` → runEnv.createParams.thoughtLevel（model-router 组装）→
+ * create 前经 _resolveThinking 连接级校验（缓存源：session/read 应答顺带沉淀 >
+ * workspace/readState；后者 params 形态未真机实测，任何失败缓存「不可用」并
+ * 透传档位给引擎，由引擎 P2 容错兜底——任务不失败）。非法档位 stderr warn +
+ * 跳过（create 不带 thoughtLevel）；合法档位生效后 result.thinking 标注实际档位，
+ * 非法跳过标 null（record 物理落点由 manager._completeRun 透传）。**全程不调用
+ * session/setThoughtLevel**（写 user 级全局设置，探针 P1 实证，D5 禁用面）。
+ * resume 轮无 create 面——thinking 是会话级设置，随会话驻留续聊自然延续。
+ *
+ * ## D6 工具限制双来源（F4）
+ * create.toolDenylist = CLI --deny-tools（runEnv.createParams.toolDenylist）∪
+ * frontmatter taskCtx.disallowedTools（并集去重，_applyCreateToolLimits）；
+ * create.toolAllowlist = CLI --allow-tools 原样。裸工具名形态（D6 源码证据）。
+ * frontmatter `tools` 白名单维持 prompt-builder 软约束不升级（D6 显式决策）；
+ * spawn 通道行为不变（denylist 走 --disallowed-tools 既有路径，CLI 来源不消费）。
  * A5 send 对 running 会话的行为（排队 or 拒绝）未实测：设计 optimistic（send 后
  *    等一轮完成）；但本 runner 内同会话已有进行中的一轮时保守报 busy。
  *    → 只改 resume() 的 busy 分支
@@ -284,6 +301,34 @@ function extractReadUsage(readResult) {
     if (finish) return finish.tokens;
   }
   return readResult.usage && typeof readResult.usage === 'object' ? readResult.usage : undefined;
+}
+
+/**
+ * 从 session/read / workspace/readState 应答提取 thoughtLevel 可用档位
+ * （D5 校验源）。F1 真机实测（2026-08-29 apc-smoke）：read 应答的
+ * settings.thoughtLevel = {available:[low|high|max], current, defaultLevel}；
+ * workspace/readState 同结构面（调研文档 RK-7 源码逆向，params 形态未实测）。
+ * 抽不到有效数组 → null（调用方按「校验源不可用」处理）。
+ */
+function extractThoughtLevels(state) {
+  const tl = state && typeof state === 'object'
+    && state.settings && typeof state.settings === 'object'
+    ? state.settings.thoughtLevel
+    : undefined;
+  if (tl && Array.isArray(tl.available)) {
+    const levels = tl.available.filter((x) => typeof x === 'string' && x.trim() !== '');
+    return levels.length > 0 ? levels : null;
+  }
+  return null;
+}
+
+/**
+ * 规范化工具名清单（裸名形态，D6：引擎以 new Set(裸名) 匹配，消费点见调研文档
+ * offset 12051550）。过滤非字符串/空白项并 trim；非数组 → 空数组。
+ */
+function cleanToolNames(v) {
+  if (!Array.isArray(v)) return [];
+  return v.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim());
 }
 
 function contentToText(content) {
@@ -721,6 +766,10 @@ class AppServerRunner {
     // 一路恢复序在执行——防引擎崩溃后 N 会话并发恢复风暴（F0 C 线：不解 -32031，
     // 每路带 runtimeModel 才是解；互斥只防风暴）
     this._recoveryChain = Promise.resolve();
+    // D5 thinking 校验缓存：AppServerConnection -> string[]|null（null=校验源
+    // 不可用）。WeakMap 按连接生命周期——连接重建（进程崩溃/退出）自动 miss 重读，
+    // 不需要手动失效
+    this._thoughtLevelCache = new WeakMap();
     // D3 stderr 落盘路径注入（测试隔离用；缺省由连接层按 config.logsDir() 自算）
     this._stderrLogPath = opts.stderrLogPath;
   }
@@ -958,6 +1007,12 @@ class AppServerRunner {
       try {
         const result = await conn.request(method, { sessionId }, { timeoutMs: READ_TIMEOUT_MS });
         const text = extractAssistantText(result);
+        // F1 实测面顺带沉淀（D5）：read 应答的 settings.thoughtLevel.available
+        // 填连接级 thinking 校验缓存——后续 start 的 thinking 校验免发
+        // workspace/readState。抽不到（null）不覆盖既有结论。
+        // 注意必须在文本提取 return 之前：主路径（成功提取正文）同样要沉淀
+        const levels = extractThoughtLevels(result);
+        if (levels) this._thoughtLevelCache.set(conn, levels);
         if (text != null) {
           // A4 收口（2026-08-29 实测）：read 的 tokens 在 step-finish parts，
           // extractReadUsage 内含顶层 usage 兜底
@@ -975,6 +1030,65 @@ class AppServerRunner {
     const agg = this._aggregatedText(sessionId);
     if (agg && agg.trim()) return { response: agg };
     return { response: '', failed: true };
+  }
+
+  // ------------------------------------------------- per-session 能力参数（D5/D6）
+
+  /**
+   * thinking 档位连接级校验（D5）。校验源优先级：
+   * ① 连接级缓存（WeakMap；含 session/read 应答顺带沉淀的 settings.thoughtLevel
+   *   可见面——F1 实测，优先于未实测的 workspace/readState）；
+   * ② workspace/readState（调研文档 RK-7 源码逆向面，params 形态未真机实测——
+   *   最小空 params 发起，任何失败一律缓存「不可用」并透传档位给引擎）。
+   * 引擎对非法值本就容错（P2 实证 warn 跳过不失败），校验源不可用时透传是
+   * 安全降级：workspace/readState 形态漂移不会让 thinking 功能死掉。真机校准
+   * （检查点面）只需改本方法内的请求 params。
+   * @param {AppServerConnection} conn
+   * @param {string} requested 请求档位（如 'low'）
+   * @returns {Promise<{ok: boolean, passthrough?: boolean, available?: string[]}>}
+   *          ok=true 且 passthrough=true 表示未经校验放行（校验源不可用）
+   */
+  async _resolveThinking(conn, requested) {
+    let levels = this._thoughtLevelCache.get(conn);
+    if (levels === undefined) {
+      try {
+        const state = await conn.request('workspace/readState', {}, { timeoutMs: REQUEST_TIMEOUT_MS });
+        levels = extractThoughtLevels(state);
+      } catch (err) {
+        levels = null;
+        stderrLog(`thinking 校验源 workspace/readState 不可用（${err && err.message}），`
+          + `档位 "${requested}" 不经本地校验直接透传（引擎容错兜底，P2）`);
+      }
+      this._thoughtLevelCache.set(conn, levels);
+    }
+    if (levels === null) return { ok: true, passthrough: true };
+    return { ok: levels.includes(requested), available: levels };
+  }
+
+  /**
+   * create 的工具限制组装（D6 双来源并集）：
+   * - toolAllowlist = CLI --allow-tools（经 runEnv.createParams 传入，再兜底规范化）；
+   * - toolDenylist = CLI --deny-tools（createParams.toolDenylist）∪ frontmatter
+   *   taskCtx.disallowedTools，并集去重。
+   * 两清单都做规范化（model-router 已清理过，这里是 create 面组装前的第二道
+   * 防御——createParams 可被直接构造的 taskCtx 绕过 router）。frontmatter
+   * `tools` 白名单不升级（维持 buildPrompt 软约束，D6 显式决策）；spawn 通道
+   * 不消费 CLI 来源（行为不变，denylist 走 --disallowed-tools 既有路径）。
+   * 就地改写 createParams；无 CLI 来源且无 frontmatter deny 时保持无键。
+   * @param {object} createParams runner 已合入 runEnv.createParams 的组装产物
+   * @param {object} taskCtx
+   */
+  _applyCreateToolLimits(createParams, taskCtx) {
+    const allow = cleanToolNames(createParams.toolAllowlist);
+    if (allow.length > 0) createParams.toolAllowlist = allow;
+    else delete createParams.toolAllowlist;
+    const frontDeny = cleanToolNames(taskCtx && taskCtx.disallowedTools);
+    const cliDeny = cleanToolNames(createParams.toolDenylist);
+    if (frontDeny.length === 0 && cliDeny.length === 0) {
+      delete createParams.toolDenylist; // 两来源皆空：不设键（防上游带空数组）
+      return;
+    }
+    createParams.toolDenylist = [...new Set([...cliDeny, ...frontDeny])];
   }
 
   // ------------------------------------------------------------- -32004 恢复序（D2）
@@ -1082,6 +1196,16 @@ class AppServerRunner {
       ...((taskCtx.runEnv && taskCtx.runEnv.createParams) || {}),
       persistence: 'immediate',
     };
+    // D6 工具限制双来源并集（CLI deny ∪ frontmatter disallowedTools；allowlist 原样）
+    this._applyCreateToolLimits(createParams, taskCtx);
+    // D5 thinking：create 前连接级校验（在 done 异步体内执行），非法档位 warn
+    // 跳过（任务不失败，P2 语义）。thinkingEffective 三态：undefined=未请求 /
+    // string=生效档位 / null=非法跳过
+    let thinkingEffective;
+    const requestedThinking = createParams.thoughtLevel;
+    if (requestedThinking !== undefined && typeof requestedThinking !== 'string') {
+      delete createParams.thoughtLevel; // 非字符串请求值（防御）：不占 create 面
+    }
     const exec = { kind: 'apc', sessionId: undefined };
     // setup 阶段的取消标记：cancel 在 create/subscribe/send 任一步之间到达都能落地
     const ctl = { cancelled: false, turn: null };
@@ -1089,6 +1213,18 @@ class AppServerRunner {
 
     const done = (async () => {
       try {
+        if (ctl.cancelled) throw new Error('cancelled');
+        if (typeof createParams.thoughtLevel === 'string') {
+          const verdict = await this._resolveThinking(conn, createParams.thoughtLevel);
+          if (verdict.ok) {
+            thinkingEffective = createParams.thoughtLevel;
+          } else {
+            stderrLog(`--thinking "${createParams.thoughtLevel}" 不在当前模型可用档位 `
+              + `[${(verdict.available || []).join(', ')}] 内，跳过该参数（任务继续，跟随模型默认档）`);
+            delete createParams.thoughtLevel;
+            thinkingEffective = null;
+          }
+        }
         if (ctl.cancelled) throw new Error('cancelled');
         const created = await conn.request('session/create', createParams, { timeoutMs: ctlTimeout });
         const sessionId = extractCreatedSessionId(created);
@@ -1115,26 +1251,26 @@ class AppServerRunner {
         }
         if (ctl.cancelled) throw new Error('cancelled');
         ctl.turn = this._createTurn(sessionId, timeoutMs, conn, { recovered });
-        return await ctl.turn.promise;
+        return { ...(await ctl.turn.promise), thinking: thinkingEffective };
       } catch (err) {
         if (ctl.cancelled) {
           if (exec.sessionId) {
             conn.request('session/stop', { sessionId: exec.sessionId }, { timeoutMs: STOP_TIMEOUT_MS }).catch(() => {});
           }
-          return { status: 'cancelled', sessionId: exec.sessionId };
+          return { status: 'cancelled', sessionId: exec.sessionId, thinking: thinkingEffective };
         }
         const drift = classifyApcError(err);
         if (drift) {
           // D3 双落点：stderr 出声 + RunResult.errorKind（错误分类随结果上行，
           // record 物理落点由上层 _completeRun 透传）
           stderrLog(drift.hint);
-          return { status: 'error', errorKind: drift.kind, error: drift.hint, sessionId: exec.sessionId };
+          return { status: 'error', errorKind: drift.kind, error: drift.hint, sessionId: exec.sessionId, thinking: thinkingEffective };
         }
         if (err && err.branchB) {
           stderrLog(err.message); // 分支 B 同样双落点（stderr 取证 + error 文案上行）
-          return { status: 'error', error: err.message, sessionId: exec.sessionId };
+          return { status: 'error', error: err.message, sessionId: exec.sessionId, thinking: thinkingEffective };
         }
-        return { status: 'error', error: err && err.message, sessionId: exec.sessionId };
+        return { status: 'error', error: err && err.message, sessionId: exec.sessionId, thinking: thinkingEffective };
       }
     })();
 
@@ -1262,3 +1398,5 @@ module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
 module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
 module.exports.extractAssistantText = extractAssistantText;
 module.exports.extractReadUsage = extractReadUsage;
+module.exports.extractThoughtLevels = extractThoughtLevels;
+module.exports.cleanToolNames = cleanToolNames;

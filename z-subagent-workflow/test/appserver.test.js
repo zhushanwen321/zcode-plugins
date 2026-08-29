@@ -1185,6 +1185,240 @@ test('runtimeModel 构造失败（v2 config 无凭据）→ 恢复序①前中�
   }
 });
 
+// ------------------------------------------- D5/D6 thinking 与工具限制（F4）
+
+/**
+ * thinking/工具限制专用 fake（写进测试 TMP，after 统一清理；fixtures/fake-appserver.js
+ * 不在本单元领地且无 workspace/readState，按 errfake/recfake 先例 inline）。
+ * 协议面对齐 lib/runner-appserver.js 头注实测事实；read/readState 应答携带
+ * settings.thoughtLevel（F1 真机实测面）供校验源与顺带沉淀断言。
+ * env 开关（spawn 时固化）：
+ *   FAKE_T_AVAILABLE=low,high   thoughtLevel.available（缺省 low,high,max）
+ *   FAKE_T_READSTATE=off        workspace/readState 回 -32601（校验源漂移模拟）
+ */
+let thinkFakeSeq = 0;
+function writeThinkingFake() {
+  const p = path.join(TMP, `thinkfake-${++thinkFakeSeq}.cjs`);
+  fs.writeFileSync(p, [
+    "'use strict';",
+    "const fs = require('node:fs');",
+    "const rl = require('node:readline').createInterface({ input: process.stdin });",
+    "const AVAILABLE = (process.env.FAKE_T_AVAILABLE || 'low,high,max').split(',').map((s) => s.trim()).filter(Boolean);",
+    "const STATE = process.env.FAKE_STATE_FILE;",
+    "let seq = 0;",
+    "let sessSeq = 0;",
+    "const live = new Map();   // sid -> {content, subscribed}",
+    "const log = (ev, data = {}) => { if (!STATE) return; try { fs.appendFileSync(STATE, JSON.stringify({ seq: ++seq, ev, ...data }) + '\\n'); } catch {} };",
+    "const out = (f) => process.stdout.write(JSON.stringify(f) + '\\n');",
+    "const reply = (id, result) => out({ id, result });",
+    "const replyErr = (id, code, message) => out({ id, error: { code, message } });",
+    "const thoughtLevel = () => ({ available: AVAILABLE, current: AVAILABLE[AVAILABLE.length - 1], defaultLevel: AVAILABLE[AVAILABLE.length - 1] });",
+    "out({ method: 'protocol', params: { name: 'ZCode Protocol', version: 1 } });",
+    "function simulate(sid) {",
+    "  setTimeout(() => {",
+    "    const s = live.get(sid);",
+    "    if (!s) return;",
+    "    out({ method: 'v4/telemetry/event', params: { kind: 'turn.terminal', status: 'success', sessionId: sid } });",
+    "    out({ method: 'session/event', params: { sessionId: sid, payload: { response: 'FAKE_T:' + s.content, usage: { input: 1, output: 1 } } } });",
+    "  }, 15);",
+    "}",
+    "rl.on('line', (line) => {",
+    "  if (!line.trim()) return;",
+    "  let f;",
+    "  try { f = JSON.parse(line); } catch { return; }",
+    "  if (!(f && f.id != null && f.method)) return; // 本 fake 不发反向请求",
+    "  const { id, method, params = {} } = f;",
+    "  if (method === 'session/create') {",
+    "    const sid = 'sess_t_' + (++sessSeq);",
+    "    live.set(sid, { content: '', subscribed: false });",
+    "    log('create', { params });",
+    "    return reply(id, { session: { sessionId: sid } });",
+    "  }",
+    "  if (method === 'session/subscribe') {",
+    "    const s = live.get(params.sessionId);",
+    "    if (s) s.subscribed = true;",
+    "    return reply(id, { subscribed: true });",
+    "  }",
+    "  if (method === 'session/send') {",
+    "    const s = live.get(params.sessionId);",
+    "    if (!s) return replyErr(id, -32004, 'Session not active (thinkfake)');",
+    "    s.content = String(params.content ?? '');",
+    "    reply(id, { accepted: true });",
+    "    if (s.subscribed) simulate(params.sessionId); // 未订阅不推终态（per-session 订阅语义）",
+    "    return;",
+    "  }",
+    "  if (method === 'session/read') {",
+    "    const s = live.get(params.sessionId);",
+    "    log('read', { sessionId: params.sessionId });",
+    "    return reply(id, {",
+    "      messages: [{ role: 'user', content: (s && s.content) || '' }, { role: 'assistant', content: 'FAKE_T_READ:' + ((s && s.content) || '') }],",
+    "      settings: { thoughtLevel: thoughtLevel() },",
+    "    });",
+    "  }",
+    "  if (method === 'workspace/readState') {",
+    "    if (process.env.FAKE_T_READSTATE === 'off') { log('readstate-err', { code: -32601 }); return replyErr(id, -32601, 'method not found (thinkfake)'); }",
+    "    log('readstate', {});",
+    "    return reply(id, { settings: { thoughtLevel: thoughtLevel() } });",
+    "  }",
+    "  if (method === 'session/list') return reply(id, { sessions: [...live.keys()].map((x) => ({ sessionId: x })) });",
+    "  return replyErr(id, -32601, 'method not found (thinkfake): ' + method);",
+    "});",
+    "rl.on('close', () => process.exit(0));",
+  ].join('\n'));
+  return p;
+}
+
+/** thinking 用例 taskCtx：runEnv.createParams 由 model-router 组装形态（model + 会话级参数）。 */
+function thinkingTaskCtx(prompt, createParams, overrides = {}) {
+  return baseTaskCtx(prompt, {
+    runEnv: { createParams: { model: { providerId: 'prov-fake', modelId: 'GLM-5.3' }, ...createParams } },
+    ...overrides,
+  });
+}
+
+test('D5 thinking：合法档位经 workspace/readState 校验后生效，连接级缓存只读一次', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const handle = runner.start(thinkingTaskCtx('低档任务', { thoughtLevel: 'low' }));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed', JSON.stringify(result).slice(0, 200));
+    assert.equal(result.thinking, 'low', '实际生效档位随 result 上行');
+    const evs = readState(stateFile);
+    const create = evs.find((e) => e.ev === 'create');
+    assert.equal(create.params.thoughtLevel, 'low', 'create 携带校验通过的档位');
+    assert.equal(evs.filter((e) => e.ev === 'readstate').length, 1, '首个 thinking 任务发一次 workspace/readState');
+
+    // 同连接第二个 thinking 任务：命中连接级缓存，不再发 readState
+    const h2 = runner.start(thinkingTaskCtx('第二任务', { thoughtLevel: 'high' }));
+    const r2 = await h2.done;
+    assert.equal(r2.status, 'closed');
+    assert.equal(r2.thinking, 'high');
+    assert.equal(readState(stateFile).filter((e) => e.ev === 'readstate').length, 1, '缓存命中：readState 仍只有 1 次');
+    assert.equal(readState(stateFile).find((e) => e.ev === 'create' && e.params.thoughtLevel === 'high') != null, true);
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D5 thinking：非法档位 stderr warn 跳过（create 不带 thoughtLevel，任务不失败）', async () => {
+  process.env.FAKE_T_AVAILABLE = 'low,high';
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const { value: result, lines } = await captureStderr(() => {
+      const handle = runner.start(thinkingTaskCtx('非法档任务', { thoughtLevel: 'max' }));
+      return handle.done;
+    });
+    assert.equal(result.status, 'closed', '非法值不失败（P2 容错语义）');
+    assert.equal(result.thinking, null, '跳过标注为 null');
+    const create = readState(stateFile).find((e) => e.ev === 'create');
+    assert.equal('thoughtLevel' in create.params, false, '非法档位不占 create 参数面');
+    const warn = lines.filter((l) => l.includes('--thinking') && l.includes('max'));
+    assert.ok(warn.length >= 1, `stderr 出声跳过原因，捕获: ${lines.join(' | ').slice(0, 200)}`);
+    assert.match(warn[0], /low, high/, 'warn 含可用档位清单');
+  } finally {
+    delete process.env.FAKE_T_AVAILABLE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D5 thinking：未请求则 create 无 thoughtLevel 且不发 readState，result.thinking 缺省', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const handle = runner.start(thinkingTaskCtx('无档位任务', {}));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    assert.equal(result.thinking, undefined);
+    const evs = readState(stateFile);
+    assert.equal('thoughtLevel' in evs.find((e) => e.ev === 'create').params, false);
+    assert.equal(evs.some((e) => e.ev === 'readstate'), false, '未请求不发校验请求');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D5 thinking：校验源不可用（readState -32601）→ 透传引擎容错，任务不失败', async () => {
+  process.env.FAKE_T_READSTATE = 'off';
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const { value: result, lines } = await captureStderr(() => {
+      const handle = runner.start(thinkingTaskCtx('校验源漂移任务', { thoughtLevel: 'low' }));
+      return handle.done;
+    });
+    assert.equal(result.status, 'closed', 'readState 漂移不拖垮任务（-32601 在校验层消化，不上抛 drift 分类）');
+    assert.equal(result.thinking, 'low', '档位透传给引擎（引擎 P2 容错兜底）');
+    const create = readState(stateFile).find((e) => e.ev === 'create');
+    assert.equal(create.params.thoughtLevel, 'low');
+    assert.ok(
+      lines.some((l) => l.includes('workspace/readState 不可用')),
+      `校验源不可用出声，捕获: ${lines.join(' | ').slice(0, 200)}`,
+    );
+  } finally {
+    delete process.env.FAKE_T_READSTATE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D5 thinking：session/read 应答的 settings.thoughtLevel 顺带沉淀校验缓存', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    // 任务 A 无 thinking：轮终态后的 session/read 应答携带 settings 面 → 沉淀缓存
+    const h1 = runner.start(thinkingTaskCtx('铺垫任务', {}));
+    const r1 = await h1.done;
+    assert.equal(r1.status, 'closed');
+    assert.equal(readState(stateFile).some((e) => e.ev === 'readstate'), false);
+    // 任务 B thinking：命中 read 沉淀的缓存，零 readState 请求
+    const h2 = runner.start(thinkingTaskCtx('受益任务', { thoughtLevel: 'low' }));
+    const r2 = await h2.done;
+    assert.equal(r2.status, 'closed');
+    assert.equal(r2.thinking, 'low');
+    assert.equal(readState(stateFile).filter((e) => e.ev === 'readstate').length, 0, 'read 应答沉淀生效：免发 readState');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D6 工具限制双来源：CLI deny ∪ frontmatter disallowedTools 并集去重入 create', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const handle = runner.start(thinkingTaskCtx('工具限制任务', {
+      toolAllowlist: ['Read', ' Grep '],
+      toolDenylist: ['Bash', 'WebSearch'],
+    }, {
+      // frontmatter 来源（manager 组 taskCtx 的 disallowedTools 字段）：与 CLI deny 有交集 + 含脏值
+      disallowedTools: ['Bash', ' mcp__demo__x ', 42, null],
+    }));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    const create = readState(stateFile).find((e) => e.ev === 'create').params;
+    assert.deepEqual(create.toolDenylist, ['Bash', 'WebSearch', 'mcp__demo__x'],
+      '并集去重 + 规范化（trim/滤非字符串），CLI 来源在前');
+    assert.deepEqual(create.toolAllowlist, ['Read', 'Grep'], 'allowlist 规范化后原样入 create');
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('D6 工具限制：两来源皆空时 create 不携带工具限制键', async () => {
+  const { runner, stateFile } = newRecoveryRunner(writeThinkingFake());
+  try {
+    const handle = runner.start(thinkingTaskCtx('无工具限制任务', {}));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed');
+    const create = readState(stateFile).find((e) => e.ev === 'create').params;
+    assert.equal('toolDenylist' in create, false);
+    assert.equal('toolAllowlist' in create, false);
+  } finally {
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
 // ------------------------------------------------- D4 create 显式化 / D8 遥测 / D3 落盘
 
 test('D4：create 固定携带 persistence:"immediate"，上游 createParams 不可覆盖', async () => {
