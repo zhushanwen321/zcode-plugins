@@ -623,7 +623,11 @@ function fallowReviewPrompt({ instruction, base }) {
 /**
  * target 系参数归一（D5）：新参（targetType/target）优先；--review-target 为等价
  * sugar（targetType=text）；全缺省 → text + v1 缺省文案。新参旧参冲突不报错：
- * 新参优先 + WARN 一行。非法 targetType / 空 target 一律可操作报错。
+ * 新参优先 + WARN 一行。可操作报错两处：非法 targetType；targetType≠text 且
+ * target 缺失/为空——结构化类型缺 target 无法构造合法审查指令，缺省文案是
+ * text 语义专用，静默回退会让子进程拿到 `git diff git 未提交改动…HEAD` 这类
+ * 坏命令，宁可入口报错。text（含全缺省/sugar）空 target 仍回退缺省文案（D5
+ * 显式映射，非报错面）。
  */
 function normalizeTargetParams(raw, warnings) {
   const hasNewTarget = raw.targetType !== undefined || raw.target !== undefined;
@@ -642,9 +646,16 @@ function normalizeTargetParams(raw, warnings) {
       + '恢复指引：--target-type git-diff|file|dir|text。'
     );
   }
-  if (typeof target !== 'string' || target.trim() === '') target = DEFAULT_TARGET_TEXT;
-  target = target.trim();
-  return { targetType, target };
+  if (typeof target !== 'string' || target.trim() === '') {
+    if (targetType !== 'text') {
+      throw new Error(
+        `targetType=${targetType} 时 target 必填（git-diff: base ref 如 main / HEAD~1；file: 文件路径；dir: 目录路径），收到空值。`
+        + '恢复指引：补传 --target <值>；或省略 --target-type 走 text 审查任务（全缺省即审查 git 未提交改动）。'
+      );
+    }
+    target = DEFAULT_TARGET_TEXT; // D5 显式映射：text 语义的空 target 回退 v1 缺省文案
+  }
+  return { targetType, target: target.trim() };
 }
 
 /**

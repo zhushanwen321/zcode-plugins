@@ -152,7 +152,7 @@ function workflowUsage(exitCode = 1) {
     + '  --reviewers "a,b"         老参数 sugar：包装为单批（默认 correctness,robustness；\n'
     + '                            与 batchN 同传时 batchN 优先）\n'
     + '  --target-type <t>         审查目标类型 git-diff|file|dir|text（默认 text）\n'
-    + '  --target <text>           审查目标（与 --target-type 配套；全缺省 = "git 未提交改动"）\n'
+    + '  --target <text>           审查目标（与 --target-type 配套；git-diff/file/dir 必填，text 缺省 = "git 未提交改动"）\n'
     + '  --review-target <text>    老参数 sugar：等价 --target-type text --target <text>\n'
     + '  --max-rounds <n>          每批最大轮数（默认 10，≥1）\n'
     + '  --stuck-threshold <n>     连续 N 轮 must-fix 不降判 stuck（默认 3）\n'

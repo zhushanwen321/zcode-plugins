@@ -61,13 +61,8 @@
 
 const os = require('node:os');
 const path = require('node:path');
-const fs = require('node:fs');
 const config = require('../../lib/config');
-const {
-  PROVIDER_ID,
-  availableModels,
-  hasProviderCredentials,
-} = require('../../lib/model-router');
+const { PROVIDER_ID } = require('../../lib/model-router');
 const workflowScript = require('../../lib/workflow-script');
 const { DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
 const { DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
@@ -227,7 +222,7 @@ function buildRunWorkflowToolDefinition() {
         },
         target: {
           type: 'string',
-          description: 'review-fix-loop only. What to review, interpreted per targetType. Default "git 未提交改动".',
+          description: 'review-fix-loop only. What to review, interpreted per targetType. Required when targetType is git-diff (base ref, e.g. main / HEAD~1), file or dir — missing/empty target with a non-text targetType is an operational error. Default "git 未提交改动" applies to text only.',
         },
         batch1: {
           type: 'array', items: { type: 'string' },
@@ -449,19 +444,21 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
               + '恢复指引：其他 action 不受影响；models 排障查 lib/assemble.js 的 modelRouter 组装。'
             );
           }
-          // listModels 抛的清单不可读错误是可操作错误（含恢复指引），
-          // 由外层 catch 原样透传
           // --all（跨 provider 兜底链闭合）：默认 provider 不可用时模型路由
           // 仍可走其他带凭据 provider，但查询面此前只有默认 provider 视图，
           // 兜底链在「查」这一环断头。--all 出全 provider 视图；缺省行为
           // （默认 provider 单视图）完全不变，既有消费方零感知。
+          // --all 数据源 = router.allProviders()（下沉后的单一实现，本入口
+          // 零复制）；清单不可读的可操作错误由外层 catch 原样透传。
           if (args.all === true) {
             return okContent({
               all: true,
-              providers: modelsAllProviders(router),
+              providers: router.allProviders(),
               guidance: '跨 provider 引用必须用全名 <provider>/<model> 传 model；default 标记 = 该 provider 的默认模型。',
             });
           }
+          // listModels 抛的清单不可读错误是可操作错误（含恢复指引），
+          // 由外层 catch 原样透传
           return okContent({
             provider: PROVIDER_ID,
             models: router.listModels(),
@@ -688,41 +685,12 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
 }
 
 /**
- * models action 的 --all 全 provider 视图数据源。口径与 SessionStart 注入块
- * 的「其他可运行 provider」段一致（lib/hook-inject.js otherProviderLines）：
- * hasProviderCredentials（driver.js 权威谓词的转口导出）且模型清单非空的
- * provider 才列——无凭据的列了也跑不起来（spawn 池只复制带凭据 provider），
- * 兜底链视图必须是「真正可运行」的全集。
- * 条目结构化复用 router.listModels(provider)（label/contextWindow/reasoning/
- * default 的提取逻辑单一实现，server 不复刻），模型名升格为全名
- * <provider>/<model>——跨 provider 引用必须全名，这是视图存在的理由。
- * v2 config 读失败抛可操作错误（与默认视图 listModels 的失败口径一致，不
- * 静默回空数组）；读成功但无合格 provider 返回空数组（合法状态：本机未配置
- * 任何可运行 provider）。
- * @returns {Array<{provider: string, models: Array<object>}>}
+ * models action 的 --all 全 provider 视图数据源已整体下沉为
+ * ModelRouter#allProviders（lib/model-router.js，「合格 provider 判定 + 全
+ * provider 模型视图」的单一实现，SessionStart 注入块同口径）：v2 config 读取、
+ * 资格过滤（带凭据且清单非空）、全名升格都不在本入口层复制——平台配置结构
+ * 知识只活在端口实现内，server 只经 router 端口消费。
  */
-function modelsAllProviders(router) {
-  let v2;
-  try {
-    v2 = JSON.parse(fs.readFileSync(config.V2_CONFIG_PATH, 'utf8'));
-  } catch {
-    throw new Error(
-      `无法从 ${config.V2_CONFIG_PATH} 读取模型清单。`
-      + '恢复指引：确认 ZCode 桌面端已登录并配置 provider 后重试。',
-    );
-  }
-  const out = [];
-  for (const [id, entry] of Object.entries((v2 && v2.provider) || {})) {
-    if (!hasProviderCredentials(entry)) continue;
-    if (!availableModels(v2, id).length) continue;
-    // 清单已验非空：listModels 的「无可用模型清单」抛错分支不可达
-    out.push({
-      provider: id,
-      models: router.listModels(id).map((m) => ({ ...m, name: `${id}/${m.name}` })),
-    });
-  }
-  return out;
-}
 
 function requireSubagentId(args) {
   if (typeof args.subagentId !== 'string' || args.subagentId.trim() === '') {

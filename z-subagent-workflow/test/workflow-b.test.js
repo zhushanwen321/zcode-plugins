@@ -1183,7 +1183,25 @@ test('review-fix-loop v2：未知参数白名单报错 + batchN 缺号报错（�
     () => runReviewFixLoop({ task: 'x', workdir: TMP, fallowScan: true }),
     /fallowScan=true 仅在 targetType=git-diff 时合法/,
   );
+  // targetType≠text 且 target 缺失/为空 → 可操作报错（不静默回退 text 专用缺省
+  // 文案产出 `git diff git 未提交改动…HEAD` 这类坏指令）
+  for (const targetType of ['git-diff', 'file', 'dir']) {
+    await assert.rejects(
+      () => runReviewFixLoop({ task: 'x', workdir: TMP, targetType }),
+      (e) => /targetType=\S+ 时 target 必填/.test(e.message) && e.message.includes('恢复指引'),
+    );
+    await assert.rejects(
+      () => runReviewFixLoop({ task: 'x', workdir: TMP, targetType, target: '   ' }),
+      /target 必填/,
+    );
+  }
   assert.deepEqual(readCalls(), []); // 校验失败零 spawn
+  // text 语义（含全缺省/sugar）空 target 仍回退缺省文案（D5 显式映射，非报错面）
+  const defTarget = await runReviewFixLoop({
+    task: '全缺省 target', workdir: makeWorkdir('rfl-target-default'), runId: 'wf-utest-target-default',
+  });
+  assert.equal(defTarget.loop.targetType, 'text');
+  assert.equal(defTarget.loop.target, 'git 未提交改动');
 });
 
 test('review-fix-loop v2：新参旧参同传 → 新参优先 + WARN 一行（D5）', async () => {

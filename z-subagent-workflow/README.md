@@ -168,7 +168,7 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 生效条件：
 
 1. 插件已启用（`zcode plugins list` 见 `z-subagent-workflow` enabled）。
-2. hook 注册于 `hooks/hooks.json`：SessionStart → `node "${ZCODE_PLUGIN_ROOT}/bin/zsw.js" hook session-start`（timeoutMs 5000；hook 内任一异常输出 `{}` + exit 0 静默降级，会话照常启动）。
+2. hook 注册于 `hooks/hooks.json`：SessionStart → `node "${ZCODE_PLUGIN_ROOT}/bin/zsw-hook.js"`（timeoutMs 5000；hook 内任一异常输出 `{}` + exit 0 静默降级，会话照常启动；`bin/zsw.js hook session-start` 是等价的 CLI 调试面）。
 3. **改 hooks 注册或插件文件后必须重启 ZCode 才生效**——GUI 只在启动时扫描插件配置。
 
 ### 验收场景（S1-S7）

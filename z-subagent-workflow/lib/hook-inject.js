@@ -8,9 +8,10 @@
  *
  * 渲染口径与 lib/model-router.js 单源：模型清单（availableModels）、默认标记
  * 判定（defaultModelFor，内部含 splitModelRef 引用切分；provider 感知——main
- * 指向非默认 provider 时不得在默认清单上错标）、apiKey 判定
- * （hasProviderCredentials，权威实现定义在 driver.js bootstrap 侧）全部直接
- * require model-router 的导出消费，本模块零复刻（防双实现语义漂移）。
+ * 指向非默认 provider 时不得在默认清单上错标）、合格 provider 判定
+ * （qualifiedProviders：带凭据且模型清单非空——凭据语义源出 driver.js 权威
+ * 谓词，判定下沉在 model-router 单一实现）全部直接 require model-router 的
+ * 导出消费，本模块零复刻（防多实现语义漂移）。
  * cliModelMain 由调用方传 defaultModelRef(v2) 回退链产物，因此本模块保持零 fs。
  *
  * 两层 models（D3）：默认 provider 段只渲染模型名单 + 默认标记，且不筛
@@ -33,7 +34,7 @@ const {
   PROVIDER_ID,
   availableModels,
   defaultModelFor,
-  hasProviderCredentials,
+  qualifiedProviders,
 } = require('./model-router');
 
 const HARD_BUDGET_LINES = 45;
@@ -48,17 +49,17 @@ const OTHER_PROVIDERS_HEADER = '  其他可运行 provider（跨 provider 必须
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * 其余可运行 provider 行（每 provider 一行）：apiKey 非空且模型清单非空才列；
- * 模型以全名 <provider>/<model> 列出；UUID 形态 provider 缩写为前 8 位并附
- * 「<缩写> 即 <全名>」对照（紧跟首个模型条目，§3.1 样例形态）。
+ * 其余可运行 provider 行（每 provider 一行）：资格判定消费 model-router 的
+ * qualifiedProviders 单一实现（带凭据且模型清单非空，与 zsw models --all 同
+ * 口径），此处只做展示层裁剪——默认 provider 单列故排除；模型以全名
+ * <provider>/<model> 列出；UUID 形态 provider 缩写为前 8 位并附「<缩写> 即
+ * <全名>」对照（紧跟首个模型条目，§3.1 样例形态）。
  */
 function otherProviderLines(v2) {
   const lines = [];
-  for (const [id, e] of Object.entries((v2 && v2.provider) || {})) {
-    if (id === PROVIDER_ID) continue;
-    if (!hasProviderCredentials(e)) continue; // 单一谓词（driver.js 权威实现的转口导出）
-    const models = Object.keys((e && e.models) || {});
-    if (!models.length) continue;
+  for (const id of qualifiedProviders(v2)) {
+    if (id === PROVIDER_ID) continue; // 默认段已单列，此段只渲染「其余」
+    const models = availableModels(v2, id);
     const isUuid = UUID_RE.test(id);
     const abbr = isUuid ? id.slice(0, 8) + '…' : id;
     const items = models.map((m) => `${abbr}/${m}`);

@@ -52,6 +52,22 @@ function providersUsable(v2) {
 }
 
 /**
+ * 「合格 provider」判定与枚举（单一实现，models --all 视图与 SessionStart 注入块
+ * 的「其他可运行 provider」段共同消费，禁复刻防多出口径漂移）：带凭据
+ * （hasProviderCredentials，driver.js 权威谓词）且模型清单非空——无凭据的列了也
+ * 跑不起来（spawn 池只复制带凭据 provider），兜底链视图必须是「真正可运行」的
+ * 全集。与 providersUsable 的差异：多了凭据维度——错误提示要列「有清单的」
+ * （帮助修正引用），可运行视图只列「真正跑得起来的」。默认 provider 不在此排除
+ * （是否单列属展示层决策）。
+ * @returns {string[]} 合格 provider id（v2 config 声明顺序）
+ */
+function qualifiedProviders(v2) {
+  return Object.entries((v2 && v2.provider) || {})
+    .filter(([, e]) => driver.hasProviderCredentials(e) && Object.keys((e && e.models) || {}).length > 0)
+    .map(([id]) => id);
+}
+
+/**
  * 引用切分（唯一实现，hook-inject 复用同一导出防双源漂移）：含 "/" 按
  * lastIndexOf 切出 provider（provider id 本身可含 ":"，如 builtin:*），否则
  * 短名归默认 provider。
@@ -120,6 +136,34 @@ function trimToNull(v) {
   if (v == null) return null;
   const s = String(v).trim();
   return s || null;
+}
+
+/**
+ * v2 条目 → 结构化模型条目（listModels 的映射体，allProviders() 复用同一实现
+ * 防两份字段提取漂移）。字段全部可选透出：config 里没有的维度不造默认值（如
+ * 本机实测条目无 label），避免误导路由。默认标记走单一谓词（provider 感知）：
+ * main 指向别的 provider 时本清单不错标。前置条件：该 provider 清单已验非空
+ * （调用方负责，listModels / allProviders 均如此）。
+ */
+function modelEntries(v2, provider) {
+  const defShort = defaultModelFor(v2, provider);
+  return availableModels(v2, provider).map((name) => {
+    const def = v2.provider[provider].models[name] || {};
+    const entry = { name };
+    const label = trimToNull(def.label);
+    if (label) entry.label = label;
+    const ctx = def.limit && def.limit.context;
+    if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
+    const r = def.reasoning;
+    if (r && Array.isArray(r.variants) && r.variants.length > 0) {
+      entry.reasoning = { variants: r.variants };
+      if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
+        entry.reasoning.defaultVariant = r.defaultVariant;
+      }
+    }
+    if (name === defShort) entry.default = true; // 默认标记：省略 model 时即用它；档位轻重随环境配置，重任务应显式指定
+    return entry;
+  });
 }
 
 /**
@@ -232,25 +276,31 @@ class ModelRouter {
         `恢复指引：改用上述 provider 之一，或先在 ZCode 桌面端为该 provider 配置模型后重试。`
       );
     }
-    // 默认标记走单一谓词（provider 感知）：main 指向别的 provider 时本清单不错标
-    const defShort = defaultModelFor(v2, provider);
-    return models.map((name) => {
-      const def = v2.provider[provider].models[name] || {};
-      const entry = { name };
-      const label = trimToNull(def.label);
-      if (label) entry.label = label;
-      const ctx = def.limit && def.limit.context;
-      if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
-      const r = def.reasoning;
-      if (r && Array.isArray(r.variants) && r.variants.length > 0) {
-        entry.reasoning = { variants: r.variants };
-        if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
-          entry.reasoning.defaultVariant = r.defaultVariant;
-        }
-      }
-      if (name === defShort) entry.default = true; // 默认标记：省略 model 时即用它；档位轻重随环境配置，重任务应显式指定
-      return entry;
-    });
+    return modelEntries(v2, provider);
+  }
+
+  /**
+   * models --all 的全 provider 结构化视图（zsub models --all 数据源；「合格
+   * provider 判定 + 全 provider 模型视图」收拢于本模块单一实现，dist/mcp/server.js
+   * 入口薄壳层只消费不复制，SessionStart 注入块经 qualifiedProviders 同口径）。
+   * 只列合格 provider（qualifiedProviders：带凭据且清单非空），模型名升格为全名
+   * <provider>/<model>——跨 provider 引用必须全名，这是视图存在的理由。
+   * 清单不可读抛可操作错误（与 listModels 失败口径一致，不静默回空数组）；读
+   * 成功但无合格 provider 返回空数组（合法状态：本机未配置任何可运行 provider）。
+   * @returns {Array<{provider: string, models: Array<object>}>}
+   */
+  allProviders() {
+    const v2 = readV2Config();
+    if (!v2) {
+      throw new Error(
+        `无法从 ${config.V2_CONFIG_PATH} 读取模型清单。`
+        + '恢复指引：确认 ZCode 桌面端已登录并配置 provider 后重试。',
+      );
+    }
+    return qualifiedProviders(v2).map((id) => ({
+      provider: id,
+      models: modelEntries(v2, id).map((m) => ({ ...m, name: `${id}/${m.name}` })),
+    }));
   }
 
   /**
@@ -303,3 +353,8 @@ module.exports.availableModels = availableModels;
 module.exports.splitModelRef = splitModelRef;
 module.exports.defaultModelFor = defaultModelFor;
 module.exports.hasProviderCredentials = driver.hasProviderCredentials;
+// 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
+// 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻（全 provider
+// 结构化视图经 ModelRouter#allProviders 消费，视图本身不经模块级导出——
+// 读 V2 config 的入口只在端口实现内，入口薄壳层零复制）
+module.exports.qualifiedProviders = qualifiedProviders;
