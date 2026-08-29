@@ -218,12 +218,66 @@ function requireRunIdArg(args) {
   return args.id;
 }
 
-/** run action：组参 → 同步等完成 → 报告 + 摘要（exit code 按终态）。 */
-async function runWorkflowRun(wfManager, args, cwd) {
+/** run action 参数面①：必填三参校验（声明顺序即缺参报错的优先级）。 */
+function requireWorkflowRunArgs(args) {
   if (!args.workflow) { process.stderr.write('缺少 --workflow\n'); workflowUsage(1); }
   if (!args.task) { process.stderr.write('缺少 --task（必填，自包含任务书）\n'); workflowUsage(1); }
   if (!args.workdir) { process.stderr.write('缺少 --workdir\n'); workflowUsage(1); }
+}
 
+/** run action 参数面②：通用 per-workflow 选项（csv→数组、字符串→数字/布尔）。 */
+function applyWorkflowCoreOptions(params, args) {
+  if (args.perspectives !== undefined) params.perspectives = csv(args.perspectives);
+  if (args.items !== undefined) params.items = parseItems(args.items);
+  if (args.operation !== undefined) params.operation = args.operation;
+  if (args.subtaskCount !== undefined) params.subtaskCount = Number(args.subtaskCount);
+  if (args.reviewTarget !== undefined) params.reviewTarget = args.reviewTarget;
+  if (args.reviewers !== undefined) params.reviewers = csv(args.reviewers);
+  if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
+  if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
+  if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
+}
+
+/** batchN 动态键（--batch1、--batch2、… 连续编号）：csv 归一 + 已消费标记 + 无值报错。 */
+function applyBatchArgs(params, args, consumedArgs) {
+  for (const [key, value] of Object.entries(args)) {
+    if (!/^batch([1-9]\d*)$/.test(key)) continue;
+    consumedArgs.add(key); // 已映射为 csv 数组，透传循环不得用原始字符串覆写
+    if (value === true) {
+      process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
+      workflowUsage(1);
+    }
+    params[key] = csv(value);
+  }
+}
+
+/** review-fix-loop v2 显式 flag 面：target/batch/聚合收敛/fix 行为 → params。 */
+function applyReviewFixLoopOptions(params, args, consumedArgs) {
+  if (args.targetType !== undefined) params.targetType = args.targetType;
+  if (args.target !== undefined) params.target = args.target;
+  applyBatchArgs(params, args, consumedArgs);
+  if (args.batchNames !== undefined) params.batchNames = csv(args.batchNames);
+  if (args.stuckThreshold !== undefined) params.stuckThreshold = Number(args.stuckThreshold);
+  if (args.convergeNewIssues !== undefined) params.convergeNewIssues = Number(args.convergeNewIssues);
+  if (args.convergeRounds !== undefined) params.convergeRounds = Number(args.convergeRounds);
+  if (args.maxFixAttempts !== undefined) params.maxFixAttempts = Number(args.maxFixAttempts);
+  if (args.aggregatorModel !== undefined) params.aggregatorModel = args.aggregatorModel;
+  if (args.reviewPrompt !== undefined) params.reviewPrompt = args.reviewPrompt;
+  if (args.fixPrompt !== undefined) params.fixPrompt = args.fixPrompt;
+  if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
+  if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
+}
+
+/** 透传面：consumedArgs 之外的未知 flag 原样透传（拼错 flag 不在 CLI 静默丢弃）。 */
+function applyPassthroughArgs(params, args, consumedArgs) {
+  for (const [key, value] of Object.entries(args)) {
+    if (consumedArgs.has(key) || value === undefined) continue;
+    params[key] = value;
+  }
+}
+
+/** run action 参数组装：基础参数 → 通用选项 → review-fix-loop 选项 → 透传。 */
+function buildWorkflowRunParams(args) {
   const params = {
     workflow: args.workflow, // 内置名或 script:<脚本名>（合法性由 manager 校验）
     task: args.task,
@@ -238,15 +292,7 @@ async function runWorkflowRun(wfManager, args, cwd) {
     // 进度走 stderr（stdout 留给结果）；回调经 record 的 JSON 序列化自然丢弃，不落盘
     onPhase: ({ phase, status }) => process.stderr.write(`[${new Date().toISOString()}] ${phase}: ${status}\n`),
   };
-  if (args.perspectives !== undefined) params.perspectives = csv(args.perspectives);
-  if (args.items !== undefined) params.items = parseItems(args.items);
-  if (args.operation !== undefined) params.operation = args.operation;
-  if (args.subtaskCount !== undefined) params.subtaskCount = Number(args.subtaskCount);
-  if (args.reviewTarget !== undefined) params.reviewTarget = args.reviewTarget;
-  if (args.reviewers !== undefined) params.reviewers = csv(args.reviewers);
-  if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
-  if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
-  if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
+  applyWorkflowCoreOptions(params, args);
 
   // review-fix-loop v2 参数面（设计 §3.4 终态全集）。target/review-target/batchN/
   // reviewers 的优先级裁决与缺省映射统一在 workflow 入口 normalizeParams（D5）——
@@ -268,34 +314,13 @@ async function runWorkflowRun(wfManager, args, cwd) {
     'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
     'fallowScan', 'autoCommit', 'onPhase',
   ]);
-  if (args.targetType !== undefined) params.targetType = args.targetType;
-  if (args.target !== undefined) params.target = args.target;
-  for (const [key, value] of Object.entries(args)) {
-    if (!/^batch([1-9]\d*)$/.test(key)) continue;
-    consumedArgs.add(key); // 已映射为 csv 数组，透传循环不得用原始字符串覆写
-    if (value === true) {
-      process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
-      workflowUsage(1);
-    }
-    params[key] = csv(value);
-  }
-  if (args.batchNames !== undefined) params.batchNames = csv(args.batchNames);
-  if (args.stuckThreshold !== undefined) params.stuckThreshold = Number(args.stuckThreshold);
-  if (args.convergeNewIssues !== undefined) params.convergeNewIssues = Number(args.convergeNewIssues);
-  if (args.convergeRounds !== undefined) params.convergeRounds = Number(args.convergeRounds);
-  if (args.maxFixAttempts !== undefined) params.maxFixAttempts = Number(args.maxFixAttempts);
-  if (args.aggregatorModel !== undefined) params.aggregatorModel = args.aggregatorModel;
-  if (args.reviewPrompt !== undefined) params.reviewPrompt = args.reviewPrompt;
-  if (args.fixPrompt !== undefined) params.fixPrompt = args.fixPrompt;
-  if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
-  if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
+  applyReviewFixLoopOptions(params, args, consumedArgs);
+  applyPassthroughArgs(params, args, consumedArgs);
+  return params;
+}
 
-  for (const [key, value] of Object.entries(args)) {
-    if (consumedArgs.has(key) || value === undefined) continue;
-    params[key] = value;
-  }
-
-  const fin = await wfManager.start(params, { cwd });
+/** run action 输出面：--json 只出摘要；默认 markdown 报告 + 摘要两段；exit 按终态。 */
+function renderWorkflowRunOutput(fin, args) {
   const summary = {
     runId: fin.runId, workflow: fin.workflow, status: fin.status,
     outputFile: fin.outputFile, error: fin.error === undefined ? null : fin.error,
@@ -309,6 +334,14 @@ async function runWorkflowRun(wfManager, args, cwd) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   }
   process.exit(fin.status === 'closed' ? 0 : 1);
+}
+
+/** run action：组参 → 同步等完成 → 报告 + 摘要（exit code 按终态）。 */
+async function runWorkflowRun(wfManager, args, cwd) {
+  requireWorkflowRunArgs(args);
+  const params = buildWorkflowRunParams(args);
+  const fin = await wfManager.start(params, { cwd });
+  renderWorkflowRunOutput(fin, args);
 }
 
 /**
