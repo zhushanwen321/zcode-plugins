@@ -78,6 +78,8 @@ agents（四根发现，同名高优先级根胜出）：context-builder（需�
 workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-loop；script:<名> 自定义（当前 0 个）
 兜底：传错模型名时报错自带可用清单（零依赖权威兜底）；主动现查 zsw models / zsw agents（需 daemon 在跑——任一启用插件的会话）
 </zsw-resources>
+```
+（渲染形态注：本样例为语义示意；实际渲染中 agents 段为「段头 + 每 agent 一行」、其余 provider 每 provider 一行、UUID 对照在该 provider 首次出现处内联一次——已登记为实施偏差，见 impl-plan §5 偏差登记表 #1/#2/#4。GUI 目视比对以实际渲染形态为准。）
 
 [用户] 派两个后台子任务，重的调研、轻的格式转换
 [agent] （零工具调用）从注入块取：重 → --model GLM-5.3（显式，因默认是轻量 Flash 不能裸跟随）；轻 → 不传，跟随默认 GLM-5.3-Flash
@@ -134,7 +136,7 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 - **代价声明**：若引擎在 resume 时重放历史注入块，会出现两份块（token 翻倍但无正确性影响）；此为运行时断言，未实测不写死结论——见探针 P-resume-dup。
 
 **D3：单外层标签 `<zsw-resources>` 内分三段；models 段两层展示（默认 provider 短名明细 + 其余 provider 全名）；硬预算（选定）**
-- **采用**：一次 hook 输出一个块，内分 models / agents / workflows 三段 + 兜底行。models 段两层：**默认 provider**（短名解析的 target，与 `zsw models` 输出同口径）只渲染**模型名单 + 默认标记**两个字段（`zsw models` 返回的结构化条目含 label/contextWindow 等，注入块不做字段级对齐，一致性按名单+默认标记判定），且**不筛 apiKey**（锚定 `zsw models` 口径；默认 provider 凭据被 GUI 中途删除属快照过期，由 G3 报错兜底覆盖）；**其他 apiKey 非空且模型清单非空的 provider** 只以**全名** `<provider>/<model>` 列出（短名跨 provider 本就不可解析，展示短名等于诱导传错）。agents 段列 name + 截断 20 字描述；workflows 段列内置 5 名 + script 数量。UUID 形态 provider 首次出现给 `UUID 前 8 位…` 缩写并附全名对照。硬预算：**全文 ≤ 45 行**；超限**优先保留 models 段**，依次截 agents 段、workflows 段；截断标注与被截段对应（截 agents 段 → 标注「完整清单：zsw agents」；截 workflows 段 → 标注「完整清单：zsw workflow --action scripts」）。
+- **采用**：一次 hook 输出一个块，内分 models / agents / workflows 三段 + 兜底行。models 段两层：**默认 provider**（短名解析的 target，与 `zsw models` 输出同口径）只渲染**模型名单 + 默认标记**两个字段（`zsw models` 返回的结构化条目含 label/contextWindow 等，注入块不做字段级对齐，一致性按名单+默认标记判定），**默认标记解析与 `zsw models` 同源**——defaultModelRef 回退链（cli config 的 model.main 可解析 → v2 顶层 model.main → 内置回退），禁止 hook 侧另造一套标记逻辑；且**不筛 apiKey**（锚定 `zsw models` 口径；默认 provider 凭据被 GUI 中途删除属快照过期，由 G3 报错兜底覆盖）；**其他 apiKey 非空且模型清单非空的 provider** 只以**全名** `<provider>/<model>` 列出（短名跨 provider 本就不可解析，展示短名等于诱导传错）。agents 段列 name + 截断 20 字描述；workflows 段列内置 5 名 + script 数量（>0 时行内列名，不增行）。UUID 形态 provider 首次出现给 `UUID 前 8 位…` 缩写并附全名对照。硬预算：**全文 ≤ 45 行**；超限**优先保留 models 段**，依次截 agents 段、workflows 段；截断标注与被截段对应（截 agents 段 → 标注「完整清单：zsw agents」；截 workflows 段 → 标注「完整清单：zsw workflow --action scripts」）。
 - **被否**：① 三个独立 XML 标签（pi 形态）——zcode 引擎对同事件多 hook 输出的拼接顺序无契约保证，单块 by construction 确定；② models 段平铺所有 provider 的裸短名——非默认 provider 短名直传必被拒（model-router.js 短名只按默认 provider 解析），正是失败模式 B 的翻版；③ 列全部 provider（含无凭据的）——会诱导传必被拒的模型名。
 - **证据**：本机实测规模：5 个可运行 provider / 7 模型 / 6 agents / 0 script → 两层结构渲染约 15-20 行，预算内；apiKey 过滤逻辑已存在（driver.js:167 同判定）；「与 `zsw models` 一致」的口径锚定——daemon 侧 `models` action 只返回默认 provider 明细（dist/mcp/server.js），故一致性定义为：**默认 provider 段与 `zsw models` 完全一致；其余 provider 段为全名形态的并集补充**。
 - **效果**：G1 的一致性口径成立且可验收；块内展示形态与 resolve 解析语义严格对齐（短名=默认 provider、跨 provider=全名），G2 的「一步到位」不会引向错误引用。
@@ -171,7 +173,10 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
    ▼
 [zsw hooks/hooks.json] ──spawn──► node bin/zsw.js hook session-start  （ZSW_NESTED=1 ? → 输出 {} 退出）
    │                                  │  项目目录 = env ZCODE_PROJECT_DIR（契约注入）> process.cwd() 回退
-   │                                  ├─ 读 ~/.zcode/v2/config.json（apiKey + 模型清单过滤 + 默认模型标记）
+   │                                  ├─ 读 ~/.zcode/v2/config.json（apiKey + 模型清单过滤）
+   │                                  ├─ 读 ~/.zcode/cli/config.json（model.main → 默认标记；
+   │                                  │    标记解析与 zsw models 同源走 defaultModelRef 回退链：
+   │                                  │    cli.main 可解析 → v2 顶层 model.main → 内置回退）
    │                                  ├─ agent-md-resolver.list(projectDir)（四根 .md 发现）
    │                                  └─ workflow-script.listScripts(projectDir) + 内置五名
    │                                  ▼

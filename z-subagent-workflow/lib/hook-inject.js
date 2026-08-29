@@ -141,7 +141,7 @@ function workflowLine(builtinWorkflows, scripts, truncated) {
  * 渲染 <zsw-resources> 注入块。
  * @param {object} input
  *   - v2 {object|null}      解析后的 ~/.zcode/v2/config.json 对象（可缺省/畸形，降级渲染）
- *   - cliModelMain {string} cli config 的 model.main（默认标记依据，可缺省）
+ *   - cliModelMain {string} 默认模型引用（调用方传 model-router.defaultModelRef(v2) 回退链产物：cli.main 可解析 → v2 顶层 model.main → 内置回退；与 zsw models 默认标记同口径，可缺省）
  *   - agents {Array}        [{name, description}]
  *   - scripts {Array}       自定义 workflow 脚本名
  *   - builtinWorkflows {Array} 内置 workflow 名（内置五名由调用方传）

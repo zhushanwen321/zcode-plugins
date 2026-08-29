@@ -38,7 +38,7 @@ node bin/zsw.js models                        → 可用模型清单（短名/�
 
 （`--local` 后门走一次性本地执行，仅调试用——无续聊/限流，CLI 退出即丢执行体。）
 
-start 前不确定有哪些 agent 可用时，先 `node bin/zsw.js agents` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
+start 前不确定有哪些 agent 可用时，优先看会话上下文 `<zsw-resources>` 快照的 agents 段（SessionStart 注入，四根发现结果，快照在场即免查询）；快照缺席或疑过期时再 `node bin/zsw.js agents` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
 
 ## CLI 模式（默认，1.0.0 起）——首选等待姿势
 

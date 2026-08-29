@@ -73,7 +73,7 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 
 参数面全集见 `node bin/zsw.js workflow --help`（`--target-type`/`--target`、`--batch1..N`/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--reviewers` 等价单批 sugar（无 batchN 时包装为 `[reviewers]`）；`--review-target <text>` 等价 `--target-type text --target <text>`；target 系全缺省 = text / "git 未提交改动"。
 
-v1→v2 行为差异（老参数调用者需知：参数兼容、语义刻意对齐 pi，非回归；完整清单见 `docs/design/zsw-review-fix-loop-v2-design.md` §4.1）：
+v1→v2 行为差异（老参数调用者需知：参数兼容、语义刻意对齐 pi，非回归；完整清单见源仓库（github.com/zhushanwen321/zcode-plugins）根 `docs/design/zsw-review-fix-loop-v2-design.md` §4.1）：
 
 | # | 差异 | v1 | v2 |
 |---|------|----|----|
@@ -141,7 +141,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 ## SessionStart 资源注入验收手册（`<zsw-resources>` 块）
 
-zsw 注册 SessionStart hook，在会话启动时向主 agent 上下文注入一份资源快照 `<zsw-resources>` 块（可运行模型 / agent .md / workflow 三段清单 + 兜底指引），模型路由决策零工具调用可得；快照可能过期，`zsw models` 等查询命令保留为权威兜底。设计全文见 `docs/design/zsw-session-start-injection-design.md`。
+zsw 注册 SessionStart hook，在会话启动时向主 agent 上下文注入一份资源快照 `<zsw-resources>` 块（可运行模型 / agent .md / workflow 三段清单 + 兜底指引），模型路由决策零工具调用可得；快照可能过期，`zsw models` 等查询命令保留为权威兜底。设计全文见源仓库（github.com/zhushanwen321/zcode-plugins）根 `docs/design/zsw-session-start-injection-design.md`。
 
 ### 块形态与生效条件
 
@@ -176,7 +176,7 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 
 | # | 场景 | 步骤 | 通过标准 |
 |---|------|------|----------|
-| S1 | 主 agent 零调用报清单 | 重启 ZCode 开新会话 → 问「现在哪些模型可跑？默认哪个？短名和全名怎么用？」 | agent 不调任何工具，答出：① 默认 provider 的**模型名单与默认标记**与 `zsw models`（另开终端跑）一致（字段粒度不做要求——`zsw models` 返回结构化条目，注入块只渲染名单+标记）；② 其余可运行 provider 以全名形态列出；③ 短名/全名使用规则与 resolve 语义一致（短名=默认 provider，跨 provider=全名） |
+| S1 | 主 agent 零调用报清单 | 重启 ZCode 开新会话 → 问「现在哪些模型可跑？默认哪个？短名和全名怎么用？」（④ 的验证需换到含项目级 agent .md 的仓库开会话执行，或按 P-cwd 手册条目在 GUI 场景单独执行） | agent 不调任何工具，答出：① 默认 provider 的**模型名单与默认标记**与 `zsw models`（另开终端跑）一致（字段粒度不做要求——`zsw models` 返回结构化条目，注入块只渲染名单+标记）；② 其余可运行 provider 以全名形态列出；③ 短名/全名使用规则与 resolve 语义一致（短名=默认 provider，跨 provider=全名）；④ 在含项目级 agent .md 的仓库开会话时，注入块 agents 段含该项目级 agent 名（P-cwd 的 GUI 侧断言落点） |
 | S2 | 路由决策一步到位 | 新会话让 agent 派发两个 zsub（一重一轻，见上文样例） | agent 直接按块内引用构造参数（重 → 显式 `--model GLM-5.3`；轻 → 不传跟随默认 Flash），全程未跑 `zsw models`；两任务受理成功 |
 | S3 | 快照过期自愈（负面场景） | 会话中途 GUI 停用一个 provider → 让 agent 用该 provider 模型派发 | 收到既有可操作报错（含可用清单）→ agent 换模型重传成功；无卡死、无静默失败 |
 | S4 | 嵌套会话不污染 | S2 的重任务 task 书里加「报告你上下文是否有 zsw-resources 块」 | 子代理回答没有；主会话块仍存在 |
@@ -194,7 +194,7 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
     node bin/zsw.js hook session-start
   ```
 
-  通过标准：输出 JSON 的 `additionalContext` 含该仓库的项目级 agent 名（GUI 侧完整断言见 S1；失败降级路径见设计 §3.5 P-cwd）。
+  通过标准：输出 JSON 的 `additionalContext` 含该仓库的项目级 agent 名（GUI 侧断言 = S1 通过标准 ④；失败降级路径见源仓库设计文档 §3.5 P-cwd）。
 - **P-nested-guard（嵌套会话不注入，实施期门复跑）**：`ZSW_NESTED=1 node bin/zsw.js hook session-start`，期望 stdout 为 `{}` 且 exit code 0（只验输出不验 exit code 会漏掉 exit 1 违规形态——非零退出会在会话启动 raise error）。
 
 ### 已知边界（如实声明）

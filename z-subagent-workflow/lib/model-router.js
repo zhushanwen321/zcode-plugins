@@ -261,3 +261,6 @@ class ModelRouter {
 module.exports = ModelRouter;
 module.exports.PROVIDER_ID = PROVIDER_ID;
 module.exports.FALLBACK_DEFAULT_MODEL = FALLBACK_DEFAULT_MODEL;
+// hook 默认标记复用同一回退链（bin/zsw.js hook 分支），与 zsw models 同口径（D3），
+// 禁止调用方复刻回退逻辑防两套口径漂移
+module.exports.defaultModelRef = defaultModelRef;

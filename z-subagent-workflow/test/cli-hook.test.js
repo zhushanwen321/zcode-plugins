@@ -5,12 +5,14 @@
  * u2 验收条款——嵌套守卫输出 {} 且 exit 0（P-nested-guard，双断言防 exit 1
  * 违规形态）、正常路径严格协议 JSON（hookEventName + <zsw-resources 块 +
  * 本机默认 provider 名）、ZCODE_PROJECT_DIR 项目级 agent 发现（P-cwd 可脚
- * 本部分）、v2 config 不可读整体降级 {}。
+ * 本部分）、v2 config 不可读整体降级 {}、cli config 缺失时默认标记回退链
+ * 生效（D3 与 zsw models 同口径：v2 顶层 model.main / 内置回退，禁止缺席）。
  *
  * 隔离：HOME 指向临时目录——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 在
  * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME，仓内 workflow-script/
  * driver 同款注释），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
- * fixture 项目目录（与 bin/zsw.js :366/:596 的 projectDir 解析链对齐）。
+ * fixture 项目目录（与 bin/zsw.js workflow 子命令及本地模式的 projectDir
+ * 解析链对齐：ZCODE_PROJECT_DIR > process.cwd()）。
  */
 
 const { execFile } = require('node:child_process');
@@ -107,6 +109,11 @@ test('正常路径 → 严格单行协议 JSON：SessionStart + <zsw-resources �
   assert.ok(ctx.includes('</zsw-resources>'));
   assert.ok(ctx.includes(PROVIDER_ID), '含本机默认 provider 名（fixture 写入同款，防硬编码漂移）');
   assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'cli config model.main → 默认标记链路真实生效');
+  // 硬预算 ≤45 行（设计 D3；探针 P-token-budget 的可脚本承接）
+  assert.ok(
+    ctx.split('\n').length <= 45,
+    `注入块行数超硬预算：${ctx.split('\n').length} > 45`,
+  );
 });
 
 // ------------------------------------------- P-cwd（ZCODE_PROJECT_DIR 项目级发现）
@@ -128,9 +135,30 @@ test('v2 config 不可读（HOME 指向空目录）→ {} + exit 0 + stderr 一�
   assert.match(r.stderr, /\[zsw:hook\]/); // 诊断走 stderr 且只此通道
 });
 
-// ------------------------------------------- 行为链补充：cli config 读不到 → null 降级渲染
+// ----------------------- 默认标记回退链（D3：cli 缺失时与 zsw models 同口径）
 
-test('cli config 缺失 → 快照块仍渲染，默认标记缺席（cliModelMain 降级 null）', async () => {
+// cli config 缺失时默认标记不再缺席——model-router defaultModelRef 的回退链
+// （cli.main 可解析 → v2 顶层 model.main → 内置 FALLBACK_DEFAULT_MODEL）生效。
+// 第 1 层已由正常路径用例覆盖（cli.main 可解析），此处分别构造第 2/3 层。
+
+test('cli config 缺失 + v2 顶层 model.main → 标它（回退链第 2 层）', async () => {
+  const homeV2Main = path.join(TMP, 'home-v2-main');
+  fs.mkdirSync(path.join(homeV2Main, '.zcode', 'v2'), { recursive: true });
+  fs.writeFileSync(
+    path.join(homeV2Main, '.zcode', 'v2', 'config.json'),
+    JSON.stringify({
+      model: { main: `${PROVIDER_ID}/GLM-5.3-Flash` },
+      provider: { [PROVIDER_ID]: { models: { 'GLM-5.3': {}, 'GLM-5.3-Flash': {} } } },
+    }),
+  );
+  const r = await run({ HOME: homeV2Main }, { cwd: TMP });
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+  const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
+  assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'v2 顶层 model.main 应成为默认标记');
+  assert.ok(!ctx.includes('GLM-5.3（默认）'), '内置回退 GLM-5.3 未被标——证明确实走了第 2 层而非第 3 层');
+});
+
+test('cli config 缺失 + v2 顶层无 model → 标内置回退 GLM-5.3（回退链第 3 层）', async () => {
   const homeNoCli = path.join(TMP, 'home-no-cli');
   fs.mkdirSync(path.join(homeNoCli, '.zcode', 'v2'), { recursive: true });
   fs.writeFileSync(
@@ -144,5 +172,5 @@ test('cli config 缺失 → 快照块仍渲染，默认标记缺席（cliModelMa
   const ctx = out.hookSpecificOutput.additionalContext;
   assert.match(ctx, /^<zsw-resources snapshot="/); // 块照常渲染
   assert.ok(ctx.includes(PROVIDER_ID));
-  assert.equal(ctx.includes('（默认）'), false); // 无 cli config = 默认标记缺席
+  assert.ok(ctx.includes('GLM-5.3（默认）'), '回退链尽头应标内置 FALLBACK_DEFAULT_MODEL 短名');
 });

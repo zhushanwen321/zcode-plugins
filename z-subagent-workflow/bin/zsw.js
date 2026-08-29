@@ -37,10 +37,11 @@
  *        run 恒本地同步形态（执行体 = CLI 进程，bg 包裹即原生通知——设计
  *        v5 决策，无 daemon 化形态）、lint 恒本地（纯文件校验无状态）；
  *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
- *   node bin/zsw.js hook session-start
- *        （SessionStart hook 入口，恒本地不经 daemon：stdout 输出资源快照
- *         协议 JSON；嵌套环境或任一异常降级 {} + exit 0，绝不阻断会话启动）
  *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
+ *   node bin/zsw.js hook session-start
+ *        （SessionStart hook 入口，恒本地不经 daemon，不适用 --local：stdout
+ *         输出资源快照协议 JSON；嵌套环境或任一异常降级 {} + exit 0，绝不
+ *         阻断会话启动）
  *
  * wait exit code（MF4）：partial（等待超时未全完成）→ 2；results 任一条为
  * 失败终态（cancelled/error/timeout/lost）→ 1；全完成 → 0（closed，或
@@ -413,11 +414,13 @@ async function runWorkflowCommand(rest) {
  *   3. 数据读取/渲染任一异常（文件缺失/JSON 坏/渲染抛错）→ stdout {} +
  *      exit 0 + stderr 一行 [zsw:hook] 诊断——降级即现状，注入是纯增益通道。
  * 数据源（D6，与 CLI 查询同一批纯读模块，无 daemon 依赖）：
- *   v2 config（models 段主源）+ cli config（默认标记）+ agent-md-resolver
- *   四根发现 + workflow-script 脚本发现 + BUILTIN_WORKFLOW_INFO 内置名单。
- *   projectDir 解析链 = ZCODE_PROJECT_DIR > process.cwd()（与 :366/:596
- *   workflow 惯例同源）；v2 config 读失败整体降级 {}（§3.1 失败路径 2），
- *   cli config 读失败仅默认标记缺席（null），块仍渲染。
+ *   v2 config（models 段主源）+ 默认标记（model-router 导出的 defaultModelRef
+ *   三层回退：cli.main 可解析 → v2 顶层 model.main → 内置回退，与 zsw models
+ *   同口径 D3）+ agent-md-resolver 四根发现 + workflow-script 脚本发现 +
+ *   BUILTIN_WORKFLOW_INFO 内置名单。
+ *   projectDir 解析链 = ZCODE_PROJECT_DIR > process.cwd()（与 workflow 子命令
+ *   及本地模式的 projectDir 解析同源）；v2 config 读失败整体降级 {}（§3.1
+ *   失败路径 2），cli config 读失败经 defaultModelRef 回退后默认标记仍呈现。
  */
 function runHookCommand(rest) {
   // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用都零开销退出）
@@ -431,22 +434,21 @@ function runHookCommand(rest) {
   }
   try {
     const fs = require('node:fs');
-    const { V2_CONFIG_PATH, CLI_CONFIG_PATH } = require('../lib/config');
+    const { V2_CONFIG_PATH } = require('../lib/config');
+    // 默认标记与 `zsw models` 同口径（D3）：复用 model-router 导出的 defaultModelRef
+    // 三层回退（cli.main 可解析 → v2 顶层 model.main → 内置回退），禁止在 CLI 侧
+    // 复刻回退逻辑防两套口径漂移；cli config 缺失/不可解析由其内部吞掉继续回退
+    const { defaultModelRef } = require('../lib/model-router');
     const { renderResourcesBlock } = require('../lib/hook-inject');
     const { AgentMdResolver } = require('../lib/agent-md-resolver');
     const { listScripts } = require('../lib/workflow-script');
 
     const projectDir = process.env.ZCODE_PROJECT_DIR || process.cwd();
     const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
-    let cliModelMain = null;
-    try {
-      const cli = JSON.parse(fs.readFileSync(CLI_CONFIG_PATH, 'utf8'));
-      cliModelMain = (cli && cli.model && cli.model.main) || null;
-    } catch { /* cli config 缺失/坏：默认标记缺席，快照块仍渲染 */ }
 
     const text = renderResourcesBlock({
       v2,
-      cliModelMain,
+      cliModelMain: defaultModelRef(v2),
       agents: new AgentMdResolver().list(projectDir),
       scripts: listScripts(projectDir).map((s) => s.name),
       builtinWorkflows: BUILTIN_WORKFLOW_INFO.map((w) => w.name), // 与 scripts action 同源
