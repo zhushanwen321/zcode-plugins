@@ -170,7 +170,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 - **多会话边界**：恢复序加 runner 级全局互斥（同一时刻至多一路恢复序在执行）——引擎崩溃时 N 个 running 会话同时被击落，N 路恢复并发打刚重启的引擎存在恢复风暴面；**F0 C 线实证**：串行化不解 -32031 本身（串行对照臂同样双双 -32031，warning 的唯一解是 resume 带 runtimeModel），互斥的价值是防风暴压垮刚重启的引擎、非防连坐——互斥保留，且每路恢复都必须带 runtimeModel。并发恢复行为列入 A-8 观察项。
 
 **D3：协议漂移显式分类 + 升级冒烟（选定）**
-- **采用**：runner 错误分类新增 `protocol-drift`（-32601 方法不存在 / -32602 参数校验失败），record 与 stderr 双落点，错误信息含恢复指引（冒烟命令 + 回退开关）；冒烟脚本 = probe 扩面（create + send 极小任务 + 关键响应字段断言：sessionId 路径/turn.terminal/response 非空/toolDenylist 生效），随插件发布、**升级后本地手动跑**——冒烟含真实模型调用，属真机 e2e 级，本仓 CI 明确排除 e2e（`.github/workflows/ci.yml:7-8` 注释「无凭据必挂且烧 token」、`:51-57` find 排除 `e2e*.test.js`），CI 化需凭据注入方案、超出本 scope 另行设计。「stderr 落点」的物理形态 = 引擎子进程 stderr **实时落盘** `~/.zcode/zsw/logs/`（对齐 logging-conventions）：现状仅内存滚动缓冲 `_stderrTail`、进程退出时输出尾部 400 字符（设计时点 `lib/runner-appserver.js:323-324,328-330`，实施后行号已漂移），运行中日志无落盘面——该落盘同时是 A-5 thinking 档位的观测面与漂移 issues 的取证面，随 F2 建成。
+- **采用**：runner 错误分类新增 `protocol-drift`（-32601 方法不存在 / -32602 参数校验失败），record 与 stderr 双落点，错误信息含恢复指引（冒烟命令 + 回退开关）；冒烟脚本 = probe 扩面（create + send 极小任务 + 关键响应字段断言：sessionId 路径/turn.terminal/response 非空/toolDenylist 生效），随插件发布、**升级后本地手动跑**——冒烟含真实模型调用，属真机 e2e 级，本仓 CI 明确排除 e2e（`.github/workflows/ci.yml:7-8` 注释「无凭据必挂且烧 token」、`:51-57` find 排除 `e2e*.test.js`），CI 化需凭据注入方案、超出本 scope 另行设计。「stderr 落点」的物理形态 = 引擎子进程 stderr **实时落盘** `~/.zcode/zsw/logs/`（对齐 logging-conventions）：现状仅内存滚动缓冲 `_stderrTail`、进程退出时输出尾部 400 字符（设计时点 `lib/runner-appserver.js:323-324,328-330`，实施后行号已漂移），运行中日志无落盘面。**Gate B 真机修正**：引擎正常进程 stderr 零输出，该落盘的实际价值是**异常诊断面**（A-4 坏路径 MODULE_NOT_FOUND 实时落盘实证）；thinking 档位与协议交互的**权威取证面 = 引擎自有日志** `~/.zcode/zsw/home-appserver/.zcode/cli/log/<date>.jsonl`（A-5 的 thoughtLevel/thought_level_skipped 事件、A-6 的 tools 清单均出于此），G4/A-5 观测面以此为准确认。
 - **被否**：「把 -32602 当普通错误重试」——重试必然再失败且掩盖根因；「全量协议快照测试」——无公开契约，快照维护成本高于收益。
 - **证据**：无版本协商、strict schema、错误码全集（调研文档 §2.1 §8）。
 - **效果**：G3；A2/A4 假设随冒烟脚本建设顺带收口（send/read 路径被冒烟覆盖）。
@@ -182,7 +182,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 - **效果**：G2 的排障面（zsw list 跨进程可见全部任务会话）。
 
 **D5：thinking 接线（选定）**
-- **采用**：`zsw start --thinking <level>`（默认不传 = 跟随模型默认，GLM-5.3 即 max）→ `create.thoughtLevel`；合法性校验源 = `workspace/readState` 的 `thoughtLevel.available`（连接级读一次缓存），非法值沿用引擎容错（warn 跳过，探针 P2 实证不失败）。**禁止**调用 `session/setThoughtLevel` RPC。
+- **采用**：`zsw start --thinking <level>`（默认不传 = 跟随模型默认，GLM-5.3 即 max）→ `create.thoughtLevel`；合法性校验源 = `workspace/readState` 的 `thoughtLevel.available`（连接级读一次缓存），非法值沿用引擎容错（warn 跳过，探针 P2 实证不失败）。**禁止**调用 `session/setThoughtLevel` RPC。**Gate B 真机结论（2026-08-29）**：当前引擎版本 `workspace/readState` 以空 params 调用收 -32602（要求 params.workspace object，正确形态待后续探针），两级校验源实际均不可用 → **透传 + 引擎容错为实际生效形态**（`--thinking ultra` 引擎侧 `thought_level_skipped` 事件、任务不失败，A-5 实证）；record.thinking 标注为请求值（'ultra'）而非生效值，生效与否以引擎事件为准；档位对隔离 HOME 的全局粘性（create 入参走 setThoughtLevel 路径）为 P1 已知无害副作用。恢复本地校验需一次 params 形态探针，列残留风险。
 - **被否**：`session/setThoughtLevel`（运行中改档）——探针 P1 + 源码证实其写 user 级全局设置（`saveGlobalReasoningLevel`），隔离 HOME 内虽无害但该 RPC 的存在诱导未来共享化误用，直接列为禁用面；本地硬编码合法枚举——按模型动态（GLM=low|high|max，DeepSeek=high|max，别家=xhigh…），硬编码必错。
 - **证据**：P1（create 入参生效 + 日志 `setInitialThoughtLevelDurationMs`）、P2（非法值容错）、catalog 动态校验链（调研文档 §2.1）。
 - **效果**：G4；同时沉淀「默认即 max」事实（README 注明：省预算场景显式传 low）。spawn 降级轮 thinking 不可用——record 标注 `thinking: null (spawn 降级)`。
@@ -224,7 +224,7 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 | A-6 | 工具限制 + 遥测 | 三来源各验一条：CLI `--deny-tools "Bash"`（裸工具名，格式保底形态）任务里 prompt 诱导跑 git；**agent .md frontmatter `disallowedTools` 声明的工具**（D6 来源②；翻转前该来源在 spawn 下已是引擎级硬拦截，验翻转后等价）同任务诱导；spec 形态（`Bash(git *)`）按冒烟结论追加；随后检查 `~/.zcode/zsw/home-appserver/` 无遥测标识文件 | 工具被拒（引擎层拦截，非 prompt 软约束，两来源同标准）；`--allow-tools` 白名单同理；遥测目录检查为 D8 验收 | G5 |
 | A-7 | 漂移检测 | 模拟漂移（monkey-patch fake server 返回 -32602；真机可省）+ 升级冒烟脚本对当前版本跑 | 错误分类为 protocol-drift 且含恢复指引；冒烟脚本输出各关键面判定结果 | G3 |
 | A-8 | 并发回归 | 4 个并发任务（默认通道） | 全部完成、响应不串线（P5 双会话已证，扩到 4 验证串行链背压） | G1 |
-| A-9 | 负面行为：busy | 会话运行中投递 message | 立即 busy 报错（含等待/stop 指引），不排队不打断、不静默丢失 | G6（诚实语义） |
+| A-9 | 负面行为：busy | 会话运行中投递 message | 立即 busy 拒绝且不排队不打断不静默丢失；文案含双出路指引「等待当前轮完成（zsw wait --id …）或 zsw cancel --id … 取消」（真机签收形态：stdout JSON `{busy:true,message}` + exit 0，属 CLI「stdout 一律 JSON」输出契约，非 stderr 报错） | G6（诚实语义） |
 
 ## 5. 下一层拆分
 
@@ -253,3 +253,4 @@ conversation 第二轮——**分支一：会话被引擎回收（空闲驱逐�
 | 2026-08-29 | 二审修订：D6 补 frontmatter `disallowedTools` → `toolDenylist` 接线（黑名单与 CLI flag 并集；`tools` 白名单显式决策维持软约束）+ A-6 补 frontmatter 场景 + D9 minor 论证挂接该前提（不接线须升 major）；§3.2 补 D workflow-first / E 等公开契约两变体否决记录、C 案否决理由改用 A 真实差异（冷启动对 A/C 等价）、推荐段补 zsub 先行的风险排序论证；D3/G3 冒烟改「升级后本地手动跑」（CI 排除真机 e2e，ci.yml:7-8,51-57）+ 新增引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`（G4/A-5 观测面 + 漂移取证面，F2 建成）；D2 ④ 补 timeoutMs 窗口判据 + session/stop 清场、新增恢复序 runner 级互斥（多会话恢复风暴）+ F0 补 C 线；D1 probe 缓存补命中后首败失效重探；§2.2 补事实 8（GUI 同构辨析 + spawn 同为逆向依赖）；README 行号按 d7b8c48 重定位 | 第二轮对抗式审查 1 must-fix + 8 suggestion |
 | 2026-08-29 | F0 探针结论回填：驱逐与崩溃**同设 restoreWarning**（「驱逐自愈+崩溃报错」双分支划分不成立，D2 固化为 resume{runtimeModel} 每次无条件携带，自愈覆盖两类）；清除候选三可用一不可用（registry 等待证伪，从恢复序删除）；D2 多会话边界按 C 线实证修正（串行化不解 -32031，互斥仅防风暴）；新增事实：订阅会话免驱逐（-32004 主来源为进程死亡/close，§2.2 事实 1）与 runtimeModel 接种效应（§2.2 事实 2）；A-2a 改探针复跑覆盖、A-2b 为链路级主验收；§5 检查点 1/3 收口；失败路径 1 降级为兜底场景 | F0 真机探针三线全绿（test/e2e-tp1-recovery.test.js） |
 | 2026-08-29 | 一致性审查文档修订：§2.2 事实 2 runtimeModel 形态补可选 `thoughtLevel?`；洪泛驱逐手法补 `titleGenerationEnabled:false` 前提（标题生成后台工作阻止驱逐，F0 附加实证）；§5 F0 行 A 线同步洪泛手法；D2/D3 行号引用加「设计时点」标注（实施后已漂移，订阅缺口已由恢复序②修复）；§2.3 失败模式 F1/F2/F4 行补已解决标注；§1 SCQA 补 -32031 已解指针；§2.4 残留项标注已解决；检查点 2 改记「spec 形态与拦截行为面归 A-6 真机收口」（冒烟保持极小不为此加 token） | 三区一致性审查（区 A 2 unreasonable+2 doc_errors、区 C 文档面） |
+| 2026-08-29 | Gate A/B 验收回填：D9 补 e2e-daemon A5 钉 spawn（exec.pid 为 spawn 专有概念，看门狗机制通道无关；apc 下 daemon 死亡 = 引擎随亡 → 任务 lost，不与 spawn 的 orphan 混同）；D5 补真机结论（workspace/readState 空 params 撞 -32602、两级校验源当前均不可用，透传+引擎容错为实际形态，恢复本地校验需 params 形态探针）；D3/G4/A-5 观测面修正（引擎正常 stderr 零输出，落盘定位为异常诊断面，权威取证面 = 引擎自有日志 jsonl）；A-9 通过标准对齐真机形态（stdout JSON busy + exit 0 输出契约） | Gate A 全量 412 pass + Gate B 九场景 9 pass 真机签收 |

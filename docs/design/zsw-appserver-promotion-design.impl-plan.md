@@ -122,12 +122,15 @@ graph TD
 ## 7 残留风险与变更历史
 
 残留风险（承接设计 §5 检查点与复审 INFO）：
-1. F0 结论可能判定崩溃分支不可自愈（-32031 无解）→ D2 走分支 B（驱逐自愈 + 崩溃诚实报错），不阻塞翻转（设计已预案）。
-2. 工具限制 spec 形态（`Bash(git *)`）支持性待 F1 冒烟实测；先按裸工具名落地。
-3. stdio 背压 + 多会话并发恢复（A-8/F0 C 线）为观察项非阻塞门。
+1. F0 结论可能判定崩溃分支不可自愈（-32031 无解）→ D2 走分支 B（驱逐自愈 + 崩溃诚实报错），不阻塞翻转（设计已预案）。**已消除：F0 探明 resume{runtimeModel}，双类全自愈。**
+2. 工具限制 spec 形态（`Bash(git *)`）支持性——**改记归后续真机场景收口**（Gate B A-6 已验裸名引擎级拦截，spec 形态未验，非阻塞）。
+3. stdio 背压 + 多会话并发恢复——**Gate B A-8 已验 4 并发无串线**；更多并发/背压为长线观察项。
 4. 复审 INFO×2（实施期留白）：D2 ④ 失败场景的分支 B 文案措辞需适配「事件流不可达」语义（F2 已按此实现）；D1 缓存重探 ok 后的重试动作由 D3 漂移分类兜底（F3 已按此实现）。
-5. F3 观察项（非 F3 引入，阶段 5 观察）：`--local` CLI 进程任务 closed 后偶发收尾慢（5 次真机 1 次，最终 exit 0）——F3 未改 runner/CLI 收尾逻辑，如需根治属独立问题。
-6. README「tools 白名单软约束/denylist 硬约束」条目翻转后仍真（F4 frontmatter 接线后再更新表述，F5 复核）。
+5. F3 观察项（非 F3 引入）：`--local` CLI 进程任务 closed 后偶发收尾慢（5 次真机 1 次，最终 exit 0）——如需根治属独立问题。
+6. README「tools 白名单软约束/denylist 硬约束」表述——**已由 F5 按 D6 事实翻转**。
+7. **Gate B 发现（2026-08-29）**：`workspace/readState` 空 params 调用撞 -32602（引擎要求 params.workspace object），thinking 两级本地校验当前形同虚设、透传+引擎容错为实际形态（已验证不失败）；恢复本地校验需一次 params 形态探针（后续项）。
+8. 档位粘性：create.thoughtLevel 走引擎 setThoughtLevel 路径、对隔离 HOME 有全局粘性（P1 已知无害副作用，隔离 HOME 内自包含）。
+9. 降级重跑启动窗口（亚秒级）内 cancel 实质丢失（终态不悬挂）——已知边界不修。
 
 | 日期 | 事件 |
 |------|------|
@@ -135,6 +138,7 @@ graph TD
 | 2026-08-29 | F0 探针结论回填设计文档（D2 固化 resume{runtimeModel}、双分支划分不成立）；F2/F3/F4 期间新增移交项与偏差均记入 §5 |
 | 2026-08-29 | W1-W5 全部 committed；F5 发版 1.2.0（tag z-subagent-workflow@1.2.0 后经 re-tag 重指——见下） |
 | 2026-08-29 | 阶段3 三区一致性审查（9 unreasonable + 7 doc_errors）；阶段4 修复批次 R1-R8 commit 83453db + doc_errors 主 agent 修订 + 定向复审 pass + 微修 aac864f；tag `z-subagent-workflow@1.2.0` re-tag 至 aac864f（版本号不变，1.2.0 从未 push 曝光）；阶段4 清零 | dev-flow 一致性审查与修复循环 |
+| 2026-08-29 | **阶段5 双级验收双绿收官**：Gate A 全量 415 tests / 412 pass / 0 fail / 3 skip（探针门控）+ 零容忍绕过零命中 + 覆盖矩阵 8/8 + 一致性门绿（A5 钉 spawn 修复 4d36646 后 tag 再 re-tag）；Gate B 九场景 9 pass / 0 fail / 0 blocked 真机签收（约 23 次 flash 极小调用），3 项观测面偏差按 doc_error 回填设计（D5 readState 现状 / D3 取证面 / A-9 形态）；残留风险 §7 更新（新增 7/8/9 三项） | dev-flow 双级验收 |
 
 ## 8 发布说明（z-subagent-workflow 1.2.0，随 tag 分发）
 
