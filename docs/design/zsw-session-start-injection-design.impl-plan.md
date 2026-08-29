@@ -89,6 +89,7 @@ graph TD
 | 6 | u2：内置五名复用 bin/zsw.js 既有 BUILTIN_WORKFLOW_INFO 常量 | 同源要求；常量注释声明名字集合以 lib/workflow-manager 为准 | 已固化 |
 | 7 | u2：`hook <未知事件>` → stderr + usage + exit 1（CLI 调试面 fail-fast） | hooks.json 只调 session-start，引擎路径永不触发；嵌套守卫仍在其之前（ZSW_NESTED=1 时任意事件名都 {} + exit 0） | 已固化 |
 | 8 | u2：第 5 个测试用例（cli config 缺失 → 默认标记缺席仍渲染） | 行为链「读不到为 null」分支的代码级断言，非推测性功能 | 已固化 |
+| 9 | u5：S5/S7 步骤命令补全（chmod 644 全路径、check 脚本加 node 前缀与 cwd 说明）、S2「见 §3.1」改指文内样例、块样例旁注明两处实际渲染差异（偏差 #1/#4） | 手册命令须真实可跑；渲染差异注明避免 GUI 断言误判 | 已固化 |
 
 ## 6 状态表
 
@@ -98,7 +99,7 @@ graph TD
 | u2-hook-cli | committed | 1 | `node --test test/cli-hook.test.js test/hook-inject.test.js` 15/15 绿（主 agent 复跑 + 亲跑嵌套守卫/正常路径 exit 0）；偏差 3 条登记 §5 |
 | u3-hooks-register | committed | 1 | check-pack + check-sync 绿（主 agent 复跑）；hooks.json 形态逐字段对照先例与官方 schema |
 | u4-routing-discipline | committed | 1 | 失真表述 grep 零命中 + 49/49 测试绿（主 agent 复跑）；SKILL.md:73/:114 与 model-router.js:218 对齐 |
-| u5-acceptance-docs | pending | 0 | — |
+| u5-acceptance-docs | committed | 1 | 纯追加 65 行（git diff 0 deletions）；S1-S7 与设计 §4 逐单元格比对 + 命令实跑存在；偏差 1 条登记 §5 |
 | u6-release-gate | pending | 0 | — |
 
 ## 7 残留风险与变更历史
