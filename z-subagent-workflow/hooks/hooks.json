@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/bin/zsw.js\" hook session-start",
+            "timeoutMs": 5000
+          }
+        ]
+      }
+    ]
+  }
+}

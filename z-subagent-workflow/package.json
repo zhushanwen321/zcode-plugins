@@ -12,6 +12,7 @@
     ".mcp.json",
     "bin/",
     "commands/",
+    "hooks/",
     "lib/",
     "dist/",
     "skills/",
