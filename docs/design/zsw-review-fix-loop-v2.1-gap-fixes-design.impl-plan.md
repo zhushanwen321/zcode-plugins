@@ -20,7 +20,7 @@
 | 待验证检查点 | §5 末段「待验证检查点」（FS1 reviewer 对锁定 hash 指令的遵循度） |
 
 补充权威源（实现语义对齐用，只读）：
-- pi 版语义权威：`/Users/zhushanwen/Code/xyz-agent-workspace/dev-0.9.10/extensions/universal/subagent-workflow/workflows/review-fix-loop.js` 及同目录 `review-fix-loop-utils.cjs`（D1 对齐 `lockReviewBase`/`buildReviewInstruction`；D2 对齐 known-remaining 抑制；D3 对齐 fallback severity 口径）
+- pi 版语义权威：`/Users/zhushanwen/Code/xyz-agent-workspace/dev-0.9.11/extensions/universal/subagent-workflow/workflows/review-fix-loop.js` 及同目录 `review-fix-loop-utils.cjs`（D1 对齐 `lockReviewBase`/`buildReviewInstruction`；D2 对齐 known-remaining 抑制；D3 对齐 fallback severity 口径）
 - 本仓 vendor（禁改）：`z-subagent-workflow/lib/workflow/review-fix-loop-utils.js`（reconcileIssues、MUST_FIX_SEVERITIES 等契约常量）
 
 ## 1 目标快照（逐字摘录）
@@ -71,13 +71,19 @@ graph LR
 
 ## 5 合理偏差登记表
 
-初始为空。格式：| 单元 | 偏差 | 理由 | 处置 |
+| 单元 | 偏差 | 理由 | 处置 |
+|------|------|------|------|
+| F1 | pi 权威路径 dev-0.9.10 → dev-0.9.11（本机实际只有后者） | 路径漂移，同名函数语义一致 | 计划 §0 权威源路径已更正 |
+| F1 | 既有 fallow 用例 target 'main..HEAD' → 'HEAD' | 本机 git 无 init.defaultBranch，真锁定语义下 rev-parse('main..HEAD') 必失败降级致断言红；改可解析 ref 后用例意图成立 | 测试修正，非行为回归 |
+| F1 | rev-parse「退出 0 无输出」分支无端到端断言 | 真实 git 无法构造该场景；防御分支与非零退出共用同一降级+WARN 路径，非零路径已断言 | 接受 |
+| F1 | 非 git-diff 类型 baseHash 维持 gitHead(workdir) 而非 pi 的置空 | D1 条款限定 rev-parse 仅 git-diff 执行；v2 既有行为与断言依赖此值，改动扩大领地面 | 接受（D1 范围内） |
+| F1 | 锁定成功不加 pi 的 INFO 行 | 可追溯性由 state.meta.baseHash 承担（设计 §3.1）；最小改动 | 接受 |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| F1 | pending | 0 | — |
+| F1 | committed | 1 | 47/47 workflow-b 绿（44 既有零回归 + 3 新增）；核验 2026-08-29 主 agent 复跑相符 |
 | F2 | pending | 0 | — |
 | F3 | pending | 0 | — |
 | F4 | pending | 0 | — |

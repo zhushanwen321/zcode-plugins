@@ -1510,13 +1510,15 @@ test('review-fix-loop v2 U3：dormant 复活——R2 同题重报经标题对齐
 test('review-fix-loop v2 U3：fallowScan 前置批——fallow-scan 先于语义批、prompt 携带锁定 base（D7）', async () => {
   writeV2Config();
   resetCalls();
-  // fallow 审 git 变更基线：工作目录须是真 git 仓库（baseHash 锁定才有 --base 值）
+  // fallow 审 git 变更基线：工作目录须是真 git 仓库（baseHash 锁定才有 --base 值）。
+  // v2.1 D1 起 base 锁定 rev-parse <target>，target 须可解析——用 HEAD（其 rev-parse
+  // 结果 == HEAD hash == base）；原 'main..HEAD' 在默认分支 master 的仓里不可解析
   const dir = makeWorkdir('rfl-fallow');
   execSync('git init -q && git config user.email t@t.io && git config user.name t && echo x > a.js && git add a.js && git commit -qm init', { cwd: dir, timeout: 30_000 });
   const base = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', timeout: 10_000 }).trim();
   const result = await runReviewFixLoop({
     task: 'fallow 前置演示', workdir: dir, runId: 'wf-utest-fallow',
-    targetType: 'git-diff', target: 'main..HEAD',
+    targetType: 'git-diff', target: 'HEAD',
     batch1: ['correctness'], fallowScan: true,
   });
   assert.equal(result.loop.status, 'clean');
@@ -1602,4 +1604,100 @@ test('review-fix-loop v2 U3：state.json 字段全集 + meta.terminated 权威�
   assert.deepEqual(st.knownRemaining, []);
   // fixer 契约结果落盘（D4 目录布局）
   assert.ok(fs.existsSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-state', 'batch-1', 'round-1', 'fix-result-1.json')));
+});
+
+// ------------------------- v2.1 D1：base 锁定（rev-parse target）+ 按 targetType 审查指令构造
+
+test('review-fix-loop v2.1 D1：git-diff 锁定 rev-parse(target)——reviewer/fixer prompt 消费指令段 + baseHash 落盘', async () => {
+  writeV2Config();
+  resetCalls();
+  // 真实临时 git 仓：rev-parse 跑真子进程（禁 mock git 行为）；首个 commit 后 base 与 HEAD 同点
+  const dir = makeWorkdir('rfl-d1-lock');
+  execSync('git init -q && git config user.email t@t.io && git config user.name t && echo x > a.js && git add a.js && git commit -qm init', { cwd: dir, timeout: 30_000 });
+  const result = await runReviewFixLoop({
+    task: 'D1 base 锁定演示', workdir: dir, runId: 'wf-utest-d1-lock',
+    targetType: 'git-diff', target: 'HEAD', batch1: ['correctness'],
+  });
+  assert.equal(result.loop.status, 'clean');
+  const locked = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', timeout: 10_000 }).trim();
+  // reviewer prompt：确定性 diff 指令（锁定 hash，非裸 target）+ 未提交改动条款（GF1）
+  const reviewCall = readCalls().find((c) => c.prompt.includes('审查者「correctness」'));
+  assert.ok(reviewCall.prompt.includes(`git diff ${locked}...HEAD`));
+  assert.ok(reviewCall.prompt.includes('git status --porcelain'));
+  assert.ok(reviewCall.prompt.includes('uncommitted working-tree changes'));
+  assert.ok(!reviewCall.prompt.includes('## 审查范围\nHEAD')); // 裸 target 透传已替换
+  // fixer prompt 同样消费指令段与锁定值（D1 统一消费）
+  const fixCall = readCalls().find((c) => c.prompt.includes('循环中的修复者'));
+  assert.ok(fixCall.prompt.includes(`git diff ${locked}...HEAD`));
+  assert.ok(fixCall.prompt.includes('uncommitted working-tree changes'));
+  // 锁定结果落 state.meta.baseHash（可追溯）
+  const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-d1-lock', 'state.json'), 'utf8'));
+  assert.equal(st.meta.baseHash, locked);
+});
+
+test('review-fix-loop v2.1 D1：file/dir/text 三型指令段构造（对齐 pi 同名函数语义，英文措辞）', async () => {
+  writeV2Config();
+  // file 型：审查指定文件内容
+  resetCalls();
+  await runReviewFixLoop({
+    task: 'D1 file 型', workdir: makeWorkdir('rfl-d1-file'),
+    targetType: 'file', target: '/tmp/proj/src/app.js', batch1: ['correctness'],
+  });
+  const fileCall = readCalls().find((c) => c.prompt.includes('审查者「correctness」'));
+  assert.ok(fileCall.prompt.includes('## 审查范围\nRead and review the file: /tmp/proj/src/app.js'));
+
+  // dir 型：遍历审查目录
+  resetCalls();
+  await runReviewFixLoop({
+    task: 'D1 dir 型', workdir: makeWorkdir('rfl-d1-dir'),
+    targetType: 'dir', target: '/tmp/proj/src', batch1: ['correctness'],
+  });
+  const dirCall = readCalls().find((c) => c.prompt.includes('审查者「correctness」'));
+  assert.ok(dirCall.prompt.includes('## 审查范围\nExplore and review the directory: /tmp/proj/src (list files, then read the relevant ones)'));
+
+  // text 型：按 target 描述自由审查
+  resetCalls();
+  await runReviewFixLoop({
+    task: 'D1 text 型', workdir: makeWorkdir('rfl-d1-text'), runId: 'wf-utest-d1-text',
+    targetType: 'text', target: '登录模块的输入校验', batch1: ['correctness'],
+  });
+  const textCall = readCalls().find((c) => c.prompt.includes('审查者「correctness」'));
+  assert.ok(textCall.prompt.includes('## 审查范围\nReview target: 登录模块的输入校验'));
+  // 非 git-diff 类型无锁定语义：baseHash 维持 run 起点 HEAD 基线（临时目录非 git → null）
+  const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-d1-text', 'state.json'), 'utf8'));
+  assert.equal(st.meta.baseHash, null);
+});
+
+test('review-fix-loop v2.1 D1：git-diff rev-parse 失败 → 降级原 ref + WARN 一行，baseHash 仍落盘', async () => {
+  writeV2Config();
+  resetCalls();
+  // 真实 git 仓 + 不存在的 ref：rev-parse 真子进程非零退出（失败路径，禁 mock）
+  const dir = makeWorkdir('rfl-d1-fallback');
+  execSync('git init -q && git config user.email t@t.io && git config user.name t && echo x > a.js && git add a.js && git commit -qm init', { cwd: dir, timeout: 30_000 });
+  const origErr = process.stderr.write;
+  const errChunks = [];
+  process.stderr.write = function (chunk, ...rest) {
+    errChunks.push(String(chunk));
+    return origErr.call(this, chunk, ...rest);
+  };
+  try {
+    const result = await runReviewFixLoop({
+      task: 'D1 降级演示', workdir: dir, runId: 'wf-utest-d1-fallback',
+      targetType: 'git-diff', target: 'no-such-ref', batch1: ['correctness'],
+    });
+    assert.equal(result.loop.status, 'clean'); // 降级不中断循环
+    // WARN 一行（stderr 日志规范，同模式 `[zsw] WARN: ...`）
+    const warnLines = errChunks.filter((l) => l.includes('WARN: git rev-parse no-such-ref'));
+    assert.equal(warnLines.length, 1);
+    assert.ok(warnLines[0].includes('falling back to ref for diff base'));
+    // 指令段用降级后的原 ref 构造 diff 指令 + 未提交条款仍在
+    const reviewCall = readCalls().find((c) => c.prompt.includes('审查者「correctness」'));
+    assert.ok(reviewCall.prompt.includes('git diff no-such-ref...HEAD'));
+    assert.ok(reviewCall.prompt.includes('uncommitted working-tree changes'));
+    // state.meta.baseHash 仍落盘（降级原 ref，可追溯）
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-d1-fallback', 'state.json'), 'utf8'));
+    assert.equal(st.meta.baseHash, 'no-such-ref');
+  } finally {
+    process.stderr.write = origErr;
+  }
 });
