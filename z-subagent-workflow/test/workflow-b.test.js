@@ -27,7 +27,13 @@
  *   聚合改判 evidence → 验证 dormant 标题对齐沿用原 id + revived 置位，6.3；聚合分支
  *   按 state-issues 块同题沿用 id、首轮臆测 downgraded / 后续轮 evidence）、
  *   FAKE_RECON_DRIFT（R2 reconciliation prev_id 以小写漂移形态 'mf-1' 声明 not-fixed
- *   → 验证收集处 findIssueKey 归一仍命中追踪键，未归一会误判「未重报 = 已修复」）。
+ *   → 验证收集处 findIssueKey 归一仍命中追踪键，未归一会误判「未重报 = 已修复」）、
+ *   FAKE_ESCALATE（v2.1 D2/FS2：R1 报 1 major + 1 minor → 修复者幽灵 defer 未追踪
+ *   minor S-1；R2 clean + 对 MF-1 声明 fixed、对 S-1 声明 escalate（deferred→open）；
+ *   R3+ clean + 对 S-1 声明 not-fixed（openStreak 累计）→ 验证 escalate→open 闭环
+ *   与成功出口 open 残留断言。FAKE_ESCALATE_FIX_R3='1' 时 R3 改为对 S-1 声明 fixed
+ *   带 evidence（配套转换 → 出口放行 clean）；='noevidence' 时声明 fixed 但空
+ *   evidence（不触发转换，open 残留继续））。
  *   fake 聚合者按 v2 契约汇总：must_fix_ids 只收 critical/major（minor 计入
  *   suggestion）、标题含「臆测」的条目裁决 downgraded（噪声裁决路径）。
  * - fake 修复者按 v2 契约回包：从 prompt 的 aggregated-issues untrusted 块提取全部
@@ -67,6 +73,7 @@ const SUGGEST_FILE = path.join(TMP, 'suggest-count.txt');
 const REVIVE_REVIEW_FILE = path.join(TMP, 'revive-review-count.txt');
 const REVIVE_AGG_FILE = path.join(TMP, 'revive-agg-count.txt');
 const DRIFT_FILE = path.join(TMP, 'drift-count.txt');
+const ESCALATE_FILE = path.join(TMP, 'escalate-count.txt');
 
 // ---- fake zcode CLI：按 prompt 关键词分支（围栏反引号放普通字符串，避免嵌套模板）----
 const FAKE_CLI = path.join(TMP, 'fake-zcode.cjs');
@@ -153,6 +160,14 @@ fs.writeFileSync(FAKE_CLI, [
   // ES3 违规形态 2：fixes 空 → must-fix 漏修
   "  } else if (process.env.FAKE_FIX_VIOLATE === 'miss') {",
   "    reply('## 修复结果\\n（本轮无修复）。\\n' + F + 'json\\n{\"fixed_count\":0,\"fixes\":[],\"deferred\":[]}\\n' + F);",
+  // FAKE_ESCALATE 修复者：修全部 must-fix + 幽灵 defer 一个未追踪 minor S-1（reason
+  // ≥20 字过软校验）——defer 建条目路径（v2.1 D2 补字段）的驱动源
+  "  } else if (process.env.FAKE_ESCALATE === '1') {",
+  "    const mE = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
+  "    let idsE = [];",
+  "    try { idsE = mE ? JSON.parse(mE[1]).map((x) => x.id) : []; } catch (e) { idsE = []; }",
+  "    const fixesE = idsE.map((id) => ({ issue_id: id, description: '测试修复 ' + id, self_check: 'grep ok', affected_files: ['a.js'] }));",
+  "    reply('## 修复结果\\n' + fixesE.map((f2) => f2.issue_id + ' → 已修复（测试模拟修复）。').join('\\n') + '\\n' + F + 'json\\n' + JSON.stringify({ fixed_count: fixesE.length, fixes: fixesE, deferred: [{ issue_id: 'S-1', reason: '命名类建议级问题涉及多处调用点重命名，本轮集中修复 major，统一放到后续重构批次处理' }] }) + '\\n' + F);",
   '  } else {',
   "    const mF = /<untrusted source=\"aggregated-issues\">\\n([\\s\\S]*?)\\n<\\/untrusted>/.exec(prompt);",
   "    let ids = [];",
@@ -211,6 +226,28 @@ fs.writeFileSync(FAKE_CLI, [
   "    } else {",
   "      reply(F + 'json\\n{\"status\":\"clean\",\"issues\":[],\"suggestion_count\":0,\"reconciliation\":[{\"prev_id\":\"mf-1\",\"status\":\"not-fixed\",\"evidence\":\"仍然存在\"}]}\\n' + F);",
   '    }',
+  // FAKE_ESCALATE（v2.1 D2/FS2）：R1 报 1 major + 1 minor；R2 clean + 对 MF-1 声明
+  // fixed、对 S-1（幽灵 defer 条目）声明 escalate（deferred→open，产生 open 残留）；
+  // R3+ clean + 对 S-1 声明 not-fixed（openStreak 累计）。FAKE_ESCALATE_FIX_R3='1'
+  // 时 R3 改为对 S-1 声明 fixed 带 evidence（配套转换 → 出口放行）；='noevidence'
+  // 时声明 fixed 但空 evidence（不触发转换）
+  "  } else if (process.env.FAKE_ESCALATE === '1' && prompt.includes('审查者「correctness」')) {",
+  "    const fE = process.env.FAKE_ESCALATE_FILE;",
+  "    const nE = Number(fs.existsSync(fE) ? fs.readFileSync(fE, 'utf8') : '0') + 1;",
+  "    fs.writeFileSync(fE, String(nE));",
+  "    let objE;",
+  "    if (nE === 1) {",
+  "      objE = { status: 'issues', issues: [{ id: 'A1', severity: 'major', title: '样例逻辑错误', detail: '边界条件', file: 'a.js' }, { id: 'A2', severity: 'minor', title: '建议重命名变量', detail: '命名不清晰', file: 'a.js' }], suggestion_count: 1, reconciliation: [] };",
+  "    } else if (nE === 2) {",
+  "      objE = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'MF-1', status: 'fixed', evidence: '上一轮修复后未再现' }, { prev_id: 'S-1', status: 'escalate', evidence: '本轮 fix 改动了相关模块上下文' }] };",
+  "    } else if (nE === 3 && process.env.FAKE_ESCALATE_FIX_R3 === '1') {",
+  "      objE = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'S-1', status: 'fixed', evidence: '上下文变化后复查确认已消除' }] };",
+  "    } else if (nE === 3 && process.env.FAKE_ESCALATE_FIX_R3 === 'noevidence') {",
+  "      objE = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'S-1', status: 'fixed', evidence: '' }] };",
+  "    } else {",
+  "      objE = { status: 'clean', issues: [], suggestion_count: 0, reconciliation: [{ prev_id: 'S-1', status: 'not-fixed', evidence: '仍然存在' }] };",
+  '    }',
+  "    reply(F + 'json\\n' + JSON.stringify(objE) + '\\n' + F);",
   // FAKE_CONVERGE：顽固问题两轮 regressed 后转 fixed + 臆测条目被裁决 downgraded → converged
   "  } else if (process.env.FAKE_CONVERGE === '1' && prompt.includes('审查者「correctness」')) {",
   "    const fC = process.env.FAKE_CONVERGE_FILE;",
@@ -291,6 +328,7 @@ process.env.FAKE_SUGGEST_FILE = SUGGEST_FILE;
 process.env.FAKE_REVIVE_REVIEW_FILE = REVIVE_REVIEW_FILE;
 process.env.FAKE_REVIVE_AGG_FILE = REVIVE_AGG_FILE;
 process.env.FAKE_DRIFT_FILE = DRIFT_FILE;
+process.env.FAKE_ESCALATE_FILE = ESCALATE_FILE;
 
 // env 隔离完成后才允许 require lib（见文件头注释）
 const config = require('../lib/config');
@@ -1275,12 +1313,15 @@ test('review-fix-loop v2 U3：reconciliation prev_id 大小写漂移仍命中对
     // R1 报 issue → fix；R2 clean + reconciliation prev_id 以小写漂移形态 'mf-1'
     // 声明 not-fixed → 收集处归一到追踪键 MF-1 → fix-attempted 转 regressed。
     // 未归一的旧行为：'mf-1' 判为未追踪 → MF-1 被误读为「未重报 = 已修复」转 fixed，
-    // 同时幽灵 'mf-1' 条目（新发现分支）被创建
+    // 同时幽灵 'mf-1' 条目（新发现分支）被创建。
+    // v2.1 D2：R2 后 MF-1=regressed 残留 → clean 出口被断言阻断（旧断言「判 clean」
+    // 正是本设计消除的假终态）→ maxRounds=2 钉住轮数耗尽
     const result = await runReviewFixLoop({
       task: 'prev_id 漂移演示', reviewers: ['correctness'],
       workdir: makeWorkdir('rfl-drift'), runId: 'wf-utest-drift',
+      maxRounds: 2,
     });
-    assert.equal(result.loop.status, 'clean');
+    assert.equal(result.loop.status, 'max-rounds'); // regressed 残留不判 clean（v2.1 D2 出口断言）
     assert.equal(result.loop.rounds, 2);
     const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-drift', 'state.json'), 'utf8'));
     assert.equal(st.issues['MF-1'].status, 'regressed');
@@ -1699,5 +1740,142 @@ test('review-fix-loop v2.1 D1：git-diff rev-parse 失败 → 降级原 ref + WA
     assert.equal(st.meta.baseHash, 'no-such-ref');
   } finally {
     process.stderr.write = origErr;
+  }
+});
+
+// ------------- v2.1 D2：escalate→open 闭环 + 成功出口 open 残留断言（FS2，GF2）
+
+test('review-fix-loop v2.1 D2 (FS2a)：R1 defer(minor) → R2 escalate → R3 对账清单仍含该条目 → R4 not-fixed openStreak 累计', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(ESCALATE_FILE, { force: true });
+  process.env.FAKE_ESCALATE = '1';
+  try {
+    // 全链：R1 major 修复 + 幽灵 defer minor（S-1 建条目）→ R2 对账 escalate
+    // （deferred→open，产生 open 残留）→ 出口断言使后续 rawAllClean 轮不判 clean
+    // （旧行为 R2 即 clean，escalate 链断裂）→ 走满 maxRounds
+    const result = await runReviewFixLoop({
+      task: 'escalate 闭环', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-esc-a'), runId: 'wf-utest-esc-a',
+      maxRounds: 4,
+    });
+    assert.equal(result.loop.rounds, 4);
+    assert.equal(result.loop.status, 'max-rounds'); // open 残留阻断 clean 终态
+    assert.equal(result.ok, false);
+    assert.equal(result.phases.length, 9); // R1 三阶段 + R2/R3/R4 各 review+聚合（残留轮不派 fixer）
+    // R2 轮摘要：全员原始 clean 但有 open/regressed 残留 → 出声并继续（不静默）
+    assert.ok(result.sections[0].body.includes('open/regressed 残留'));
+
+    const calls = readCalls().filter((c) => c.prompt.includes('审查者「correctness」'));
+    assert.equal(calls.length, 4);
+    const listBlock = (p) => {
+      const m = /<untrusted source="state-issues">\n([\s\S]*?)\n<\/untrusted>/.exec(p);
+      return m ? JSON.parse(m[1]) : [];
+    };
+    // R2 清单（对账清单按 status 过滤，不按轮次）：MF-1（fix-attempted）+ S-1（deferred
+    // 带抑制标注）；S-1 在清单 = 幽灵 defer 建条目成功
+    const r2List = listBlock(calls[1].prompt);
+    assert.deepEqual(r2List.map((x) => x.id).sort(), ['MF-1', 'S-1']);
+    const s1r2 = r2List.find((x) => x.id === 'S-1');
+    assert.ok(s1r2.note.includes('[deferred——仅本轮 fix 改变其上下文时 escalate，否则无需判定]'));
+    // R3 清单：escalate→open 复活的 S-1 仍在对账清单（status 过滤不丢）；fixed 的 MF-1 移出
+    const r3List = listBlock(calls[2].prompt);
+    assert.deepEqual(r3List.map((x) => x.id), ['S-1']);
+    assert.equal(r3List[0].severity, 'minor');
+    // R4 清单仍含 S-1（not-fixed 保持 open）
+    assert.deepEqual(listBlock(calls[3].prompt).map((x) => x.id), ['S-1']);
+
+    // state：S-1 全链 deferred → (escalated) open；openStreak R3/R4 各 +1（vendor
+    // seen+open 累计）；lastActiveRound 在 escalate→open 转换处刷新为 R2（元数据）
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-a', 'state.json'), 'utf8'));
+    assert.equal(st.issues['S-1'].status, 'open');
+    assert.equal(st.issues['S-1'].openStreak, 2);
+    assert.equal(st.issues['S-1'].lastActiveRound, 2);
+    assert.deepEqual(st.issues['S-1'].history.map((h) => h.status), ['deferred', 'escalated']);
+    // MF-1 走常规链转 fixed（R2 对账「未重报」= 已修复）
+    assert.equal(st.issues['MF-1'].status, 'fixed');
+    assert.equal(st.meta.terminated, 'max-rounds');
+  } finally {
+    delete process.env.FAKE_ESCALATE;
+  }
+});
+
+test('review-fix-loop v2.1 D2 (FS2b)：全员 clean 但存在 open 残留 → 不判 clean、循环继续', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(ESCALATE_FILE, { force: true });
+  process.env.FAKE_ESCALATE = '1';
+  try {
+    // maxRounds=2：R1 issue→fix+defer；R2 全员 clean 但对 S-1 声明 escalate →
+    // open 残留阻断 clean 出口（出口断言缺失时此处误判 clean）→ 轮数耗尽非 clean
+    const result = await runReviewFixLoop({
+      task: 'open 残留阻断 clean', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-esc-b'), runId: 'wf-utest-esc-b',
+      maxRounds: 2,
+    });
+    assert.equal(result.loop.status, 'max-rounds'); // 非 clean/converged
+    assert.equal(result.ok, false);
+    assert.equal(result.loop.rounds, 2); // R2 确实继续跑了（循环未提前终止）
+    assert.equal(result.phases.length, 5); // R1 三阶段 + R2 review+聚合
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-b', 'state.json'), 'utf8'));
+    assert.equal(st.issues['S-1'].status, 'open'); // escalate→open 残留在场
+    assert.equal(st.meta.terminated, 'max-rounds');
+  } finally {
+    delete process.env.FAKE_ESCALATE;
+  }
+});
+
+test('review-fix-loop v2.1 D2 (FS2c)：open 残留被对账声明 fixed（带 evidence）→ 转 fixed、clean 出口放行', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(ESCALATE_FILE, { force: true });
+  process.env.FAKE_ESCALATE = '1';
+  process.env.FAKE_ESCALATE_FIX_R3 = '1';
+  try {
+    // R2 escalate → S-1 open 残留；R3 对账直接声明 S-1 fixed（带 evidence）→
+    // 编排层配套转换（vendor reconcileIssues 无 open→fixed 通道）转 fixed →
+    // 出口断言放行 → clean 收尾
+    const result = await runReviewFixLoop({
+      task: '对账消除 open 残留', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-esc-c'), runId: 'wf-utest-esc-c',
+      maxRounds: 3,
+    });
+    assert.equal(result.loop.status, 'clean');
+    assert.equal(result.ok, true);
+    assert.equal(result.loop.rounds, 3);
+    assert.equal(result.phases.length, 7); // R1 三阶段 + R2/R3 各 review+聚合
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-c', 'state.json'), 'utf8'));
+    assert.equal(st.issues['S-1'].status, 'fixed');
+    assert.equal(st.issues['S-1'].openStreak, 0);
+    const s1h = st.issues['S-1'].history;
+    assert.deepEqual(s1h[s1h.length - 1], { round: 3, status: 'fixed' }); // 配套转换的 history 落痕
+    assert.equal(st.meta.terminated, 'clean');
+  } finally {
+    delete process.env.FAKE_ESCALATE;
+    delete process.env.FAKE_ESCALATE_FIX_R3;
+  }
+});
+
+test('review-fix-loop v2.1 D2：对账声明 fixed 但无 evidence → 不触发配套转换，open 残留继续', async () => {
+  writeV2Config();
+  resetCalls();
+  fs.rmSync(ESCALATE_FILE, { force: true });
+  process.env.FAKE_ESCALATE = '1';
+  process.env.FAKE_ESCALATE_FIX_R3 = 'noevidence';
+  try {
+    // 「带 evidence」是配套转换前置（pi EVIDENCE RULE 同向：fixed 声明须附判定依据）
+    // ——空 evidence 不采信，S-1 保持 open → R3 仍不判 clean
+    const result = await runReviewFixLoop({
+      task: '无证据 fixed 声明', reviewers: ['correctness'],
+      workdir: makeWorkdir('rfl-esc-c2'), runId: 'wf-utest-esc-c2',
+      maxRounds: 3,
+    });
+    assert.equal(result.loop.status, 'max-rounds');
+    assert.equal(result.ok, false);
+    const st = JSON.parse(fs.readFileSync(path.join(TMP, 'zsub-root', 'rfl', 'wf-utest-esc-c2', 'state.json'), 'utf8'));
+    assert.equal(st.issues['S-1'].status, 'open');
+  } finally {
+    delete process.env.FAKE_ESCALATE;
+    delete process.env.FAKE_ESCALATE_FIX_R3;
   }
 });

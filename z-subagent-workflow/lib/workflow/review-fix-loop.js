@@ -32,9 +32,12 @@
  *   权威，§3.4「ID 对齐」）；wrapUntrusted 覆盖 D10 嵌入通道（reviewer→聚合 /
  *   聚合→fixer / state→reviewer / 用户自定义参数）。
  * - U3 对账/收敛状态机 + state 落盘（设计 §3.3 D6/D7、§3.4 状态机契约、§2.3 终态）：
- *   R2+ reconciliation 消费（reconSeen/reconEscalate/reconAll → reconcileIssues，
- *   escalate→open 映射在 vendor 函数内；无对账数据轮有 fix-attempted 仍须 reconcile
- *   ——空 seenIds = 未重报 = fixed，pi F1 语义）→ stuck 双通道（有对账走 stuckIds
+ *   R2+ reconciliation 消费（reconSeen/reconEscalate/reconAll/reconFixed → reconcileIssues
+ *   + 编排层 postReconcile 补充：escalate→open 映射在 vendor 函数内、open/regressed 被
+ *   带 evidence 的 fixed 声明消除 + 复活条目 lastActiveRound 刷新在编排层；无对账数据轮
+ *   有 fix-attempted 仍须 reconcile——空 seenIds = 未重报 = fixed，pi F1 语义；v2.1 D2
+ *   起 rawAllClean/A4/converged 三个成功出口前置 open/regressed 残留断言，残留轮不判
+ *   clean、清 cleanNames 继续对账）→ stuck 双通道（有对账走 stuckIds
  *   驱动，无对账走 updateStuckState 计数式）→ needs-redesign（fixAttempts>=
  *   maxFixAttempts 且 regressed，先 stuck 后 redesign）→ 收敛判定（checkConvergence
  *   + 无 open/regressed 活跃条目 + suggestion===0，D6）→ A4 全降级轮跳过 fix；
@@ -393,15 +396,64 @@ function updateIssuesFromAggregation(state, entries, round, { reconCount = 0 } =
 
 /**
  * 上一轮活跃条目清单（R2+ review prompt 注入，D2 reconciliation 的对账数据源）：
- * state.issues 中 lastActiveRound 等于最新活跃轮的条目（id+title+severity）。
- * 只列最近一轮的活跃集合——更早轮已修复/降级的条目不要求本轮对账。
+ * v2.1 D2 改按 status 过滤（不按轮次）——status ∈ {open, regressed, fix-attempted,
+ * deferred} 的条目持续出现在对账清单，直到 fixed。escalate→open 复活的条目不进 fix
+ * 队列（D2：回修唯一路径 = 经清单被重报进聚合，pi re-open 语义 = 进对账可见面），
+ * 旧版按 lastActiveRound===max 过滤会在下一轮把它移出清单——reviewer 永远看不到它，
+ * escalate 链断裂（GF2）。lastActiveRound 降级为元数据（escalate 转换处 / 聚合
+ * upsert 刷新），不再参与过滤。
+ * deferred 条目带抑制标注（对齐 pi known-remaining 语义：仅本轮 fix 改变其上下文时
+ * 才允许 escalate，否则无需判定），豁免与清单段「每条必须判定」指令的矛盾；标注放
+ * 独立 note 字段而非拼接 title——聚合 prompt 复用本清单做「ID 权威」提示，拼接会
+ * 污染 dedupKey 标题对账（聚合条目复制清单 title 时因后缀失配误分新号）。
  */
 function activeIssuesForPrompt(state) {
-  const all = Object.entries(state.issues).filter(([, i]) => Number.isInteger(i.lastActiveRound));
-  if (all.length === 0) return [];
-  const maxRound = Math.max(...all.map(([, i]) => i.lastActiveRound));
-  return all.filter(([, i]) => i.lastActiveRound === maxRound)
-    .map(([id, i]) => ({ id, title: i.title, severity: i.severity }));
+  const PROMPT_ACTIVE_STATUSES = ['open', 'regressed', 'fix-attempted', 'deferred'];
+  return Object.entries(state.issues)
+    .filter(([, i]) => PROMPT_ACTIVE_STATUSES.includes(i.status))
+    .map(([id, i]) => ({
+      id,
+      title: i.title,
+      severity: i.severity,
+      ...(i.status === 'deferred'
+        ? { note: '[deferred——仅本轮 fix 改变其上下文时 escalate，否则无需判定]' }
+        : {}),
+    }));
+}
+
+/**
+ * D2 成功出口断言（GF2「clean 终态不被 open 残留污染」）：state.issues 有 open/
+ * regressed 残留时，rawAllClean / A4 全降级 / converged 三个成功出口统一不得 break——
+ * 继续轮，对账清单注入保证下轮 reviewer 可见（escalate 复活条目 / 重报路径由此收敛）。
+ */
+function hasOpenResidue(state) {
+  return Object.values(state.issues || {}).some((i) => i.status === 'open' || i.status === 'regressed');
+}
+
+/**
+ * reconcileIssues 调用后的编排层补充（v2.1 D2；vendor 函数体禁改，pi 同构结构无这两个
+ * 通道/字段——与 recordDormant 后编排层补 title 同一模式）：
+ * ① 配套转换（出口断言的消除路径）：open/regressed 条目被本轮 reconciliation 声明
+ *   fixed（带 evidence）→ 转 fixed，reviewer 明确确认已修即信。vendor 只有
+ *   fix-attempted→fixed/regressed 通道——escalate→open 的条目不经聚合 fix 队列，
+ *   reviewer 对账直接确认已修（如上下文变化已使其失效）时无此转换会空转到 maxRounds；
+ *   未声明则保持原状态（清单注入 → 重报进聚合 → fix-attempted → 常规链消除）。
+ * ② escalate→open 转换处刷新 lastActiveRound 为当前轮（字段保留为元数据，复活条目
+ *   回到「最近活跃」口径；vendor 的 pi 同构结构不含该字段）。
+ */
+function postReconcile(state, { reconFixedIds, round }) {
+  for (const id of reconFixedIds || []) {
+    const issue = state.issues[id];
+    if (!issue || (issue.status !== 'open' && issue.status !== 'regressed')) continue;
+    issue.status = 'fixed';
+    issue.openStreak = 0;
+    issue.history.push({ round, status: 'fixed' });
+  }
+  for (const issue of Object.values(state.issues)) {
+    const h = issue.history || [];
+    const last = h[h.length - 1];
+    if (last && last.round === round && last.status === 'escalated') issue.lastActiveRound = round;
+  }
 }
 
 /**
@@ -947,10 +999,13 @@ async function runReviewFixLoop(raw = {}) {
       // R2+ reconciliation 消费（U3，pi 5.1 同构收集）：reconSeen = 非 fixed 非 escalate
       // 声明（stuckIds 驱动数据源）；reconEscalate = escalate 声明（deferred 重开）；
       // reconAll = 全部声明去重（含 fixed——全 fixed 时 reconSeen 空但 reconcile 仍须
-      // 执行，否则 fix-attempted → fixed 永不发生，pi M2/F1 语义）
+      // 执行，否则 fix-attempted → fixed 永不发生，pi M2/F1 语义）；reconFixed = 声明
+      // fixed 且带 evidence 的 prev_id（v2.1 D2 配套转换数据源——open/regressed 的
+      // fixed 消除通道，pi EVIDENCE RULE 同向：fixed 声明须附判定依据，空证据不采信）
       const reconSeen = new Set();
       const reconEscalate = new Set();
       const reconAll = new Set();
+      const reconFixed = new Set();
       for (const p of parsedReviews) {
         for (const r of p.reconciliation || []) {
           if (!r || typeof r.prev_id !== 'string' || !r.prev_id) continue;
@@ -960,7 +1015,9 @@ async function runReviewFixLoop(raw = {}) {
           // 原样保留防丢声明，交由 reconcileIssues 的「新发现」分支处理
           const reconKey = findIssueKey(state.issues, r.prev_id) || r.prev_id;
           if (r.status === 'escalate') reconEscalate.add(reconKey);
-          else if (r.status !== 'fixed') reconSeen.add(reconKey);
+          else if (r.status === 'fixed') {
+            if (typeof r.evidence === 'string' && r.evidence.trim() !== '') reconFixed.add(reconKey);
+          } else reconSeen.add(reconKey);
           reconAll.add(reconKey);
         }
       }
@@ -1172,11 +1229,28 @@ async function runReviewFixLoop(raw = {}) {
             round, stuckThreshold,
           });
           state.issues = rec.issues;
+          // v2.1 D2 编排层补充：open/regressed 的 fixed 消除 + escalate→open 刷新
+          // lastActiveRound（vendor 函数体无这两通道）
+          postReconcile(state, { reconFixedIds: [...reconFixed], round });
           state.knownRemaining = rec.knownRemaining;
         }
         roundRecord.mustFix = 0;
         roundRecord.suggestion = 0;
         if (degraded) roundRecord.degraded = true;
+        // v2.1 D2 出口断言：有 open/regressed 残留（如 escalate 复活条目）不判 clean——
+        // 继续下一轮，对账清单注入保证下轮 reviewer 可见。跳过 merge/fix：原始全 clean
+        // 无可信可修条目，聚合幻觉条目不入状态机（与 break 路径「merge 在 break 后」
+        // 同一防护）；mustFix 记 0 是原始口径（reviewer 无人报 must-fix）
+        if (hasOpenResidue(state)) {
+          summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员原始 clean，但存在 open/regressed 残留，不判 clean，继续对账）', mustFixCount: 0 });
+          rounds++;
+          lastAction = 'review';
+          // 本轮 reviewer 已被记入 cleanNames（skip-clean 会让下轮全跳 → active 空以
+          // clean 假终态漏出）——残留未清期间下轮仍需 reviewer 出场对账，清空重派
+          cleanNames.clear();
+          closeRound();
+          continue;
+        }
         summaries.push({ batch: batchIndex, round, detail: reviewOutcome() + '（全员原始 clean，批 clean）', mustFixCount: 0 });
         rounds++;
         status = 'clean'; lastAction = 'review'; remaining = [];
@@ -1231,6 +1305,9 @@ async function runReviewFixLoop(raw = {}) {
           round, stuckThreshold,
         });
         state.issues = rec.issues;
+        // v2.1 D2 编排层补充（同 rawAllClean 回填处）：open/regressed 的 fixed 消除 +
+        // escalate→open 刷新 lastActiveRound
+        postReconcile(state, { reconFixedIds: [...reconFixed], round });
         state.knownRemaining = rec.knownRemaining;
         stuck = { stuck: rec.stuck, stuckIds: rec.stuckIds };
       } else {
@@ -1277,7 +1354,10 @@ async function runReviewFixLoop(raw = {}) {
         const activeIssueCount = Object.values(state.issues || {})
           .filter((i) => i.status === 'open' || i.status === 'regressed').length;
         const noActiveIssues = trackedCount === 0 ? mustFixCount === 0 : activeIssueCount === 0;
-        if (conv.converged && noActiveIssues && suggestion === 0) {
+        // v2.1 D2 出口断言（统一前置）：三成功出口共用 hasOpenResidue——与 noActiveIssues
+        // 的 open/regressed 计数口径重复但显式化，防 noActiveIssues 语义演化时 silently
+        // 放开 open 残留的假终态
+        if (conv.converged && noActiveIssues && suggestion === 0 && !hasOpenResidue(state)) {
           status = 'converged';
           remaining = [];
           appendTerminationNote(`新发现率收敛（连续 ${P.convergeRounds} 轮新问题 ≤${P.convergeNewIssues}）且无活跃 must-fix、suggestion 归零，批 clean`);
@@ -1288,7 +1368,17 @@ async function runReviewFixLoop(raw = {}) {
 
       if (fixQueue.length === 0 && suggestion === 0) {
         // A4 全降级轮：reviewer 有原始上报但聚合裁决后无活跃条目且 suggestion 归零
-        // → 语义等价 clean，跳过 fix（不空转派发 fixer；rawAllClean 轮已在上方 break）
+        // → 语义等价 clean，跳过 fix（不空转派发 fixer；rawAllClean 轮已在上方 break）。
+        // v2.1 D2 出口断言：state.issues 有 open/regressed 残留时不判 clean（假终态
+        // 防护）——无活跃队列无可修，直接继续下一轮，对账清单注入保证下轮 reviewer 可见
+        if (hasOpenResidue(state)) {
+          appendTerminationNote('聚合裁决后无活跃条目且 suggestion 归零，但存在 open/regressed 残留，不判 clean，继续对账');
+          lastAction = 'review';
+          // 同 rawAllClean 残留分支：残留未清期间下轮仍需 reviewer 出场对账
+          cleanNames.clear();
+          closeRound();
+          continue;
+        }
         status = 'clean'; lastAction = 'review'; remaining = [];
         appendTerminationNote('聚合裁决后无活跃条目（全部降级/存疑）且 suggestion 归零，跳过 fix，批 clean');
         closeRound();
@@ -1425,11 +1515,15 @@ async function runReviewFixLoop(raw = {}) {
           state.issues[trackedKey].history.push({ round, status: 'deferred' });
         } else {
           // 未追踪的 minor defer（S-x）：新建 deferred 条目（防幽灵条目——原条目
-          // 漏建会让 knownRemaining 断链，pi 5.3-4 同构）
+          // 漏建会让 knownRemaining 断链，pi 5.3-4 同构）。v2.1 D2 补齐 lastActiveRound/
+          // openStreak（pi 同构结构缺这两个 zsw 字段）；title 回退 reason 首段截断
+          // ——对账清单/报告渲染需要 title，fixer deferred 契约无标题字段
           state.issues[d.issue_id] = {
             firstSeen: round, severity: 'minor', status: 'deferred',
+            title: reason.trim().slice(0, 40) || '(未命名延期条目)',
             deferredReason: reason,
             history: [{ round, status: 'deferred' }], fixAttempts: 0,
+            lastActiveRound: round, openStreak: 0,
           };
         }
       }

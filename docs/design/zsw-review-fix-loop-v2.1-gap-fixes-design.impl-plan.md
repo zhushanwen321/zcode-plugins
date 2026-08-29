@@ -78,13 +78,17 @@ graph LR
 | F1 | rev-parse「退出 0 无输出」分支无端到端断言 | 真实 git 无法构造该场景；防御分支与非零退出共用同一降级+WARN 路径，非零路径已断言 | 接受 |
 | F1 | 非 git-diff 类型 baseHash 维持 gitHead(workdir) 而非 pi 的置空 | D1 条款限定 rev-parse 仅 git-diff 执行；v2 既有行为与断言依赖此值，改动扩大领地面 | 接受（D1 范围内） |
 | F1 | 锁定成功不加 pi 的 INFO 行 | 可追溯性由 state.meta.baseHash 承担（设计 §3.1）；最小改动 | 接受 |
+| F2 | 出口断言 fall-through 轮 `cleanNames.clear()` | 探针实证：残留轮 reviewer 已记 clean，skipCleanAgents 默认语义下轮全跳 → active 空直接假 clean 从 skip-clean 门漏出；「继续轮」隐含 reviewer 须被派发 | 实现层必要配套，接受 |
+| F2 | 既有 FAKE_RECON_DRIFT 用例终态断言修正（clean → max-rounds 钉轮） | 原断言编码的正是 D2 要消除的假终态（regressed 残留判 clean）；核心断言（regressed 链/fixAttempts）原样保留 | 既有断言随行为修正，接受 |
+| F2 | 幽灵 defer 建条目额外补 title（reason 首段截断 40 字） | 对账清单条目与报告渲染需要 title；fixer deferred 契约无标题字段（pi 同构亦无） | 接受 |
+| F2 | deferred 抑制标注落条目独立 note 字段而非拼接 title（文案逐字保留设计原文） | 聚合 prompt 复用清单做「ID 权威」提示，拼接 title 会污染 dedupKey 标题对账 | 接受 |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
 | F1 | committed | 1 | 47/47 workflow-b 绿（44 既有零回归 + 3 新增）；核验 2026-08-29 主 agent 复跑相符 |
-| F2 | pending | 0 | — |
+| F2 | committed | 1 | 51/51 workflow-b 绿（47 零回归 + 4 新增，实现前红态 4 fail 实证）；核验 2026-08-29 主 agent 复跑相符 |
 | F3 | pending | 0 | — |
 | F4 | pending | 0 | — |
 
