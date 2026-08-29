@@ -106,11 +106,14 @@ graph TD
 | u3-hooks-register | committed | 1 | check-pack + check-sync 绿（主 agent 复跑）；hooks.json 形态逐字段对照先例与官方 schema |
 | u4-routing-discipline | committed | 1 | 失真表述 grep 零命中 + 49/49 测试绿（主 agent 复跑）；SKILL.md:73/:114 与 model-router.js:218 对齐 |
 | u5-acceptance-docs | committed | 1 | 纯追加 65 行（git diff 0 deletions）；S1-S7 与设计 §4 逐单元格比对 + 命令实跑存在；偏差 1 条登记 §5 |
-| u6-release-gate | pending | 0 | — |
+| u6-release-gate | blocked（等用户裁决发版与 push） | 0 | Gate A 全量 470/470 绿 + check 三件套绿；check-release-needed 报 UNRELEASED（1.1.0 未 bump，符合待发版状态） |
+
+**Gate 执行记录（2026-08-29）**：Gate A = `node --test "test/*.test.js"`（cwd=z-subagent-workflow/）470 pass / 0 fail / 0 skipped（27 文件静态声明 470 用例与运行数吻合；AGENTS.md 字面命令 `node --test test/` 在 Node v24.11.1 把目录当模块加载不可用，等价 glob 替代——AGENTS.md 命令漂移已在残留风险登记）；check-sync / check-pack PASS。Gate B 可脚本半边 5/5 pass：S4（真实 spawn 子代理答「没有」注入块）、S5（空 HOME → `{}`+exit 0+stderr 诊断）、P-cold-start（3×0.03s 中位 30ms <500ms）、P-token-budget（19 行/约 304 token ≤ 上限）、P-cwd（无关 cwd 下 ZCODE_PROJECT_DIR 定位项目级 agent 正确）。GUI 半边（S1/S2/S3/S6 及 S4/S5 的 GUI 断言）待用户按 README 手册真机执行，未以 mock 冒充。
 
 ## 7 残留风险与变更历史
 
 - **S1-S6 GUI 真机验收不在 subagent 单元内**：这些场景需重启 ZCode + 真实会话，属交付后用户/主 agent 手工验收（README 手册承载）。subagent 单元只覆盖可脚本化断言（P-nested-guard 复跑 / P-cwd 可脚本部分 / 单测）。
 - **模型路由说明**：本环境 Agent 工具无 model 参数（引擎原生后台 agent 不支持 per-start 模型指定），subagent 以会话默认模型派发；全局路由表的「看不到指定模型先确认」条款按「无可见选项」处理，已如实登记。
 - **分支现状**：本 worktree 分支 fix-review-fix-loop 上有 12+ commits 未 push 未发版（含 review-fix-loop v2.1 修复）；本计划完成后 u6 发版会把两批变更一并带出——是否拆开发版由用户在 u6 门决定。
-- 变更历史：v1 基线 2026-08-29。
+- **残留风险（交付时点）**：① GUI 真机验收（S1/S2/S3/S6 及各 GUI 半边断言）未执行——需重启 ZCode + 真实会话，剧本在 README 手册，属用户手工验收；② `node --test test/` 字面命令在 Node v24.11.1 不可用（目录被当模块入口），AGENTS.md 命令漂移待修（与 v2.1 工作线遗留的「AGENTS.md 命令漂移」同源，合并处理）；③ 发版未执行（u6 等用户裁决：本特性 minor 与并行工作线 v2.1 修复是否同批发版、push 授权）。
+- 变更历史：v1 基线 2026-08-29；同日执行完成 u1-u5（2add250/ffc8c83/f1009f7/3ff64ba/c1fac0d）+ 一致性审查 R1 修复批（4804a29，定向复审确认全成立）+ Gate A/B 执行记录登记。
