@@ -70,7 +70,7 @@ node bin/zsw.js list
 2. **禁止轮询**：异步启动后不要反复查 list/status 等结果，不要发明 `sleep N && status` 循环。完成唤醒走「CLI 模式（默认，1.0.0 起）」节姿势：`Bash(run_in_background=true)` 包裹 `zsw wait` / `zsw start --wait`，完成即引擎原生 task-notification 自动唤醒（不依赖 mailbox——那是 MCP 工具面时代的 legacy 投递通道，CLI/daemon 面恒无投递目标）。未包裹等待就结束 turn 的任务典型运行 3-10 分钟，先做别的，稍后做一次性 status 查询（`node bin/zsw.js status --id <id>`）。
 3. **通知即确认**：收到 `[subagent 完成]` 消息后直接处理结果，不要再调 status"二次确认"。
 4. **并发克制**：默认上限 3。嵌套 subagent 深度越深可用并发越少（自动分层），不要试图绕过。
-5. **模型路由（环境无关）**：档位原则——重量任务（设计/架构/深度调研/复杂修复）不传 model，跟随默认主模型；简单任务（探索/计数/格式转换/测试）显式传轻量模型（`--model <轻量模型短名>`）降成本。可用模型集随 v2 config 变化，不要凭记忆硬编码名字——路由决策前先 `node bin/zsw.js models` 查当前清单（短名/上下文窗口/推理档位/默认标记）；传未知模型名也会在报错中收到可用清单，按清单重传即可。
+5. **模型路由（环境无关）**：模型引用优先取自会话上下文的 `<zsw-resources>` 快照（SessionStart 注入；models 分两层——默认 provider 列短名、其他 provider 只列全名 `<provider>/<model>`，默认模型带标记；另含 agents / workflows 清单），免查询直接派发。默认档位以块内默认标记为准，**不假设「不传 model = 重量」**：默认是轻量模型时，重量任务（设计/架构/深度调研/复杂修复）必须显式传重量模型短名；简单任务（探索/计数/格式转换/测试）跟随默认即可。模型名不要凭记忆硬编码。快照缺失或疑似过期（GUI 中途改过配置）时走两条兜底：优先直接尝试——传错模型名会在报错中收到可用清单，按清单重传（零依赖权威兜底）；或主动现查 `node bin/zsw.js models`（短名/上下文窗口/推理档位/默认标记；需 daemon 在跑——任一启用插件的 zcode 会话）。
 6. **worktree 任务收到完成通知后**：通知里含 `patchFile` 路径——需要落地改动时执行 `git apply <patchFile>`；不需要则明确告知用户改动保留在 patch 中未应用。
 7. **嵌套不支持**：zsub 不支持嵌套派发（子任务的 subagent 会被防递归门禁拒绝）；树形/多层的深度任务改用 zflow（review-fix-loop / scatter-gather），它们的阶段是编排不是嵌套。
 
@@ -111,7 +111,7 @@ node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本�
 | 并行审查 → 聚合裁决 → 修复 → ID 对账重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）；v2 批次外环：`--batch1..--batchN` 串行（前一批 clean 后一批才启动，`--reviewers` 为单批 sugar），批内 review → LLM 聚合裁决（噪声降级）→ 结构化契约 fix → 跨轮 ID 对账，state 落盘可观测；`--max-rounds`（默认 10）/`--stuck-threshold`（默认 3）/`--skip-clean-agents`（默认 true，clean 审查者下轮跳过）/`--recheck-after-fix`（默认 false，true 时 fix 后全批重派、clean 者走限定复检）/`--aggregator-model` 等可调，参数全集 `zsw workflow --help` |
 | 固定 分析 → 实现 → 总结 管线 | `chain` | 三步顺序链，上阶段结论注入下阶段 |
 
-通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，阶段在其下工作）；`--model`（可用清单先查 `node bin/zsw.js models`——模型集随环境变化，勿硬编码）/ `--max-concurrent`（默认 3）/ `--timeout-per-phase`（单阶段超时，不设则无超时）/ `--timeout-ms`（整体超时，不设则无超时）。运行可达数分钟——run_in_background 包裹时完成通知自动到达，通知到达前去做别的事。
+通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，阶段在其下工作）；`--model`（模型引用优先取上下文 `<zsw-resources>` 快照；快照缺失或疑过期再现查 `node bin/zsw.js models`——模型集随环境变化，勿硬编码）/ `--max-concurrent`（默认 3）/ `--timeout-per-phase`（单阶段超时，不设则无超时）/ `--timeout-ms`（整体超时，不设则无超时）。运行可达数分钟——run_in_background 包裹时完成通知自动到达，通知到达前去做别的事。
 
 ### 自定义 workflow 脚本（script:<name>）
 

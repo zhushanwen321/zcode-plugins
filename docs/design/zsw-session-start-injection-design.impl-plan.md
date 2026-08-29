@@ -96,8 +96,8 @@ graph TD
 |------|------|------|----------|
 | u1-foundation | committed | 1 | `node --test test/hook-inject.test.js` 10/10 绿（主 agent 复跑确认）；偏差 5 条登记 §5 |
 | u2-hook-cli | committed | 1 | `node --test test/cli-hook.test.js test/hook-inject.test.js` 15/15 绿（主 agent 复跑 + 亲跑嵌套守卫/正常路径 exit 0）；偏差 3 条登记 §5 |
-| u3-hooks-register | pending | 0 | — |
-| u4-routing-discipline | pending | 0 | — |
+| u3-hooks-register | committed | 1 | check-pack + check-sync 绿（主 agent 复跑）；hooks.json 形态逐字段对照先例与官方 schema |
+| u4-routing-discipline | committed | 1 | 失真表述 grep 零命中 + 49/49 测试绿（主 agent 复跑）；SKILL.md:73/:114 与 model-router.js:218 对齐 |
 | u5-acceptance-docs | pending | 0 | — |
 | u6-release-gate | pending | 0 | — |
 

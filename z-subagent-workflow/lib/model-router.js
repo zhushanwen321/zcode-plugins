@@ -215,7 +215,7 @@ class ModelRouter {
           entry.reasoning.defaultVariant = r.defaultVariant;
         }
       }
-      if (name === defShort) entry.default = true; // 默认标记：重量任务省略 model 即用它
+      if (name === defShort) entry.default = true; // 默认标记：省略 model 时即用它；档位轻重随环境配置，重任务应显式指定
       return entry;
     });
   }
