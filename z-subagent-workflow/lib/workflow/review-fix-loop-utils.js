@@ -15,7 +15,8 @@
  *   ——全部上游 LLM 产出嵌入下游 prompt 的唯一入口）。供 lib/workflow/review-fix-loop.js
  *   运行时 require 与 test/review-fix-loop-utils.test.js 共用；全部为纯函数，无 I/O。
  *
- * 与 pi 版的分叉点（14 个目标函数体逐字复制，含原注释）：
+ * 与 pi 版的分叉点（12 个目标函数体逐字复制，含原注释；validateFixResult/
+ * reconcileIssues 经质量门禁拆分，见分叉点 5）：
  * 1. 依赖闭包一并 vendor（不在 14 函数交付清单内，为保持模块内引用一致而带入）：
  *    parseResult（normalizeFixResult 的解析底座）、normIssueId（findIssueKey 的归一
  *    底座）、DORMANT_ADJUDICATIONS/toIdSet/dormantDetail（recordDormant/filterActiveIds
@@ -28,7 +29,12 @@
  *    ISSUE_STATUSES（state.issues status 值域）、SEVERITIES/MUST_FIX_SEVERITIES/
  *    SEVERITY_RANK（severity 契约集合与排序权重）。
  * 4. 函数体与注释保持 pi 源原样（含双引号风格），最小化 vendor 分叉、便于上游 diff
- *    审计；模块壳（'use strict'/头注/导出）遵循 zsw 侧惯例。
+ *    审计；模块壳（'use strict'/头注/导出）遵循 zsw 侧惯例。12 个函数仍逐字复制；
+ *    validateFixResult/reconcileIssues 拆分后其字符串与注释仍逐字跟随移动（分叉点 5）。
+ * 5. 质量门禁拆分（pr-cr-fix Gate-1 圈复杂度 ≤15，2026-08-29 授权）：validateFixResult/
+ *    reconcileIssues 拆为壳函数 + 私有子函数，语义零变更（测试 100% 覆盖不变，字符串与
+ *    注释逐字跟随）。上游同步时按 pi 源逻辑对齐子函数即可，或推动上游采用同款拆分
+ *    恢复逐字对齐。
  */
 
 // ── 5.10 防注入（设计 D10 对齐 pi 三层防御第 1 层）────────────────
@@ -98,39 +104,68 @@ function findIssueKey(issues, issueId) {
  * 仅追踪无此 ID（S-x minor）时采信 fix agent 自报。
  */
 function validateFixResult(result, mustFixIds, trackedIssues) {
-  const violations = [];
-  for (const d of result.deferred || []) {
-    if (!d) continue;
-    const sev = typeof d.severity === "string" ? d.severity.toLowerCase() : "";
-    // m9: 自报 severity 可被单边绕过（fix agent 与审核方同一 LLM，有少干活动机，
-    // 把 must-fix 标 minor 塞进 deferred 即过旧校验）——与追踪表交叉核对：
-    // trackedIssues 中能找到的 ID 以其追踪 severity 为准；追踪表无此 ID 采信自报。
-    let effectiveSev = sev;
-    if (trackedIssues && typeof d.issue_id === "string" && d.issue_id) {
-      const trackedKey = findIssueKey(trackedIssues, d.issue_id);
-      const trackedSev = trackedKey ? trackedIssues[trackedKey].severity : undefined;
-      const ts = typeof trackedSev === "string" ? trackedSev.toLowerCase() : "";
-      // 仅认真实 severity 等级（critical/major/minor/trivial）；"unknown"（reconcile 新
-      // ID 默认）等非等级值不覆盖自报，避免误伤合法 minor deferral
-      if (ts === "critical" || ts === "major" || ts === "minor" || ts === "trivial") {
-        effectiveSev = ts;
-      }
+  return [
+    ...deferredSeverityViolations(result.deferred, trackedIssues),
+    ...mustFixNotFixedViolations(result.fixes, mustFixIds),
+  ];
+}
+
+/**
+ * validateFixResult 拆分子函数（语义零变更）：单条 deferred 的有效 severity——
+ * 自报 severity 经追踪表交叉核对后的最终判定值。
+ */
+function effectiveDeferredSeverity(d, trackedIssues) {
+  const sev = typeof d.severity === "string" ? d.severity.toLowerCase() : "";
+  // m9: 自报 severity 可被单边绕过（fix agent 与审核方同一 LLM，有少干活动机，
+  // 把 must-fix 标 minor 塞进 deferred 即过旧校验）——与追踪表交叉核对：
+  // trackedIssues 中能找到的 ID 以其追踪 severity 为准；追踪表无此 ID 采信自报。
+  let effectiveSev = sev;
+  if (trackedIssues && typeof d.issue_id === "string" && d.issue_id) {
+    const trackedKey = findIssueKey(trackedIssues, d.issue_id);
+    const trackedSev = trackedKey ? trackedIssues[trackedKey].severity : undefined;
+    const ts = typeof trackedSev === "string" ? trackedSev.toLowerCase() : "";
+    // 仅认真实 severity 等级（critical/major/minor/trivial）；"unknown"（reconcile 新
+    // ID 默认）等非等级值不覆盖自报，避免误伤合法 minor deferral
+    if (ts === "critical" || ts === "major" || ts === "minor" || ts === "trivial") {
+      effectiveSev = ts;
     }
+  }
+  return effectiveSev;
+}
+
+/**
+ * validateFixResult 拆分子函数（语义零变更）：ES3 校验 (1)——deferred 非
+ * minor/trivial（有效等级）判 violation。
+ */
+function deferredSeverityViolations(deferred, trackedIssues) {
+  const violations = [];
+  for (const d of deferred || []) {
+    if (!d) continue;
+    const effectiveSev = effectiveDeferredSeverity(d, trackedIssues);
     if (effectiveSev && effectiveSev !== "minor" && effectiveSev !== "trivial") {
       violations.push({ issue_id: d.issue_id || "(unnamed)", severity: effectiveSev });
     }
   }
-  if (Array.isArray(mustFixIds) && mustFixIds.length > 0) {
-    // m3: ID 归一化比较——大小写 + 尾部括号尾注（如 "(fixed)"）漂移不误杀：
-    // 严格 trim 比较会把 "mf-1"/"MF-1 (fixed)" 判漏修，整轮 fix-failure 误杀
-    const fixedIds = new Set((result.fixes || [])
-      .map((f) => (f && typeof f.issue_id === "string" ? normIssueId(f.issue_id) : ""))
-      .filter(Boolean));
-    for (const id of mustFixIds) {
-      const norm = typeof id === "string" ? normIssueId(id) : (id && typeof id.id === "string" ? normIssueId(id.id) : "");
-      if (norm && !fixedIds.has(norm)) {
-        violations.push({ issue_id: norm, severity: "must-fix-not-fixed" });
-      }
+  return violations;
+}
+
+/**
+ * validateFixResult 拆分子函数（语义零变更）：ES3 校验 (2)——mustFixIds 中未进
+ * fixes[] 的 ID 判 violation（漏修）。mustFixIds 为 null/undefined/空时无 violation
+ * （无 aggregator 数据的降级路径，wave 2 限制）。
+ */
+function mustFixNotFixedViolations(fixes, mustFixIds) {
+  if (!Array.isArray(mustFixIds) || mustFixIds.length === 0) return [];
+  // m3: ID 归一化比较——大小写 + 尾部括号尾注（如 "(fixed)"）漂移不误杀：
+  // 严格 trim 比较会把 "mf-1"/"MF-1 (fixed)" 判漏修，整轮 fix-failure 误杀
+  const fixedIds = new Set((fixes || [])
+    .map((f) => (f && typeof f.issue_id === "string" ? normIssueId(f.issue_id) : ""))
+    .filter(Boolean));
+  const violations = [];
+  for (const id of mustFixIds) {
+    const norm = typeof id === "string" ? normIssueId(id) : (id && typeof id.id === "string" ? normIssueId(id.id) : "");
+    if (norm && !fixedIds.has(norm)) {
+      violations.push({ issue_id: norm, severity: "must-fix-not-fixed" });
     }
   }
   return violations;
@@ -180,60 +215,94 @@ function reconcileIssues(prevIssues, { seenIds, escalateIds, round, stuckThresho
   const escalated = new Set(escalateIds || []);
   const stuckIds = [];
   for (const [id, issue] of Object.entries(prevIssues || {})) {
-    issues[id] = { ...issue, history: [...(issue.history || [])] };
-    if (issue.status === "deferred") {
-      // 5.1-5 显式升级：reconciliation 声明 escalate → 重新 open（保留历史与 fixAttempts），
-      // 进入修复循环；未升级的 deferred 留 known-remaining，不参与判定。
-      if (escalated.has(id)) {
-        issues[id].status = "open";
-        issues[id].openStreak = 0;
-        issues[id].history.push({ round, status: "escalated" });
-      }
+    const entry = issues[id] = { ...issue, history: [...(issue.history || [])] };
+    if (entry.status === "deferred") {
+      escalateDeferred(entry, id, escalated, round);
       continue;
     }
-    if (issue.status === "fix-attempted") {
-      if (!seen.has(id)) {
-        issues[id].status = "fixed";
-        issues[id].openStreak = 0;
-        issues[id].history.push({ round, status: "fixed" });
-      } else {
-        issues[id].status = "regressed";
-        // fixAttempts 语义 = 修复失败次数：初始 0，每次 regressed +1（RC-7「经 2 次修复
-        // 仍未收敛」= 第 2 次 regressed 后触发，修复见 findNeedsRedesign 阈值）。
-        issues[id].fixAttempts = (issue.fixAttempts || 0) + 1;
-        issues[id].history.push({ round, status: "regressed" });
-      }
-    }
-    // MF-2: fixed 条目再次被报告（seen）→ 回归：转 regressed + fixAttempts+1（已确认修复
-    // 的问题复发同样计修复失败，needs-redesign 可达）；openStreak 由下方统一 if 累计
-    // （首轮回归 1）。未 seen → 保持 fixed（漏报不误转）。修复前此处无转换——fixed 条目
-    // 复发时 fixAttempts/openStreak 均不增长，与收敛终止组合后默认配置下 R3 即以
-    // converged 提前终止而 must-fix 仍活跃（MF-2）。
-    if (issue.status === "fixed" && seen.has(id)) {
-      issues[id].status = "regressed";
-      issues[id].fixAttempts = (issue.fixAttempts || 0) + 1;
-      issues[id].history.push({ round, status: "regressed" });
-    }
-    // open/regressed 且本轮仍在（seen）→ openStreak +1（跨轮字段）；漏报（未 seen）不增长（保守）
-    if (seen.has(id) && (issues[id].status === "open" || issues[id].status === "regressed")) {
-      issues[id].openStreak = (issues[id].openStreak || 0) + 1;
-      if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
-    }
+    applySeenTransition(entry, id, issue, seen, round);
+    if (accumulateOpenStreak(entry, id, seen, stuckThreshold)) stuckIds.push(id);
   }
   // 新 ID（reviewer 声明的新发现）→ open
   for (const id of seen) {
     if (issues[id]) continue;
-    issues[id] = {
-      firstSeen: round, severity: "unknown", status: "open", openStreak: 1,
-      history: [{ round, status: "open" }], fixAttempts: 0,
-    };
-    // 新 ID 首现 openStreak=1：统一判定语义 openStreak >= stuckThreshold（与下方既有
-    // 条目分支一致）。边界：stuckThreshold=1 时新 ID 首现即 stuck（语义自洽：阈值为 1
-    // 表示「任何未解决条目出现即视为卡住」，属显式配置而非 bug）。
-    if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
+    addNewFinding(issues, id, round, stuckThreshold, stuckIds);
   }
   const knownRemaining = computeKnownRemaining(issues);
   return { issues, stuck: stuckIds.length > 0, stuckIds, knownRemaining };
+}
+
+/**
+ * reconcileIssues 拆分子函数（语义零变更）：5.1-5 显式升级分支——仅处理 status=deferred
+ * 条目，escalate 声明转 open，其余 deferred 不动（由调用方 continue 跳过后续判定）。
+ */
+function escalateDeferred(entry, id, escalated, round) {
+  // 5.1-5 显式升级：reconciliation 声明 escalate → 重新 open（保留历史与 fixAttempts），
+  // 进入修复循环；未升级的 deferred 留 known-remaining，不参与判定。
+  if (escalated.has(id)) {
+    entry.status = "open";
+    entry.openStreak = 0;
+    entry.history.push({ round, status: "escalated" });
+  }
+}
+
+/**
+ * reconcileIssues 拆分子函数（语义零变更）：fix-attempted 判定（未再现 → fixed；
+ * 再现 → regressed + fixAttempts+1）与 MF-2 fixed 回归（再次被报告 → regressed +
+ * fixAttempts+1）。
+ */
+function applySeenTransition(entry, id, issue, seen, round) {
+  if (issue.status === "fix-attempted") {
+    if (!seen.has(id)) {
+      entry.status = "fixed";
+      entry.openStreak = 0;
+      entry.history.push({ round, status: "fixed" });
+    } else {
+      entry.status = "regressed";
+      // fixAttempts 语义 = 修复失败次数：初始 0，每次 regressed +1（RC-7「经 2 次修复
+      // 仍未收敛」= 第 2 次 regressed 后触发，修复见 findNeedsRedesign 阈值）。
+      entry.fixAttempts = (issue.fixAttempts || 0) + 1;
+      entry.history.push({ round, status: "regressed" });
+    }
+  }
+  // MF-2: fixed 条目再次被报告（seen）→ 回归：转 regressed + fixAttempts+1（已确认修复
+  // 的问题复发同样计修复失败，needs-redesign 可达）；openStreak 由下方统一 if 累计
+  // （首轮回归 1）。未 seen → 保持 fixed（漏报不误转）。修复前此处无转换——fixed 条目
+  // 复发时 fixAttempts/openStreak 均不增长，与收敛终止组合后默认配置下 R3 即以
+  // converged 提前终止而 must-fix 仍活跃（MF-2）。
+  if (issue.status === "fixed" && seen.has(id)) {
+    entry.status = "regressed";
+    entry.fixAttempts = (issue.fixAttempts || 0) + 1;
+    entry.history.push({ round, status: "regressed" });
+  }
+}
+
+/**
+ * reconcileIssues 拆分子函数（语义零变更）：openStreak 累计与 stuck 判定——
+ * 命中累计条件且达 stuckThreshold 时返回 true（由调用方记入 stuckIds）。
+ */
+function accumulateOpenStreak(entry, id, seen, stuckThreshold) {
+  // open/regressed 且本轮仍在（seen）→ openStreak +1（跨轮字段）；漏报（未 seen）不增长（保守）
+  if (seen.has(id) && (entry.status === "open" || entry.status === "regressed")) {
+    entry.openStreak = (entry.openStreak || 0) + 1;
+    return entry.openStreak >= stuckThreshold;
+  }
+  return false;
+}
+
+/**
+ * reconcileIssues 拆分子函数（语义零变更）：新 ID（reviewer 声明的新发现）→ open，
+ * 首现 openStreak=1 并按统一阈值语义参与 stuck 判定。
+ */
+function addNewFinding(issues, id, round, stuckThreshold, stuckIds) {
+  issues[id] = {
+    firstSeen: round, severity: "unknown", status: "open", openStreak: 1,
+    history: [{ round, status: "open" }], fixAttempts: 0,
+  };
+  // 新 ID 首现 openStreak=1：统一判定语义 openStreak >= stuckThreshold（与下方既有
+  // 条目分支一致）。边界：stuckThreshold=1 时新 ID 首现即 stuck（语义自洽：阈值为 1
+  // 表示「任何未解决条目出现即视为卡住」，属显式配置而非 bug）。
+  if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
 }
 
 /**
