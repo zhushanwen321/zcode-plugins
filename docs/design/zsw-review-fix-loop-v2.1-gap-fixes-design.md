@@ -77,14 +77,14 @@
 ### 3.3 关键决策
 
 - **D1（GF1）base 锁定与审查指令构造**：引入 `buildReviewInstruction(targetType, lockedBase)`（对齐 pi utils 同名函数语义）：git-diff → `git diff <hash>...HEAD` + 未提交改动条款；file → 审查指定文件内容；dir → 遍历审查目录；text → 按 target 描述自由审查。baseHash 改锁 `git rev-parse <target>`（仅 git-diff；失败降级原 ref + WARN，落 state.meta.baseHash）。reviewer/fixer/fallow prompt 统一消费指令段与锁定值。被否：维持裸 target 透传——即现状，RC-6 缺失。
-- **D2（GF2）对账清单改按 status 过滤 + 出口断言**：`activeIssuesForPrompt` 过滤条件改为 `status ∈ {open, regressed, fix-attempted, deferred}`（deferred 注入供 escalate 声明——pi 语义），不再依赖 lastActiveRound（字段保留为元数据，escalate→open 时编排层刷新为当前 round；幽灵 defer 建条目时补齐该字段）。fix 队列构成不变（仅聚合活跃条目）——escalate 条目「重新进修复队列」的准确路径 = 经对账清单被 reviewer 重报 → 聚合进队列（pi 同构），而非直接塞队列（避免 fixer 重复修已修条目）。rawAllClean/A4/converged 三个成功出口统一前置断言：`state.issues` 无 open/regressed 残留，有则不 break、继续轮（清单注入保证下轮可见）。被否：escalate 直接并入 fix 队列——pi 的 re-open 是「进对账可见面」而非「直接派修」，直接派修会在 reviewer 未确认的情况下让 fixer 重修可能已修好的条目。
-- **D3（GF3）契约校验双修**：(a) `jsAggregateFallback` 按 severity 拆分——minor 不进 fixQueue（suggestion 明细通道已存在），与 LLM 聚合契约同形；(b) `validateFixResult` 调用侧 mustFixIds 只传 `severity ∈ MUST_FIX_SEVERITIES` 的条目（与 mustFixCount 口径对齐，双保险）；(c) reviewer parseFail 判定扩展：`status` 缺失或非 {clean,issues}、`status=issues` 而 issues 非数组、`suggestion_count` 不可数值化、issues 内 title 畸形条目被剔除后有效条目为 0 且原始条目数 >0——任一命中即 parseFail 走 D3 终止（报告指明缺失字段）。被否：放宽 fixer 校验（deferred minor 视为已处理）——治标，且会让 LLM 聚合违约把 minor 塞 must_fix_ids 的路径继续无设防。
+- **D2（GF2）对账清单改按 status 过滤 + 出口断言 + open/regressed 的 fixed 转换**：`activeIssuesForPrompt` 过滤条件改为 `status ∈ {open, regressed, fix-attempted, deferred}`，不再依赖 lastActiveRound（字段保留为元数据，escalate→open 时编排层刷新为当前 round；幽灵 defer 建条目时补齐该字段）。清单内 deferred 条目带语义标注（「[deferred——仅本轮 fix 改变其上下文时 escalate，否则无需判定]」）——对齐 pi 的 known-remaining 抑制语义，避免与对账清单段「每条必须判定」的指令矛盾。fix 队列构成不变（仅聚合活跃条目）——escalate 条目「重新进修复队列」的准确路径 = 经对账清单被 reviewer 重报 → 聚合进队列（pi 同构），而非直接塞队列。rawAllClean/A4/converged 三个成功出口统一前置断言：`state.issues` 无 open/regressed 残留，有则不 break、继续轮（清单注入保证下轮可见）。**配套转换（出口断言的消除路径，审查 MF 补全）**：vendor reconcileIssues 只有 fix-attempted→fixed/regressed 转换，open/regressed 条目无消除通道会空转到 maxRounds——编排层在 reconcile 后补充转换：open/regressed 条目被 reconciliation 声明 `fixed`（带 evidence）→ 转 fixed（reviewer 明确确认已修即信）；未声明则保持（经清单注入 → 重报进聚合 → fixer 修 → fix-attempted → 常规链消除）。被否：escalate 直接并入 fix 队列——pi 的 re-open 是「进对账可见面」而非「直接派修」。
+- **D3（GF3）契约校验双修**：(a) `jsAggregateFallback` 按 severity 拆分——minor 不进 fixQueue（suggestion 明细通道已存在），与 LLM 聚合契约同形；(b) `validateFixResult` 调用侧 mustFixIds 只传 `severity ∈ MUST_FIX_SEVERITIES` 的条目（与 mustFixCount 口径对齐，双保险）；(c) reviewer parseFail 判定扩展：`status` 缺失或非 {clean,issues}、`status=issues` 而 issues 非数组、**`status=clean` 而 issues 有效条目 >0（矛盾输出，按 :855 现实现会判 clean=true 丢条目——假 clean 同类机理，审查补全）**、`suggestion_count` 不可数值化、issues 内 title 畸形条目被剔除后有效条目为 0 且原始条目数 >0——任一命中即 parseFail 走 D3 终止（报告指明 reviewer 名与具体缺失/矛盾字段）。被否：放宽 fixer 校验（deferred minor 视为已处理）——治标，且会让 LLM 聚合违约把 minor 塞 must_fix_ids 的路径继续无设防。
 - **D4（GF4）联合计数**：`alignIssueToState` 新号扫描集 = `Object.keys(state.issues) ∪ state.dormant[].id ∪ 本次 used`。被否：dormant 改独立 D-N 前缀——ID 空间分裂，复活对账（prev_id 匹配）复杂化。
-- **D5（GF5）rawAllClean 上移**：全员原始 clean（各 reviewer 契约级 must-fix 与 suggestion 双零）判定移至 review 解析后、聚合 phase 前——对齐 pi 时序，收尾轮零聚合调用。注意上移后该轮不产 aggregated.md（报告轮次摘要标注「全员 clean，未聚合」）。
+- **D5（GF5）rawAllClean 上移**：全员原始 clean（各 reviewer 契约级 must-fix 与 suggestion 双零）判定移至 review 解析后、聚合 phase 前——对齐 pi 时序，收尾轮零聚合调用。上移后该轮不产 aggregated.md（报告轮次摘要标注「全员 clean，未聚合」）。**连带更新（审查 MF 补全）**：v2 设计 S5 与 README 验收手册中「各轮 aggregated.md 齐全」的断言措辞需同步改为「非全员 clean 轮齐全；全员 clean 轮标注未聚合」；受影响既有测试断言 = workflow-b 中 S2/S5 相关用例的 aggregated.md 存在性断言（改条件断言），在 F4 一并更新。
 - **D6（M1）报告完备**：`buildMarkdownReport` 头部元信息增 `runDir` 行（有值时）；fixed-unverified/max-rounds/stuck/converged 终报段从 state.issues 渲染残留清单（id/severity/title/status）+ knownRemaining（deferred 及理由）。
 - **D7（M2）recheck 模式补全**：fix 消费处把 `fixes[].affected_files` 归并入第二清单 `state.fixImpactFiles`；scoped prompt 的 scope 改 `lastModifiedFiles ∪ fixImpactFiles` 并追加对账清单段（scoped reviewer 也产出 reconciliation）。仅影响显式开启 recheckAfterFix 的可选模式。
-- **D8（M3）参数与防御**：`convergeNewIssues` coerceInt 下限改 1（对齐 pi）；畸形 severity 回落改 major（对齐 pi normalizeSeverity 的 must-fix 保守方向——注：仅对将进活跃追踪的条目；suggestion 通道的 minor 明细不受影响）；roundRecord 增 `phaseTimings {review, aggregate?, fix?}`（Date.now 差值，聚合可跳过时为 null）。
-- **D9（doc 同步）**：v2 设计文档 4 处措辞按实现修正（聚合 runFail 也走降级链；abort 检查点合并描述；D7 fallow 探测主体；D4 目录布局 batch/round 子路径），并在 §6 变更历史记 v2.1 一笔。
+- **D8（M3）参数与防御**：`convergeNewIssues` coerceInt 下限改 1（对齐 pi）；畸形 severity 回落改 major（对齐 pi normalizeSeverity 的 must-fix 保守方向——仅对将进活跃追踪的条目；suggestion 明细通道的畸形 severity 条目维持排除行为——非 minor 不入明细，审查 S 补注）；roundRecord 增 `phaseTimings {review, aggregate?, fix?}`（Date.now 差值，聚合可跳过时为 null）。
+- **D9（doc 同步）**：v2 设计文档 5 处措辞修正（聚合 runFail 也走降级链；abort 检查点合并描述；D7 fallow 探测主体；D4 目录布局 batch/round 子路径；**v2 :198「escalate→open（重新进修复队列）」与 :144「fix 队列照常建立」两个从宽解读源头短语按 D2/D3 准确路径改写**——审查 S 补全），v2 S5 措辞随 D5 更新，并在 §6 变更历史记 v2.1 一笔。
 
 ## 4. 验收
 
@@ -92,10 +92,10 @@
 
 | # | 场景 | 步骤 | 通过标准 | 回溯 |
 |---|------|------|----------|------|
-| FS1 | base 锁定（真机） | 临时仓：base commit → 分支上第二个 commit（含 bug）→ 未提交改动；`--target-type git-diff --target main` 跑 run | state.meta.baseHash == rev-parse main 的 hash（≠ HEAD）；reviewer 报告（runDir round-1/*.md）中审查指令含 `git diff <hash>...HEAD` 且分支 commit 引入的 bug 被报出（证明未漏审） | GF1 |
+| FS1 | base 锁定（真机） | 临时仓：base commit → 分支上第二个 commit（含 bug）→ 未提交改动；`--target-type git-diff --target main` 跑 run | ① state.meta.baseHash == rev-parse main 的 hash（≠ HEAD）；② 行为级验证：分支 commit 引入的 bug 被报出（证明未漏审——runDir round-N/*.md 落盘的是 reviewer response 而非 prompt，指令级断言不在此测；指令拼装由单测级断言覆盖于 F1） | GF1 |
 | FS2 | escalate 闭环（单测探针） | fake：R1 issue → defer（minor）→ R2 reviewer 声明 escalate → 断言 R3 对账清单仍含该条目 → R4 reviewer 报 not-fixed → openStreak 累计；另构造全员 clean 但 open 残留 → 不断言 clean、循环继续 | 全链 status/清单断言 + 终态非 clean 直到条目 fixed | GF2 |
 | FS3a | fallback minor defer（单测探针） | FAKE_AGG_GARBAGE + reviewer 报 1 major + 1 minor → fixer 修 major、合法 defer minor（≥20 字理由） | 循环继续（非 fix-failed）；fix 队列 prompt 只含 major；minor 出现在 suggestion 段 | GF3 |
-| FS3b | 契约缺失输出（单测探针） | reviewer 围栏输出 `{"ok":true}` / `status:"maybe"` / issues 非数组三形态 | review-failed 终止，报告指明 reviewer 名与缺失字段 | GF3 |
+| FS3b | 契约缺失输出（单测探针） | reviewer 围栏输出 `{"ok":true}` / `status:"maybe"` / issues 非数组 / `status:"clean"` 但 issues 有条目 四形态 | review-failed 终止，报告指明 reviewer 名与缺失/矛盾字段 | GF3 |
 | FS4 | 撞号（单测探针） | issues={MF-1,MF-2}+dormant 含 MF-3 → 下轮全新条目 | 新条目分得 MF-4；dormant MF-3 复活走原 id | GF4 |
 | FS5 | rawAllClean 零聚合（单测） | 双维度首轮全 clean run | 聚合调用计数 0；轮次摘要标注「全员 clean，未聚合」 | GF5 |
 | FS6 | 报告完备（单测+人读） | 任一 max-rounds/stuck run | markdown 头部含 runDir 行；终报含残留清单与 deferred 清单 | GF5/M1 |
@@ -115,3 +115,12 @@
 串行 F1→F2→F3→F4（同文件领地）。全量回归（FS7）与真机 FS1 在 F4 后统一跑。
 
 **待验证检查点**：FS1 的 reviewer 对锁定 hash 指令的遵循度（真机一次即测；若 reviewer 仍自由发挥范围，考虑指令段加围栏示例——不过 pi 同款指令已被验证，风险低）。
+
+**发版 type 判定**：**minor**——含能力扩展（D1 按 targetType 的审查指令构造、D7 recheck scope 增强）与调用方可见判定面变化（D3c 缺字段输出 clean→review-failed、D5 全 clean 轮产物变化），超出 patch 的「bug 修复、内部重构」范畴（对照仓库 AGENTS.md 版本判定表）。
+
+## 6. 变更历史
+
+| 日期 | 变更 | 触发 |
+|------|------|------|
+| 2026-08-29 | 初版（5 major + 9 minor 差距修复方案，方案 A 定向修复） | 终局对抗审查差距清单 |
+| 2026-08-29 | 审查修订：FS1 断言对象修正（.md 落盘 response 非 prompt）；D2 补 open/regressed 的 fixed 补充转换（出口断言消除路径）与 deferred 清单标注；D3c 补矛盾输出形态（clean+issues）与 FS3b 第四形态；D5 补 v2 S5/README/既有断言连带更新；D9 补第 5 处短语改写；发版 type 判定 minor；suggestion 通道排除补注 | 对抗式审查 4 must-fix + 4 suggestion |
