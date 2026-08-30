@@ -31,6 +31,8 @@ function zswRoot() {
 
 function outputsDir() { return path.join(zswRoot(), 'outputs'); }
 function recordsPath() { return path.join(zswRoot(), 'records.jsonl'); }
+/** 引擎 stderr 实时落盘目录（D3 观测/取证面；appserver runner 消费）。 */
+function logsDir() { return path.join(zswRoot(), 'logs'); }
 /** provider id 含 ':'，目录名安全化（builtin:bigmodel-coding-plan → builtin_bigmodel-coding-plan）。 */
 function providerDirName(p) { return String(p).replace(/[^A-Za-z0-9._-]/g, '_'); }
 
@@ -75,7 +77,8 @@ const DEFAULTS = {
   timeoutMs: null,          // 不设超时限制（用户可按需填写）
   killGraceMs: 30_000,     // SIGTERM 后等这么久再 SIGKILL（终止宽限非任务死线；30s 给被杀执行体留优雅落盘窗口）
   maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
-  idleConversationTtlMs: 30 * 60_000, // apc conversation 会话空闲回收
+  // D7：会话空闲回收职责归引擎驻留池（10min 驱逐 + resume 可回），
+  // 原 idleConversationTtlMs 预留常量已删除——zsw 侧只维护 -32004 恢复序
 };
 
 const NESTED = process.env.ZSW_NESTED === '1';
@@ -87,6 +90,7 @@ module.exports = {
   zswRoot,
   outputsDir,
   recordsPath,
+  logsDir,
   homePoolDir,
   appserverHomeDir,
   mailboxRoot,

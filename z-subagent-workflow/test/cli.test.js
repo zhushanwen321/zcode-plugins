@@ -241,6 +241,53 @@ module.exports = {
   assert.equal(j.ok, true);
 });
 
+// ------------------------------------------------- F4 能力增量 flag（D5/D6）
+
+// parseArgs/csv 纯解析单测：bin/zsw.js 以 require.main 守卫导出解析函数——
+// 黑盒子进程测不到的 kebab→camel 映射与缺值布尔形态在此钉住
+const { parseArgs, csv } = require('../bin/zsw.js');
+
+test('F4 flag 解析：--thinking/--allow-tools/--deny-tools 的 kebab→camel 与值形态', () => {
+  const a = parseArgs(['start', '--thinking', 'low', '--allow-tools', 'Read,Grep', '--deny-tools', 'Bash, WebSearch', '--task', 'x']);
+  assert.equal(a.thinking, 'low');
+  assert.equal(a.allowTools, 'Read,Grep');
+  assert.equal(a.denyTools, 'Bash, WebSearch'); // 原样字符串，逗号拆分在 csv()
+  assert.equal(a.task, 'x');
+  // 缺值 → 布尔 true（thinkingArg/csvArg 的 warn 分支输入形态）
+  const b = parseArgs(['start', '--thinking', '--task', 'x']);
+  assert.equal(b.thinking, true);
+  assert.equal(b.task, 'x');
+  const c = parseArgs(['start', '--deny-tools']);
+  assert.equal(c.denyTools, true);
+  assert.deepEqual(csv('Bash, WebSearch ,,Grep'), ['Bash', 'WebSearch', 'Grep']); // 去空白、滤空段
+  assert.equal(csv(undefined), undefined);
+  assert.equal(csv(42), undefined);
+});
+
+test('F4 flag 黑盒：--thinking 缺值 → stderr warn + 忽略（容错不失败，daemon 模式可观测）', async () => {
+  const r = await run(['start', '--thinking', '--task', 'x', '--slug', 'y'],
+    { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+  assert.equal(r.code, 1); // daemon 不在场照常报错（warn 不改变退出语义）
+  assert.match(r.stderr, /--thinking 需要档位值/);
+  assert.match(r.stderr, /已忽略该参数/);
+  assert.match(r.stderr, /daemon 未运行/); // 后续路径不受影响
+});
+
+test('F4 flag 黑盒：--allow-tools/--deny-tools 缺值 → stderr warn + 忽略', async () => {
+  const r = await run(['start', '--allow-tools', '--deny-tools', '--task', 'x', '--slug', 'y'],
+    { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+  // 两 flag 的 next 都以 -- 开头（parseArgs 缺值语义）→ 均为布尔 true → 均 warn
+  assert.match(r.stderr, /--allow-tools 需要逗号分隔的工具名清单/);
+  assert.match(r.stderr, /--deny-tools 需要逗号分隔的工具名清单/);
+});
+
+test('F4 flag 黑盒：合法档位值不触发缺值 warn', async () => {
+  const r = await run(['start', '--thinking', 'low', '--task', 'x', '--slug', 'y'],
+    { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+  assert.doesNotMatch(r.stderr, /--thinking 需要档位值/);
+  assert.match(r.stderr, /daemon 未运行/); // 仍走 daemon 报错路径（本测试不跑引擎）
+});
+
 // ---------------------------------- review-fix-loop v2 CLI 冒烟（零引擎）
 
 // 探针脚本（模块顶层创建，发现根 = ZCODE_PROJECT_DIR = TMP；清理走文件级

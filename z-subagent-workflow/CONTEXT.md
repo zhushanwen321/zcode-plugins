@@ -11,7 +11,7 @@
 | 层 | token | 适用场合 |
 |----|-------|---------|
 | **全名** | `z-subagent-workflow` | 人读的插件标识：marketplace.json 的 name/source、插件目录名、`.zcode-plugin/plugin.json` 的 name、`.mcp.json` 的 server key、文档标题、git 分支名（`feat-zcode-subagent-workflow-*`） |
-| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_SOCK`、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
+| **缩写** | `zsw` | 机器读的短标识：env 前缀（`ZSW_ROOT`、`ZSW_NESTED`、`ZSW_ZCODE_CLI`、`ZSW_RUNNER`、`ZSW_SOCK`、`ZSW_TP1_*`（TP-1 恢复探针专用：`ZSW_TP1_SCENARIOS`/`ZSW_TP1_FLOOD_ONLY`/`ZSW_TP1_IDLE_WAIT_MS`，见 test/e2e-tp1-recovery.test.js）、`ZSW_E2E_*`）、数据根 `~/.zcode/zsw/`、CLI 命令 `bin/zsw.js`、MCP server 名（SERVER_INFO.name）、workflow 脚本发现根 `.zsw/workflows`（workspace 与 HOME 两侧）、内部函数（`zswRoot()`）、日志前缀 `[zsw]` |
 | **tool 名** | `zsub` / `zflow` | 语义层名（1.0.0 起 MCP 工具面下线，无实际 tool，叙事沿用）：`zsub` = subagent 生命周期（九 action：start/list/status/cancel/message/close/wait/agents/models），`zflow` = workflow 管理面（六 action：run/abort/status/list/scripts/lint）。skill 名 `zsub-zflow-orchestration` 由两者组合。CLI/文档中提到「zsub 面」「zflow 的 run action」用这些名 |
 
 ## 判定规则
@@ -20,7 +20,7 @@
 
 1. 指代**插件整体**（安装单元）→ 人读场合用全名；机器读场合（env/路径/命令）用 `zsw`。
 2. 指代 **zsub/zflow 语义面**（action 语境；1.0.0 起无实际 MCP tool）→ 只能用 `zsub` 或 `zflow`，且与该面的 action 语义一致。
-3. 指代**数据/运行时产物** → `zsw`（数据根下）或语义前缀（record id：`sa-` subagent / `wf-` workflow run；worktree 目录 `wt-<id>`；home 池 `home-<provider>-<model>`）。
+3. 指代**数据/运行时产物** → `zsw`（数据根下）或语义前缀（record id：`sa-` subagent / `wf-` workflow run；worktree 目录 `wt-<id>`；home 池 `home-<provider>-<modelShort>`）。
 
 禁止混用：`zsub` 不再作为插件总品牌（旧用法）；`zsw` 不用于 tool 名；数据目录不出现 `zsub` 字样。
 
@@ -32,10 +32,18 @@
 ├── outputs/<id>.md               结果全文（worktree 任务另有 <id>.patch）
 ├── daemon.sock                   daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock              daemon 竞选锁文件（sockPath + '.lock'，O_EXCL 原子裁决）
+├── logs/                         appserver 引擎子进程 stderr 实时落盘（异常诊断面，引擎正常时零输出）
+├── probe-cache.json              appserver probe 结论缓存（键 = CLI 路径 + mtime，只缓存 ok）
 ├── wt-<subagentId>/              worktree 隔离目录（listOrphans 按前缀认领）
 ├── home-<provider>-<modelShort>/ spawn per-model 隔离 HOME 池
 └── home-appserver/               appserver runner 单一隔离 HOME
 ```
+
+## 执行通道 env（`ZSW_RUNNER`，D1 默认翻转）
+
+| env | 取值 | 默认 | 语义 |
+|-----|------|------|------|
+| `ZSW_RUNNER` | `spawn` \| `appserver` | `appserver` | 执行引擎通道。未设置 = 缺省 appserver（组装前 probe 健康检查，失败自动降级 spawn，ok 结论落盘 `probe-cache.json`）；`spawn` = 显式回退旧通道（每轮独立进程）；`appserver` = 显式定向（跳过 probe）。daemon 在进程启动时读一次 env——改后需重启 ZCode 生效 |
 
 > 迁移说明：2026-08 重构前数据根为 `~/.zcode/zsub/`。插件 0.1.0 未发布、无外部
 > 用户，不做自动迁移；旧目录若存在属于历史残留，可人工删除。
@@ -52,6 +60,7 @@
 |------|------|------|
 | 2026-08 · 0.2.0（M0） | daemon 化第一步：MCP server 进程竞选单例 daemon（sock 同目录锁文件 `O_EXCL` 原子裁决 + 看门狗接管），unix socket 控制面（`daemon.sock`，`ZSW_SOCK` 可覆盖）；CLI 加 `--daemon`（thin client，默认仍本地执行）与 `wait` 子命令（daemon 侧内存挂起、零轮询、partial exit 2）；推荐等待姿势 = `Bash(run_in_background=true)` + `zsw start --daemon --wait` / `zsw wait --daemon --id`（借引擎原生 background 通知，完成即唤醒含 idle）。MCP 双 tool 面行为不变（双面并存） | [design/DESIGN-v4.md](../design/DESIGN-v4.md)（§6 D1-D7 决策、§9 M0/M1 版本台阶） |
 | 2026-08 · 1.0.0（M1） | M1 终态：MCP 工具面恒下线（tools/list 恒空、tools/call 恒拒绝并指引走 CLI——agent 交互全走 CLI，`zsub`/`zflow` 保留为语义层名）；CLI 默认翻转为 daemon thin client（不加 flag 即 daemon），本地一次性执行改为显式 `--local` 调试后门（无续聊/限流，CLI 退出即丢执行体），原 daemon flag 删除；`ZSW_TOOLS_DISABLED` 灰度开关删除（自用单用户无灰度对象，默认翻转与工具摘除两项 breaking 在 1.0.0 一个 major 一次到位） | [design/DESIGN-v4.md](../design/DESIGN-v4.md)（§6 D1/D5/D7 决策、§9 M1 版本台阶） |
+| 2026-08 · appserver 主通道化（D1） | 默认执行引擎从 spawn 翻转为常驻 app-server（apc 协议）：`ZSW_RUNNER` 缺省 = appserver（组装前 probe 健康检查 + 落盘缓存 `probe-cache.json` + 首败失效重探）、`spawn` = 显式回退；spawn 完整保留为回退位；断链自愈（-32004 → resume{runtimeModel} 恢复序）与协议漂移分类（protocol-drift）先行建成再翻转 | [docs/design/zsw-appserver-promotion-design.md](../docs/design/zsw-appserver-promotion-design.md)（§3.3 D1-D9） |
 
 ## 自查清单（提交前）
 

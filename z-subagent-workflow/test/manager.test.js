@@ -316,7 +316,10 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   const h = await manager.start({ task: '忙碌任务书', slug: 'busy-demo', conversation: true }, c);
   await waitFor(() => runner.startCalls.length === 1);
   const busy = await manager.message(h.subagentId, '现在怎么样了');
-  assert.deepEqual(busy, { busy: true, message: '该 subagent 正在运行，仅 idle 状态可投递' });
+  assert.deepEqual(busy, {
+    busy: true,
+    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（zsw wait --id ${h.subagentId}）或 zsw cancel --id ${h.subagentId} 取消后再投递`,
+  });
 
   // 非 conversation：完成后 message 直接报可操作错误
   const h2 = await manager.start({ task: '普通任务书', slug: 'plain-demo' }, c);
@@ -793,4 +796,169 @@ test('_withLock：同 id 排队按到达序执行，链空自清，不同 id 并
   await Promise.all([a, b, c2]);
   assert.deepEqual(order, ['a-start', 'c', 'a-end', 'b'], 'a 完成后 b 才执行');
   assert.equal(manager._locks.size, 0, '链空自清');
+});
+
+// -------------------------------------- F4 能力增量：thinking 标注 / errorKind 透传
+
+/** capabilities.kind 可覆盖的 FakeRunner（thinking 标注按实际通道判定，需模拟两通道）。 */
+function runnerWithKind(kind) {
+  const runner = new FakeRunner();
+  runner.capabilities = () => ({ kind, steering: 'none', coldStartMs: 0 });
+  return runner;
+}
+
+test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非法跳过 / 未请求不落字段', async () => {
+  // 返回终态 record（不是 boolean）——本测试直接断言返回值的 thinking 字段
+  const settle = (records, id) =>
+    waitFor(() => {
+      const r = records.get(id);
+      return r && ['closed', 'idle'].includes(r.status) ? r : null;
+    });
+
+  // ① runner 回填实际档位优先：请求 low，appserver runner 确认生效 high（创建时
+  //    落请求值，终态覆盖为实际生效值——status 查询全程有观测面）
+  {
+    const runner = runnerWithKind('appserver');
+    const { manager, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'think-ok', thinking: 'low' }, ctx());
+    assert.equal(records.get(h.subagentId).thinking, 'low', '创建时落请求值（运行中可观测）');
+    runner.finishAll({ status: 'closed', response: 'ok', thinking: 'high' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.thinking, 'high', 'runner 回填的实际档位优先于请求值');
+  }
+  // ② 非 appserver 通道（spawn 回退 / probe 降级翻转）请求了 thinking：runner 无
+  //    回填 → 'null (spawn 降级)'（设计 D5 字面标注）
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'think-degraded', thinking: 'low' }, ctx());
+    runner.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.thinking, 'null (spawn 降级)');
+  }
+  // ③ appserver 通道请求了 thinking 但 runner 无回填：null（非法档位被跳过的
+  //    语义——合法生效必有 string 回填）
+  {
+    const runner = runnerWithKind('appserver');
+    const { manager, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'think-skip', thinking: 'ultra' }, ctx());
+    runner.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.thinking, null);
+  }
+  // ④ 未请求 thinking：不落字段（undefined），任何通道一致
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'think-none' }, ctx());
+    runner.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.thinking, undefined);
+  }
+});
+
+test('thinking 标注：resume 轮不改写首轮标注（会话级设置随会话驻留）', async () => {
+  const runner = runnerWithKind('appserver');
+  const { manager, runner: r, records } = buildManager({ runner });
+  const h = await manager.start(
+    { task: '对话任务书', slug: 'think-chat', thinking: 'low', conversation: true },
+    ctx(),
+  );
+  r.finishAll({ status: 'closed', response: '首轮', thinking: 'low', sessionId: 'sess-think-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'idle');
+  assert.equal(records.get(h.subagentId).thinking, 'low');
+
+  // resume 轮无 create 面（thinking 是会话级），result 无 thinking 字段也不得
+  // 把首轮的 'low' 改写成 null
+  await manager.message(h.subagentId, '续聊');
+  const idle2 = await waitFor(() => {
+    const rec = records.get(h.subagentId);
+    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
+  });
+  assert.equal(idle2.thinking, 'low', 'resume 轮不改写 thinking 标注');
+});
+
+test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 record', async () => {
+  const { manager, runner, records } = buildManager();
+  setTimeout(() => runner.finishAll({
+    status: 'error', error: '协议漂移: -32602', errorKind: 'protocol-drift', response: '',
+  }), 20);
+  const res = await manager.start({ task: '漂移任务书', slug: 'drift-kind', wait: true }, ctx());
+  assert.equal(res.status, 'error');
+  const rec = records.get(res.subagentId);
+  assert.equal(rec.errorKind, 'protocol-drift', '错误分类独立字段可查询（不必从 error 文案反推）');
+  assert.equal(rec.status, 'error');
+
+  // 对照：无 errorKind 的普通错误不落该字段
+  const { manager: m2, runner: r2, records: rec2 } = buildManager();
+  setTimeout(() => r2.finishAll({ status: 'error', error: '普通失败', response: '' }), 20);
+  const res2 = await m2.start({ task: '普通失败任务书', slug: 'plain-err', wait: true }, ctx());
+  assert.equal(rec2.get(res2.subagentId).errorKind, undefined);
+});
+
+test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools → toolsNote；appserver / 未请求 → 不落', async () => {
+  const settle = (records, id) =>
+    waitFor(() => {
+      const r = records.get(id);
+      return r && ['closed', 'idle'].includes(r.status) ? r : null;
+    });
+
+  // ① spawn 回退通道请求了工具限制：spawn 无 flag 通道 → 静默失效，toolsNote 如实标注
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start(
+      { task: '任务书', slug: 'tools-degraded', allowTools: ['Read'], denyTools: ['Bash'] },
+      ctx(),
+    );
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道工具限制失效必须可见');
+  }
+  // ② appserver 通道请求了工具限制：正常消费（create 面），不落降级标注
+  {
+    const runner = runnerWithKind('appserver');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-apc', allowTools: ['Read'] }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, 'appserver 通道无 toolsNote');
+  }
+  // ③ spawn 通道未请求工具限制：无失效面，不落字段
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-none' }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, '未请求 tools 不落 toolsNote');
+  }
+});
+
+test('F4 CLI 工具限制透传 taskCtx（appserver runner 侧做 frontmatter 并集）', async () => {
+  const { manager, runner } = buildManager();
+  await manager.start(
+    { task: '任务书', slug: 'cli-tools', allowTools: ['Read', ' Grep '], denyTools: ['Bash', ''] },
+    ctx(),
+  );
+  await waitFor(() => runner.startCalls.length === 1);
+  const taskCtx = runner.startCalls[0];
+  assert.deepEqual(taskCtx.toolAllowlist, ['Read', 'Grep'], '规范化（trim）后透传');
+  assert.deepEqual(taskCtx.toolDenylist, ['Bash'], '空段过滤后透传');
+  // frontmatter disallowedTools 仍按原字段透传（spawn 通道既有路径不回归）
+  const restricted = {
+    name: 'restricted2', description: '', filePath: '/fake/r2.md', body: '正文',
+    disallowedTools: ['WebSearch'],
+  };
+  const { manager: m2, runner: r2 } = buildManager({
+    resolver: { resolve: (n) => (n === 'restricted2' ? restricted : null) },
+  });
+  await m2.start(
+    { task: '任务书', slug: 'fm-tools', agent: 'restricted2', denyTools: ['Bash'] },
+    ctx(),
+  );
+  await waitFor(() => r2.startCalls.length === 1);
+  assert.deepEqual(r2.startCalls[0].disallowedTools, ['WebSearch']);
+  assert.deepEqual(r2.startCalls[0].toolDenylist, ['Bash']);
+  // 并集去重断言在 appserver.test.js（runner 组 create 面）——此处只钉 manager 透传
 });

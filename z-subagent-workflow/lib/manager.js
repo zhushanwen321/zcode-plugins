@@ -37,7 +37,7 @@
 
 const crypto = require('node:crypto');
 const config = require('./config');
-const { buildPrompt } = require('./prompt-builder');
+const { buildPrompt, toolList } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
 const { extractJsonObject } = require('./jsonout');
 
@@ -148,7 +148,19 @@ class SubagentManager {
     // ③ 模型解析链 requested > agent frontmatter > 默认；再准备运行环境
     const modelRef = this.modelRouter.resolve(params.model, profile ? profile.model : undefined);
     const runnerKind = this.runner.capabilities().kind;
-    const runEnv = await this.modelRouter.prepareRunEnv(modelRef, runnerKind);
+    // F4 per-session 能力参数（D5/D6）：thinking 与 CLI 工具限制。appserver 通道
+    // 经 runEnv.createParams 落 create 面；spawn 通道无对应 flag 通道（D6 决策：
+    // 行为不变），prepareRunEnv 的 spawn 分支整体忽略
+    const thinking = typeof params.thinking === 'string' && params.thinking.trim() !== ''
+      ? params.thinking.trim()
+      : undefined;
+    const allowTools = toolList(params.allowTools);
+    const denyTools = toolList(params.denyTools);
+    const runEnv = await this.modelRouter.prepareRunEnv(modelRef, runnerKind, {
+      thinking,
+      toolAllowlist: allowTools,
+      toolDenylist: denyTools,
+    });
     const prompt = buildPrompt({
       agentProfile: profile,
       task,
@@ -197,13 +209,23 @@ class SubagentManager {
     if (params.schema !== undefined && params.schema !== null && params.schema !== '') {
       createInit.schema = params.schema;
     }
+    // thinking 请求值随创建落盘（F4/D5）：运行中 status 可见请求意图；终态时由
+    // _completeRun 覆盖为实际生效标注（生效档位 / null / 'null (spawn 降级)'）
+    if (thinking !== undefined) {
+      createInit.thinking = thinking;
+    }
     this.records.create(createInit);
 
     // taskCtx.disallowedTools：runner 层落 --disallowed-tools flag（硬约束）；
-    // 白名单（tools）无 flag 通道，已由 buildPrompt 拼软约束段
+    // 白名单（tools）无 flag 通道，已由 buildPrompt 拼软约束段。
+    // F4/D6：CLI 工具限制（allowTools/denyTools）随 taskCtx 上行，appserver
+    // runner 组 create 时 deny 与 frontmatter disallowedTools 并集去重
     const taskCtx = {
       subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation, runEnv,
       disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
+      thinking,
+      toolAllowlist: allowTools.length > 0 ? allowTools : undefined,
+      toolDenylist: denyTools.length > 0 ? denyTools : undefined,
     };
 
     // ④⑤ 后台执行体不 await（wait=true 除外）
@@ -301,7 +323,12 @@ class SubagentManager {
       );
     }
     if (rec.status === 'running' || rec.status === 'created') {
-      return { busy: true, message: '该 subagent 正在运行，仅 idle 状态可投递' };
+      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令真实可执行
+      return {
+        busy: true,
+        message: `该 subagent 正在运行，仅 idle 状态可投递。`
+          + `等待当前轮完成（zsw wait --id ${id}）或 zsw cancel --id ${id} 取消后再投递`,
+      };
     }
     if (rec.status !== 'idle') {
       throw new Error(
@@ -508,7 +535,17 @@ class SubagentManager {
         }
         result = await run;
       }
-      const record = await this._completeRun(id, result, { conversation: cur.conversation === true });
+      const record = await this._completeRun(id, result, {
+        conversation: cur.conversation === true,
+        // F4/D5：thinking 请求值随首轮下行——终态标注的判定依据（resume 轮无
+        // create 面，会话级设置随会话驻留，不改写首轮标注）
+        thinkingRequested: plan.kind === 'first' ? plan.taskCtx.thinking : undefined,
+        // F4/D6（G6 标注面对称）：CLI 工具限制请求值随首轮下行——最终通道为
+        // spawn 时限制静默失效，终态落 toolsNote 如实标注
+        toolsRequested: plan.kind === 'first'
+          ? Boolean(plan.taskCtx.toolAllowlist || plan.taskCtx.toolDenylist)
+          : undefined,
+      });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
     } catch (err) {
       // 兜底：未预期异常也要把 record 从活跃态救出，否则悬挂 running 永远占语义
@@ -525,7 +562,7 @@ class SubagentManager {
   }
 
   /** done 之后的统一收尾：落盘 → 终态转移 → 通知。 */
-  async _completeRun(id, result, { conversation }) {
+  async _completeRun(id, result, { conversation, thinkingRequested, toolsRequested } = {}) {
     const status = ['closed', 'timeout', 'cancelled'].includes(result && result.status)
       ? result.status
       : 'error';
@@ -568,9 +605,18 @@ class SubagentManager {
       if (structured === null) schemaParseFailed = true;
     }
 
-    this._transitionOrSkip(id, 'running', to, {
+    // F4/D5 thinking 标注：runner 回填优先（生效档位 string / 非法跳过 null）；
+    // 请求了但 runner 无回填时按实际通道判定——非 appserver（spawn 回退 /
+    // probe 降级翻转）= 'null (spawn 降级)'；未请求不落字段。**仅在应改写时
+    // 携带键**：record-store 内存 fold 是 Object.assign（undefined 会覆盖既有
+    // 值，与 JSON 落盘面的 undefined-丢弃不同）——resume 轮不携带键才能保住
+    // 首轮标注（thinking 是会话级设置，随会话驻留）
+    const transitionPatch = {
       closedReason,
       error: result ? result.error : undefined,
+      // F1 移交（D3）：protocol-drift 分类以独立字段落 record——错误类别可查询，
+      // 不必从 error 文案反推
+      errorKind: result ? result.errorKind : undefined,
       sessionId: (result && result.sessionId) || before.sessionId,
       tokens: (result && result.usage) || before.tokens,
       // rounds 完成计数：成功收尾的轮 +1（首轮 0→1，续聊轮 1→2）；失败/取消轮
@@ -585,7 +631,21 @@ class SubagentManager {
       patchFile,
       structured: structured !== null ? structured : undefined,
       schemaParseFailed: schemaParseFailed ? true : undefined,
-    });
+    };
+    if (result && result.thinking !== undefined) {
+      transitionPatch.thinking = result.thinking;
+    } else if (thinkingRequested !== undefined) {
+      transitionPatch.thinking = before.runnerKind === 'appserver' ? null : 'null (spawn 降级)';
+    }
+    // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
+    // 键」纪律）：请求了 allow/deny 且最终通道非 appserver（spawn 回退 / probe
+    // 降级翻转）= 限制未生效，落 toolsNote；未请求或 appserver 通道不落字段。
+    // before.runnerKind 在此已是最终通道——降级翻转的 record 改标发生在 done
+    // settle 之前（assemble.relabelRecord）
+    if (toolsRequested && before.runnerKind !== 'appserver') {
+      transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
+    }
+    this._transitionOrSkip(id, 'running', to, transitionPatch);
 
     // 完成通知：cancelled 是调用方主动行为（cancel 响应已回），不再通知。
     // 门卫同时看 record 当前终态：cancel 走无句柄路径已把 record 终态化为

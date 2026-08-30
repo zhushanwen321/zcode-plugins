@@ -94,4 +94,4 @@ function buildToolConstraint(agentProfile) {
   return lines.join('\n');
 }
 
-module.exports = { buildPrompt };
+module.exports = { buildPrompt, toolList };

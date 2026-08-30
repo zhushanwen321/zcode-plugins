@@ -22,6 +22,12 @@
  *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
  *        [--conversation] [--timeout-ms <n>] [--wait]
+ *        [--thinking <low|high|max>]
+ *        [--allow-tools <逗号分隔工具名>] [--deny-tools <逗号分隔工具名>]
+ *        （--thinking：appserver 通道映射 create.thoughtLevel，非法档位 warn
+ *         跳过不失败，spawn 回退通道不可用并如实标注；--allow-tools/--deny-tools：
+ *         appserver 通道 create.toolAllowlist/toolDenylist，deny 与 agent .md
+ *         frontmatter disallowedTools 并集去重，spawn 通道不消费）
  *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
  *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
  *         partial 结果，exit 2）
@@ -97,6 +103,41 @@ function parseArgs(argv) {
     else out[key] = true;
   }
   return out;
+}
+
+function csv(v) {
+  return typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+}
+
+/**
+ * F4 值必填 flag 的缺值规整：parseArgs 对「--flag 后无值」产 true（布尔形态），
+ * 与「显式给了值」不可同路处理——缺值属用户输入错误，stderr warn + 忽略该参数
+ * （容错不失败，与 D5 非法档位 warn 跳过同语义），不静默丢弃。
+ */
+function requireFlagValue(name, hint, v) {
+  if (v !== true) return v;
+  process.stderr.write(`[zsw] --${name} 需要${hint}。已忽略该参数。\n`);
+  return undefined;
+}
+
+function thinkingArg(v) {
+  const s = requireFlagValue('thinking', '档位值（如 --thinking low）', v);
+  if (s === undefined) return undefined;
+  const t = String(s).trim();
+  return t || undefined;
+}
+
+function csvArg(name, v) {
+  return csv(requireFlagValue(name, `逗号分隔的工具名清单（如 --${name} "Bash,WebSearch"）`, v));
+}
+
+/** start 面新 flag → manager.start params（daemon 与 --local 两形态共用，防漂移）。 */
+function startCapabilityArgs(args) {
+  return {
+    thinking: thinkingArg(args.thinking),
+    allowTools: csvArg('allow-tools', args.allowTools),
+    denyTools: csvArg('deny-tools', args.denyTools),
+  };
 }
 
 // ------------------------------------------------------ workflow 子命令
@@ -181,10 +222,6 @@ function workflowUsage(exitCode = 1) {
     + '进度打 stderr；exit 0 = 成功（run 以终态 closed 判定）。zcode CLI 路径可用 ZSW_ZCODE_CLI 覆盖。\n'
   );
   process.exit(exitCode);
-}
-
-function csv(v) {
-  return typeof v === 'string' ? v.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
 }
 
 /**
@@ -525,6 +562,9 @@ async function runDaemonCommand(cmd, args, rest) {
         worktree: args.worktree === true,
         conversation: args.conversation === true,
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+        // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——appserver 通道落
+        // create 面；spawn 回退通道 manager 如实标注（thinking: null (spawn 降级)）
+        ...startCapabilityArgs(args),
       };
       break;
     }
@@ -723,6 +763,7 @@ async function main() {
         conversation: args.conversation === true,
         wait: true, // CLI 进程活着才有后台执行体（无 --no-wait，见文件头注）
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+        ...startCapabilityArgs(args), // F4：与 daemon 形态同款参数面（防漂移）
       }, ctx);
       break;
     }
@@ -758,7 +799,13 @@ async function main() {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-main().catch((e) => {
-  process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
-  process.exit(1);
-});
+// require.main 守卫：test/cli.test.js 经 require 复用 parseArgs/csv 做解析
+// 单测（bin 直接执行时行为不变）；导出面只含纯解析函数，无副作用。
+module.exports = { parseArgs, csv };
+
+if (require.main === module) {
+  main().catch((e) => {
+    process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
+    process.exit(1);
+  });
+}
