@@ -71,7 +71,7 @@
 - 平台固有差异的强行对齐：triggerTurn vs mailbox、每 turn vs 一次性注入、双引擎切换、TUI/GUI 面差异
 - zsub 生命周期/ledger、reaper、slots、jsonout、prompt 拼装措辞（已有 D6 分段决策，维持插件层——见 §2.3）
 - core 的引擎/编排内核行为变更（本设计不动引擎）
-- pi-sw 的 fork/conversation/idleTimeout 等会话级参数向 zsw 的移植（spawn 单轮通道语义不同，属未来独立设计）
+- pi-sw 的 fork/conversation/idleTimeout 等会话级参数向 zsw 的移植（spawn 单轮通道语义不同，属未来独立设计；执行通道的终态演进见 [zcode-engine-appserver-decision-record.md](zcode-engine-appserver-decision-record.md)——app-server 常驻化在 core engine 层实施后，此项的语义基础随之变化）
 
 ---
 
