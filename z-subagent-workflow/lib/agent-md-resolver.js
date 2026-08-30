@@ -237,6 +237,11 @@ function toProfile(fm, filePath, body) {
   };
   const model = pickStr(fm.model);
   if (model) profile.model = model;
+  // engine（回接 2c）：core 路由三层优先级的 frontmatter 层——runner-core 经
+  // taskCtx.agentEngine 透传给 routeEngine；未注册 id 在路由期报 engine_not_found
+  //（含已注册清单与来源定位），解析期不做注册表校验（resolver 不感知引擎表）
+  const engine = pickStr(fm.engine);
+  if (engine) profile.engine = engine;
   // when（何时用我）：索引提示字段，pi 的 available_subagents 索引含此字段——
   // 主 agent 挑 agent 时比 description 更直接命中场景
   const when = pickStr(fm.when);

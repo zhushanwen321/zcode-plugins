@@ -123,9 +123,10 @@ function fakeResolver() {
 }
 
 function fakeRouter() {
+  // 2c 后 manager 只消费清单器的 resolveDefault（默认模型回退链展示值）；
+  // 模型校验归 core 引擎 preparer，fake 不再需要 resolve/prepareRunEnv
   return {
-    resolve: (requested, agentDefault) => requested || agentDefault || 'fake/default-model',
-    prepareRunEnv: async (modelRef) => ({ env: { HOME: `/fake/home/${modelRef}`, ZSW_NESTED: '1' } }),
+    resolveDefault: () => 'fake/default-model',
   };
 }
 
@@ -807,18 +808,21 @@ function runnerWithKind(kind) {
   return runner;
 }
 
-test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非法跳过 / 未请求不落字段', async () => {
-  // 返回终态 record（不是 boolean）——本测试直接断言返回值的 thinking 字段
+test('thinking 标注矩阵：runner 回填优先 / spawn 单轮降级 / 未请求不落字段', async () => {
+  // 返回终态 record（不是 boolean）——本测试直接断言返回值的 thinking 字段。
+  // 2c 后唯一通道是 core 引擎 spawn 单轮：runner 无 thinking 回填面（appserver
+  // 通道退役），但「RunResult.thinking 回填优先」的字段契约保留（未来引擎
+  // 提供档位回填时零改动生效）
   const settle = (records, id) =>
     waitFor(() => {
       const r = records.get(id);
       return r && ['closed', 'idle'].includes(r.status) ? r : null;
     });
 
-  // ① runner 回填实际档位优先：请求 low，appserver runner 确认生效 high（创建时
-  //    落请求值，终态覆盖为实际生效值——status 查询全程有观测面）
+  // ① runner 回填实际档位优先：请求 low，runner 确认 high（创建时落请求值，
+  //    终态覆盖为实际生效值——status 查询全程有观测面）
   {
-    const runner = runnerWithKind('appserver');
+    const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
     const h = await manager.start({ task: '任务书', slug: 'think-ok', thinking: 'low' }, ctx());
     assert.equal(records.get(h.subagentId).thinking, 'low', '创建时落请求值（运行中可观测）');
@@ -826,8 +830,8 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.thinking, 'high', 'runner 回填的实际档位优先于请求值');
   }
-  // ② 非 appserver 通道（spawn 回退 / probe 降级翻转）请求了 thinking：runner 无
-  //    回填 → 'null (spawn 降级)'（设计 D5 字面标注）
+  // ② spawn 单轮请求了 thinking：runner 无回填 → 'null (spawn 降级)'（无
+  //    flag 通道的字面标注；appserver 非法跳过的 null 分支随通道退役不可达）
   {
     const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
@@ -836,17 +840,7 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.thinking, 'null (spawn 降级)');
   }
-  // ③ appserver 通道请求了 thinking 但 runner 无回填：null（非法档位被跳过的
-  //    语义——合法生效必有 string 回填）
-  {
-    const runner = runnerWithKind('appserver');
-    const { manager, records } = buildManager({ runner });
-    const h = await manager.start({ task: '任务书', slug: 'think-skip', thinking: 'ultra' }, ctx());
-    runner.finishAll({ status: 'closed', response: 'ok' });
-    const rec = await settle(records, h.subagentId);
-    assert.equal(rec.thinking, null);
-  }
-  // ④ 未请求 thinking：不落字段（undefined），任何通道一致
+  // ③ 未请求 thinking：不落字段（undefined）
   {
     const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });

@@ -15,24 +15,24 @@
  *                   manager.start 同一拼装器，两入口不各拼一份）
  *   agent         → resolver.resolve 四根发现（内置资产传入的是 .md 绝对
  *                   路径；名字形态同样兼容）
- *   model         → modelRouter.resolve（run 级 $MODEL 已在 worker 层 fallback
- *                   进 per-call opts.model，到这里必是最终请求值或 undefined）
- *   thinkingLevel → prepareRunEnv sessionOpts.thinking（F4 通道，appserver 落
- *                   create.thoughtLevel，spawn 无通道自动忽略）
+ *   model         → modelRef 原始透传（run 级 $MODEL 已在 worker 层 fallback
+ *                   进 per-call opts.model；校验与兜底归 core 引擎 preparer）
+ *   engine        → taskCtx.engine（core 路由三层最优先层，U4 接线——之前
+ *                   静默不消费）
  *   cwd           → per-call 工作目录；undefined 回落 adapter 绑定的
  *                   fallbackCwd（= 本 run 的 workdir——core RunSpec 无 cwd
  *                   字段，workdir 经 per-run 构造 adapter 闭包传入）
- *   timeoutMs     → taskCtx.timeoutMs（zsw runner 内部实施超时/宽限杀链）
+ *   timeoutMs     → taskCtx.timeoutMs（runner-core 计时 abort → core 杀链）
  *   schema        → buildPrompt 契约段 + done 后 jsonout 三级容错提取为
  *                   parsedOutput（core 语义：schema 提供且输出可解析才有）
- *   skill / scene / engine / maxTurns / fork / worktree / returnMeta 等
+ *   thinkingLevel / skill / scene / maxTurns / fork / worktree / returnMeta 等
  *                   zsw 通道无对应面，静默不消费（差异清单见 README 回接
- *                   说明；engine 路由属 U4）
+ *                   说明）
  *
  * AbortSignal 契约（对齐 run-phase 旧语义）：启动前 aborted → 直接回
  * AbortError（core 的 dispatchCall 预检分支按 name 判定跳过记错）；运行中
- * abort → handle.cancel()（端口内部分流 apc session/stop / spawn 杀进程链），
- * listener 逐 call 摘除防泄漏。zsw runner 无事件流，onEvent 不接（port 可选参）。
+ * abort → handle.cancel()（runner-core 转 AbortSignal → core 杀链），listener
+ * 逐 call 摘除防泄漏。zsw runner 无事件流，onEvent 不接（port 可选参）。
  */
 
 const crypto = require('node:crypto');
@@ -83,7 +83,8 @@ function abortError() {
  * 构造 core AgentRunner 适配器。
  * @param {object} opts
  * @param {object} opts.runner        zsw RunnerPort（assemble 组装，与 zsub 线共享同一实例）
- * @param {object} opts.modelRouter   ModelRouter（resolve / prepareRunEnv）
+ * @param {object} [opts.modelRouter] 模型清单器（2c 后执行链不再消费；参数保留
+ *        兼容 orchestration-host 组装面）
  * @param {object} [opts.resolver]    agent .md 四根发现（lib/agent-md-resolver 类或模块）
  * @param {string} [opts.fallbackCwd] opts.cwd 缺省时的工作目录（= run 的 workdir）
  * @returns {{ run(opts: object, signal: AbortSignal) => Promise<object> }}
@@ -95,12 +96,7 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
       + '恢复指引：经 lib/assemble.js 组装注入，勿手工构造。'
     );
   }
-  if (!modelRouter || typeof modelRouter.prepareRunEnv !== 'function') {
-    throw new Error(
-      'createAgentRunnerAdapter 需要 modelRouter（含 prepareRunEnv）。'
-      + '恢复指引：经 lib/assemble.js 组装注入。'
-    );
-  }
+  void modelRouter;
   const cwdBase = typeof fallbackCwd === 'string' && fallbackCwd !== ''
     ? fallbackCwd
     : process.env.ZCODE_PROJECT_DIR || process.cwd();
@@ -132,17 +128,11 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
         }
       }
 
-      // 三行范式（run-phase.js 承接）：kind 阶段级重读 → prepareRunEnv → start
-      const kind = runner.capabilities().kind;
-      const modelRef = modelRouter.resolve(opts.model, profile ? profile.model : undefined);
-      const runEnv = await modelRouter.prepareRunEnv(modelRef, kind, {
-        thinking: typeof opts.thinkingLevel === 'string' && opts.thinkingLevel !== ''
-          ? opts.thinkingLevel
-          : undefined,
-      });
-      // prepareRunEnv 是 await 点：abort 可能落在窗口内，start 前复查（双检查）
-      if (signal && signal.aborted) throw abortError();
-
+      // 三行范式承接（2c 起执行链 = core zcode engine）：模型原始透传（校验归
+      // 引擎 preparer），无环境准备步骤（隔离 HOME 池归引擎）
+      const modelRef = typeof opts.model === 'string' && opts.model.trim() !== ''
+        ? opts.model.trim()
+        : (profile && typeof profile.model === 'string' && profile.model.trim() !== '' ? profile.model.trim() : undefined);
       const prompt = buildPrompt({
         agentProfile: profile,
         task: opts.prompt,
@@ -155,9 +145,14 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
         prompt,
         cwd: typeof opts.cwd === 'string' && opts.cwd !== '' ? opts.cwd : cwdBase,
         modelRef,
-        runEnv,
         timeoutMs: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : undefined,
         conversation: false,
+        // core 路由三层：调用参数 engine 最优先（U4 接线，之前静默不消费）；
+        // frontmatter engine 随 profile 透传（agentEngine）
+        engine: typeof opts.engine === 'string' && opts.engine.trim() !== '' ? opts.engine.trim() : undefined,
+        agentEngine: profile && typeof profile.engine === 'string' && profile.engine.trim() !== ''
+          ? profile.engine.trim()
+          : undefined,
         disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
       };
       const handle = runner.start(taskCtx);

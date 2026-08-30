@@ -1,34 +1,39 @@
 'use strict';
 /**
- * ModelRouterPort 实现（DESIGN-v3 D5：model 路由双机制中的 spawn/home-pool 侧）。
+ * 模型清单器（回接计划 2c 瘦身）：ModelRouterPort 的 shell 面。
  *
- * 职责拆分：
- * - resolve()：解析链 requested > agentDefault > 默认，并对照
- *   ~/.zcode/v2/config.json 的 provider['builtin:bigmodel-coding-plan'].models
- *   校验。未知模型抛可操作错误（列可用清单 + 恢复指引）。
- * - prepareRunEnv('spawn')：per-model 隔离 HOME 池 + 按需 bootstrap；
- *   prepareRunEnv('appserver')：只给 session/create 的 model 参数，HOME 池
- *   逻辑整体不触发（apc 是单一长驻进程，模型 per-session 设置）。
+ * 执行链已切 vendored subagent-core 的 zcode engine（lib/runner-core.js）——
+ * 模型解析校验（resolve）/ 隔离 HOME 池准备（prepareRunEnv）整体归引擎
+ * preparer（core TS 重写自 zsub 同源机制），本模块不再承担执行期职责。
+ * 保留面 = 清单与默认标记（`zsw models` action / SessionStart hook 注入块 /
+ * hook 面的实际消费导出）：
+ * - ModelRouter#listModels / #allProviders   dist/mcp/server.js models action
+ * - ModelRouter#resolveDefault               manager.start 台账落盘的默认模型
+ *                                           回退链（record.model 展示值；执行
+ *                                           校验归 engine preparer）
+ * - defaultModelRef / availableModels / defaultModelFor / qualifiedProviders /
+ *   PROVIDER_ID                              hook-source / hook-inject 单源导出
  *
- * 为什么 spawn 侧只复制带 apiKey 的 provider 凭据（2026-08-23 从「唯一
- * provider」泛化为多 provider）：隔离 HOME 的 cli/config.json 复制 v2 config
- * 里实际配置了凭据的条目——没配凭据的 provider 写了也跑不起来，resolve
- * 阶段即报错比运行时挂掉可诊断。spawn 池按 provider+model 隔离目录，跨
- * provider 同名模型不共池。
- *
- * 实测事实（2026-08）：本机 v2 config 顶层无 model 字段，「当前主模型」
- * 读取 model.main，读不到则回退 GLM-5.3。
+ * 数据源不变：~/.zcode/v2/config.json（桌面登录态，每次调用重读——apiKey/
+ * 模型清单随桌面端操作变化，不缓存）。
  */
 
 const fs = require('node:fs');
-const path = require('node:path');
 const config = require('./config');
-const driver = require('./driver');
 
-const PROVIDER_ID = driver.PROVIDER_ID;
-/** 短名解析的默认 provider（全名 provider/model 不受此限，精确匹配任意已配置 provider）。 */
-const DEFAULT_PROVIDER_ID = PROVIDER_ID;
+/** 默认 provider（短名解析与默认清单视图的锚点）。 */
+const PROVIDER_ID = 'builtin:bigmodel-coding-plan';
 const FALLBACK_DEFAULT_MODEL = `${PROVIDER_ID}/GLM-5.3`;
+
+/**
+ * provider 条目凭据判定（原 lib/driver.js 权威谓词随 driver 删除内联至此——
+ * 语义源自「清单视图只列真正跑得起来的 provider」，单一实现防各处复刻漂移；
+ * 引擎 preparer 的凭据判定是 core 自有实现（更严格：非空 string），两处语义
+ * 分立：本谓词只服务清单/展示面）。
+ */
+function hasProviderCredentials(entry) {
+  return Boolean(entry && entry.options && entry.options.apiKey);
+}
 
 /** 每次调用都重读源文件：apiKey/模型清单会随桌面端操作变化，不能缓存。 */
 function readV2Config() {
@@ -41,7 +46,7 @@ function readV2Config() {
 
 /** 指定 provider 下的可用模型（缺省 = 默认 provider，向后兼容旧调用）。 */
 function availableModels(v2, provider) {
-  return Object.keys(v2?.provider?.[provider || DEFAULT_PROVIDER_ID]?.models || {});
+  return Object.keys(v2?.provider?.[provider || PROVIDER_ID]?.models || {});
 }
 
 /** v2 config 中所有带非空模型清单的 provider id（「未知 provider」错误的可用清单数据源）。 */
@@ -54,30 +59,27 @@ function providersUsable(v2) {
 /**
  * 「合格 provider」判定与枚举（单一实现，models --all 视图与 SessionStart 注入块
  * 的「其他可运行 provider」段共同消费，禁复刻防多出口径漂移）：带凭据
- * （hasProviderCredentials，driver.js 权威谓词）且模型清单非空——无凭据的列了也
- * 跑不起来（spawn 池只复制带凭据 provider），兜底链视图必须是「真正可运行」的
- * 全集。与 providersUsable 的差异：多了凭据维度——错误提示要列「有清单的」
- * （帮助修正引用），可运行视图只列「真正跑得起来的」。默认 provider 不在此排除
- * （是否单列属展示层决策）。
+ * （hasProviderCredentials）且模型清单非空——无凭据的列了也跑不起来，兜底链
+ * 视图必须是「真正可运行」的全集。与 providersUsable 的差异：多了凭据维度——
+ * 错误提示要列「有清单的」（帮助修正引用），可运行视图只列「真正跑得起来的」。
  * @returns {string[]} 合格 provider id（v2 config 声明顺序）
  */
 function qualifiedProviders(v2) {
   return Object.entries((v2 && v2.provider) || {})
-    .filter(([, e]) => driver.hasProviderCredentials(e) && Object.keys((e && e.models) || {}).length > 0)
+    .filter(([, e]) => hasProviderCredentials(e) && Object.keys((e && e.models) || {}).length > 0)
     .map(([id]) => id);
 }
 
 /**
- * 引用切分（唯一实现，hook-inject 复用同一导出防双源漂移）：含 "/" 按
- * lastIndexOf 切出 provider（provider id 本身可含 ":"，如 builtin:*），否则
- * 短名归默认 provider。
+ * 引用切分（唯一实现）：含 "/" 按 lastIndexOf 切出 provider（provider id 本身
+ * 可含 ":"，如 builtin:*），否则短名归默认 provider。
  * @returns {{provider: string, short: string}}
  */
 function splitModelRef(ref) {
   const s = String(ref);
   return s.includes('/')
     ? { provider: s.slice(0, s.lastIndexOf('/')), short: s.slice(s.lastIndexOf('/') + 1) }
-    : { provider: DEFAULT_PROVIDER_ID, short: s };
+    : { provider: PROVIDER_ID, short: s };
 }
 
 /** 引用能否被 v2 清单解析：全名查对应 provider、短名查默认 provider，模型须在清单内。 */
@@ -112,9 +114,7 @@ function defaultModelRef(v2) {
  * SessionStart hook 注入共用，禁止调用方复刻比对逻辑防两套口径漂移）。
  *
  * provider 感知（2026-08 修复）：main 指向非目标 provider 时必须返回 null，
- * 而不是按纯短名在目标 provider 清单上错标——旧 listModels 实现曾因忽略
- * ref 的 provider，在 cli main 切到别的 provider 时给默认 provider 的同名
- * 模型错标「默认」。
+ * 而不是按纯短名在目标 provider 清单上错标。
  *
  * @param {object|null} v2         v2 config 对象
  * @param {string} providerId      目标 provider
@@ -139,20 +139,10 @@ function trimToNull(v) {
 }
 
 /**
- * 规范化 per-session 工具名清单（裸工具名形态，D6：引擎以 new Set(裸名) 匹配）。
- * 过滤非字符串/空白项并 trim；非数组入参 → 空数组（调用方按长度决定是否设键）。
- */
-function cleanToolNames(v) {
-  if (!Array.isArray(v)) return [];
-  return v.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim());
-}
-
-/**
  * v2 条目 → 结构化模型条目（listModels 的映射体，allProviders() 复用同一实现
- * 防两份字段提取漂移）。字段全部可选透出：config 里没有的维度不造默认值（如
- * 本机实测条目无 label），避免误导路由。默认标记走单一谓词（provider 感知）：
- * main 指向别的 provider 时本清单不错标。前置条件：该 provider 清单已验非空
- * （调用方负责，listModels / allProviders 均如此）。
+ * 防两份字段提取漂移）。字段全部可选透出：config 里没有的维度不造默认值，
+ * 避免误导路由。默认标记走单一谓词（provider 感知）。前置条件：该 provider
+ * 清单已验非空（调用方负责，listModels / allProviders 均如此）。
  */
 function modelEntries(v2, provider) {
   const defShort = defaultModelFor(v2, provider);
@@ -175,107 +165,28 @@ function modelEntries(v2, provider) {
   });
 }
 
-/**
- * per-model HOME 池互斥链：同 home 的重入按序执行。
- * 为什么需要：bootstrap 是「读源 → 比对 → 写池」多步操作，若未来实现变
- * 异步（如 fs/promises），无互斥会交错；同时把「并发 start 同一模型只
- * bootstrap 一次」的意图显式化。跨进程竞态由 tmp+rename 原子写兜底。
- */
-const poolMutex = new Map(); // home -> Promise（链尾，吞掉前序失败保证后续排队者仍执行）
-
-function ensureHomePool(home, modelRef, bootstrapOpts) {
-  const prev = poolMutex.get(home) || Promise.resolve();
-  const next = prev.then(() => {
-    if (homeNeedsBootstrap(home)) driver.bootstrapIsolatedHome(home, modelRef, bootstrapOpts);
-  });
-  poolMutex.set(home, next.catch(() => {}));
-  return next;
-}
-
-/**
- * 仅当以下情况重写池配置（否则跳过，resume 轮零开销）：
- * 1. 池目录或池内 config.json 不存在（首次建池）；
- * 2. 池内 config.json 损坏（torn write 防线：mtime 看似新但内容不完整）；
- * 3. 源 v2 config 的 mtime 比池内 config 新（桌面端刷新了 apiKey/模型清单）。
- * 源文件不可读但池配置完好：保留池现状——没有更好依据时不破坏可用状态。
- */
-function homeNeedsBootstrap(home) {
-  const poolConfig = path.join(home, '.zcode', 'cli', 'config.json');
-  if (!fs.existsSync(home) || !fs.existsSync(poolConfig)) return true;
-  let poolMtimeMs = 0;
-  try {
-    JSON.parse(fs.readFileSync(poolConfig, 'utf8'));
-    poolMtimeMs = fs.statSync(poolConfig).mtimeMs;
-  } catch {
-    return true;
-  }
-  try {
-    return fs.statSync(config.V2_CONFIG_PATH).mtimeMs > poolMtimeMs;
-  } catch {
-    return false;
-  }
-}
-
 class ModelRouter {
-/**
- * 解析并校验模型引用。
- *
- * 支持两种形态（精确匹配，无模糊猜测）：
- * - 全名 `provider/model`：在 v2 config 的对应 provider 下精确校验该模型；
- * - 短名 `model`：按默认 provider（DEFAULT_PROVIDER_ID）校验。
- *
- * @param {string} [requested]     start 入参的 model
- * @param {string} [agentDefault]  agent .md frontmatter 的 model
- * @returns {string} 规范化全名 `${provider}/${短名}`（provider 保留解析结果）
- * @throws 未知 provider/未知模型/清单不可读（显式指定时）——均为可操作错误
- */
-  resolve(requested, agentDefault) {
-    const wanted = trimToNull(requested) || trimToNull(agentDefault);
-    const v2 = readV2Config();
-    const providersWithModels = providersUsable(v2);
-    const target = wanted || defaultModelRef(v2);
-
-    if (!providersWithModels.length) {
-      if (wanted) {
-        throw new Error(
-          `无法从 ${config.V2_CONFIG_PATH} 读取任何带模型清单的 provider，不能校验 model="${wanted}"。` +
-          `恢复指引：确认 ZCode 桌面端已登录并配置 provider（v2 config 内存在含 models 的条目）后重试。`
-        );
-      }
-      // 无显式指定且无清单可校验：放行默认值，bootstrap 阶段会给完整可操作错误
-      return target;
-    }
-
-    const { provider, short } = splitModelRef(target);
-    const pModels = availableModels(v2, provider);
-    if (!pModels.length) {
-      const known = providersWithModels.join(', ');
-      throw new Error(
-        `未知 provider "${provider}"（v2 config 中有模型清单的 provider: ${known}）。` +
-        `恢复指引：改用上述 provider 之一（全名 provider/model），或短名（默认按 ${DEFAULT_PROVIDER_ID} 解析）后重试。`
-      );
-    }
-    if (!pModels.includes(short)) {
-      throw new Error(
-        `未知模型 "${short}"（provider ${provider} 下可用: ${pModels.join(', ')}）。` +
-        `恢复指引：改用该 provider 下的模型（短名或 ${provider}/<模型名> 全名），或先在 ZCode 桌面端启用目标模型后重试。`
-      );
-    }
-    return `${provider}/${short}`;
+  /**
+   * 默认模型引用（manager.start 台账落盘用回退链产物；执行期校验/兜底归
+   * engine preparer——core resolveZcodeModelRef 在 task.model 缺省时用引擎
+   * 内置兜底，本链保持 record 展示语义与历史一致）。
+   * @returns {string} provider/model 全名或原始 main 引用
+   */
+  resolveDefault() {
+    return defaultModelRef(readV2Config());
   }
 
   /**
    * 列出可用模型（zsub models action 数据源）。
    * 为什么返回结构化条目而非裸名字数组：路由决策要的不只是「有哪些」，
    * 还有档位信息（上下文窗口/推理档位/默认标记）——裸名字会让调用方
-   * 再查一次 v2 config。字段全部可选透出：config 里没有的维度不造默认值
-   * （如本机实测条目无 label），避免误导路由。
+   * 再查一次 v2 config。
    * @param {string} [provider] 目标 provider，缺省 = 默认 provider
    * @returns {Array<{name: string, label?: string, contextWindow?: number,
    *   reasoning?: {variants: string[], defaultVariant?: string}, default?: true}>}
    * @throws 清单不可读（可操作错误，含恢复指引）
    */
-  listModels(provider = DEFAULT_PROVIDER_ID) {
+  listModels(provider = PROVIDER_ID) {
     const v2 = readV2Config();
     const models = availableModels(v2, provider);
     if (!models.length) {
@@ -311,84 +222,18 @@ class ModelRouter {
       models: modelEntries(v2, id).map((m) => ({ ...m, name: `${id}/${m.name}` })),
     }));
   }
-
-  /**
-   * 准备运行环境（runner 启动前必须调用，结果放进 taskCtx.runEnv）。
-   * @param {string} modelRef  resolve() 的产物
-   * @param {'spawn'|'appserver'} runnerKind 执行通道（必填，无缺省值——调用方
-   *        按 capabilities().kind 显式传，与 ports.js ModelRouterPort 契约一致）
-   * @param {object} [sessionOpts] per-session 能力参数（F4：仅 appserver 消费，
-   *        经 createParams 合入 session/create；spawn 分支整体忽略——spawn 无
-   *        对应 flag 通道，行为不变）
-   * @param {string} [sessionOpts.thinking]      thinking 档位请求值 → create.thoughtLevel
-   *        （合法性校验在 runner 侧连接级做——此处无连接，透传原始值）
-   * @param {string[]} [sessionOpts.toolAllowlist] CLI --allow-tools 来源 → create.toolAllowlist
-   * @param {string[]} [sessionOpts.toolDenylist]  CLI --deny-tools 来源 → create.toolDenylist
-   *        （与 frontmatter taskCtx.disallowedTools 的并集去重在 runner 组 create 时做）
-   * @returns {Promise<{env?: {HOME: string, ZSW_NESTED: string}, createParams?: {model: string,
-   *           thoughtLevel?: string, toolAllowlist?: string[], toolDenylist?: string[]}}>}
-   *         （createParams 各能力键仅在规范化后非空时设——create schema strict，空键不占面）
-   */
-  async prepareRunEnv(modelRef, runnerKind, sessionOpts = {}) {
-    if (!modelRef || typeof modelRef !== 'string') {
-      throw new Error(
-        `ModelRouter.prepareRunEnv: modelRef 必填（收到 ${JSON.stringify(modelRef)}）。` +
-        '恢复指引：先经 resolve() 得到模型全名再准备运行环境。'
-      );
-    }
-    // modelRef 已是 resolve() 的规范化产物（provider/model 全名）；防御性兜底：
-    // 裸短名按默认 provider 解析，与 resolve() 的短名语义一致
-    const { provider, short } = splitModelRef(modelRef);
-    if (runnerKind === 'appserver') {
-      // 模型走 session/create 参数，无 per-model HOME 池（D5「单一隔离 HOME」）；
-      // 但 app-server 进程的 provider 凭据同样读 $HOME/.zcode/cli/config.json，
-      // 该 HOME 也必须 bootstrap——e2e 实测（2026-08-23）：不 bootstrap 则真实
-      // 模型调用全部失败（空配置无凭据）。复用 ensureHomePool 的互斥 + mtime 链。
-      // 长驻进程启动时一次性读全部凭据：bootstrap 写「所有带 apiKey 的 provider」，
-      // 之后任意 provider 的 session/create 都可用（spawn 池无此需求——每池单
-      // provider 单模型，只写目标 provider）。
-      const home = config.appserverHomeDir();
-      await ensureHomePool(home, `${provider}/${short}`, { allProviders: true });
-      // session/create 的 model 是 strict 对象（e2e 实测 2026-08-23，zcode.cjs
-      // schema C1t/hc）：{providerId, modelId, variant?}——字符串会被 -32602
-      // ZodError 拒收（expected object, received string）。
-      const createParams = { model: { providerId: provider, modelId: short } };
-      // F4 per-session 能力参数（D5/D6）：仅在调用方显式提供时设键——create
-      // schema strict，空键不占面；各值规范化后再落（防御直接构造的入参）
-      const thinking = typeof sessionOpts.thinking === 'string' ? sessionOpts.thinking.trim() : '';
-      if (thinking) createParams.thoughtLevel = thinking;
-      const allow = cleanToolNames(sessionOpts.toolAllowlist);
-      if (allow.length > 0) createParams.toolAllowlist = allow;
-      const deny = cleanToolNames(sessionOpts.toolDenylist);
-      if (deny.length > 0) createParams.toolDenylist = deny;
-      return { createParams };
-    }
-    const home = config.homePoolDir(short, provider);
-    await ensureHomePool(home, `${provider}/${short}`);
-    return { env: { HOME: home, ZSW_NESTED: '1' } };
-  }
 }
 
 module.exports = ModelRouter;
 module.exports.PROVIDER_ID = PROVIDER_ID;
-module.exports.FALLBACK_DEFAULT_MODEL = FALLBACK_DEFAULT_MODEL;
-module.exports.cleanToolNames = cleanToolNames;
 // hook 默认标记复用同一回退链（bin/zsw.js hook 分支），与 zsw models 同口径（D3），
 // 禁止调用方复刻回退逻辑防两套口径漂移
 module.exports.defaultModelRef = defaultModelRef;
-// 纯谓词单一导出（hook-inject / 测试消费，禁复刻）：清单、引用切分、
-// 默认标记判定、provider 凭据判定（权威实现定义在 driver.js——判定语义
-// 源自 bootstrap 的「只写带凭据 provider」，且放那里无 require 环）
+// 纯谓词单一导出（hook-inject / 测试消费，禁复刻）：清单、默认标记判定、
+// provider 凭据判定（原 driver.js 权威实现内联至此）
 module.exports.availableModels = availableModels;
-module.exports.splitModelRef = splitModelRef;
 module.exports.defaultModelFor = defaultModelFor;
-// 引用能否被 v2 清单解析——runner-appserver 恢复序的兜底闸门消费（闸门只管清单
-// 可解析，凭据存在性由调用方后续 provider 条目检查兜住），与 defaultModelRef
-// 内部同一判定，禁复刻防两套口径漂移
-module.exports.resolvableInV2 = resolvableInV2;
-module.exports.hasProviderCredentials = driver.hasProviderCredentials;
+module.exports.hasProviderCredentials = hasProviderCredentials;
 // 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
-// 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻（全 provider
-// 结构化视图经 ModelRouter#allProviders 消费，视图本身不经模块级导出——
-// 读 V2 config 的入口只在端口实现内，入口薄壳层零复制）
+// 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻
 module.exports.qualifiedProviders = qualifiedProviders;

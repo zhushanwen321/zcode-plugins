@@ -30,7 +30,7 @@ process.env.HOME = ANCHOR_HOME;
 
 const { renderResourcesBlock } = require('../lib/hook-inject');
 const ModelRouter = require('../lib/model-router');
-const { PROVIDER_ID, availableModels, splitModelRef, hasProviderCredentials } = ModelRouter;
+const { PROVIDER_ID, availableModels, hasProviderCredentials } = ModelRouter;
 const { V2_CONFIG_PATH, CLI_CONFIG_PATH } = require('../lib/config');
 
 const NOW = '2026-08-29T12:00:00+08:00';
@@ -249,11 +249,8 @@ test('语义锚：其余段在场性 ≡ hasProviderCredentials 且模型非空�
   assert.equal(hasProviderCredentials({ options: {} }), false);
   assert.equal(hasProviderCredentials({ options: { apiKey: '' } }), false);
   assert.equal(hasProviderCredentials({ options: { apiKey: 'k' } }), true);
-  // 引用切分：全名按 lastIndexOf（provider id 含 ":" 不受影响）、短名归默认
-  assert.deepEqual(splitModelRef(`${PROVIDER_ID}/GLM-5.3`), { provider: PROVIDER_ID, short: 'GLM-5.3' });
-  assert.deepEqual(splitModelRef('a/b/c'), { provider: 'a/b', short: 'c' });
-  assert.deepEqual(splitModelRef('GLM-5.3'), { provider: PROVIDER_ID, short: 'GLM-5.3' });
-  // 清单导出与默认段渲染名单同源
+  // （splitModelRef 导出面已随执行解析删除——引用切分语义经 defaultModelFor
+  // 的 provider 感知判定间接覆盖；清单导出与默认段渲染名单同源）
   assert.deepEqual(availableModels(mkBaseV2(), PROVIDER_ID), ['GLM-5.3', 'GLM-5.3-Flash']);
 });
 

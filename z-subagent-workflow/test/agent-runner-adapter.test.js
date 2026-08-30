@@ -5,8 +5,8 @@
  * 承接已删除的 test/workflow-apc.test.js 的核心断言面（旧 workflow 入口
  * 函数的 apc 翻转面测试随入口退役；「agent() 调用经 zsw RunnerPort」的
  * 契约现在钉在这里）：
- * - 三行范式 taskCtx 契约：runner.start 收到 {prompt, cwd, modelRef, runEnv,
- *   timeoutMs}（runEnv 为通道对应形态）；
+ * - taskCtx 契约：runner.start 收到 {prompt, cwd, modelRef, timeoutMs, engine}
+ *   （2c 起无 runEnv——模型校验/环境准备归 core 引擎 preparer）；
  * - 各调用 done 后 release 被调（D2 全终态释放）；
  * - 运行中 abort → handle.cancel 被调；
  * - AgentResult 映射：closed → content/parsedOutput（schema 经 jsonout 提取）
@@ -59,21 +59,9 @@ function makeFakeZswRunner({ result, kind = 'appserver', hold = false } = {}) {
   };
 }
 
-/** fake ModelRouter：resolve 固定值 + prepareRunEnv 按通道出对应形态。 */
-function makeFakeRouter(modelRef = 'prov/model-x') {
-  const calls = [];
-  return {
-    calls,
-    resolve: (requested, agentDefault) => {
-      calls.push({ requested, agentDefault });
-      return requested || agentDefault || modelRef;
-    },
-    prepareRunEnv: async (ref, kind, sessionOpts) => {
-      calls.push({ ref, kind, sessionOpts });
-      if (kind === 'appserver') return { createParams: { model: ref, ...(sessionOpts && sessionOpts.thinking ? { thoughtLevel: sessionOpts.thinking } : {}) } };
-      return { env: { HOME: path.join(TMP, 'home-pool'), ZSW_NESTED: '1' } };
-    },
-  };
+/** fake ModelRouter（2c 后执行链不再消费；保留注入形态对齐 orchestration-host 组装面）。 */
+function makeFakeRouter() {
+  return { resolveDefault: () => 'prov/model-x' };
 }
 
 function makeAdapter(runner, router, resolver) {
@@ -85,7 +73,7 @@ function makeAdapter(runner, router, resolver) {
   });
 }
 
-test('三行范式 taskCtx 契约：start 收到 prompt/cwd/modelRef/runEnv/timeoutMs，done 后 release', async () => {
+test('taskCtx 契约：start 收到 prompt/cwd/modelRef/timeoutMs/engine（无 runEnv），done 后 release', async () => {
   const runner = makeFakeZswRunner();
   const router = makeFakeRouter();
   const adapter = makeAdapter(runner, router);
@@ -95,17 +83,18 @@ test('三行范式 taskCtx 契约：start 收到 prompt/cwd/modelRef/runEnv/time
     prompt: '任务书',
     model: 'prov/model-y',
     timeoutMs: 65000,
-    thinkingLevel: 'high',
+    engine: 'zcode',
   }, signal);
 
-  // ① capabilities 阶段级重读 → ② prepareRunEnv（thinking 进 sessionOpts）
-  // → ③ start（最小 taskCtx 子集）
+  // 模型原始透传 + 调用参数 engine 进 core 路由三层（2c）；runEnv 已随
+  // model-router 瘦身消失
   assert.equal(runner.state.starts.length, 1);
   const ctx = runner.state.starts[0];
   assert.ok(ctx.prompt.includes('任务书'));
   assert.equal(ctx.cwd, WORKDIR, 'opts.cwd 缺省回落 fallbackCwd（= run 的 workdir）');
   assert.equal(ctx.modelRef, 'prov/model-y');
-  assert.ok(ctx.runEnv.createParams && ctx.runEnv.createParams.thoughtLevel === 'high');
+  assert.equal(ctx.engine, 'zcode', 'opts.engine 透传（调用参数层最优先）');
+  assert.equal(ctx.runEnv, undefined, '2c 起无环境准备产物');
   assert.equal(ctx.timeoutMs, 65000);
   // D2：done 落定后一次性会话释放（成功态也释放）
   assert.equal(runner.state.releases.length, 1);
@@ -195,14 +184,13 @@ test('opts.agent → resolver.resolve（prompt 拼角色段）；找不到抛可
   );
 });
 
-test('spawn 通道：runEnv 为 {env} 形态（capabilities 分流）', async () => {
+test('model 缺省链：opts.model 与 agent frontmatter 均无 → modelRef=undefined（兜底归引擎 preparer）', async () => {
   const runner = makeFakeZswRunner({ kind: 'spawn' });
-  const router = makeFakeRouter();
-  const adapter = makeAdapter(runner, router);
+  const adapter = makeAdapter(runner);
   await adapter.run({ prompt: 'p' }, undefined);
   const ctx = runner.state.starts[0];
-  assert.ok(ctx.runEnv.env && ctx.runEnv.env.ZSW_NESTED === '1');
-  assert.equal(ctx.runEnv.createParams, undefined);
+  assert.equal(ctx.modelRef, undefined, '无显式模型时不造默认值，引擎 preparer 兜底');
+  assert.equal(ctx.runEnv, undefined);
 });
 
 test('opts.prompt 必填校验（可操作错误）', async () => {

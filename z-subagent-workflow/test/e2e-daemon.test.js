@@ -89,9 +89,10 @@ function canConnect(sockPath) {
   });
 }
 
-// require 无 env 前置要求：driver/config 冻结的 V2_CONFIG_PATH 来自真实 HOME，
+// require 无 env 前置要求：config 冻结的 V2_CONFIG_PATH 来自真实 HOME，
 // 这正是凭据来源（见文件头 env 纪律）。仅配额 gate 用，场景本体全走子进程。
-const driver = require('../lib/driver');
+// 回接 2c：spawn 驱动已删，探测走 core zcode engine（CoreRunner 真实例）。
+const CoreRunner = require('../lib/runner-core');
 
 /**
  * 配额/凭据 gate（惰性单例）：首个模型场景触发探测。返回 {ok, reason}。
@@ -104,21 +105,21 @@ let gatePromise = null;
 function modelGate() {
   if (gatePromise) return gatePromise;
   gatePromise = (async () => {
-    const home = path.join(TMP, 'quota-probe-home');
-    try {
-      driver.bootstrapIsolatedHome(home, MODEL_REF);
-    } catch (e) {
-      return { ok: false, reason: `真实模型凭据不可用: ${e && e.message}` };
-    }
+    // core 引擎的池引导在 run 内做（preparer）；缺凭据在首探即报可操作错误 → skip
+    const runner = new CoreRunner();
     for (let i = 1; i <= 3; i++) {
       CALLS.probes += 1;
       const t0 = Date.now();
-      const r = await driver.runHeadless({
-        home,
-        cwd: TMP,
-        prompt: '回复：ok。不要做任何其他事。',
-        timeoutMs: 120_000,
-      });
+      let r;
+      try {
+        r = await runner.start({
+          subagentId: `sa-gate-${i}`, slug: 'quota-gate',
+          prompt: '回复：ok。不要做任何其他事。',
+          cwd: TMP, modelRef: MODEL_REF, timeoutMs: 120_000, conversation: false,
+        }).done;
+      } catch (e) {
+        return { ok: false, reason: `真实模型凭据不可用: ${e && e.message}` };
+      }
       console.error(`[e2e-daemon] 配额窗口探测 #${i}: status=${r.status} elapsed=${Date.now() - t0}ms`);
       if (r.status === 'closed') return { ok: true };
       CALLS.probeRetries += 1;
@@ -467,10 +468,9 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
 test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管 → status 带 lost/orphan 与重发指引', async (t) => {
   if (!(await requireModel(t))) return;
   const sc = newScenario(t, 'a5');
-  // A5 的 victim 断言依赖 exec.pid（spawn 专有：独立子进程 + pid 探活/orphan 语义；
-  // apc 的 exec 是 {kind:'apc', sessionId}，无 pid 字段，断言永假）。
-  // 看门狗机制本身通道无关；apc 下 daemon 死亡 = 引擎随亡 → 任务 lost（语义不同，不在此验）。
-  sc.env.ZSW_RUNNER = 'spawn';
+  // A5 的 victim 断言依赖 exec.pid（2c 后唯一通道恒 spawn 单轮：独立子进程 +
+  // pid 探活/orphan 语义；appserver 已随 D6-⑥ 退役）。
+  // （ZSW_RUNNER 钉面已删——缺省即 core zcode engine spawn 单轮）
   const a = spawnMcpServer(sc, 'a5-daemon');
   assert.equal(await a.role, 'daemon');
   assert.equal(fs.readFileSync(sc.lockPath, 'utf8'), String(a.child.pid), 'lock 内必须是 daemon A 的 pid');

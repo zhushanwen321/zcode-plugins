@@ -627,25 +627,9 @@ function createServer({ manager, wfHost, nested = false, log = () => {}, emitFra
    * 错误，走 JSON-RPC error 帧）；命中则整包交给对应 handler（第二级，
    * zsub 的 switch(action) / zflow 的 switch(workflow) 见
    * buildToolHandlers）。
+   * （升级提示投递面已随 appserver 通道退役删除，回接 2c：格式漂移检测
+   * 改由 core 引擎探针的 golden 干跑回归承担。）
    */
-  /**
-   * 升级提示投递（wave2 D5，MCP 面）：标记存在时在 tool 结果文本尾部追加提示行
-   * （daemon 形态经 agent 转达用户）。挂 dispatchToolCall 返回处 = MCP tools/call
-   * 面的唯一统一出口（1.0.0 终态下 tool 结果恒为本函数产出的拒绝指引文本）；
-   * socket 面刻意不挂——其唯一消费者是 CLI thin client，CLI 侧 main() 顶部已对
-   * 同一标记出声，重复投递无读者。lazy require + 容错：投递失败不影响 tool 结果。
-   */
-  function appendUpgradeNotice(wrapped) {
-    try {
-      const { readUpgradeNotice, buildUpgradeNoticeMessage } = require('../../lib/assemble');
-      if (!readUpgradeNotice()) return wrapped;
-      const block = wrapped && Array.isArray(wrapped.content) ? wrapped.content[0] : null;
-      if (block && typeof block.text === 'string') {
-        block.text += `\n\n[zsub] ${buildUpgradeNoticeMessage()}`;
-      }
-    } catch { /* 投递失败不影响 tool 结果 */ }
-    return wrapped;
-  }
 
   async function dispatchToolCall(params) {
     // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
@@ -663,8 +647,7 @@ function createServer({ manager, wfHost, nested = false, log = () => {}, emitFra
     } catch { /* 诊断失败不影响服务 */ }
     // 工具面恒拒绝（1.0.0 终态，D1：agent 交互全走 CLI；嵌套环境同文案——
     // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）。
-    // 返回前经升级提示投递（wave2 D5）：标记存在即文本尾部追加提示行
-    return appendUpgradeNotice(errContent(toolsDisabledMessage()));
+    return errContent(toolsDisabledMessage());
   }
 
   async function handleMessage(msg) {
@@ -792,8 +775,9 @@ async function main() {
   if (config.NESTED) {
     log('ZSW_NESTED=1：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
-    // runner 决策位（D3 门控）：ZSW_RUNNER=appserver 的 probe+降级链已下沉
-    // lib/assemble（MCP 与 CLI 共用同一决策，避免两入口行为漂移）
+    // 执行通道（回接 2c）：runner 恒为 core zcode engine 的 spawn 单轮
+    // （lib/assemble.js 组装；appserver 通道已按 D6-⑥ 退役，ZSW_RUNNER=appserver
+    // 在 assemble 显式报错——MCP 与 CLI 共用同一决策，两入口行为不漂移）
     const assembled = await createManager();
     manager = assembled.manager;
     wfHost = assembled.wfHost;

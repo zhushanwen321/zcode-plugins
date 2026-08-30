@@ -213,7 +213,7 @@ function workflowUsage(exitCode = 1) {
     + 'lint:\n'
     + '  --file <脚本路径>         校验脚本（core lintScript：agent() 入口等契约）\n'
     + '\n'
-    + '进度打 stderr；exit 0 = 成功（run 以 reason=completed 判定）。zcode CLI 路径可用 ZSW_ZCODE_CLI 覆盖。\n'
+    + '进度打 stderr；exit 0 = 成功（run 以 reason=completed 判定）。zcode CLI 路径（core 引擎）可用 XYZ_ZCODE_CLI 覆盖。\n'
   );
   process.exit(exitCode);
 }
@@ -689,24 +689,16 @@ function collectIds(rest) {
   return ids;
 }
 
-/**
- * 升级提示投递（wave2 D5，CLI 面）：任意 zsw 命令执行前检查升级标记，存在即
- * stderr 出声。检测发生在组装期（resolveRunnerKind 的 stale miss 落标记），
- * 与投递解耦——daemon thin client 形态下本进程不组装，标记由 daemon/MCP
- * server 侧检测落盘，本面只读标记出声。调用点放 main 最前：workflow/hook/
- * daemon/local/usage 各分发路径（含全部早期 return）一次覆盖。lazy require：
- * 无标记的常态下零模块加载开销。
- */
-function notifyUpgradeNotice() {
-  try {
-    const { readUpgradeNotice, buildUpgradeNoticeMessage } = require('../lib/assemble');
-    if (!readUpgradeNotice()) return;
-    process.stderr.write(`[zsub] ${buildUpgradeNoticeMessage()}\n`);
-  } catch { /* 投递失败不影响命令本身 */ }
-}
-
 async function main() {
-  notifyUpgradeNotice();
+  // ZSW_RUNNER 校验前置（回接 2c）：thin client / daemon / --local 三形态一致
+  // 立即报退役错误，不依赖 daemon 在场或组装时机（hook/workflow 子命令不经
+  // 组装面，但 env 误配同样应尽早在用户可见面出声）
+  try {
+    require('../lib/assemble').assertRunnerEnv();
+  } catch (e) {
+    process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
+    process.exit(1);
+  }
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）

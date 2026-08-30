@@ -13,12 +13,12 @@
  *    ①  notifyMode 探测：notifier.capabilities().mode
  *        （mailbox|polling；env 探测在 createRuntime，本层只消费）
  *    ②  resolver.resolve(agent, cwd)            四根 agent .md 发现（D6）
- *    ③  modelRouter.resolve + prepareRunEnv     模型链解析 + 隔离 HOME（D5）
+ *    ③  模型引用原始透传（校验归 core 引擎 preparer，回接 2c）
  *        + promptBuilder.buildPrompt            拼装角色/工具约束/任务/schema/技能（D7）
  *        + worktree.prepare（可选）             任务 cwd 切到隔离目录（D12）
  *        + records.create                       append-only 事件流（D9）
  *    ④  后台执行体（不 await）：slots.acquire（D11 深度分层）→ created→running
- *        → runner.start(taskCtx)（spawn 侧由 driver 注入 ZSW_NESTED=1，D10）
+ *        → runner.start(taskCtx)（core 引擎经公共 nesting-guard 注入嵌套标记，D10）
  *    ⑤  wait=false 立即返回句柄 {subagentId, status:'running', notify, guidance?}
  *    ⑥  done 回调：outputs.writeResult（worktree 再 collectPatch 回填 patchFile）
  *        → record 终态 closed/error/timeout（conversation 首轮置 idle）→ 释放槽位
@@ -145,22 +145,22 @@ class SubagentManager {
       }
     }
 
-    // ③ 模型解析链 requested > agent frontmatter > 默认；再准备运行环境
-    const modelRef = this.modelRouter.resolve(params.model, profile ? profile.model : undefined);
+    // ③ 模型解析链 requested > agent frontmatter > 默认链（2c 起：原始请求透传，
+    // 校验与兜底归 core 引擎 preparer——resolveZcodeModelRef 短名/全名/兜底全支持；
+    // 默认链产物仅服务 record.model 台账展示，与历史形态一致）
+    const modelRef = (typeof params.model === 'string' && params.model.trim() !== ''
+      ? params.model.trim()
+      : (profile && typeof profile.model === 'string' && profile.model.trim() !== ''
+        ? profile.model.trim()
+        : this.modelRouter.resolveDefault()));
     const runnerKind = this.runner.capabilities().kind;
-    // F4 per-session 能力参数（D5/D6）：thinking 与 CLI 工具限制。appserver 通道
-    // 经 runEnv.createParams 落 create 面；spawn 通道无对应 flag 通道（D6 决策：
-    // 行为不变），prepareRunEnv 的 spawn 分支整体忽略
+    // F4 per-session 能力参数（D5/D6）：thinking 与 CLI 工具限制。2c 后唯一通道是
+    // spawn 单轮：无 flag 通道（行为不变），请求值随 record 落盘、终态标注降级
     const thinking = typeof params.thinking === 'string' && params.thinking.trim() !== ''
       ? params.thinking.trim()
       : undefined;
     const allowTools = toolList(params.allowTools);
     const denyTools = toolList(params.denyTools);
-    const runEnv = await this.modelRouter.prepareRunEnv(modelRef, runnerKind, {
-      thinking,
-      toolAllowlist: allowTools,
-      toolDenylist: denyTools,
-    });
     const prompt = buildPrompt({
       agentProfile: profile,
       task,
@@ -216,12 +216,15 @@ class SubagentManager {
     }
     this.records.create(createInit);
 
-    // taskCtx.disallowedTools：runner 层落 --disallowed-tools flag（硬约束）；
-    // 白名单（tools）无 flag 通道，已由 buildPrompt 拼软约束段。
-    // F4/D6：CLI 工具限制（allowTools/denyTools）随 taskCtx 上行，appserver
-    // runner 组 create 时 deny 与 frontmatter disallowedTools 并集去重
+    // taskCtx.disallowedTools：与 CLI toolDenylist 在 runner-core 并集去重后落
+    // core 引擎 --disallowed-tools flag（硬约束）；白名单（tools）无 flag 通道，
+    // 已由 buildPrompt 拼软约束段。engine（frontmatter）经 taskCtx.agentEngine
+    // 进 core 路由三层（V3-①）
     const taskCtx = {
-      subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation, runEnv,
+      subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation,
+      agentEngine: profile && typeof profile.engine === 'string' && profile.engine.trim() !== ''
+        ? profile.engine.trim()
+        : undefined,
       disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
       thinking,
       toolAllowlist: allowTools.length > 0 ? allowTools : undefined,
@@ -615,10 +618,15 @@ class SubagentManager {
       closedReason,
       error: result ? result.error : undefined,
       // F1 移交（D3）：protocol-drift 分类以独立字段落 record——错误类别可查询，
-      // 不必从 error 文案反推
+      // 不必从 error 文案反推（2c 后 core 引擎错误不经 JSON-RPC 通道，该字段
+      // 仅旧 record 兼容读取面存在）
       errorKind: result ? result.errorKind : undefined,
       sessionId: (result && result.sessionId) || before.sessionId,
       tokens: (result && result.usage) || before.tokens,
+      // 引擎留痕（V3-①③，2c 新增 optional 字段）：实际执行引擎 id 与 probe
+      // 失败 fallback 事实随终态原子落盘，status 可查、GUI 可警示
+      engine: (result && result.engineId) || before.engine,
+      engineFallback: (result && result.engineFallback) || before.engineFallback,
       // rounds 完成计数：成功收尾的轮 +1（首轮 0→1，续聊轮 1→2）；失败/取消轮
       // 不计（「成功完成的轮数」语义，与 E3 验收「两轮后 rounds=2」对齐）。
       // 放在 transition patch 里与终态原子落盘，避免「先 update 后 transition」
@@ -635,13 +643,14 @@ class SubagentManager {
     if (result && result.thinking !== undefined) {
       transitionPatch.thinking = result.thinking;
     } else if (thinkingRequested !== undefined) {
-      transitionPatch.thinking = before.runnerKind === 'appserver' ? null : 'null (spawn 降级)';
+      // 2c 后唯一通道是 spawn 单轮：请求了但无通道 = 降级标注（appserver 分支
+      // 随通道退役不可达，旧 record 的 null 值仍可读）
+      transitionPatch.thinking = 'null (spawn 降级)';
     }
     // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
-    // 键」纪律）：请求了 allow/deny 且最终通道非 appserver（spawn 回退 / probe
-    // 降级翻转）= 限制未生效，落 toolsNote；未请求或 appserver 通道不落字段。
-    // before.runnerKind 在此已是最终通道——降级翻转的 record 改标发生在 done
-    // settle 之前（assemble.relabelRecord）
+    // 键」纪律）：请求了 allow/deny 且通道为 spawn 单轮（恒真，appserver 已退役）
+    // = 限制未生效白名单侧未落 flag，落 toolsNote。denylist 侧在 runner-core
+    // 并入引擎 --disallowed-tools（硬约束生效），此处标注只覆盖 allow 语义
     if (toolsRequested && before.runnerKind !== 'appserver') {
       transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
     }

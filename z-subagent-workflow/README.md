@@ -23,7 +23,7 @@
          + workflows/ 内置 5 资产（chain/parallel/map-reduce/scatter-gather/review-fix-loop）
 ```
 
-三个决策位（执行引擎 / 回流通道 / 入口形态）正交且各自可换——更换实现不动 manager。执行引擎缺省 appserver（D1 翻转；`ZSW_RUNNER=spawn` 显式回退），平台版本漂移被限制在端口实现内部消化（`interpretEvent` 等单点防洪堤）。
+三个决策位（执行引擎 / 回流通道 / 入口形态）正交且各自可换——更换实现不动 manager。执行引擎 = vendored subagent-core 的 zcode 引擎（回接 2c，`lib/runner-core.js` 适配；appserver 通道已退役），平台版本漂移被限制在 core 引擎与端口实现内部消化（探针 golden 回归 + 引擎版本留痕）。
 
 core 资产消费形态：对 npm 包 `@zhushanwen/subagent-core` 的消费（当前面为其 `workflows/*` 资产）采用构建期 vendored 副本（`lib/vendor/subagent-core/`，`scripts/vendor-subagent-core.js` 刷新 + `lib/core-ref.js` 单一解析点，VENDOR-MANIFEST.json 溯源），运行时不依赖 node_modules 解析面。规范见 workspace 仓 `docs/standards.md`「vendored 核心包消费」节。
 
@@ -105,6 +105,33 @@ zsw 自有 workflow 运行时（WorkflowManager + lib/workflow/ 管线 + workflo
 
 **通知面变化**：workflow 完成不再投 mailbox 通知（旧 WorkflowManager 的 notifyCompletion 线随 record 线退役）——CLI run 恒同步等终态，socket 面异步 run 用 `--action status` 查询。
 
+## 回接 2c break 变更（执行链换 vendored core zcode engine；appserver 通道退役）
+
+zsub 执行链（runner/spawn 驱动/模型执行解析）已整体替换为 vendored `@zhushanwen/subagent-core` 的 zcode 引擎（`lib/runner-core.js` 端口适配：`routeEngine` 三层路由 → `EnginePort.run` spawn 单轮）。**appserver 常驻通道按设计 D6-⑥ 显式退役**——统一走 core zcode engine 的 spawn 单轮。以下是调用方可见的行为 break：
+
+**D6-⑥ appserver 通道退役（优势让渡与回归路线）**：appserver 的长驻进程 / 零冷启动续聊 / 实时进度流 / per-session model 设置暂时让渡——按上游设计（subagent-engine-abstraction §1 out of scope），常驻模式属「引擎内部优化项，不进首期接口实现」。回归路线 **P3**：core zcode engine 内部换常驻实现（EnginePort 接口已常驻友好，onEvent 回调式 + AbortSignal），届时 zsw 壳零改动获得全部能力；per-session model 的回收载体单列为 P3 的 core engine 配置面扩展。退役后：
+- `ZSW_RUNNER=appserver` 启动即报退役错误（信息含回归路线指引）；`ZSW_RUNNER=spawn` 兼容 no-op（告警一次后忽略——通道本就是 spawn 单轮）；其余未知值一律前置报错。
+- 旧 probe 门控 / `probe-cache.json` 落盘缓存 / 首败失效重探 / 通道级降级链 / `upgrade-notice.json` 升级标记（及其 CLI/MCP 投递面）整体删除。格式漂移检测改由 **core 引擎探针**承担（binary 存在 + `--version` 解析 + golden 样本干跑回归，引擎实例内缓存、`routeEngine` 每任务真探；CLI 升级后首个任务即暴露）。
+- 常驻会话专属面消失：`session/resume` 断链自愈、`-32004` 会话驱逐恢复序、多会话单连接承载、实时推送帧归因——这些是 appserver 协议面概念，spawn 单轮无对应物。
+
+**引擎数据布局（新）**：per-provider+model 隔离 HOME 池与引擎 journal 归 core，落 `~/.zcode/zsw/engines/zcode/home-<provider 安全化>-<model>/`（目录名经 core 路径段编码，模型名中的 `.` 归一为 `-`，如 `home-builtin-bigmodel-coding-plan-GLM-5-3`；`ZSW_ROOT` 覆盖时随之隔离）。凭据源不变（`~/.zcode/v2/config.json` 桌面登录态，池内 config 按 mtime 免重写）。旧 `home-<provider>-<model>/` 与 `home-appserver/` 池目录随自有 spawn 驱动退役——存量目录无害残留，可手工清理。
+
+**message/close 降级语义（spawn 单轮）**：
+- `message`（conversation 续聊）：**明确报错**——core EnginePort 面无 resume 入口（launcher 支持 `--resume` 但接口未透出），旧 spawn 通道的 `--resume` 冷续聊让渡，随 P3 常驻实现回归；错误信息含「重新 start 派发新任务」指引。conversation 任务的**首轮照常可用**（标志作用于 record 状态机：首轮完成置 idle），续聊轮落 error 终态。
+- `close`：壳层 record 终态化 + worktree 清理不变；runner 无驻留会话对应物（`release` no-op）。
+
+**模型链归属变化**：执行解析（模型校验 / 隔离 HOME 池 bootstrap / 兜底模型）归 core 引擎 preparer——zsw 的 `model-router` 瘦身为清单器（`zsw models` / SessionStart hook 注入面不变），manager 侧模型引用原始透传（短名/全名均可，未知模型在任务启动时报引擎的可操作错误，文案含可用清单）。**`zsw models` 面不变**。
+
+**agent .md `engine:` 字段（core 路由三层）**：frontmatter `engine:` 现已生效（`lib/agent-md-resolver.js` 解析透传）——调用参数显式 engine（workflow `agent({engine})`）> frontmatter engine > 缺省 `zcode`（zsw 唯一生产引擎）。probe 失败按 core 守卫：调用参数显式指定不兜底（报 `engine_probe_failed`）；frontmatter/缺省来源 fallback 回缺省引擎并在 record 留痕 `engineFallback`；显式 model + 换引擎被守卫拒绝。record 新增 optional 字段 `engine` / `engineFallback`（实际执行引擎与 fallback 事实，旧 record 读取不受影响）。
+
+**zsub 台账（records.jsonl）格式不变**：D7 调研结论——存量 record 全量可读（新增字段均为 optional，record-store 的 fold 是 Object.assign 不会破坏旧事件重放）；旧 spawn/exec 形态（`kind:'spawn'`, pid）与新引擎句柄同构。详查计划文档 `docs/design/zsw-subagent-core-rebind.impl-plan.md` §7 检查点 3 调研记录。
+
+**其他行为差异**：
+- 工具 denylist 升级：CLI `--deny-tools` 与 frontmatter `disallowedTools` **并集去重**后落引擎 `--disallowed-tools` flag（旧 spawn 通道只消费 frontmatter 侧；`--allow-tools` 白名单仍无 flag 通道，维持 prompt 软约束）。
+- protocol-drift（`errorKind`）分类面随 JSON-RPC 通道消失退役（字段保留兼容旧 record 读取）。
+- thinking / allow-tools 请求值在 spawn 单轮下恒不生效，record 维持 `'null (spawn 降级)'` / `toolsNote` 如实标注。
+- 嵌套防护升级：core 公共 nesting-guard（`XYZ_AGENT_SUBAGENT=1` + 剥离 `ZSW_NESTED` 旧标记，防孙代误判嵌套层）。
+
 ## CLI 默认形态：daemon thin client（1.0.0 起）
 
 1.0.0 起 CLI 默认即常驻 daemon thin client（不加任何 flag；unix socket；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --wait` 为 start+wait sugar；`wait` 子命令：`zsw wait --id a [--id b ...] [--timeout-ms n]`（无 `--local` 形态——本地一次性进程没有可挂起的等待方），等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
@@ -130,10 +157,10 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ├── outputs/             subagent 结果全文 + patch（workflow 报告线已退役，CLI stdout 直出）
 ├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
-├── logs/                appserver 引擎 stderr 实时落盘 + core 编排日志（workflow-core.log）
-├── probe-cache.json     appserver probe 结论缓存（键 = CLI 路径 + mtime，只缓存 ok）
-├── home-<provider>-<modelShort>/  per-model 隔离 HOME 池（spawn 回退通道模型路由）
-├── home-appserver/      appserver 默认通道单一隔离 HOME（遥测已关闭）
+├── logs/                core 编排日志（workflow-core.log）
+├── engines/zcode/       core zcode 引擎数据（回接 2c：per-provider+model 隔离 HOME 池
+│   home-<provider>-<m>/  + journal，布局归 core paths SSOT；目录名路径段编码，'.'→'-'）
+├── home-*/              旧 spawn/appserver 池目录（已退役，存量无害残留可手工清理）
 └── wt-<id>/             worktree 隔离目录（任务期存在）
 
 （review-fix-loop 的 run 目录由 core 资产自管：~/.review-fix-loop/<repo-slug>/<runId>/，
@@ -143,28 +170,21 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ## 已知边界（如实声明）
 
 - **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI daemon）任务的完成唤醒唯一路径 = CLI 阻塞进程（`wait` / `start --wait`）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
-- **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议；subagent 任务与 workflow 阶段同走）**：`zsw start` 与 workflow 的每个阶段不带任何 env 即走常驻引擎。冷启动代价按形态摊薄：daemon 形态下引擎全进程共享——每个引擎进程只惰性启动一次（~1-2s，首个任务/阶段付出），之后 subagent 会话零冷启动续聊、后续 workflow 阶段零进程重建；`zsw workflow run`（本地一次性进程）每 run 付一次引擎惰性启动。组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标；降级为**通道级**——daemon 生命周期内后续任务直接走 spawn 免重探，重启 ZCode 后重新组装、恢复探测。workflow 阶段条目落 `channel` 字段（`appserver`|`spawn`），降级混跑的报告可直接对照各阶段实际通道。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
-- **workflow 中止语义（回接 2b 后）**：daemon 形态（socket 面派发、执行体 = daemon 进程内 core worker 线程）的 `abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；但引擎侧在飞的 agent() 轮**不被打断**（`session/stop` 对 RPC 在飞轮无打断能力，已真机实证），该轮会跑到自然完成——这部分 token 已消耗，属 apc 通道相对 spawn 立停的已知代价。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的本地 run 用引擎 TaskStop。
-- **`ZSW_RUNNER=spawn` 显式回退旧通道**：subagent 每轮、workflow 每阶段各自 spawn 独立 zcode 进程（~1-2s 冷启动），故障隔离与翻转前一致。daemon 在进程启动时读一次 env——改 `ZSW_RUNNER` 后需重启 ZCode 生效。
-- **running 会话不可插话（busy，两通道同语义）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；appserver 侧 `-32010` 硬错误，探针实证；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递。
-- **工具黑名单是引擎级硬拦截（两来源并集），`tools` 白名单维持软约束**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`——默认 appserver 通道经 `session/create` 的 `toolDenylist` 引擎级拦截，spawn 回退通道维持 `--disallowed-tools` flag 硬拦截（frontmatter 来源生效，CLI 来源不消费）；`--allow-tools` 白名单同理落 `toolAllowlist`（仅 appserver）。frontmatter `tools` 白名单维持 prompt 软约束（两通道一致）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
+- **执行通道 = core zcode engine spawn 单轮（回接 2c；appserver 已按 D6-⑥ 退役，迁移对照见「回接 2c break 变更」节）**：`zsw start` 与 workflow 每阶段各 spawn 一个独立无头 zcode 进程（`--json --mode yolo`，~1-2s 冷启动/轮）。每任务启动经 core `routeEngine` 真探（binary + version + golden 干跑，引擎实例内缓存——进程存活期不重探，CLI 升级后重启进程/首任务即暴露漂移）；引擎 preparer 内做模型校验（凭据源 `~/.zcode/v2/config.json`）与 per-provider+model 隔离 HOME 池引导（落 `<zsw 数据根>/engines/zcode/`），未知模型/缺凭据在任务启动时报含可用清单的可操作错误。取消/超时 = AbortSignal → core 杀链（SIGTERM→5s→SIGKILL）。
+- **conversation 续聊暂不可用（core EnginePort 面无 resume 入口）**：conversation 任务首轮照常（完成置 idle），`message` 续聊明确报可操作错误（含「重新 start」指引）；旧 spawn `--resume` 冷续聊让渡，P3 常驻实现回归（见「回接 2c break 变更」节）。busy 语义不变：running 中投递返回 busy 结果。
+- **workflow 中止语义（回接 2b 后）**：daemon 形态（socket 面派发、执行体 = daemon 进程内 core worker 线程）的 `abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；在飞 agent() 轮经 runner-core 的 AbortSignal → 引擎杀链立停（2c 起 spawn 单轮可中断）。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的本地 run 用引擎 TaskStop。
+- **`ZSW_RUNNER` 已退役（2c）**：'spawn' = 兼容 no-op（告警一次后忽略）；'appserver' / 未知值 = 启动即报错（见「回接 2c break 变更」节）。
+- **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
+- **工具黑名单是引擎级硬拦截（两来源并集去重），`tools` 白名单维持软约束**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`，并集去重后落引擎 `--disallowed-tools` flag（2c 起两来源等价生效）。`--allow-tools` 白名单与 frontmatter `tools` 白名单均无 flag 通道（zcode CLI 无 allowlist flag，`--allowed-tools` 拒收），只能约束意图不能拦截行为——record 终态 toolsNote 如实标注。
 - **subagent 并发池与 workflow 并发治理已分治（回接 2b 后）**：subagent 池默认 3（`ZSW_MAX_CONCURRENT` 可调）仅约束 zsub start 线；workflow 线的并发由 core 资产内部形态决定（`parallel()` 共享 core 配额池、顺序编排逐个执行），zsw 侧不再有独立 workflow 槽位池，`--max-concurrent` 已废弃。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 
 ## 排障
 
-### ps 里看到两个 zcode app-server 进程，是不是泄漏？
+### ps 里看到多个 zcode 无头进程，是不是泄漏？
 
-大概率不是。默认通道下引擎是常驻进程，以下三种场景会出现第二个引擎进程，属正常短暂态：`--local` 调试（CLI 一次性进程自拉引擎）、probe 健康检查（探测用短命引擎）、daemon 接管切换瞬间（旧引擎退出与新引擎启动的窗口）。多引擎共存是设计内容忍面，不是缺陷。
-
-**怎么定位引擎进程**（pgrep 查不到，用 db 句柄反查）：
-
-```bash
-lsof ~/.zcode/zsw/home-appserver/.zcode/cli/db/db.sqlite
-```
-
-引擎命令行是 `node <zcode路径> app-server --cwd <工作目录>`——HOME 只在环境变量里、不在命令行参数里，所以 `pgrep -f "app-server.*home-appserver"` 恒匹配不到；而每个引擎进程都会打开会话数据库 db.sqlite，按文件句柄反查最可靠。
+回接 2c 后执行体是 spawn 单轮的 `node <zcode路径> --json ...` 短命进程（任务期存在、done 即退出），并发任务数等于进程数（subagent 池默认 3，`ZSW_MAX_CONCURRENT` 可调）。长驻泄漏的判据：任务全部终态后仍有 `--json --prompt` 形态的 zcode 进程存活——用 `pgrep -f 'zcode.cjs --json'` 核对，残留进程 `kill <pid>` 即可（record 已落盘，下一次 recover 会把死 pid 标 lost）。旧 appserver 常驻进程（`app-server --cwd` 形态）已随通道退役，不应再出现。
 
 **怎么判读**（看输出的 PID 列）：
 
@@ -182,9 +202,9 @@ lsof ~/.zcode/zsw/home-appserver/.zcode/cli/db/db.sqlite
 | M2 | 跨会话可见 | 窗口 A start（异步），窗口 B `node bin/zsw.js list` / `status --id` | B 能看到 A 派的任务与状态（record 同盘共享） |
 | M3 | 降级 | 不设 mailbox env（polling 档，legacy 通道不启用），同样 start（异步） | 返回含轮询指引（时间预期 + CLI 等待姿势）；status 能拿到终态 |
 | M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt` 后 wait | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
-| M5 | 默认通道与回退 | 不设任何 env 跑 `node bin/zsw.js start` conversation 两轮；随后 `ZSW_RUNNER=spawn` 复跑同款任务 | 默认 record.runnerKind='appserver'，第二轮无进程重建（零冷启动续聊）；spawn 复跑 record.runnerKind='spawn'；probe 失败自动降级且 stderr 有降级日志、record 如实标注 |
+| M5 | 执行通道与续聊降级 | 不设任何 env 跑 `node bin/zsw.js start --wait`（单轮任务）；再跑 conversation 任务 + `message` | record.runnerKind='spawn'、record.engine='zcode' 留痕；conversation 首轮 idle、message 续聊报「无 resume 入口」可操作错误（2c 契约，见「回接 2c break 变更」节） |
 
-无头 e2e（E1-E10，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）。E9 为 apc-smoke 升级冒烟（create/send/terminal/read/list/close 协议面八步断言的极小任务），支持单场景入口 `node test/e2e.test.js --name apc-smoke`——zcode 升级后先跑它验证 apc 协议面（与「已知边界」的升级冒烟指引呼应）；E10 为 appserver 多会话并发。
+无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）；支持单场景入口 `node test/e2e.test.js --name E1`。appserver 专有场景（E9 apc-smoke 冒烟 / E10 多会话并发）已随 D6-⑥ 退役删除——升级漂移核对改由 core 引擎探针（golden 干跑回归）承担；E3/E7 已改 spawn 通道形态（续聊报退役错误）。
 
 ## SessionStart 资源注入验收手册（`<zsw-resources>` 块）
 

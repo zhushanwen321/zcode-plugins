@@ -6,7 +6,11 @@
  *   ~/.zcode/zsw/                  插件数据根（ZSW_ROOT 可覆盖，测试用）
  *     ├── records.jsonl            append-only record 事件流（D9）
  *     ├── outputs/<subagentId>.md  任务结果全文（+ <id>.patch）
- *     └── home-<provider>-<model>/ per-model 隔离 HOME 池（spawn runner，D5）
+ *     ├── engines/zcode/<pool>/    core zcode 引擎数据（回接 2c：per-provider+model
+ *     │                            隔离 HOME 池 + journal，布局归 core paths SSOT；
+ *     │                            旧 home-<provider>-<model>/ 池目录随自有 spawn
+ *     │                            驱动退役，存量目录无害残留可手工清理）
+ *     └── workflow-state/          core FileRunStore（workflow 线状态面）
  *
  * env 语义（Z10：MCP server 由引擎 spawn，继承引擎进程的全部字符串 env，
  * 因此 process.env 读到的就是宿主真实值）：
@@ -16,11 +20,9 @@
  *   ZSW_MAX_CONCURRENT     并发槽位上限覆盖（正整数；非法值忽略并警告，缺省 3）
  */
 
-const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const ZCODE_CLI = process.env.ZSW_ZCODE_CLI || '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs';
 const V2_CONFIG_PATH = path.join(os.homedir(), '.zcode', 'v2', 'config.json');
 const CLI_CONFIG_PATH = path.join(os.homedir(), '.zcode', 'cli', 'config.json');
 
@@ -31,18 +33,8 @@ function zswRoot() {
 
 function outputsDir() { return path.join(zswRoot(), 'outputs'); }
 function recordsPath() { return path.join(zswRoot(), 'records.jsonl'); }
-/** 引擎 stderr 实时落盘目录（D3 观测/取证面；appserver runner 消费）。 */
+/** 引擎 stderr 实时落盘目录（观测/取证面）。 */
 function logsDir() { return path.join(zswRoot(), 'logs'); }
-/** provider id 含 ':'，目录名安全化（builtin:bigmodel-coding-plan → builtin_bigmodel-coding-plan）。 */
-function providerDirName(p) { return String(p).replace(/[^A-Za-z0-9._-]/g, '_'); }
-
-/** spawn per-model HOME 池。目录名含 provider 维度：跨 provider 同名模型不共池（凭据/配置互不污染）。 */
-function homePoolDir(modelShort, provider) {
-  const p = provider || 'builtin:bigmodel-coding-plan'; // 缺省 = 默认 provider（向后兼容旧调用）
-  return path.join(zswRoot(), `home-${providerDirName(p)}-${modelShort}`);
-}
-/** appserver runner 的单一隔离 HOME（D5：apc 无 per-model 池，模型走 create 参数）。 */
-function appserverHomeDir() { return path.join(zswRoot(), 'home-appserver'); }
 
 /** mailbox 根：与引擎 drain 侧同一解析规则（Z8）。 */
 function mailboxRoot() {
@@ -75,27 +67,23 @@ function resolveMaxConcurrent() {
 
 const DEFAULTS = {
   timeoutMs: null,          // 不设超时限制（用户可按需填写）
-  killGraceMs: 30_000,     // SIGTERM 后等这么久再 SIGKILL（终止宽限非任务死线；30s 给被杀执行体留优雅落盘窗口）
   maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
-  // D7：会话空闲回收职责归引擎驻留池（10min 驱逐 + resume 可回），
-  // 原 idleConversationTtlMs 预留常量已删除——zsw 侧只维护 -32004 恢复序
+  // 杀链宽限（SIGTERM 后等这么久再 SIGKILL）归 core 引擎常量（ZCODE_KILL_GRACE_MS），
+  // zsw 侧不再持有同名配置；会话空闲回收归引擎（D7 注记同旧）
 };
 
 const NESTED = process.env.ZSW_NESTED === '1';
 
 module.exports = {
-  ZCODE_CLI,
   V2_CONFIG_PATH,
   CLI_CONFIG_PATH,
   zswRoot,
   outputsDir,
   recordsPath,
   logsDir,
-  homePoolDir,
-  appserverHomeDir,
   mailboxRoot,
   mailboxEnabled,
   DEFAULTS,
   NESTED,
-  fs, path, os,
+  path, os,
 };

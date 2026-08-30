@@ -83,6 +83,34 @@ graph LR
 
 ## 7 残留风险与变更历史
 
+### 检查点 3 调研记录（D7 存量调研门，U4 第 0 步，2026-08-30）
+
+**存量数据量**（实测 `~/.zcode/zsw/`，调研时点）：
+
+| 条目 | 体积/数量 | 处置 |
+|------|-----------|------|
+| `records.jsonl` | 276KB / 668 行事件 | **保留格式不变**（偏差 #3）：zsub 台账承载 daemon 面（list/wait/接管恢复），record-store/事件流/状态机零改动；2c 新增字段（engine/engineFallback）均为 optional，旧事件重放不受影响 |
+| `outputs/` | 1.7M | 不动（用户资产） |
+| `workflow-state/` | 28K | 不动（core FileRunStore 状态面，2b 已迁） |
+| `home-<provider>-<model>/` ×4 | ~4.2G（含 2.3G/1.8G 两个大模型池） | 随自有 spawn 驱动退役——存量目录无害残留，README 标注可手工清理；新池落 `engines/zcode/home-*`（per-provider+model 维度同构，core preparer 接管 bootstrap） |
+| `home-appserver/` | 39M | 随 appserver 通道退役（D6-⑥），同上残留处置 |
+| `probe-cache.json` | 4KB | 不再读写（probe 门控删除）；文件残留无消费方，可删 |
+| `wt-sa-*` worktree ×7 | ~4.7G | 与 runner 无关（worktree-adapter 线不动） |
+| `logs/` `rfl/` `meta-debug.jsonl` 等 | <1M | 不动 |
+
+**records 读取消费方清单**（grep `rebuildFromLog|TERMINAL_STATUSES|records` 于 lib/bin/dist）：
+
+| 消费方 | 读取面 | 2c 影响 |
+|--------|--------|---------|
+| `lib/manager.js` | records.create/transition/update/get/list + `rebuildFromLog()`（recover）+ TERMINAL_STATUSES | 编排语义不动；仅因 model-router 瘦身做最小适配（resolve→原始透传 + resolveDefault 台账值；transitionPatch 增 engine/engineFallback 留痕） |
+| `lib/wait-handler.js` | `TERMINAL_STATUSES`（WAIT_DONE_STATUSES）+ manager.status 收编 | 零改动（record-store 保留） |
+| `lib/record-store.js` | 本体（rebuildFromLog/TERMINAL_STATUSES 定义） | 零改动 |
+| `dist/mcp/server.js` | manager.recover()（启动序列） | 零改动（恢复语义不变，exec.pid 探活新引擎同构） |
+| `bin/zsw.js` | manager.list/status/wait（CLI 面） | 零改动 |
+| 旧 wf- record（recordType:'workflow'） | 无消费方（2b 已退役） | README 已标注不可读（偏差 #10） |
+
+**处置结论**：zsub 台账保留格式不变 = 旧数据可读（已登记为计划偏差 #3，本轮维持）；`test/manager.test.js` 的 record 断言全绿（31/31）+ `wait-handler`/`server`/`server-daemon`/`cli-daemon-zsub` 面全绿佐证读取面零破坏。旧 record 的 `runnerKind:'appserver'` 值与 `errorKind:'protocol-drift'` 字段成为历史形态（读取兼容、不再产生）。
+
 **残留风险**：
 1. bundle 体积（ajv/yaml/proper-lockfile 内联）估 1-2MB 进 git——marketplace/npm 形态可接受性留用户复核。
 2. manager RunnerPort 契约与 EnginePort 形状差异（事件流/进度/message-close 交互）——U4 开工 subagent 必读两端口定义；spawn 单轮下 message/close 降级语义维持现状（真交互本就只在 appserver 通道，已退役）。
