@@ -310,10 +310,16 @@ function normIssueId(s) {
  * fix 阶段（fix-attempted/deferred 标记）与 ES3 校验共用——精确键查表会把
  * "mf-1"/"MF-1 (fixed)" 等漂移 ID 判为未追踪，导致 fix-attempted → fixed/regressed
  * → needs-redesign 状态链静默失效；deferred 侧漂移则创建幽灵条目（原条目仍 open 阻塞收敛）。
+ *
+ * 首查必须 Object.hasOwn（上收 zsw 侧同款修复）：truthy 查表（issues[issueId]）会让
+ * 原型链键（"__proto__"/"toString"/"constructor"）误命中——ID 来自 LLM 产出，攻击面
+ * 真实存在；误命中会把非 own 键当台账键返回，后续 issues[key].severity 读取原型
+ * 成员（undefined 或函数）污染 fix 对账。归一化回退段的 Object.keys 只枚举 own 键，
+ * 本就无此问题。
  */
 function findIssueKey(issues, issueId) {
   if (!issues || typeof issueId !== "string" || !issueId) return undefined;
-  if (issues[issueId]) return issueId;
+  if (Object.hasOwn(issues, issueId)) return issueId;
   const norm = normIssueId(issueId);
   if (!norm) return undefined;
   for (const key of Object.keys(issues)) {
@@ -785,7 +791,9 @@ function resolveIssueIdentity(entry, { issues, dormant }) {
  */
 function translateId(idMap, id, issues) {
   if (typeof id !== "string" || !id) return id;
-  if (issues && issues[id]) return id;
+  // Object.hasOwn：truthy 查表会让原型链键（"__proto__"/"toString"）误判为台账键
+  // 直接返回，跳过 idMap 翻译（与 findIssueKey 同款加固，nextFreeId 键空间同理）。
+  if (issues && Object.hasOwn(issues, id)) return id;
   if (idMap && Object.prototype.hasOwnProperty.call(idMap, id)) return idMap[id];
   return id;
 }

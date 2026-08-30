@@ -1039,7 +1039,9 @@ for (let batchIndex = 1; batchIndex <= BATCHES.length; batchIndex++) {
       const r1IdMap = {};
       for (const entry of agg.must_fix_ids) {
         const id = typeof entry === "string" ? entry : entry && entry.id;
-        if (!id || state.issues[id]) continue;
+        // Object.hasOwn：truthy 查表会让原型链键（"__proto__"/"toString"）误判已登记
+        // 而 continue 跳过真实条目（与 utils findIssueKey 同款加固；id 来自 LLM 产出）。
+        if (!id || Object.hasOwn(state.issues, id)) continue;
         if (!activeIds.has(id)) continue;
         const resolved = resolveIssueIdentity(
           typeof entry === "string" ? { id } : entry,

@@ -71,7 +71,7 @@ graph LR
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| U0-core-barrel | blocked（待用户授权 xyz-agent 仓新分支/worktree；范围追加上游 MF-1 加固） | 0 | — |
+| U0-core-barrel | committed | 0 | 88d7eadc6（xyz-agent feat-subagent-core-host-surface：2336 测试绿/typecheck 零错/闭包守卫+--self-test 绿/bundle 704KB 自包含 17fn+3class 探针 11+/findIssueKey·translateId·R1 登记 Object.hasOwn 加固；node:sqlite 命中为 reader 惰性动态 import 字符串，node 内建非 npm 依赖，node20/21 降级路径与未打包一致——已知事实非缺陷） |
 | U1-vendor | committed | 0 | 8b8bc78（vendored npm@0.2.0 / 32 文件 / check-sync+check-pack 双绿 / 幂等+sha256 自检） |
 | U2-utils-2a | committed | 2 | dc6a771（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9） |
 | U3-flow-2b | pending | 0 | — |
