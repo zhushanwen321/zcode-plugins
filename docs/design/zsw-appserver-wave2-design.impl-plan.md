@@ -1,6 +1,6 @@
 # zsw apc 第二波优化 实施计划
 
-基线: <基线 commit 后回填> | 来源设计: [zsw-appserver-wave2-design.md](zsw-appserver-wave2-design.md) | 日期: 2026-08-30
+基线: 9d24633 | 来源设计: [zsw-appserver-wave2-design.md](zsw-appserver-wave2-design.md) | 日期: 2026-08-30
 
 - 工作区：`/Users/zhushanwen/Code/zcode-plugin-workspace/feat-app-server-refactor`（分支 `feat-app-server-refactor`）
 - 代码根（所有领地路径此前缀）：`z-subagent-workflow/`
