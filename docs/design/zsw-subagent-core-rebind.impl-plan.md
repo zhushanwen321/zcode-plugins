@@ -66,6 +66,9 @@ graph LR
 | 7 | vendor 源首选 npm tarball（0.2.0 已发布），本地 core 构建为 0.3.0 预留 `--local` 通道 | 设计 §4 前置门「file: 本地链接联调」 | core 0.2.0 已发 npm（registry versions=[0.2.0]）；npm 源的溯源链（版本+sha256）强于本地路径链接，file: 联调的等价物降级为 `--local` 通道（bundle 落地前 requireCore 不可用，capability 如实记录） |
 | 8 | 5 个 zsw 契约常量（SEVERITIES/SEVERITY_RANK/MUST_FIX_SEVERITIES/TERMINAL_STATUSES/ISSUE_STATUSES）迁入编排层 `review-fix-loop.js` 自有+转出口 | 分叉点③登记「zsw 侧新增，pi 无此形态」 | 常量是编排契约面而非纯函数层内容；归位消费方后分叉点③消灭，不向 core 注入 pi 没有的形态；U3 切 core 编排资产后自然消亡 |
 | 9 | `findIssueKey` 编排层消毒包装（`Object.hasOwn` 首行），MF-1 护栏改测包装出口 | 分叉点⑥（2026-08-30 zsw 侧 MF-1 修复，core 资产为 pi 原版 truthy 查表） | vendored 资产禁改 + 护栏不削；上游修复（core workflows 资产 findIssueKey + 主脚本自查）已记入 U0 批次，落地后包装变恒等、随上游对齐拆除（登记「待上游对齐」）——本条即设计失败模式 B（行为不一致各自修）的活案例与根治路径 |
+| 10 | 2b 用户可见行为差异批（README「回接 2b break 变更」节全表）：`--reviewers` 废弃显式报错（core 批次=agent .md 路径）；review-fix-loop target/targetType 必填（旧 text 缺省=git 未提交改动语义消失）；`--max-concurrent`/`--timeout-per-phase`/`--subtask-count` warning 忽略（并发治理归 core）；run 状态面迁 `<dataRoot>/workflow-state/`（旧 wf- record 与 outputs 报告线退役、mailbox 完成通知不再投递）；终态词汇 closed/error/cancelled → done+reason；lint 返回 `{valid,findings}`；workdir 经 adapter 闭包成 agent() fallback cwd（core 资产内 process.cwd() 取 worker 宿主 cwd） | 设计 D6-⑧（契约 break 显式迁移而非静默）+ V5-④ | core worker 契约无等价面；差异全部显式（报错/warning/README），无静默吞 |
+| 11 | zsw 侧 registry 用鸭子对象实现 core registry port（`WorkflowScript` 类未导出）；`~/.zsw/workflows` 借 user-pi 槽注入、`<ws>/.zsw/workflows` host 手工扫（core 扫描布局无 .zsw 根槽位）；内置名不可被用户脚本遮蔽 | U3 core 面适配性发现 | 未扩 core 面（vendor 纪律）；.zsw 根保留 = zsw 历史根兼容，V3-④ 清单差异在 README 归属说明 |
+| 12 | host 层加 ref'd keepAlive 撑住 CLI 一次性进程（core `runAndWait` 轮询 timer unref，事件循环空即静默退出） | core launcher.ts IF10(#16) 为长驻宿主设计 | 壳层修复（daemon/MCP 形态无影响）；core 若上收 one-shot 宿主语义可拆除，登记「待上游评估」 |
 
 ## 6 状态表
 
@@ -74,7 +77,7 @@ graph LR
 | U0-core-barrel | committed | 0 | 88d7eadc6（xyz-agent feat-subagent-core-host-surface：2336 测试绿/typecheck 零错/闭包守卫+--self-test 绿/bundle 704KB 自包含 17fn+3class 探针 11+/findIssueKey·translateId·R1 登记 Object.hasOwn 加固；node:sqlite 命中为 reader 惰性动态 import 字符串，node 内建非 npm 依赖，node20/21 降级路径与未打包一致——已知事实非缺陷） |
 | U1-vendor | committed | 0 | 8b8bc78（vendored npm@0.2.0 / 32 文件 / check-sync+check-pack 双绿 / 幂等+sha256 自检） |
 | U2-utils-2a | committed | 2 | dc6a771（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9） |
-| U3-flow-2b | pending | 0 | — |
+| U3-flow-2b | committed | 0 | <U3 commit>（orchestration-host 9/0 + agent-runner-adapter 7/0 + 受影响面逐文件绿（非 e2e 全量绿）；CLI 冒烟：scripts 出 vendored 内置 5 + 四根用户脚本、lint 走 core lintScript；旧引用 grep 零残留、lib/workflow/ 目录删除；真机 run 留 U4/U5） |
 | U4-exec-2c | pending | 0 | — |
 | U5-accept | pending | 0 | — |
 

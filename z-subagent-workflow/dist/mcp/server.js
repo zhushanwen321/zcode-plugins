@@ -38,23 +38,26 @@
  * content 包装——CLI 对侧（bin/zsw.js）直接消费业务字段（如 wait 的
  * partial 决定 exit code），content 包装形态对 CLI 是泄漏。
  *
- * zflow 管理面（N2-b，后台化改造）：
- * - run 经 WorkflowManager（lib/workflow-manager.js）：record 化生命周期
- *   （wf- 前缀 runId、recordType:'workflow'）、报告落 outputs、完成 mailbox
- *   通知。立即返回 {runId, status:'running', notify}，勿轮询；wait=true
- *   同步等终态 + 报告全文（MCP 30s 超时，主要给测试）。
- * - 校验权威在 WorkflowManager（task/workdir/workflow 名/脚本发现均它管），
- *   server 不重复解析——两处各解析一份会漂移（与源版「模型校验不前置」
- *   同一决策）。per-workflow 参数（items/operation 等）原样透传，缺参错误
- *   由各 workflow 入口自带的可操作校验抛出。
- * - progressToken 进度帧不再接线：后台语义下 tools/call 响应在启动即返回，
- *   阶段进度没有承载时机；运行中状态经 status action（含脚本 progress 留痕）
- *   查询。旧同步版的 onPhase/onPlan 接线随同步形态一并退役。
+ * zflow 管理面（回接 2b：vendored subagent-core orchestration）：
+ * - 六 action（run/abort/status/list/scripts/lint）走 orchestration host
+ *   （lib/orchestration-host.js）：core runWorkflow/abortRun/FileRunStore +
+ *   vendored 内置资产注册。run 立即返回 {runId, stateFile}；wait=true 走
+ *   runAndWait 同步等终态 + scriptResult（MCP 30s 超时，主要给测试）。
+ * - 校验/组参权威在 host 的 normalizeRunParams + registry（task/workdir/
+ *   workflow 名/脚本发现/$ARGS 映射均它管），server 不重复解析——两处各
+ *   解析一份会漂移。旧 reviewers sugar 在该层显式报错（core 契约批次值 =
+ *   agent .md 路径）；maxConcurrent/timeoutMsPerPhase 无 core 对应面，以
+ *   warnings 显式说明不静默。
+ * - run 状态面 = 内存 runs Map（done 保留 MAX_RETAINED_DONE_RUNS 条）+
+ *   <zswRoot>/workflow-state/<runId>.jsonl append-only 快照；zsw record
+ *   事件流与 mailbox 完成通知线随旧 WorkflowManager 退役。
+ * - daemon 生命周期钩子：启动/接管 → host.recoverOrphans()（遗留 running
+ *   标 done,failed）；stdin 关闭 → host.shutdown()（terminateRunningRuns）。
  *
  * 可测性：纯函数（extractSessionId / buildToolDefinition /
  * buildRunWorkflowToolDefinition / buildTools / buildToolHandlers /
  * buildDaemonHandlers / createFrameDecoder / createServer / createManager）
- * 导出供 node:test，wfManager / waitHandler 经 buildToolHandlers /
+ * 导出供 node:test，wfHost / waitHandler 经 buildToolHandlers /
  * createServer 参数可注入 fake（manager 同款模式）；stdio 主循环只在
  * require.main === module 时启动，require 零副作用。
  */
@@ -63,9 +66,6 @@ const os = require('node:os');
 const path = require('node:path');
 const config = require('../../lib/config');
 const { PROVIDER_ID } = require('../../lib/model-router');
-const workflowScript = require('../../lib/workflow-script');
-const { DEFAULT_PERSPECTIVES } = require('../../lib/workflow/parallel');
-const { DEFAULT_REVIEWERS } = require('../../lib/workflow/review-fix-loop');
 
 // S5：版本与 package.json 同源（require 缓存 + 发版流程统一 bump，防止
 // SERVER_INFO 手抄漂移——修复前 0.1.0 vs 实际 0.0.1 已然漂移）
@@ -141,38 +141,30 @@ function buildToolDefinition() {
   };
 }
 
-/** 内置 5 种 workflow 的索引信息（scripts action 与 WorkflowManager.defaultWorkflows 同名同序）。 */
-const BUILTIN_WORKFLOW_INFO = [
-  { name: 'chain', description: 'analyze -> implement -> summarize pipeline' },
-  { name: 'parallel', description: 'multi-perspective parallel review of one target, then aggregate' },
-  { name: 'map-reduce', description: 'parallel transform over a KNOWN items array, then reduce' },
-  { name: 'scatter-gather', description: 'split a big task into 2-4 subtasks, process in parallel, merge' },
-  { name: 'review-fix-loop', description: 'parallel review -> aggregate must-fix -> fix -> re-review until clean (WRITES files)' },
-];
+/** 内置 workflow 清单的单一来源是 orchestration-host（scripts action 经
+ * wfHost.scripts().builtin 返回）——server 不再持第二份内置清单，防漂移。 */
 
 /**
- * zflow tool 定义（N2-b 管理面：run 后台化 + abort/status/list/
- * scripts/lint 五个管理 action）。
+ * zflow tool 定义（回接 2b：六 action 走 orchestration-host = vendored
+ * subagent-core orchestration）。
  *
- * description 是常驻注入成本，上限压到 ≤1000 字符（比 zsub tool 的 1.5KB
- * 更紧——形态速查让位给管理面语义）。workflow 值是自由 string 而非静态
- * enum：script:<name> 的脚本名是四根目录动态发现的，静态枚举无法收录，
- * 合法值说明进 description（内置 5 / script: 前缀），运行期由
- * WorkflowManager._resolveEntry 校验（拼错名给可操作错误）。
+ * description 是常驻注入成本，上限压到 ≤1000 字符。workflow 值是自由 string
+ * 而非静态 enum：script:<name> 的脚本名是动态发现的，静态枚举无法收录，
+ * 合法值说明进 description（内置 5 / script: 前缀），运行期由 host 的
+ * registry 解析校验（拼错名给可操作错误）。旧 reviewers sugar 已废弃
+ * （core 契约批次值 = agent .md 路径）。
  */
 function buildRunWorkflowToolDefinition() {
   return {
     name: 'zflow',
     description:
-      'Deterministic multi-phase workflows over headless zcode sessions; each phase = an isolated agent session. ' +
-      'Managed background tasks (runId prefix wf-). action=run returns runId at once; ' +
-      'completion auto-notifies when mailbox is enabled, else run response carries one-shot status guidance — do NOT poll ' +
-      '(wait=true sync-waits + final report, tests only). ' +
-      'Workflows: "chain" analyze->implement->summarize; "parallel" multi-perspective review then aggregate; ' +
-      '"map-reduce" map over a KNOWN items array then reduce; "scatter-gather" split into 2-4 subtasks, parallel, merge; ' +
-      '"review-fix-loop" review->must-fix->fix->re-review until clean (WRITES files); ' +
-      '"script:<name>" custom workflow script (four-root discovery; action=scripts lists). ' +
-      'action=abort(runId): stop a run. action=status(runId): run detail + report path. ' +
+      'Deterministic multi-step workflows (vendored subagent-core orchestration); each agent() call = an isolated agent session via the zsw runner port. ' +
+      'action=run returns runId at once (query via action=status; no completion push — the CLI run is synchronous). ' +
+      'Workflows: "chain" analyze->transform->synthesize; "parallel" multi-perspective review then aggregate; ' +
+      '"map-reduce" map over a KNOWN items array then reduce; "scatter-gather" split into subtasks, parallel, merge; ' +
+      '"review-fix-loop" batches (batch1..batchN = agent .md absolute paths, comma-separated) review->must-fix->fix->re-review until clean (WRITES files); ' +
+      '"script:<name>" custom core-contract script (@pi-meta + top-level agent(); action=scripts lists). ' +
+      'action=abort(runId): stop a run. action=status(runId): run detail + state file path. ' +
       'action=list: all runs. action=scripts: builtin 5 + custom scripts. action=lint(file): validate a script. ' +
       'Runs can take minutes; WARNING: transform/fix phases may modify files under workdir.',
     inputSchema: {
@@ -185,24 +177,30 @@ function buildRunWorkflowToolDefinition() {
         },
         workflow: {
           type: 'string',
-          description: 'run 必填。内置 5 名（chain / parallel / map-reduce / scatter-gather / review-fix-loop，形态见 tool description）或 "script:<脚本名>"（自定义 workflow 脚本，可用清单先查 action=scripts）',
+          description: 'run 必填。内置 5 名（chain / parallel / map-reduce / scatter-gather / review-fix-loop，形态见 tool description）或 "script:<脚本名>"（core 契约脚本，可用清单先查 action=scripts）',
         },
         task: {
           type: 'string',
-          description: 'run 必填。自包含任务书：目标、背景、验收标准——阶段会话看不到当前会话上下文（map-reduce 可作为上下文简述）',
+          description: 'run 必填（chain/scatter-gather/script 形态）。自包含任务书——阶段会话看不到当前会话上下文。parallel 场景作为 target 回退；review-fix-loop 场景作为 target 回退（显式传 target 更清晰）',
         },
-        workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the phases operate in.' },
+        workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the agent() calls operate in.' },
         model: {
           type: 'string',
-          description: 'Model override, exact match: "<provider>/<model>" full name resolves against any configured provider. Invalid names fail with the list of what is actually configured.',
+          description: 'Run-level model override (RunSpec.model), exact match: "<provider>/<model>" full name resolves against any configured provider. Invalid names fail with the list of what is actually configured.',
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
-        file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 file 字段，或自填绝对路径）' },
-        wait: { type: 'boolean', description: 'run 可选。true 时同步等完成并返回报告全文（MCP 30s 超时约束，主要给测试用）' },
-        timeoutMs: { type: 'number', description: 'run 可选。workflow 整体超时毫秒数（不填则无超时限制）' },
+        file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 path 字段，或自填绝对路径）' },
+        wait: {
+          type: 'boolean',
+          description: 'run 可选。true 时同步等完成并返回 scriptResult（MCP 30s 超时约束，主要给测试用）',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'run 可选。workflow 整体墙钟预算毫秒数（RunSpec.budgetTimeMs；不填则无超时限制）',
+        },
         perspectives: {
           type: 'array', items: { type: 'string' },
-          description: `parallel only. Default [${DEFAULT_PERSPECTIVES.join(', ')}].`,
+          description: 'parallel only. Analysis perspectives. Default [security, performance, maintainability].',
         },
         items: {
           type: 'array', items: { type: 'string' },
@@ -212,13 +210,9 @@ function buildRunWorkflowToolDefinition() {
           type: 'string',
           description: 'map-reduce only (required). What to do with each item.',
         },
-        subtaskCount: {
-          type: 'integer', minimum: 2, maximum: 4,
-          description: 'scatter-gather only. Hint for how many subtasks to split into.',
-        },
         reviewTarget: {
           type: 'string',
-          description: 'review-fix-loop only (legacy sugar). Same as targetType="text" + target=<value>. Defaults to uncommitted changes.',
+          description: 'review-fix-loop only (legacy sugar). Same as targetType="text" + target=<value>.',
         },
         targetType: {
           type: 'string', enum: ['git-diff', 'file', 'dir', 'text'],
@@ -226,19 +220,15 @@ function buildRunWorkflowToolDefinition() {
         },
         target: {
           type: 'string',
-          description: 'review-fix-loop only. What to review, interpreted per targetType. Required when targetType is git-diff (base ref, e.g. main / HEAD~1), file or dir — missing/empty target with a non-text targetType is an operational error. Default "git 未提交改动" applies to text only.',
+          description: 'review-fix-loop only. What to review: git-diff base ref (e.g. main), file path, dir path, or text description. Required.',
         },
         batch1: {
           type: 'array', items: { type: 'string' },
-          description: `review-fix-loop only. Reviewer dims of batch 1; pass batch2, batch3... the same way for more batches (same array form). Batches run serially: a batch starts only after the previous one finishes clean; dims clean in an earlier batch with no fix since are skipped. Overrides the legacy "reviewers" sugar when both are given.`,
+          description: 'review-fix-loop only. Reviewer agent .md absolute paths of batch 1 (comma-joined into the $ARGS.batch1 string); pass batch2, batch3... the same way. Batches run serially. At least one batchN (or agents) is required.',
         },
         batchNames: {
           type: 'array', items: { type: 'string' },
-          description: 'review-fix-loop only. Display names for batches; count must match the number of batchN. Defaults batch-1..N.',
-        },
-        reviewers: {
-          type: 'array', items: { type: 'string' },
-          description: `review-fix-loop only (legacy sugar). Review focuses wrapped as a single batch. Default [${DEFAULT_REVIEWERS.join(', ')}]. Ignored when batchN is given.`,
+          description: 'review-fix-loop only. Display names for batches (comma-joined string). Defaults batch-1..N.',
         },
         maxRounds: {
           type: 'integer', minimum: 1,
@@ -250,11 +240,11 @@ function buildRunWorkflowToolDefinition() {
         },
         skipCleanAgents: {
           type: 'boolean',
-          description: 'review-fix-loop only. Skip reviewers that reported clean (within the batch and across batches while no fix happened). Default true.',
+          description: 'review-fix-loop only. Skip reviewers that reported clean. Default true.',
         },
         recheckAfterFix: {
           type: 'boolean',
-          description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt (review only what the fix touched). Default false (clean reviewers stay skipped).',
+          description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt. Default false.',
         },
         convergeNewIssues: {
           type: 'integer', minimum: 1,
@@ -270,7 +260,7 @@ function buildRunWorkflowToolDefinition() {
         },
         aggregatorModel: {
           type: 'string',
-          description: 'review-fix-loop only. Model for the aggregation phase (full "<provider>/<model>" name or short name (resolved via the default provider)). Default: same as the run model.',
+          description: 'review-fix-loop only. Model for the aggregation phase. Default: same as the run model.',
         },
         reviewPrompt: {
           type: 'string',
@@ -286,15 +276,7 @@ function buildRunWorkflowToolDefinition() {
         },
         autoCommit: {
           type: 'boolean',
-          description: 'review-fix-loop only. Let the fixer stage/commit its changes. Default false (changes left uncommitted).',
-        },
-        maxConcurrent: {
-          type: 'integer', minimum: 1, maximum: 6,
-          description: 'Max concurrent phase sessions. Default 3.',
-        },
-        timeoutMsPerPhase: {
-          type: 'number',
-          description: 'Per-phase timeout in milliseconds (no timeout if not set).',
+          description: 'review-fix-loop only. Let the fixer stage/commit its changes. Default false.',
         },
       },
       required: ['action'],
@@ -353,14 +335,15 @@ function createManager(opts = {}) {
 
 /**
  * tool handler 注册表工厂：{ [toolName]: handler(params, env) }。
- * - 为什么是工厂而不是模块级表：handler 闭包持有 manager / wfManager /
+ * - 为什么是工厂而不是模块级表：handler 闭包持有 manager / wfHost /
  *   nested，每次 createServer 一份，实例间互不串线。
  * - 为什么 null 原型 + hasOwnProperty 守卫：防止 params.name 撞 Object
  *   原型链属性名（如 "constructor"）被误当 handler 命中——注册表键必须
  *   精确匹配（改造前 `name !== TOOL_NAME` 严格比较的等价行为）。
  * - 嵌套门禁在各自 handler 内而非分发层：拒绝文案按 tool 定制。
- * - wfManager 参数：WorkflowManager 注入点（assembleManager 组装真实现），
- *   测试传 fake 即可全链路冒烟（manager 同款模式）。
+ * - wfHost 参数：orchestration host 注入点（assembleManager 组装真实现 =
+ *   vendored subagent-core orchestration 的 zsw 宿主），测试传 fake 即可
+ *   全链路冒烟（manager 同款模式）。
  * - env.emitFrame：handler 中途发通知帧的通道，缺省 no-op（直接调用
  *   handler 的测试不需要收集通知帧）。
  * - agents action 的 resolver 经 manager.resolver 取（公开端口字段，构造
@@ -372,7 +355,7 @@ function createManager(opts = {}) {
  *   env.signal 透传（daemon socket 面的连接级取消；MCP 面恒 undefined =
  *   无取消，同步挂到终态或超时）。
  */
-function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } = {}) {
+function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}) {
   let wait = waitHandler || null;
   function getWaitHandler() {
     if (!wait) wait = require('../../lib/wait-handler').createWaitHandler({ manager });
@@ -495,12 +478,12 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
         + '恢复指引：这是预期行为，workflow 阶段会话内不要调用 zflow。'
       );
     }
-    if (!wfManager) {
+    if (!wfHost) {
       throw new RpcError(-32603, 'server 未初始化 workflow 运行时');
     }
     const args = params.arguments || {};
-    // run 的透传参数剔除 action（WorkflowManager 的 workflowParams 只剥
-    // STRIP_PARAM_KEYS，action 泄漏进去会污染入口参数与 record）
+    // run 的透传参数剔除 action（host 的 normalizeRunParams 会把保留键外的
+    // 透传键组进 $ARGS，action 泄漏进去会污染脚本参数）
     const { action, ...runArgs } = args;
     const ctx = {
       targetSessionId: extractSessionId(params._meta),
@@ -508,29 +491,47 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
     };
     try {
       switch (action) {
-        case 'run':
-          // 校验权威在 WorkflowManager.start（task/workdir/workflow 名/脚本
-          // 发现/per-workflow 参数），抛的都是含恢复指引的可操作错误
-          return okContent(await wfManager.start(runArgs, ctx));
+        case 'run': {
+          // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
+          // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
+          // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）
+          if (args.wait === true) {
+            return okContent(await wfHost.runAndWait(runArgs, ctx, { signal: env.signal }));
+          }
+          return okContent(await wfHost.run(runArgs, ctx));
+        }
         case 'abort':
-          return okContent(await wfManager.abort(requireRunId(args)));
+          return okContent(await wfHost.abort(requireRunId(args)));
         case 'status':
-          return okContent(wfManager.status(requireRunId(args)));
+          return okContent(wfHost.status(requireRunId(args)));
         case 'list':
-          return okContent(wfManager.list());
-        case 'scripts':
-          // 内置 5 + 四根发现的脚本；发现根 = workspace cwd（ctx 组装同 zsub）
+          return okContent(wfHost.list());
+        case 'scripts': {
+          // vendored 内置 5 + core 发现面 + .zsw 根用户脚本；发现根 =
+          // workspace cwd（ctx 组装同 zsub）。builtin/scripts 均以 host 返回
+          // 为单一来源（host 内置表与 registry 同源——server 不再持第二份
+          // 内置清单，防两处漂移）；scripts 条目补 file 兼容字段（lint action
+          // 的 file 参数指引用旧字段名）
+          const found = await wfHost.scripts(ctx.cwd);
           return okContent({
-            builtin: BUILTIN_WORKFLOW_INFO,
-            scripts: wfManager.listScripts(ctx.cwd),
+            builtin: found.builtin,
+            scripts: found.scripts.map((s) => ({
+              name: s.name,
+              description: s.description || '',
+              path: s.path,
+              file: s.path, // 兼容旧字段名（lint action 的 file 参数指引）
+              available: s.available,
+              source: s.source,
+            })),
           });
+        }
         case 'lint': {
           if (typeof args.file !== 'string' || args.file.trim() === '') {
             return errContent(
-              'lint 需要 file（脚本文件路径）。恢复指引：先 scripts 查看已发现脚本的 file 字段，或直接给绝对路径。'
+              'lint 需要 file（脚本文件路径）。恢复指引：先 scripts 查看已发现脚本的 path 字段，或直接给绝对路径。'
             );
           }
-          return okContent(await workflowScript.lintScript(path.resolve(args.file)));
+          return okContent(await wfHost.lint(args.file));
         }
         default:
           return errContent(
@@ -539,7 +540,7 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
           );
       }
     } catch (e) {
-      // wfManager / lintScript 抛的都是可操作错误（含恢复指引），原样回给主 agent
+      // wfHost 抛的都是可操作错误（含恢复指引），原样回给主 agent
       return errContent(String(e && e.message || e));
     }
   };
@@ -614,8 +615,8 @@ function unwrapContentResult(wrapped) {
  * ZSW_TOOLS_DISABLED 灰度开关删除——自用单用户场景无灰度对象）。参数保留
  * 仅为兼容旧签名，任何值都不改变行为。
  */
-function createServer({ manager, wfManager, nested = false, log = () => {}, emitFrame = () => {} } = {}) {
-  const toolHandlers = buildToolHandlers({ manager, wfManager, nested });
+function createServer({ manager, wfHost, nested = false, log = () => {}, emitFrame = () => {} } = {}) {
+  const toolHandlers = buildToolHandlers({ manager, wfHost, nested });
 
   /** 工具面下线的可操作拒绝（D1 终态）：指向 CLI 出口（socket 面不受影响）。 */
   const toolsDisabledMessage = () => 'zsub/zflow 工具面已下线（1.0.0 起，agent 交互全走 CLI）。'
@@ -787,7 +788,7 @@ function writeFrame(msg) {
 async function main() {
   log(`mcp server starting (pid=${process.pid})`);
   let manager = null;
-  let wfManager = null;
+  let wfHost = null;
   if (config.NESTED) {
     log('ZSW_NESTED=1：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
@@ -795,7 +796,7 @@ async function main() {
     // lib/assemble（MCP 与 CLI 共用同一决策，避免两入口行为漂移）
     const assembled = await createManager();
     manager = assembled.manager;
-    wfManager = assembled.wfManager;
+    wfHost = assembled.wfHost;
     const notifier = assembled.notifier;
     // mailbox 档启动清扫己方 .tmp 残留（Z8 规范 4；PollingNotifier 无此方法）
     if (typeof notifier.sweepStaleTmp === 'function') {
@@ -811,13 +812,13 @@ async function main() {
       log(`recover 失败（继续启动，record 功能可能受限）: ${e && e.message || e}`);
     }
     try {
-      // workflow record 恢复与 subagent recover 并存安全（共享 store：rebuild
-      // 幂等，各自的 update 只写自己的 recordType）——执行体在 server 进程内，
-      // 非终态 run 全部标 lost 并注明（无进程可探活，见 workflow-manager 头注）
-      const rec = await wfManager.recover();
-      log(`workflow record 恢复：重建后非终态 ${rec.lost.length} 条标 lost（执行体随进程消亡）`);
+      // workflow 孤儿恢复（回接 2b）：FileRunStore 重水合上一代 daemon 遗留的
+      // workflow-state 快照，running 标 done,failed 落盘（worker 线程随旧进程
+      // 死亡，无进程可探活）——与 subagent recover 并存安全（两池存储面已分离）
+      const rec = await wfHost.recoverOrphans();
+      log(`workflow 孤儿恢复：重水合 ${rec.recovered} 条，running 遗留 ${rec.orphaned} 条标 failed`);
     } catch (e) {
-      log(`wfManager recover 失败（继续启动，workflow 管理面可能受限）: ${e && e.message || e}`);
+      log(`wfHost recoverOrphans 失败（继续启动，workflow 管理面可能受限）: ${e && e.message || e}`);
     }
 
     // 孤儿清扫（报告模式，不自动删——结果文件是用户资产；worktree 孤儿同理由用户 close）
@@ -827,7 +828,7 @@ async function main() {
       // 的，wf id 必须并入 known，否则 wf-* 结果文件会被误报孤儿
       const known = [
         ...manager.list().map((r) => r.subagentId),
-        ...wfManager.list().map((r) => r.runId),
+        ...wfHost.list().map((r) => r.runId),
       ];
       // sweepStaleOutputs 返回 {stale: [{file, subagentId}]}（报告模式，见
       // lib/reaper.js 头注）——字段名必须与 reaper 契约一致，写错会让整段
@@ -852,7 +853,7 @@ async function main() {
     }
   }
 
-  const server = createServer({ manager, wfManager, nested: config.NESTED, log, emitFrame: writeFrame });
+  const server = createServer({ manager, wfHost, nested: config.NESTED, log, emitFrame: writeFrame });
 
   // daemon socket 控制面接线（DESIGN-v4 D2/D3，M0）：非 NESTED 才挂——嵌套
   // 进程不参与竞选（防递归边界保持在 MCP 工具面语义内，socket 面是服务面）。
@@ -870,7 +871,7 @@ async function main() {
       require('node:fs').mkdirSync(path.dirname(sockPath), { recursive: true });
       daemon = await startDaemon({
         sockPath,
-        // 单份 handler 表（createServer 已建，闭包同 manager/wfManager），
+        // 单份 handler 表（createServer 已建，闭包同 manager/wfHost），
         // 适配成 socket 帧 (req, meta) 形态并解包 content（见适配器头注）
         handlers: buildDaemonHandlers(server.toolHandlers),
         log,
@@ -884,10 +885,10 @@ async function main() {
             log(`接管后 recover 失败（继续服务，record 功能可能受限）: ${e && e.message || e}`);
           }
           try {
-            const rec = await wfManager.recover();
-            log(`接管后 workflow record 恢复：非终态 ${rec.lost.length} 条标 lost（执行体随旧 daemon 消亡）`);
+            const rec = await wfHost.recoverOrphans();
+            log(`接管后 workflow 孤儿恢复：重水合 ${rec.recovered} 条，running 遗留 ${rec.orphaned} 条标 failed（执行体随旧 daemon 消亡）`);
           } catch (e) {
-            log(`接管后 wfManager recover 失败: ${e && e.message || e}`);
+            log(`接管后 wfHost recoverOrphans 失败: ${e && e.message || e}`);
           }
         },
       });
@@ -925,7 +926,14 @@ async function main() {
     log('stdin closed, server exiting');
     queue.then(async () => {
       // daemon 退出卫生：stop() 幂等（daemon-socket 头注）；SIGTERM/exit 路径
-      // 另有传输层自己的信号钩子兜底，这里只覆盖 stdin 正常关闭的主路径
+      // 另有传输层自己的信号钩子兜底，这里只覆盖 stdin 正常关闭的主路径。
+      // workflow 退出钩子（回接 2b）：全部 running run 转 done,failed 落盘
+      // （worker 线程随进程死亡——不落盘则下次启动误判仍在跑）
+      try {
+        if (wfHost) await wfHost.shutdown();
+      } catch (e) {
+        log(`wfHost shutdown 失败（best-effort，下次启动由孤儿恢复收编）: ${e && e.message || e}`);
+      }
       if (daemon) await daemon.stop();
       process.exit(0);
     });

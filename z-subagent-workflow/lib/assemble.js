@@ -4,10 +4,11 @@
  * 这是 lib 内唯一允许 import 具体端口实现的地方（对齐 ports.createRuntime
  * 的定位——决策位①③的「换实现」发生在这里，manager 永远只面对端口）。
  *
- * 组装产物含两个 manager：SubagentManager（subagent 生命周期）与
- * WorkflowManager（workflow run 生命周期，N2-b 接线）。两者共享同一
- * records / outputs / notifier 实例——record 事件流按 recordType 区分
- * （'subagent' 缺省 / 'workflow'），完成通知同走 mailbox。
+ * 组装产物：SubagentManager（zsub 生命周期）+ orchestration host（workflow
+ * 编排，回接 2b 起 = vendored subagent-core orchestration 的 zsw 宿主，见
+ * lib/orchestration-host.js）。两者共享同一 records / outputs / notifier /
+ * runner——zsub record 事件流与通知同源；workflow 线状态面已迁 core
+ * FileRunStore（<zswRoot>/workflow-state/），不再写 zsw record。
  *
  * runnerKind 解析顺序（D1 默认翻转）：显式参数 > ZSW_RUNNER env > 默认 appserver。
  * probe 门控（翻转后 = 默认通道健康检查）只对缺省分支生效：组装前探 app-server，
@@ -395,7 +396,7 @@ async function assembleManager(opts = {}) {
   const outputs = require('./output-store');
   const { createSlots } = require('./slots');
   const { SubagentManager } = require('./manager');
-  const { WorkflowManager } = require('./workflow-manager');
+  const { createOrchestrationHost } = require('./orchestration-host');
   const { createWorktreeAdapter } = require('./worktree-adapter');
   const resolver = require('./agent-md-resolver');
 
@@ -410,9 +411,9 @@ async function assembleManager(opts = {}) {
   }
   const rt = createRuntime({ runnerKind, notifyMode: opts.notifyMode });
   const notifier = opts.notifier || rt.createNotifier();
-  // 三个端口实例先于两个 manager 构造（SubagentManager 与 WorkflowManager
-  // 共享同一 records/outputs/notifier——record 事件流、结果落盘、完成通知
-  // 必须同源，两份实例会让 recordType 过滤与 mailbox 投递互相看不见）
+  const modelRouter = opts.modelRouter || rt.createModelRouter();
+  // 端口实例先于 manager/host 构造（SubagentManager 与 orchestration host
+  // 共享同一 records/outputs/notifier——zsub 线 record 事件流与通知同源）
   const records = opts.records || new RecordStore();
   const outputsPort = opts.outputs || outputs;
   let runner = opts.runner || rt.createRunner();
@@ -422,7 +423,7 @@ async function assembleManager(opts = {}) {
   }
   const manager = new SubagentManager({
     runner,
-    modelRouter: opts.modelRouter || rt.createModelRouter(),
+    modelRouter,
     notifier,
     resolver: opts.resolver || resolver, // 模块对象自带 resolve(nameOrPath, cwd)，天然满足端口契约
     records,
@@ -430,17 +431,17 @@ async function assembleManager(opts = {}) {
     slots: opts.slots || createSlots({ limit: config.DEFAULTS.maxConcurrent }),
     worktree: opts.worktree === undefined ? createWorktreeAdapter() : opts.worktree,
   });
-  // wave2 D1：workflow 线与 zsub 共用同一 runner 实例（含 fromCache 分支的
-  // probe 失效包装形态）——probe 门控、通道级降级、降级 spawn 重跑对 workflow
-  // 阶段逐阶段生效（D4 零新增）；WorkflowManager 未注入 runner 时其阶段保持
-  // spawn 直调旧行为（真实入口组装恒注入）
-  const wfManager = opts.wfManager || new WorkflowManager({
-    records,
-    outputs: outputsPort,
-    notifier,
+  // workflow 线（回接 2b）：zsw 自有运行时已退役，编排整体换 vendored
+  // subagent-core orchestration（orchestration-host 组装 core 三 port + 内置
+  // 资产注册）。与 zsub 线共用同一 runner 实例（含 fromCache 分支的 probe
+  // 失效包装形态）——probe 门控、通道级降级、降级 spawn 重跑对 workflow
+  // agent() 调用逐调用生效；测试经 opts.wfHost 注入 fake 跳过组装
+  const wfHost = opts.wfHost || createOrchestrationHost({
     runner,
+    modelRouter,
+    resolver: opts.resolver || resolver,
   });
-  return { manager, wfManager, notifier, runnerKind };
+  return { manager, wfHost, notifier, runnerKind };
 }
 
 // 缓存层与失效判定导出：单测注入 cacheFile / 锁定判定行为，不真跑引擎

@@ -12,7 +12,10 @@
  * 那里，本文件只做入口兜底。
  */
 try {
-  require('../lib/hook-source').runSessionStartHook();
+  // async（core 发现面是异步 API）：.catch 兜 promise 链上的意外拒绝
+  //（正常降级路径在 runSessionStartHook 内部已消化）；事件循环挂起在
+  // pending IO 上直至完成，无需 process.exit
+  require('../lib/hook-source').runSessionStartHook().catch(() => {});
 } catch (e) {
   // hook-source 加载/执行本身的意外抛出（正常降级路径在其内部已消化）：
   // stdout 是协议通道，必须给引擎一个合法帧；诊断尽力写 stderr

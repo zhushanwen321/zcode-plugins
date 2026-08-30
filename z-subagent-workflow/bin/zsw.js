@@ -37,12 +37,15 @@
  *   node bin/zsw.js cancel --id <subagentId>
  *   node bin/zsw.js close --id <subagentId>
  *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>]
- *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
+ *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>|<脚本绝对路径>>
  *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
  *        abort/status/list/scripts 管理面默认经 daemon（zflow 同源，MF1）；
  *        run 恒本地同步形态（执行体 = CLI 进程，bg 包裹即原生通知——设计
  *        v5 决策，无 daemon 化形态）、lint 恒本地（纯文件校验无状态）；
  *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
+ *        （回接 2b：workflow 编排 = vendored subagent-core orchestration，
+ *        旧 reviewers sugar / max-concurrent / timeout-per-phase /
+ *        subtask-count 已废弃——详见 workflow 子命令 usage）
  *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
  *   node bin/zsw.js hook session-start
  *        （SessionStart hook 入口，恒本地不经 daemon，不适用 --local：stdout
@@ -145,23 +148,10 @@ function startCapabilityArgs(args) {
 /** workflow 六 action（与 MCP zflow tool 的 action 枚举同源）。 */
 const WORKFLOW_ACTIONS = ['run', 'abort', 'status', 'list', 'scripts', 'lint'];
 
-/**
- * scripts action 的内置索引。面向人类 CLI 的中文一句话；LLM 侧权威索引在
- * dist/mcp/server.js 的 BUILTIN_WORKFLOW_INFO（英文，随 tool description）——
- * 两个入口受众不同，文案独立维护，名字集合以 lib/workflow-manager 的
- * defaultWorkflows 为准。
- */
-const BUILTIN_WORKFLOW_INFO = [
-  { name: 'chain', description: '分析 → 实现 → 总结 三步顺序链' },
-  { name: 'parallel', description: '单目标多视角并行审查后聚合' },
-  { name: 'map-reduce', description: '对已知 items 数组并行变换再归约' },
-  { name: 'scatter-gather', description: '大任务拆 2-4 份并行处理再合并' },
-  { name: 'review-fix-loop', description: '并行审查 → 聚合 must-fix → 修复 → 复审到 clean（会写文件）' },
-];
-
 function workflowUsage(exitCode = 1) {
   process.stderr.write(
-    'zsw workflow：workflow 编排与管理（经 WorkflowManager，record/outputs/通知与 MCP zflow 同源）\n'
+    'zsw workflow：workflow 编排与管理（vendored subagent-core orchestration，经'
+    + ' lib/orchestration-host.js；状态面 = <zsw 数据根>/workflow-state/，不再写 zsw record）\n'
     + '\n'
     + '用法:\n'
     + '  node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
@@ -170,37 +160,35 @@ function workflowUsage(exitCode = 1) {
     + '   本地一次性执行）\n'
     + '\n'
     + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
-    + '  异步 runId + 完成通知走 MCP zflow）:\n'
+    + '  异步 runId 走 socket 面后用 status 查询）:\n'
     + '  --workflow <名>           chain / parallel / map-reduce / scatter-gather /\n'
-    + '                            review-fix-loop / script:<自定义脚本名>\n'
-    + '  --task <text>             任务描述（必填，自包含）\n'
-    + '  --workdir <path>          工作目录（必填，绝对路径）\n'
-    + '  --model <name>            模型短名或 provider 全名（默认跟随配置的 main 模型；仅限 provider 已启用的模型，传错会列出可用清单）\n'
-    + '  --max-concurrent <n>      单 workflow 内阶段并发上限（默认 3）\n'
-    + '  --timeout-per-phase <ms>  单阶段超时（不设则无超时）\n'
-    + '  --timeout-ms <ms>         workflow 整体超时（不设则无超时）\n'
+    + '                            review-fix-loop / script:<脚本名> / <脚本绝对路径>\n'
+    + '  --task <text>             任务描述（必填；parallel 场景作为 target 回退，\n'
+    + '                            review-fix-loop 场景作为 target 回退）\n'
+    + '  --workdir <path>          工作目录（必填，绝对路径——agent() 调用的 cwd）\n'
+    + '  --model <name>            RunSpec.model（短名或 provider 全名；\n'
+    + '                            传错会列出可用清单）\n'
+    + '  --timeout-ms <ms>         workflow 整体墙钟预算（RunSpec.budgetTimeMs；不设则无限制）\n'
     + '  --json                    只输出 run 摘要 JSON（默认 markdown 报告 + 摘要两段）\n'
     + '\n'
     + '  per-workflow 选项:\n'
     + '  --perspectives "a,b,c"    parallel：分析视角（默认 security,performance,maintainability）\n'
     + '  --items <json数组|a,b,c>  map-reduce：待处理条目，如 \'["a","b"]\' 或 a,b,c\n'
     + '  --operation <text>        map-reduce：对每个 item 做什么\n'
-    + '  --subtask-count <n>       scatter-gather：拆分数提示（2-4）\n'
     + '  review-fix-loop（批次外环：batch1..batchN 串行，批内 review→聚合→fix→重审到 clean）:\n'
-    + '  --batch1 "a,b"            批次维度（batch1、batch2、… 连续编号，缺号报错；批间串行，\n'
-    + '                            前一批 clean 后一批才启动；跨批 clean 且无 fix 的维度跳过）\n'
+    + '  --batch1 "<refs>"         批次执行者：agent .md 绝对路径（逗号分隔多 agent）。\n'
+    + '                            batch2、batch3… 连续编号同形态；至少传一个\n'
+    + '                            batchN（无 agent .md 时改用 script: 自定义脚本）\n'
     + '  --batch-names "a,b"       批次命名（数量须与批次数一致，缺省 batch-1..N）\n'
-    + '  --reviewers "a,b"         老参数 sugar：包装为单批（默认 correctness,robustness；\n'
-    + '                            与 batchN 同传时 batchN 优先）\n'
     + '  --target-type <t>         审查目标类型 git-diff|file|dir|text（默认 text）\n'
-    + '  --target <text>           审查目标（与 --target-type 配套；git-diff/file/dir 必填，text 缺省 = "git 未提交改动"）\n'
+    + '  --target <text>           审查目标（必填：git-diff 传 base ref 如 main、\n'
+    + '                            file/dir 传路径、text 传描述）\n'
     + '  --review-target <text>    老参数 sugar：等价 --target-type text --target <text>\n'
     + '  --max-rounds <n>          每批最大轮数（默认 10，≥1）\n'
     + '  --stuck-threshold <n>     连续 N 轮 must-fix 不降判 stuck（默认 3）\n'
-    + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭；\n'
-    + '                            同时作用于批内轮间与跨批）\n'
-    + '  --recheck-after-fix [b]   fix 后重派全批，上一轮 clean 的走限定复检（只查 fix 引入的\n'
-    + '                            回归；默认 false，clean 持续跳过）\n'
+    + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭）\n'
+    + '  --recheck-after-fix [b]   fix 后重派全批，上一轮 clean 的走限定复检\n'
+    + '                            （默认 false，clean 持续跳过）\n'
     + '  --converge-new-issues <n> 收敛判定：每轮新发现上限（默认 1）\n'
     + '  --converge-rounds <n>     收敛判定：连续 N 轮达标即收敛（默认 2）\n'
     + '  --max-fix-attempts <n>    同一问题回归 N 次后判 needs-redesign（默认 2）\n'
@@ -211,15 +199,21 @@ function workflowUsage(exitCode = 1) {
     + '                            默认 false）\n'
     + '  --auto-commit [b]         允许修复者提交改动（默认 false，改动留给用户）\n'
     + '\n'
+    + '  已废弃 flags（显式报错或 warning，不静默）:\n'
+    + '  --reviewers               报错：core 契约批次值 = agent .md 路径（用 --batch1）\n'
+    + '  --max-concurrent / --timeout-per-phase / --subtask-count\n'
+    + '                            warning：core 编排无对应面，已忽略\n'
+    + '\n'
     + 'abort / status / list / scripts（管理面：默认经 daemon，zflow 同源；--local 本地）:\n'
     + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
-    + '                            abort 后状态落 cancelled）\n'
-    + 'list:                       全部 workflow run（精简视图）\n'
-    + 'scripts:                    内置 5 + 自定义脚本清单（四根发现）\n'
+    + '                            abort 后状态落 aborted）\n'
+    + 'list:                       全部 workflow run（精简视图；done run 内存保留\n'
+    + '                            有上限，淘汰后读 stateFile）\n'
+    + 'scripts:                    vendored 内置 5 + 用户脚本（core 发现面 + .zsw 根）\n'
     + 'lint:\n'
-    + '  --file <脚本路径>         校验脚本（node --check 语法 + name/description/run 契约形状）\n'
+    + '  --file <脚本路径>         校验脚本（core lintScript：agent() 入口等契约）\n'
     + '\n'
-    + '进度打 stderr；exit 0 = 成功（run 以终态 closed 判定）。zcode CLI 路径可用 ZSW_ZCODE_CLI 覆盖。\n'
+    + '进度打 stderr；exit 0 = 成功（run 以 reason=completed 判定）。zcode CLI 路径可用 ZSW_ZCODE_CLI 覆盖。\n'
   );
   process.exit(exitCode);
 }
@@ -262,8 +256,21 @@ function requireWorkflowRunArgs(args) {
   if (!args.workdir) { process.stderr.write('缺少 --workdir\n'); workflowUsage(1); }
 }
 
-/** run action 参数面②：通用 per-workflow 选项（csv→数组、字符串→数字/布尔）。 */
-function applyWorkflowCoreOptions(params, args) {
+/**
+ * run action 参数组装（回接 2b）：CLI flag → zflow params 形态（csv→数组、
+ * 字符串→数字/布尔），$ARGS 映射 / sugar 裁决 / 废弃 flag 拦截统一在
+ * lib/orchestration-host.js 的 normalizeRunParams（单一权威，CLI 不重复实现
+ * 映射，防两处漂移）。CLI 只做形态转换与已消费键标记。
+ */
+function buildWorkflowRunParams(args) {
+  const params = {
+    workflow: args.workflow, // 内置名 / script:<脚本名> / 脚本绝对路径（合法性由 host 校验）
+    task: args.task,
+    workdir: path.resolve(args.workdir),
+    model: args.model,
+    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+  };
+  // 通用 per-workflow 选项
   if (args.perspectives !== undefined) params.perspectives = csv(args.perspectives);
   if (args.items !== undefined) params.items = parseItems(args.items);
   if (args.operation !== undefined) params.operation = args.operation;
@@ -273,26 +280,17 @@ function applyWorkflowCoreOptions(params, args) {
   if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
   if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
   if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
-}
-
-/** batchN 动态键（--batch1、--batch2、… 连续编号）：csv 归一 + 已消费标记 + 无值报错。 */
-function applyBatchArgs(params, args, consumedArgs) {
+  // review-fix-loop 显式 flag 面
+  if (args.targetType !== undefined) params.targetType = args.targetType;
+  if (args.target !== undefined) params.target = args.target;
   for (const [key, value] of Object.entries(args)) {
     if (!/^batch([1-9]\d*)$/.test(key)) continue;
-    consumedArgs.add(key); // 已映射为 csv 数组，透传循环不得用原始字符串覆写
     if (value === true) {
-      process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
+      process.stderr.write(`--${key} 需要值（agent .md 绝对路径，逗号分隔多 agent）\n`);
       workflowUsage(1);
     }
     params[key] = csv(value);
   }
-}
-
-/** review-fix-loop v2 显式 flag 面：target/batch/聚合收敛/fix 行为 → params。 */
-function applyReviewFixLoopOptions(params, args, consumedArgs) {
-  if (args.targetType !== undefined) params.targetType = args.targetType;
-  if (args.target !== undefined) params.target = args.target;
-  applyBatchArgs(params, args, consumedArgs);
   if (args.batchNames !== undefined) params.batchNames = csv(args.batchNames);
   if (args.stuckThreshold !== undefined) params.stuckThreshold = Number(args.stuckThreshold);
   if (args.convergeNewIssues !== undefined) params.convergeNewIssues = Number(args.convergeNewIssues);
@@ -303,45 +301,11 @@ function applyReviewFixLoopOptions(params, args, consumedArgs) {
   if (args.fixPrompt !== undefined) params.fixPrompt = args.fixPrompt;
   if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
   if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
-}
 
-/** 透传面：consumedArgs 之外的未知 flag 原样透传（拼错 flag 不在 CLI 静默丢弃）。 */
-function applyPassthroughArgs(params, args, consumedArgs) {
-  for (const [key, value] of Object.entries(args)) {
-    if (consumedArgs.has(key) || value === undefined) continue;
-    params[key] = value;
-  }
-}
-
-/** run action 参数组装：基础参数 → 通用选项 → review-fix-loop 选项 → 透传。 */
-function buildWorkflowRunParams(args) {
-  const params = {
-    workflow: args.workflow, // 内置名或 script:<脚本名>（合法性由 manager 校验）
-    task: args.task,
-    workdir: path.resolve(args.workdir),
-    model: args.model,
-    maxConcurrent: args.maxConcurrent ? Number(args.maxConcurrent) : undefined,
-    timeoutMsPerPhase: args.timeoutPerPhase ? Number(args.timeoutPerPhase) : undefined,
-    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
-    // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
-    // start 的 CLI 语义对齐；异步启动走 MCP zflow
-    wait: true,
-    // 进度走 stderr（stdout 留给结果）；回调经 record 的 JSON 序列化自然丢弃，不落盘
-    onPhase: ({ phase, status }) => process.stderr.write(`[${new Date().toISOString()}] ${phase}: ${status}\n`),
-  };
-  applyWorkflowCoreOptions(params, args);
-
-  // review-fix-loop v2 参数面（设计 §3.4 终态全集）。target/review-target/batchN/
-  // reviewers 的优先级裁决与缺省映射统一在 workflow 入口 normalizeParams（D5）——
-  // CLI 负责形态转换（csv→数组、字符串→数字/布尔）与已映射键的消费标记：
-  // batchN 动态键必须 add 进 consumedArgs，否则下方透传循环会用原始逗号字符串
-  // 覆写回 params，数组形态永远到不了入口。CLI 不重复实现映射，防两处漂移。
-  //
-  // 透传面：CLI 自有 / 已映射 flag（consumedArgs）不透传，其余 flags 原样透传
-  // ——parseArgs 是通用 --key 解析，拼错的 flag（如 --batchX、--stuck-threshld）
-  // 若在此静默丢弃，入口白名单就永远拦不到。透传后 review-fix-loop 入口的参数
-  // 白名单会报「未知参数」并列合法清单（单一权威，CLI 不重复维护清单）；其他
-  // 内置 workflow 无白名单，多余键被入口解构忽略，与透传前行为一致。
+  // 透传面（script: 用户脚本的 $ARGS 通道）：CLI 自有/已映射 flag 不透传，
+  // 其余 flags 原样透传——拼错的 flag（如 --stuck-threshld）不在 CLI 静默
+  // 丢弃，透传后 host 对内置形态出 warning、script: 形态进 $ARGS 由脚本
+  // 自己的 parameters schema 裁决
   const consumedArgs = new Set([
     '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait',
     'workflow', 'task', 'workdir', 'model', 'maxConcurrent', 'timeoutPerPhase', 'timeoutMs',
@@ -349,35 +313,73 @@ function buildWorkflowRunParams(args) {
     'reviewTarget', 'reviewers', 'maxRounds', 'skipCleanAgents', 'recheckAfterFix',
     'targetType', 'target', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
     'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
-    'fallowScan', 'autoCommit', 'onPhase',
+    'fallowScan', 'autoCommit',
   ]);
-  applyReviewFixLoopOptions(params, args, consumedArgs);
-  applyPassthroughArgs(params, args, consumedArgs);
+  for (const [key, value] of Object.entries(args)) {
+    if (consumedArgs.has(key) || /^(batch([1-9]\d*))$/.test(key) || value === undefined) continue;
+    params[key] = value;
+  }
+  // maxConcurrent/timeoutPerPhase 拼写保留位：透传给 host 出显式 warning（不再
+  // 静默忽略），CLI 不消费
+  if (args.maxConcurrent !== undefined) params.maxConcurrent = Number(args.maxConcurrent);
+  if (args.timeoutPerPhase !== undefined) params.timeoutMsPerPhase = Number(args.timeoutPerPhase);
   return params;
 }
 
-/** run action 输出面：--json 只出摘要；默认 markdown 报告 + 摘要两段；exit 按终态。 */
+/**
+ * run action 输出面：--json 只出摘要；默认 markdown 报告 + 摘要两段；
+ * exit 按 reason=completed 判定。报告正文 = core scriptResult（资产返回值），
+ * message 字段优先（人读一行结论），其余字段 JSON 序列化补全。
+ * 用 process.exitCode 而非 process.exit：大报告的 stdout write 可能仍挂起，
+ * process.exit 会截断 pending flush（输出丢失），自然退出让事件循环排空。
+ */
 function renderWorkflowRunOutput(fin, args) {
   const summary = {
-    runId: fin.runId, workflow: fin.workflow, status: fin.status,
-    outputFile: fin.outputFile, error: fin.error === undefined ? null : fin.error,
+    runId: fin.runId,
+    workflow: args.workflow,
+    reason: fin.reason,
+    error: fin.error === undefined ? null : fin.error,
+    stateFile: fin.stateFile === undefined ? null : fin.stateFile,
+    warnings: Array.isArray(fin.warnings) && fin.warnings.length > 0 ? fin.warnings : undefined,
   };
+  if (Array.isArray(fin.warnings)) {
+    for (const w of fin.warnings) process.stderr.write(`[zsw] ${w}\n`);
+  }
   if (args.json === true) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   } else {
+    const reportBody = renderScriptResultMarkdown(fin.scriptResult);
     process.stdout.write(`\n${'='.repeat(60)}\nmarkdown 报告:\n${'='.repeat(60)}\n`);
-    process.stdout.write(`${fin.report || ''}\n`);
+    process.stdout.write(`${reportBody}\n`);
     process.stdout.write(`\n${'='.repeat(60)}\nrun 摘要:\n${'='.repeat(60)}\n`);
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   }
-  process.exit(fin.status === 'closed' ? 0 : 1);
+  process.exitCode = fin.reason === 'completed' ? 0 : 1;
 }
 
-/** run action：组参 → 同步等完成 → 报告 + 摘要（exit code 按终态）。 */
-async function runWorkflowRun(wfManager, args, cwd) {
+/** scriptResult（core 资产返回值，对象/字符串/null）→ 人读 markdown 段。 */
+function renderScriptResultMarkdown(scriptResult) {
+  if (scriptResult === null || scriptResult === undefined) return '(无 scriptResult)';
+  if (typeof scriptResult === 'string') return scriptResult;
+  const lines = [];
+  if (typeof scriptResult.message === 'string' && scriptResult.message !== '') {
+    lines.push(scriptResult.message);
+  }
+  const rest = { ...scriptResult };
+  delete rest.message;
+  if (Object.keys(rest).length > 0) {
+    lines.push('', '```json', JSON.stringify(rest, null, 2), '```');
+  }
+  return lines.join('\n');
+}
+
+/** run action：组参 → host.runAndWait 同步等终态 → 报告 + 摘要（exit 按终态）。 */
+async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
   const params = buildWorkflowRunParams(args);
-  const fin = await wfManager.start(params, { cwd });
+  // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
+  // start 的 CLI 语义对齐；异步启动走 socket 面（zflow run 不带 wait）
+  const fin = await wfHost.runAndWait(params, { cwd });
   renderWorkflowRunOutput(fin, args);
 }
 
@@ -435,37 +437,38 @@ async function runWorkflowCommand(rest) {
     }
   }
 
-  const { wfManager } = await assembleManager();
-  try { wfManager.records.rebuildFromLog(); } catch (e) {
-    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
-  }
+  // 回接 2b：本地路径走 orchestration host（vendored subagent-core）。
+  // 一次性进程不重水合历史 run（内存 runs 空，list 显示为空；历史快照在
+  // <zsw 数据根>/workflow-state/，daemon 启动/接管时由 recoverOrphans 收编）
+  const { wfHost } = await assembleManager();
   const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
 
-  if (action === 'run') return runWorkflowRun(wfManager, args, cwd);
+  if (action === 'run') return runWorkflowRun(wfHost, args, cwd);
 
   switch (action) {
     case 'abort':
-      process.stdout.write(`${JSON.stringify(await wfManager.abort(requireRunIdArg(args)), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await wfHost.abort(requireRunIdArg(args)), null, 2)}\n`);
       break;
     case 'status':
-      process.stdout.write(`${JSON.stringify(wfManager.status(requireRunIdArg(args)), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(wfHost.status(requireRunIdArg(args)), null, 2)}\n`);
       break;
     case 'list':
-      process.stdout.write(`${JSON.stringify(wfManager.list(), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(wfHost.list(), null, 2)}\n`);
       break;
-    case 'scripts':
+    case 'scripts': {
+      const found = await wfHost.scripts(cwd);
       process.stdout.write(`${JSON.stringify({
-        builtin: BUILTIN_WORKFLOW_INFO,
-        scripts: wfManager.listScripts(cwd),
+        builtin: found.builtin.map((b) => ({ name: b.name, description: b.description, path: b.path })),
+        scripts: found.scripts,
       }, null, 2)}\n`);
       break;
+    }
     case 'lint': {
       if (typeof args.file !== 'string' || args.file.trim() === '') {
-        process.stderr.write('lint 需要 --file <脚本路径>（scripts 可查已发现脚本的 file 字段）\n');
+        process.stderr.write('lint 需要 --file <脚本路径>（scripts 可查已发现脚本的 path 字段）\n');
         workflowUsage(1);
       }
-      const { lintScript } = require('../lib/workflow-script');
-      process.stdout.write(`${JSON.stringify(await lintScript(path.resolve(args.file)), null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify(await wfHost.lint(args.file), null, 2)}\n`);
       break;
     }
   }
@@ -494,7 +497,7 @@ async function runWorkflowCommand(rest) {
  * 数据组装/渲染/降级语义（D4/D5/D6 三条硬约束与口径）见 lib/hook-source.js 头注。
  */
 function runHookCommand(rest) {
-  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用都零开销退出）
+  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用零开销退出）
   if (process.env.ZSW_NESTED === '1') {
     process.stdout.write('{}\n');
     return; // 自然退出 = exit 0；不用 process.exit 防 stdout 未 flush
@@ -504,7 +507,9 @@ function runHookCommand(rest) {
     usage(1);
   }
   try {
-    require('../lib/hook-source').runSessionStartHook();
+    // async（core 发现面异步）+ 容错：runSessionStartHook 内部已消化正常
+    // 降级，此处 .catch 只兜 promise 链意外拒绝
+    require('../lib/hook-source').runSessionStartHook().catch(() => {});
   } catch (e) {
     // hook-source 加载/执行本身的意外抛出（正常降级路径在其内部已消化）：
     // stdout 是协议通道，必须给引擎一个合法帧；诊断尽力写 stderr

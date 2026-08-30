@@ -7,7 +7,7 @@
  * exit 1 → 每会话启动 raise error（D5 降级承诺违规；2026-08 实测复现：删
  * lib/assemble.js → `node bin/zsw.js hook session-start` exit 1）。本模块
  * **顶层零 require**：hook 链路依赖（config/model-router/hook-inject/
- * agent-md-resolver/workflow-script）全部在函数体内 require 且被整体 try
+ * agent-md-resolver/orchestration-host）全部在函数体内 require 且被整体 try
  * 包裹——任一模块缺失/损坏 → stdout {} 降级而非 crash，绝不阻断会话启动。
  *
  * 三条硬约束（继承 bin/zsw.js runHookCommand 语义，设计 D4/D5，
@@ -24,11 +24,11 @@
  */
 
 /**
- * 内置 workflow 五名。名字集合的权威源是 lib/workflow-manager 的
- * defaultWorkflows() 键集（bin/zsw.js 的 BUILTIN_WORKFLOW_INFO 与
- * dist/mcp/server.js 的同名集合同此口径）。刻意不从 workflow-manager
- * require：那会把 workflow 入口全链（chain/parallel/... 各自依赖树）拉进
- * hook 链路，扩大降级面，违背本模块「hook 链路依赖最小化」的存在理由。
+ * vendored 内置 workflow 五名（= core workflows/ 资产 stem）。名字集合权威源
+ * 是 lib/orchestration-host.js 的 BUILTIN_WORKFLOW_NAMES（回接 2b 起 workflow
+ * 线整体走 vendored subagent-core）；此处刻意不从 orchestration-host require：
+ * name-only 静态名单零依赖（require 它会拉起 core-ref → vendored bundle 的
+ * requireCore 链，尽管实测仅 ~15ms，静态名单连这个都不付）。
  */
 const BUILTIN_WORKFLOW_NAMES = [
   'chain',
@@ -74,11 +74,15 @@ function resolveHookIO(opts) {
  * 定位/装载注入源并渲染两行输出文本：require 链、fs 读取、资源列举、渲染
  * 全部在此——任一异常向上抛，由 runSessionStartHook 的 catch 统一降级 {}。
  *
- * @returns {{protocolLine, diagLine}}
+ * 回接 2b：workflow 名单改 core 发现面（异步 API，经
+ * orchestration-host.listWorkflowNames——core discoverWorkflows + .zsw 手工根，
+ * name-only 不执行脚本体）。core 侧 require/发现实测 <20ms，5s 预算无虞。
+ *
+ * @returns {Promise<{protocolLine, diagLine}>}
  *   - protocolLine：stdout 协议通道的严格单行 JSON（hookSpecificOutput）
  *   - diagLine：stderr 人读诊断行（providers/agents/scripts 计数 + 耗时）
  */
-function assembleSessionStartOutput({ env, cwd, now, startMs }) {
+async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // 依赖全部函数体内 require（顶层零 require 纪律见文件头注）：任一模块
   // 缺失/损坏在 require 阶段即抛 → 上层 catch 统一 {} 降级
   const fs = require('node:fs');
@@ -86,7 +90,7 @@ function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   const { defaultModelRef } = require('./model-router');
   const { renderResourcesBlock } = require('./hook-inject');
   const { AgentMdResolver } = require('./agent-md-resolver');
-  const { listScriptNames } = require('./workflow-script');
+  const { listWorkflowNames } = require('./orchestration-host');
 
   // projectDir 解析链与 bin/zsw.js workflow 子命令同源：ZCODE_PROJECT_DIR > cwd
   const source = env.ZCODE_PROJECT_DIR ? 'env' : 'cwd';
@@ -98,9 +102,9 @@ function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
 
   const agents = new AgentMdResolver().list(projectDir);
-  // name-only 发现：绝不 require 脚本——脚本体顶层副作用（任意用户代码）
-  // 不得在会话启动的 hook 内联路径上触发，这正是 listScriptNames 的存在理由
-  const scripts = listScriptNames(projectDir);
+  // name-only 发现：不执行脚本体——listWorkflowNames 只 readdir/解析
+  // @pi-meta（core 发现面），用户代码顶层副作用不在此路径触发
+  const scripts = await listWorkflowNames(projectDir);
 
   const text = renderResourcesBlock({
     v2,
@@ -125,9 +129,11 @@ function assembleSessionStartOutput({ env, cwd, now, startMs }) {
 /**
  * 执行 SessionStart hook：组装资源快照并输出协议 JSON；异常降级 {}。
  * 恒不调 process.exit——入口自然退出即 exit 0（降级路径同样零非零退出）。
+ * async（core 发现面是异步 API）：入口（bin/zsw-hook.js / bin/zsw.js 的
+ * hook 子命令）负责 await 或 .then 收尾，异常在此内部消化不外抛。
  * 参数/IO 注入点见 resolveHookIO，装载与渲染见 assembleSessionStartOutput。
  */
-function runSessionStartHook(opts) {
+async function runSessionStartHook(opts) {
   const { env, cwd, out, err, now, startMs } = resolveHookIO(opts);
 
   // 嵌套守卫最前（守卫优先于一切 IO；嵌套下任何 hook 调用零开销退出）
@@ -137,7 +143,7 @@ function runSessionStartHook(opts) {
   }
 
   try {
-    const { protocolLine, diagLine } = assembleSessionStartOutput({ env, cwd, now, startMs });
+    const { protocolLine, diagLine } = await assembleSessionStartOutput({ env, cwd, now, startMs });
     out.write(protocolLine);
     err.write(diagLine);
   } catch (e) {

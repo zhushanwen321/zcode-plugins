@@ -2,8 +2,9 @@
 /**
  * 长驻并发槽位池（DESIGN-v3 D11）。
  *
- * 与 lib/pool.js 的 runWithLimit（一次性批处理）互补：本池长驻，
- * acquire/release 生命周期跟随 subagent 任务（start → done/cancel）。
+ * 仅服务 zsub start 线（回接 2b 起 workflow 线整体走 vendored subagent-core
+ * 编排，其并发自治；旧的一次性批处理辅助 lib/pool.js 已随旧 workflow 运行时
+ * 退役）。acquire/release 生命周期跟随 subagent 任务（start → done/cancel）。
  *
  * 深度分层：effectiveLimit = max(1, limit - depth)。
  * 学 pi（P4）防指数爆炸：嵌套 subagent 每深一层可用槽位少一个；

@@ -133,6 +133,23 @@ after(() => {
 
 // ---------------------------------------------------------- 缺省翻转 + probe 门控
 
+test('组装产物含 orchestration host（回接 2b）：六 action 面在场，与 zsub 线共用 runner', async () => {
+  delete process.env.ZSW_RUNNER;
+  process.env.ZSW_RUNNER = 'spawn'; // 显式回退：不 probe（零引擎，单测隔离）
+  try {
+    const a = await assembleManager();
+    assert.ok(a.wfHost, 'assembleManager 产物应含 wfHost（lib/orchestration-host）');
+    for (const method of ['run', 'runAndWait', 'abort', 'status', 'list', 'scripts', 'lint', 'recoverOrphans', 'shutdown']) {
+      assert.equal(typeof a.wfHost[method], 'function', `wfHost 缺 ${method}`);
+    }
+    // zsub 线不因 workflow 线换核而漂移：manager 面照旧
+    assert.equal(typeof a.manager.start, 'function');
+    assert.equal(a.runnerKind, 'spawn');
+  } finally {
+    delete process.env.ZSW_RUNNER;
+  }
+});
+
 test('缺省（无 ZSW_RUNNER）→ appserver（probe OK），ok 结论落盘缓存', async () => {
   delete process.env.ZSW_RUNNER;
   clearProbeCache();
@@ -540,11 +557,11 @@ test('MCP 投递面：标记存在时 tools/call 结果文本尾部追加提示�
     jsonrpc: '2.0', id: 1, method: 'tools/call',
     params: { name: 'zsub', arguments: { action: 'list' } },
   });
-  const bare = await call(createServer({ manager: null, wfManager: null, nested: false }));
+  const bare = await call(createServer({ manager: null, wfHost: null, nested: false }));
   assert.ok(!bare[0].result.content[0].text.includes('检测到 ZCode CLI 已更新'), '无标记不追加提示');
   // 构造标记（真机链路由 resolveRunnerKind 的 stale miss 落盘，此处直写同一事实源）
   writeUpgradeNotice(FAKE_CLI, fakeCliMtime());
-  const withNotice = await call(createServer({ manager: null, wfManager: null, nested: false }));
+  const withNotice = await call(createServer({ manager: null, wfHost: null, nested: false }));
   const text = withNotice[0].result.content[0].text;
   assert.ok(text.startsWith('zsub/zflow 工具面已下线'), '原结果文本保留在前（追加非替换）');
   assert.ok(text.includes('检测到 ZCode CLI 已更新'), '结果文本尾部出现升级提示');

@@ -32,7 +32,6 @@ const { renderResourcesBlock } = require('../lib/hook-inject');
 const ModelRouter = require('../lib/model-router');
 const { PROVIDER_ID, availableModels, splitModelRef, hasProviderCredentials } = ModelRouter;
 const { V2_CONFIG_PATH, CLI_CONFIG_PATH } = require('../lib/config');
-const { listScriptNames, listScripts } = require('../lib/workflow-script');
 
 const NOW = '2026-08-29T12:00:00+08:00';
 const BUILTINS = ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop'];
@@ -401,44 +400,53 @@ test('builtinWorkflows 缺省与 nowIso 缺省均不抛错', () => {
 });
 
 // ---------------------------------------------------------------------------
-// listScriptNames（修复 5）：name-only 发现，与 listScripts 名单交叉锚定
+// name-only 发现（回接 2b）：orchestration-host.listWorkflowNames 与发现面交叉锚定
 // ---------------------------------------------------------------------------
 
-test('listScriptNames 与 listScripts 名字集合一致（name-only 安全子集）且绝不 require 脚本', () => {
+test('listWorkflowNames 与 scripts() 发现面名单一致（name-only 安全子集）且绝不执行脚本', async () => {
+  const { listWorkflowNames, createOrchestrationHost } = require('../lib/orchestration-host');
   const ws = path.join(TMP, 'ws-scripts');
+  // core 契约脚本 fixture（@pi-meta 块）；bomb.js 顶层 throw——发现面若误执行
+  // 脚本体（require/eval）会直接炸测试，零执行行为锚
   const script = (name) =>
-    `'use strict';\nmodule.exports = { name: ${JSON.stringify(name)}, description: 'd', run: async () => ({ markdown: '' }) };\n`;
+    `/* @pi-meta\nname: ${JSON.stringify(name)}\ndescription: d\nphases: [run]\n*/\nawait agent({ prompt: 'x' });\n`;
   const mk = (dir, files) => {
     fs.mkdirSync(dir, { recursive: true });
     for (const [n, c] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), c);
   };
   mk(path.join(ws, '.agents', 'workflows'), {
-    'alpha.js': script('not-from-filename'), // 导出名 ≠ 文件名：证明 name 来源是文件名
+    // core 发现面以 @pi-meta name 为名单键（与旧 zsw「name 取文件名 stem」不同，
+    // 行为差异见 README 回接说明）——fixture meta name 与文件名保持一致
+    'alpha.js': script('alpha'),
     'beta.js': script('beta'),
-    'bomb.js': 'throw new Error("listScriptNames MUST NOT require scripts");\n',
+    'bomb.js': 'throw new Error("listWorkflowNames MUST NOT execute scripts");\n',
   });
-  mk(path.join(ws, '.zsw', 'workflows'), { 'alpha.js': script('low-priority-dup') }); // 同名低优先级根
-  mk(path.join(ANCHOR_HOME, '.agents', 'workflows'), { 'gamma.js': script('gamma') }); // HOME 侧根
+  mk(path.join(ws, '.zsw', 'workflows'), { 'delta.js': script('delta') }); // zsw workspace 特有根（host 手工扫）
+  mk(path.join(ANCHOR_HOME, '.agents', 'workflows'), { 'gamma.js': script('gamma') }); // HOME 侧根（core user-agents）
 
-  const names = listScriptNames(ws);
-  assert.deepEqual(names, ['alpha', 'beta', 'bomb', 'gamma'], '同名高优先级根胜出（去重）+ 按名排序');
-  assert.deepEqual(names, listScripts(ws).map((s) => s.name), '与 listScripts 名字集合一致（交叉锚定）');
-  assert.ok(!names.includes('not-from-filename'), 'name 来自文件名而非模块导出（与 listScripts 同语义）');
-  // listScriptNames 全程未 require bomb.js（否则 throw 直接炸测试）——零 require 行为锚
+  const names = await listWorkflowNames(ws);
+  for (const expected of ['alpha', 'beta', 'bomb', 'delta', 'gamma']) {
+    assert.ok(names.includes(expected), `名单缺 ${expected}: ${JSON.stringify(names)}`);
+  }
+  // 交叉锚定：name-only 与 host.scripts 的发现面同源
+  const host = createOrchestrationHost({ agentRunner: { async run() { return { content: '' }; } } });
+  const found = await host.scripts(ws);
+  assert.deepEqual(names.sort(), found.scripts.map((s) => s.name).sort(), '与 scripts() 发现面名单一致（交叉锚定）');
 });
 
-test('listScriptNames：四根全不存在时空数组；cwd 缺失抛可操作错误', () => {
+test('listWorkflowNames：发现根全不存在时空数组', async () => {
+  const { listWorkflowNames } = require('../lib/orchestration-host');
   const ws = path.join(TMP, 'ws-empty');
   const emptyHome = path.join(TMP, 'empty-home'); // 避开锚定用例写入 HOME 侧根的 fixture
   fs.mkdirSync(ws, { recursive: true });
   fs.mkdirSync(emptyHome, { recursive: true });
   const prev = process.env.HOME;
-  process.env.HOME = emptyHome; // scriptRoots 运行时读 $HOME（os.homedir 不缓存）
+  process.env.HOME = emptyHome; // 发现根运行时读 $HOME（os.homedir 不缓存）
   try {
-    assert.deepEqual(listScriptNames(ws), []);
+    const { invalidateCache } = require('../lib/core-ref').requireCore();
+    invalidateCache(); // 清 discover 缓存，防上一用例 fixture 残留命中
+    assert.deepEqual(await listWorkflowNames(ws), []);
   } finally {
     process.env.HOME = prev;
   }
-  assert.throws(() => listScriptNames(''), /需要 cwd/);
-  assert.throws(() => listScriptNames(undefined), /需要 cwd/);
 });

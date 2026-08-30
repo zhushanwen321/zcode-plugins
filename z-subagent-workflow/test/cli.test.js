@@ -226,19 +226,23 @@ test('workflow --action lint 缺 --file → exit 1', async () => {
   assert.match(r.stderr, /--file/);
 });
 
-test('workflow --action lint 对合法脚本 → exit 0 + ok JSON', async () => {
+test('workflow --action lint 对合法脚本 → exit 0 + valid JSON（core lintScript）', async () => {
+  // core 契约好脚本：@pi-meta 块 + agent() 入口（lint 的两项硬检查）
   const f = path.join(TMP, 'wf-ok.js');
-  fs.writeFileSync(f, `'use strict';
-module.exports = {
-  name: 'demo',
-  description: '演示脚本',
-  async run() { return { final: 'done' }; },
-};
+  fs.writeFileSync(f, `/* @pi-meta
+name: demo
+description: 演示脚本
+phases: [run]
+*/
+await agent({ prompt: 'x' });
+return { final: 'done' };
 `);
   const r = await run(['workflow', '--action', 'lint', '--file', f]);
   assert.equal(r.code, 0);
   const j = JSON.parse(r.stdout);
-  assert.equal(j.ok, true);
+  assert.equal(j.valid, true);
+  // 无 error 级 finding（warning 级如 agent() 缺 description 允许存在）
+  assert.ok(!j.findings.some((x) => x.severity === 'error'), JSON.stringify(j.findings));
 });
 
 // ------------------------------------------------- F4 能力增量 flag（D5/D6）
@@ -288,41 +292,46 @@ test('F4 flag 黑盒：合法档位值不触发缺值 warn', async () => {
   assert.match(r.stderr, /daemon 未运行/); // 仍走 daemon 报错路径（本测试不跑引擎）
 });
 
-// ---------------------------------- review-fix-loop v2 CLI 冒烟（零引擎）
+// ---------------------------------- workflow CLI 参数透传冒烟（零引擎，core 契约）
 
-// 探针脚本（模块顶层创建，发现根 = ZCODE_PROJECT_DIR = TMP；清理走文件级
-// after 的 TMP 整删）：run(ctx) 把收到的 ctx.params 塞进返回 json——manager
-// 剥壳后原样透传给脚本 ctx.params，CLI 组参形态（batchN 数组、透传键）由此
-// 端到端断言；脚本不调 runAgent，全程零引擎 spawn。
+// 探针脚本（模块顶层创建，发现根 = TMP/.agents/workflows = core 发现面的
+// project-agents 根；清理走文件级 after 的 TMP 整删）：core worker 契约，
+// $ARGS 原样塞进 scriptResult——host 剥壳后组进 $ARGS 的 CLI 组参形态
+// （batchN 数组、透传键）由此端到端断言。agent() 调用挂在 $ARGS.callAgent
+// 条件下：满足 lint 静态检查（必须含 agent() 入口）但运行时不触发，
+// 全程零引擎 spawn。
 const WF_DIR = path.join(TMP, '.agents', 'workflows');
 fs.mkdirSync(WF_DIR, { recursive: true });
-fs.writeFileSync(path.join(WF_DIR, 'params-probe.js'), `'use strict';
-module.exports = {
-  name: 'params-probe',
-  description: '测试探针：回显收到的 params',
-  async run(ctx) { return { markdown: 'probe', json: { params: ctx.params } }; },
-};
+fs.writeFileSync(path.join(WF_DIR, 'params-probe.js'), `/* @pi-meta
+name: params-probe
+description: 测试探针回显 $ARGS
+phases: [run]
+*/
+if ($ARGS.callAgent === true) {
+  await agent({ prompt: 'probe' });
+}
+return { status: 'ok', params: $ARGS };
 `);
 
-/** 从 CLI 默认输出（markdown 报告 + 摘要两段）提取脚本返回的 ```json 机器段。 */
+/** 从 CLI 默认输出（markdown 报告 + 摘要两段）提取 scriptResult 的 ```json 机器段。 */
 function probeParams(stdout) {
   const fenced = stdout.match(/```json\n([\s\S]*?)\n```/);
-  assert.ok(fenced, '报告应含 ```json 机器段（脚本返回的 json）');
+  assert.ok(fenced, '报告应含 ```json 机器段（scriptResult 的非 message 字段）');
   return JSON.parse(fenced[1]).params;
 }
 
-test('v2 冒烟：batchN csv 转数组抵达入口参数（防透传覆写回归）', async () => {
+test('冒烟：batchN csv 转数组抵达 $ARGS（防透传覆写回归）', async () => {
   const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
     '--workdir', TMP, '--batch1', 'correctness,robustness', '--batch2', 'security']);
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   const params = probeParams(r.stdout);
-  // 修复前：batchN 循环先 csv 成数组，透传循环又用原始字符串覆写回 params——
+  // 修复前（旧线）：batchN 循环先 csv 成数组，透传循环又用原始字符串覆写——
   // 数组形态永远到不了入口。deepEqual 数组同时排除字符串形态回归。
   assert.deepEqual(params.batch1, ['correctness', 'robustness']);
   assert.deepEqual(params.batch2, ['security']);
 });
 
-test('v2 冒烟：未映射 flag 原样透传抵达入口参数（白名单可见面）', async () => {
+test('冒烟：未映射 flag 原样透传抵达 $ARGS（script: 形态无白名单）', async () => {
   const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
     '--workdir', TMP, '--totally-unknown-flag', 'x']);
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
@@ -330,14 +339,17 @@ test('v2 冒烟：未映射 flag 原样透传抵达入口参数（白名单可�
   assert.equal(params.totallyUnknownFlag, 'x'); // parseArgs camelCase 化后透传
 });
 
-test('v2 冒烟：透传的未知键被 review-fix-loop 入口白名单拒绝（exit 1 + 可操作文案）', async () => {
-  // 拼错 flag（--stuck-threshld）不在 CLI 映射面 → 原样透传 → 入口
-  // normalizeParams 白名单报错（先于一切引擎派发，零 spawn 快速失败）
+test('冒烟：内置 workflow 的未知键被 host 前置拦截（stderr warning + 不进 $ARGS）', async () => {
+  // 零引擎约束：--target-type bogus 让 review-fix-loop 资产在 agent() 派发前
+  // fail-fast（TARGET_TYPES 枚举校验），杜绝真实引擎 spawn；拼错 flag
+  // （--stuck-threshld）不在 CLI 映射面 → 透传 → host normalizeRunParams 对
+  // 内置形态出显式 warning（旧线入口白名单报错的等价承接面：不静默丢弃、
+  // 指认实际键名）
   const r = await run(['workflow', '--workflow', 'review-fix-loop', '--task', '白名单冒烟',
-    '--workdir', TMP, '--batch1', 'correctness', '--stuck-threshld', '2']);
-  assert.equal(r.code, 1);
-  assert.match(r.stdout, /收到未知参数/); // 报错文案随 error 报告落 stdout 双段
-  assert.match(r.stdout, /stuckThreshld/); // 指向透传后的实际键名（可操作）
+    '--workdir', TMP, '--target-type', 'bogus', '--batch1', 'x', '--stuck-threshld', '2']);
+  assert.equal(r.code, 1); // 资产 fail-fast（reason=failed）
+  assert.match(r.stderr, /stuckThreshld/); // warning 指向透传后的实际键名（可操作）
+  assert.match(r.stderr, /不被内置 workflow "review-fix-loop" 消费/);
 });
 
 // ------------------------------------------- F-A7：--local 嵌套盲区（MF2 补洞）

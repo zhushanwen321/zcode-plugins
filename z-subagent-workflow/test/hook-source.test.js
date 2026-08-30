@@ -7,6 +7,8 @@
  * 未执行——marker 探针，name-only 发现的核心回归）、成功可观测性 stderr 行、
  * projectDir env/cwd 双来源。
  *
+ * 回接 2b：runSessionStartHook 已 async 化（core 发现面异步）——测试统一
+ * await。脚本 fixture 改 core 契约（@pi-meta 块）仍验 name-only 语义。
  * HOME 隔离：本文件在任何 ../lib/* require 之前把 process.env.HOME 指到
  * fixture——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 与 agent-md-resolver
  * 的 defaultResolver homeDir 都在模块加载期经 os.homedir()（POSIX 读 $HOME）
@@ -42,21 +44,22 @@ fs.writeFileSync(
   '---\nname: proj-agent\ndescription: 项目级探针 agent\n---\n\nbody\n',
 );
 
-// 脚本 fixture：顶层代码写 marker——若 hook 链路误用 require 版发现
-// （listScripts 会 freshRequire 每个脚本读 description），marker 出现即失败；
-// name-only（listScriptNames）则永不触发
+// 脚本 fixture（core 契约形态，@pi-meta 块 + top-level）：顶层代码写 marker——
+// 若 hook 链路误用 require 版发现（执行脚本体），marker 出现即失败；
+// name-only（core discoverWorkflows 只 parse @pi-meta + 手工根 readdir）则永不触发
 fs.writeFileSync(
   path.join(PROJECT, '.zsw', 'workflows', 'probe-script.js'),
-  `const fs = require('node:fs');\n`
+  `/* @pi-meta\nname: probe-script\ndescription: x\nphases: [run]\n*/\n`
+  + `const fs = require('node:fs');\n`
   + `fs.writeFileSync(${JSON.stringify(MARKER)}, 'executed');\n`
-  + `module.exports = { name: 'probe-script', description: 'x', run: async () => ({ markdown: '' }) };\n`,
+  + `await agent({ prompt: 'x' });\n`,
 );
 
 /** 注入式执行：env 纯对象起底（不继承宿主，防外部 env 漏入），stdout/stderr 捕获，时钟固定。 */
-function runHook({ env = {}, cwd = PROJECT } = {}) {
+async function runHook({ env = {}, cwd = PROJECT } = {}) {
   const outChunks = [];
   const errChunks = [];
-  runSessionStartHook({
+  await runSessionStartHook({
     env,
     cwd,
     stdout: { write: (s) => outChunks.push(s) },
@@ -72,8 +75,8 @@ after(() => {
 
 // ---------------------------------------------------- 嵌套守卫（P-nested 同款）
 
-test('ZSW_NESTED=1 → stdout 单行 {} 且零诊断（守卫最前，零 IO 退出）', () => {
-  const r = runHook({ env: { ZSW_NESTED: '1' } });
+test('ZSW_NESTED=1 → stdout 单行 {} 且零诊断（守卫最前，零 IO 退出）', async () => {
+  const r = await runHook({ env: { ZSW_NESTED: '1' } });
   assert.deepEqual(JSON.parse(r.out), {});
   assert.equal(r.out, '{}\n');
   assert.equal(r.err, '', '嵌套守卫零开销：不得产生任何 stderr 诊断');
@@ -82,8 +85,8 @@ test('ZSW_NESTED=1 → stdout 单行 {} 且零诊断（守卫最前，零 IO 退
 
 // ------------------------------- v2 config 缺失降级（此时 fixture 尚无 v2 config）
 
-test('v2 config 缺失 → {} + stderr 一行 [zsw:hook] 诊断', () => {
-  const r = runHook();
+test('v2 config 缺失 → {} + stderr 一行 [zsw:hook] 诊断', async () => {
+  const r = await runHook();
   assert.deepEqual(JSON.parse(r.out), {});
   assert.match(r.err, /^\[zsw:hook\] .+\n$/);
 });
@@ -113,8 +116,8 @@ test('setup：fixture HOME 写入 v2/cli config（后续用例转入配置齐备
 
 // ---------------------------------------------------- 正常路径（协议 + 快照）
 
-test('正常路径 → 严格单行协议 JSON：agent/脚本/内置名在场，脚本顶层未执行', () => {
-  const r = runHook();
+test('正常路径 → 严格单行协议 JSON：agent/脚本/内置名在场，脚本顶层未执行', async () => {
+  const r = await runHook();
   // stdout 纯协议：严格单行 JSON（唯一换行在末尾）
   assert.equal(r.out.indexOf('\n'), r.out.length - 1);
   const parsed = JSON.parse(r.out);
@@ -139,15 +142,15 @@ test('正常路径 → 严格单行协议 JSON：agent/脚本/内置名在场，
 
 // ---------------------------------------------------- projectDir 双来源
 
-test('ZCODE_PROJECT_DIR 设置 → source=env，agent 从 env 的 projectDir 发现', () => {
-  const r = runHook({ env: { ZCODE_PROJECT_DIR: PROJECT }, cwd: TMP }); // cwd 下无 agent
+test('ZCODE_PROJECT_DIR 设置 → source=env，agent 从 env 的 projectDir 发现', async () => {
+  const r = await runHook({ env: { ZCODE_PROJECT_DIR: PROJECT }, cwd: TMP }); // cwd 下无 agent
   const ctx = JSON.parse(r.out).hookSpecificOutput.additionalContext;
   assert.ok(ctx.includes('proj-agent'), 'agent 名只能来自 ZCODE_PROJECT_DIR 的发现');
   assert.ok(r.err.includes(`projectDir=${PROJECT} source=env `), `stderr 实际: ${r.err}`);
 });
 
-test('ZCODE_PROJECT_DIR 未设 → source=cwd，projectDir 回退注入的 cwd', () => {
-  const r = runHook({ cwd: PROJECT }); // env 无 ZCODE_PROJECT_DIR
+test('ZCODE_PROJECT_DIR 未设 → source=cwd，projectDir 回退注入的 cwd', async () => {
+  const r = await runHook({ cwd: PROJECT }); // env 无 ZCODE_PROJECT_DIR
   const ctx = JSON.parse(r.out).hookSpecificOutput.additionalContext;
   assert.ok(ctx.includes('proj-agent'), 'agent 名来自回退 cwd 的发现');
   assert.ok(r.err.includes(`projectDir=${PROJECT} source=cwd`), `stderr 实际: ${r.err}`);
@@ -155,12 +158,12 @@ test('ZCODE_PROJECT_DIR 未设 → source=cwd，projectDir 回退注入的 cwd',
 
 // ---------------------------------------------------- v2 坏 JSON 降级
 
-test('v2 config 坏 JSON → 整体降级 {} + 诊断（跑后恢复 fixture）', () => {
+test('v2 config 坏 JSON → 整体降级 {} + 诊断（跑后恢复 fixture）', async () => {
   const p = path.join(HOME, '.zcode', 'v2', 'config.json');
   const good = fs.readFileSync(p, 'utf8');
   fs.writeFileSync(p, '{broken');
   try {
-    const r = runHook();
+    const r = await runHook();
     assert.deepEqual(JSON.parse(r.out), {});
     assert.match(r.err, /^\[zsw:hook\] .+\n$/);
   } finally {
@@ -170,22 +173,15 @@ test('v2 config 坏 JSON → 整体降级 {} + 诊断（跑后恢复 fixture）'
 
 // ---------------------------------------------------- 内置五名权威源锚定
 
-test('BUILTIN_WORKFLOW_NAMES 与 workflow-manager 内置注册键集相等（第三副本防漂移锚）', () => {
-  // 权威源：lib/workflow-manager 的 defaultWorkflows() 键集（未导出）。可访问
-  // 等价结构 = WorkflowManager 缺省装配产物 this.workflows（构造器 opts.workflows
-  // 缺省时即 defaultWorkflows()）。限制：若 defaultWorkflows 改名/删除或缺省
-  // 装配形态变化，本用例需随之更新。测试期 require 全依赖树无碍——刻意不
-  // 从 workflow-manager require 的是运行时 hook 链路（降级面，见 hook-source.js
-  // 头注），非测试进程。
-  const { WorkflowManager } = require('../lib/workflow-manager');
-  const manager = new WorkflowManager({
-    records: {},
-    outputs: {},
-    notifier: { capabilities: () => ({ mode: 'mailbox' }) },
-  });
+test('BUILTIN_WORKFLOW_NAMES 与 orchestration-host 内置集合相等（第三副本防漂移锚）', () => {
+  // 权威源：lib/orchestration-host 的 BUILTIN_WORKFLOW_NAMES（= vendored core
+  // workflows/ 资产 stem）。hook-source 刻意持静态名单（不 require host——
+  // 那会把 core-ref → vendored bundle 拉进 hook 链路，扩大降级面），测试
+  // 进程里 require 对照防两份名单漂移。
+  const { BUILTIN_WORKFLOW_NAMES: HOST_NAMES } = require('../lib/orchestration-host');
   assert.deepEqual(
     [...BUILTIN_WORKFLOW_NAMES].sort(),
-    Object.keys(manager.workflows).sort(),
-    'hook 注入块的内置 workflow 名单必须与 workflow 引擎实际注册的内置集合一致',
+    [...HOST_NAMES].sort(),
+    'hook 注入块的内置 workflow 名单必须与编排宿主实际注册的内置集合一致',
   );
 });

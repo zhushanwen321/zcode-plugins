@@ -1,0 +1,215 @@
+'use strict';
+/**
+ * agent-runner-adapter 单测（回接 2b）。
+ *
+ * 承接已删除的 test/workflow-apc.test.js 的核心断言面（旧 workflow 入口
+ * 函数的 apc 翻转面测试随入口退役；「agent() 调用经 zsw RunnerPort」的
+ * 契约现在钉在这里）：
+ * - 三行范式 taskCtx 契约：runner.start 收到 {prompt, cwd, modelRef, runEnv,
+ *   timeoutMs}（runEnv 为通道对应形态）；
+ * - 各调用 done 后 release 被调（D2 全终态释放）；
+ * - 运行中 abort → handle.cancel 被调；
+ * - AgentResult 映射：closed → content/parsedOutput（schema 经 jsonout 提取）
+ *   /usage（snake_case → camelCase）；非 closed → error 携带；
+ * - agent .md 解析链：opts.agent → resolver.resolve（找不到抛可操作错误）。
+ *
+ * 隔离：fake zsw RunnerPort + fake ModelRouter，零引擎零真实 HOME。
+ */
+
+const test = require('node:test');
+const { after } = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
+
+const { createAgentRunnerAdapter } = require('../lib/agent-runner-adapter');
+
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-adapter-'));
+const WORKDIR = path.join(TMP, 'workdir');
+fs.mkdirSync(WORKDIR, { recursive: true });
+
+/** fake zsw RunnerPort：可编程结果 / cancel 记录 / release 记录。 */
+function makeFakeZswRunner({ result, kind = 'appserver', hold = false } = {}) {
+  const state = { starts: [], cancels: 0, releases: [] };
+  return {
+    state,
+    capabilities: () => ({ kind, steering: 'none', coldStartMs: 100 }),
+    start(taskCtx) {
+      state.starts.push(taskCtx);
+      let cancelled = false;
+      const done = hold
+        ? new Promise((resolve) => {
+          const onAbort = () => { cancelled = true; resolve({ status: 'cancelled', response: null }); };
+          // hold 形态由 adapter 的 signal 触发 cancel 后由本 fake 自行终态化
+          setImmediate(() => { /* 挂住直到 cancel */ });
+          state._onCancel = onAbort;
+        })
+        : Promise.resolve(result || { status: 'closed', response: 'ok', usage: { input_tokens: 3, output_tokens: 5 }, sessionId: 'sess-1' });
+      return {
+        exec: { kind, sessionId: 'sess-1' },
+        cancel: () => { state.cancels += 1; if (state._onCancel) state._onCancel(); },
+        done,
+      };
+    },
+    release(exec) {
+      state.releases.push(exec);
+      return Promise.resolve();
+    },
+  };
+}
+
+/** fake ModelRouter：resolve 固定值 + prepareRunEnv 按通道出对应形态。 */
+function makeFakeRouter(modelRef = 'prov/model-x') {
+  const calls = [];
+  return {
+    calls,
+    resolve: (requested, agentDefault) => {
+      calls.push({ requested, agentDefault });
+      return requested || agentDefault || modelRef;
+    },
+    prepareRunEnv: async (ref, kind, sessionOpts) => {
+      calls.push({ ref, kind, sessionOpts });
+      if (kind === 'appserver') return { createParams: { model: ref, ...(sessionOpts && sessionOpts.thinking ? { thoughtLevel: sessionOpts.thinking } : {}) } };
+      return { env: { HOME: path.join(TMP, 'home-pool'), ZSW_NESTED: '1' } };
+    },
+  };
+}
+
+function makeAdapter(runner, router, resolver) {
+  return createAgentRunnerAdapter({
+    runner: runner || makeFakeZswRunner(),
+    modelRouter: router || makeFakeRouter(),
+    resolver,
+    fallbackCwd: WORKDIR,
+  });
+}
+
+test('三行范式 taskCtx 契约：start 收到 prompt/cwd/modelRef/runEnv/timeoutMs，done 后 release', async () => {
+  const runner = makeFakeZswRunner();
+  const router = makeFakeRouter();
+  const adapter = makeAdapter(runner, router);
+  const signal = new AbortController().signal;
+
+  const r = await adapter.run({
+    prompt: '任务书',
+    model: 'prov/model-y',
+    timeoutMs: 65000,
+    thinkingLevel: 'high',
+  }, signal);
+
+  // ① capabilities 阶段级重读 → ② prepareRunEnv（thinking 进 sessionOpts）
+  // → ③ start（最小 taskCtx 子集）
+  assert.equal(runner.state.starts.length, 1);
+  const ctx = runner.state.starts[0];
+  assert.ok(ctx.prompt.includes('任务书'));
+  assert.equal(ctx.cwd, WORKDIR, 'opts.cwd 缺省回落 fallbackCwd（= run 的 workdir）');
+  assert.equal(ctx.modelRef, 'prov/model-y');
+  assert.ok(ctx.runEnv.createParams && ctx.runEnv.createParams.thoughtLevel === 'high');
+  assert.equal(ctx.timeoutMs, 65000);
+  // D2：done 落定后一次性会话释放（成功态也释放）
+  assert.equal(runner.state.releases.length, 1);
+  assert.equal(runner.state.releases[0].kind, 'appserver');
+  // 结果映射
+  assert.equal(r.content, 'ok');
+  assert.equal(r.error, undefined);
+  assert.equal(r.sessionId, 'sess-1');
+  assert.deepEqual(r.usage, { input: 3, output: 5, cacheRead: undefined, cacheWrite: undefined, turns: undefined });
+});
+
+test('schema → parsedOutput（jsonout 提取）；opts.cwd 覆盖 fallback', async () => {
+  const runner = makeFakeZswRunner({
+    result: { status: 'closed', response: '前缀垃圾 {"insights":"i"} 尾部', usage: null },
+  });
+  const adapter = makeAdapter(runner);
+  const r = await adapter.run({
+    prompt: 'p',
+    schema: { type: 'object' },
+    cwd: '/custom/cwd',
+  }, undefined);
+  assert.deepEqual(r.parsedOutput, { insights: 'i' });
+  assert.equal(runner.state.starts[0].cwd, '/custom/cwd');
+  // 无 schema 不提取（core 语义：schema 提供且可解析才有 parsedOutput）
+  const r2 = await adapter.run({ prompt: 'p', cwd: '/x' }, undefined);
+  assert.equal(r2.parsedOutput, undefined);
+});
+
+test('非 closed 终态 → AgentResult.error 携带（core 据此判 call 失败）', async () => {
+  const runner = makeFakeZswRunner({ result: { status: 'error', error: '引擎崩了' } });
+  const adapter = makeAdapter(runner);
+  const r = await adapter.run({ prompt: 'p' }, undefined);
+  assert.equal(r.content, '');
+  assert.equal(r.error, '引擎崩了');
+  assert.equal(r.usage, undefined);
+  assert.equal(runner.state.releases.length, 1, '失败态同样释放');
+});
+
+test('运行中 abort → handle.cancel 被调 + listener 摘除；启动前 abort → AbortError', async () => {
+  const runner = makeFakeZswRunner({ hold: true });
+  const adapter = makeAdapter(runner);
+  const ctl = new AbortController();
+  const p = adapter.run({ prompt: 'p' }, ctl.signal);
+  // 等 start 已发生（prepareRunEnv 是 await 点，直接同步 abort 会命中启动前
+  // 预检的双检查窗口——那是 pre-abort 语义，不是本用例对象）
+  await new Promise((r) => setImmediate(r));
+  assert.equal(runner.state.starts.length, 1, 'run 已进入执行段');
+  ctl.abort();
+  const r = await p;
+  assert.equal(runner.state.cancels, 1, 'abort 传播到 handle.cancel');
+  assert.equal(r.error.includes('cancelled'), true);
+
+  // pre-abort：不做环境准备直接 AbortError（name 判定是 core 预检分支契约）
+  const ctl2 = new AbortController();
+  ctl2.abort();
+  await assert.rejects(
+    adapter.run({ prompt: 'p' }, ctl2.signal),
+    (e) => e.name === 'AbortError',
+  );
+  assert.equal(runner.state.starts.length, 1, 'pre-abort 不触发第二次 start');
+});
+
+test('opts.agent → resolver.resolve（prompt 拼角色段）；找不到抛可操作错误', async () => {
+  const profile = {
+    name: 'reviewer',
+    body: '你是审查员',
+    model: 'prov/agent-model',
+    skills: ['/sk/a.md'],
+    disallowedTools: ['Bash'],
+  };
+  const resolver = {
+    resolve: (ref, cwd) => (ref === 'reviewer' ? { ...profile, filePath: '/a/reviewer.md' } : null),
+  };
+  const runner = makeFakeZswRunner();
+  const router = makeFakeRouter();
+  const adapter = makeAdapter(runner, router, resolver);
+
+  const r = await adapter.run({ prompt: 'p', agent: 'reviewer' }, undefined);
+  assert.ok(runner.state.starts[0].prompt.includes('你是审查员'), 'agent .md 正文拼进 prompt');
+  assert.equal(runner.state.starts[0].modelRef, 'prov/agent-model', '模型解析链 requested > agent frontmatter');
+  assert.deepEqual(runner.state.starts[0].disallowedTools, ['Bash'], 'frontmatter 工具黑名单透传');
+  assert.equal(r.content, 'ok');
+
+  await assert.rejects(
+    adapter.run({ prompt: 'p', agent: 'nope' }, undefined),
+    /未找到/,
+  );
+});
+
+test('spawn 通道：runEnv 为 {env} 形态（capabilities 分流）', async () => {
+  const runner = makeFakeZswRunner({ kind: 'spawn' });
+  const router = makeFakeRouter();
+  const adapter = makeAdapter(runner, router);
+  await adapter.run({ prompt: 'p' }, undefined);
+  const ctx = runner.state.starts[0];
+  assert.ok(ctx.runEnv.env && ctx.runEnv.env.ZSW_NESTED === '1');
+  assert.equal(ctx.runEnv.createParams, undefined);
+});
+
+test('opts.prompt 必填校验（可操作错误）', async () => {
+  const adapter = makeAdapter();
+  await assert.rejects(adapter.run({}, undefined), /opts.prompt 必填/);
+});
+
+after(() => {
+  try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
+});

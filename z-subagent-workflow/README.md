@@ -2,7 +2,7 @@
 
 > 两条能力线，1.0.0 起统一走 CLI（`node bin/zsw.js`，默认连常驻 daemon thin client；MCP 工具面已下线——tools/list 恒空、tools/call 指引走 CLI）：
 > **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **zflow** — 确定性多阶段编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop）+ 自定义 `script:<名>` 脚本扩展；run 同步阻塞出报告（配 Bash run_in_background 即完成原生唤醒）。review-fix-loop v2 内置质量内核：LLM 聚合裁决（审查噪声降级不进修复队列）+ 跨轮 ID 对账 + 批次依赖 + 收敛/needs-redesign 状态机 + state 落盘（过程可观测）。自 dynamic-workflow v0.2.0 移植并入（原插件已卸载，本插件是唯一一套）。
+> **zflow** — 确定性多步编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）。回接 2b 起 workflow 运行时整体替换为 vendored `@zhushanwen/subagent-core` orchestration：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop，资产来自 core `workflows/`）+ core 契约 `script:<名>` 脚本扩展（`@pi-meta` + top-level `agent()`）；run 同步阻塞出 scriptResult（配 Bash run_in_background 即完成原生唤醒）。**本替换是行为 break——旧契约/旧状态面的迁移对照见「回接 2b break 变更」节。**
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
@@ -12,14 +12,15 @@
          （tools/list 恒空、tools/call 恒拒并指引走 CLI；zsub 九 action / zflow 六 action
           保留为语义层名，见 CONTEXT.md）
 编排层   SubagentManager（subagent 生命周期，只依赖 lib/ports.js 契约）
-         WorkflowManager（workflow run 生命周期，共享 records/outputs/notifier）
-         lib/workflow/（内置 5 种确定性管线）+ workflow-script（自定义脚本四根发现/执行/校验）
+         orchestration-host（workflow 编排宿主 = vendored subagent-core orchestration：
+         configureCore 宿主端口 + FileRunStore + WorkerHostImpl + registry 内置资产注册，
+         AgentRunner port 经 lib/agent-runner-adapter.js 桥回 zsw RunnerPort）
 端口层   RunnerPort        NotifierPort        ModelRouterPort
           ├ SpawnRunner      ├ MailboxNotifier    ├ home-pool（spawn 配套）
           └ AppServerRunner  └ PollingNotifier    └ per-session（apc 配套）
 域层     resolver / prompt-builder / record-store / output-store / worktree / jsonout
-         workflow/: run-phase（共享执行辅助）+ chain/parallel/map-reduce/
-                    scatter-gather/review-fix-loop + report
+         vendored core（lib/vendor/subagent-core/）：runWorkflow/lifecycle/error-recovery
+         + workflows/ 内置 5 资产（chain/parallel/map-reduce/scatter-gather/review-fix-loop）
 ```
 
 三个决策位（执行引擎 / 回流通道 / 入口形态）正交且各自可换——更换实现不动 manager。执行引擎缺省 appserver（D1 翻转；`ZSW_RUNNER=spawn` 显式回退），平台版本漂移被限制在端口实现内部消化（`interpretEvent` 等单点防洪堤）。
@@ -45,52 +46,64 @@ node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   #
 node bin/zsw.js cancel --id sa-xxxx
 ```
 
-workflow 管理面（zflow 面六 action 的 CLI 入口；record/outputs 同源。abort/status/list/scripts 默认经 daemon——跨进程 record 一致、abort 经 daemon 句柄真停 daemon 侧 run；run/lint 恒本地）：
+workflow 管理面（zflow 面六 action 的 CLI 入口；状态面 = `<zsw 数据根>/workflow-state/`。abort/status/list/scripts 默认经 daemon——跨进程状态一致、abort 经 daemon 侧 core `abortRun` 真停 run；run/lint 恒本地）：
 
 ```bash
 # run（--action 缺省；恒本地同步执行，执行体 = CLI 进程，跑到终态退出并打报告。
-# 阶段默认走常驻引擎通道（apc），一次性进程每 run 付一次引擎惰性启动 ~1-2s；
-# 中止 = 进程级（Ctrl-C 时引擎随亡），详见「已知边界」。
+# agent() 调用默认走常驻引擎通道（apc），一次性进程每 run 付一次引擎惰性启动 ~1-2s。
 # 需要「派发后做别的、完成唤醒」时用 Bash run_in_background 包裹整条命令，CLI 退出即引擎原生通知）
 node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
-node bin/zsw.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # 自定义脚本
+node bin/zsw.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # core 契约脚本
 
 # abort / status / list / scripts / lint
 node bin/zsw.js workflow --action list
 node bin/zsw.js workflow --action status --id wf-xxxxxxxx
 node bin/zsw.js workflow --action abort --id wf-xxxxxxxx
-node bin/zsw.js workflow --action scripts          # 内置 5 + 自定义脚本清单
+node bin/zsw.js workflow --action scripts          # vendored 内置 5 + 用户脚本清单
 node bin/zsw.js workflow --action lint --file <脚本路径>
 ```
 
-**review-fix-loop v2（批次外环 + 质量内核）**：唯一会写文件的内置 workflow（fix 阶段）。批次外环：`--batch1..--batchN` 串行，前一批 clean 后一批才启动，跨批 clean 且无 fix 的维度自动跳过。每轮并行 review → LLM 聚合裁决（臆测/无证据条目降级，不进修复队列）→ 结构化契约 fix → R2 起逐条 ID 对账（fixed/not-fixed/regressed）→ 收敛/needs-redesign 状态机；全程 state 落盘 `~/.zcode/zsw/rfl/<runId>/state.json`（每轮发生了什么、为什么终止可查证）。
+**review-fix-loop（批次外环 + 质量内核，资产来自 core）**：唯一会写文件的内置 workflow（fix 阶段）。批次外环：`--batch1..--batchN` 串行（**值 = agent .md 绝对路径**，逗号分隔多 agent），前一批 clean 后一批才启动。每轮并行 review → LLM 聚合裁决（臆测/无证据条目降级，不进修复队列）→ 结构化契约 fix → R2 起逐条 ID 对账（fixed/not-fixed/regressed）→ 收敛/needs-redesign 状态机；run 目录由 core 资产自管（`~/.review-fix-loop/<repo-slug>/<runId>/`，含 state.json 与各轮报告）。
 
 ```bash
 node bin/zsw.js workflow --workflow review-fix-loop \
   --task "审查 PR：重构 auth 中间件" --workdir <绝对路径> \
   --target-type git-diff --target main \
-  --batch1 "correctness,security" --batch2 "robustness,performance" \
+  --batch1 "/abs/path/correctness-reviewer.md,/abs/path/security-reviewer.md" \
   --stuck-threshold 3 --aggregator-model <模型短名>
 ```
 
-参数面全集见 `node bin/zsw.js workflow --help`（`--target-type`/`--target`、`--batch1..N`/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--reviewers` 等价单批 sugar（无 batchN 时包装为 `[reviewers]`）；`--review-target <text>` 等价 `--target-type text --target <text>`；target 系全缺省 = text / "git 未提交改动"。
+参数面全集见 `node bin/zsw.js workflow --help`（`--target-type`/`--target`（必填）、`--batch1..N`（agent .md 路径）/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--review-target <text>` 等价 `--target-type text --target <text>`；`--task` 在 review-fix-loop 场景作为 target 回退。**`--reviewers`（自由文本维度）已废弃**——core 契约批次值 = agent .md 路径，传入显式报错；无 agent .md 的自由文本维度场景改用 `script:` 自定义脚本。
 
-v1→v2 行为差异（老参数调用者需知：参数兼容、语义刻意对齐 pi，非回归；完整清单见源仓库（github.com/zhushanwen321/zcode-plugins）根 `docs/design/zsw-review-fix-loop-v2-design.md` §4.1）：
-
-| # | 差异 | v1 | v2 |
-|---|------|----|----|
-| 1 | reviewer 失败容忍 | 部分失败容忍（parseFail 按 clean 并告警） | 任一 reviewer 无效即 review-failed 结构化终止 |
-| 2 | max-rounds 默认 | 5 | 10 |
-| 3 | stuck-threshold | 硬编码 2、不可调 | 默认 3、`--stuck-threshold` 可调 |
-| 4 | 修复范围 | 仅 must-fix，minor 不阻塞收敛 | 全等级修复，成功类终止要求 suggestion 归零 |
-| 5 | 修复者输出 | 自由 markdown | 结构化契约（fixes/deferred 硬校验，违规 fix-failed） |
-| 6 | 聚合 | JS 标题去重 | LLM 聚合裁决优先，JS 降级链兜底 |
-
-**自定义 workflow 脚本**：内置 5 种之外的编排用 `script:<名>` 扩展。脚本按四根发现（`<ws>/.agents/workflows` > `<ws>/.zsw/workflows` > `~/.agents/workflows` > `~/.zsw/workflows`，只扫顶层 `*.js`），契约 `{name, description, run(ctx)}`；`ctx.runAgent({...})` 每次 = 一个独立无头 zcode 阶段（与内置阶段同一执行落点），返回 `{markdown, json}` 双段报告。完整契约与示例见 skill `zsub-zflow-orchestration` 与 `lib/workflow-script.js` 头注；写完先 `lint` 校验再运行。
+**自定义 workflow 脚本（core 契约）**：内置 5 种之外的编排用 `script:<名>` 扩展。发现面 = core 发现面（`<ws>/.pi/workflows` + `<ws>/.agents/workflows` + `~/.agents/workflows` + `~/.zsw/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）；写完先 `lint` 校验再运行。
 
 `--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动 + 聚合等待（`wait` / `start --wait`）走默认 daemon 模式（见下节）。
+
+## 回接 2b break 变更（workflow 线换 vendored subagent-core orchestration）
+
+zsw 自有 workflow 运行时（WorkflowManager + lib/workflow/ 管线 + workflow-script 旧契约）已整体退役，编排层换成 vendored `@zhushanwen/subagent-core`（`lib/orchestration-host.js` 宿主 + `lib/agent-runner-adapter.js` 执行桥）。**以下是调用方可见的行为 break，旧用法按本表迁移**：
+
+**D6-⑧ 旧 `script:<name>` 脚本契约废弃**（daemon 内 fresh-require CJS、`ctx = {task, cwd, model, runAgent, log, params}` → 返回 `{markdown, json}`），新契约为 core worker 脚本（`@pi-meta` meta 块 + top-level `agent()`，在 core worker 线程执行）。迁移对照表：
+
+| 旧契约（lib/workflow-script.js） | 新契约（core worker） |
+|----------------------------------|----------------------|
+| `module.exports = { name, description, run(ctx) }` | `/* @pi-meta name/description/phases */` 块注释 + top-level await 脚本（lint 强校验 `agent()`/`parallel()`/`pipeline()` 入口） |
+| `ctx.runAgent({prompt, cwd, model, timeoutMs})` | `agent({prompt, model, timeoutMs, agent, schema, ...})`（每次调用一个独立 agent 会话） |
+| `ctx.log(text)` | `log(text)` / `console.log`（core worker log 通道） |
+| `ctx.params`（run 透传参数） | `$ARGS`（白名单外 flag 全进 `$ARGS`；`$ARGS.task` 恒并入） |
+| 返回 `{markdown, json}` 或字符串 | `return <scriptResult>`（任意可结构化克隆值；CLI 渲染为「message 行 + JSON 块」双段） |
+| 四根发现（`.agents/workflows` > `.zsw/workflows` 两级 × ws/HOME） | core 发现面（`.pi/workflows`、`.agents/workflows` × ws/HOME、`~/.zsw/workflows`）+ `<ws>/.zsw/workflows` 手工根；旧根大多保留但同名遮蔽优先级变化 |
+| 脚本同目录 require 相对路径（进程 cwd） | 必须 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱相对路径以 cwd 为基准） |
+
+**D7 旧 wf- record 不可读**：旧 WorkflowManager 把 run 状态写 `~/.zcode/zsw/records.jsonl`（`recordType:'workflow'` 事件流）+ 报告落 `outputs/<runId>.md`，该线已退役——新 run 的状态面是 `<zsw 数据根>/workflow-state/<runId>.jsonl`（core FileRunStore append-only 快照，`status` action 的 `stateFile` 字段即此路径），报告不落盘（CLI stdout 直出 scriptResult）。旧 record/报告文件留在原位可人工查阅，但 CLI/MCP 不再解析。
+
+**daemon 重启恢复语义**：上一代 daemon 遗留的 `running` run 在新 daemon 启动/接管时统一标 `done,failed`（error = "daemon takeover: worker died with previous process"）——core worker 线程随宿主进程死亡，无进程可探活、不尝试续跑；这与 zsub 线 subagent 的探活/孤儿标记语义不同，是两线故意的差异。done run 内存保留上限 20 条（core `MAX_RETAINED_DONE_RUNS`），淘汰后 `status` 报可操作错误并指向 stateFile。
+
+**run 参数面变化**：`--timeout-ms` 映射 RunSpec `budgetTimeMs`（整体墙钟预算，到期 `done,time_limited`）；`--model` 映射 `RunSpec.model`（run 级，agent() per-call 可覆盖）。`--max-concurrent` / `--timeout-per-phase` / `--subtask-count` 已废弃（core 编排无对应面），传入 stderr 显式 warning 不静默。review-fix-loop 的 `--reviewers` 显式报错（见上文）。
+
+**通知面变化**：workflow 完成不再投 mailbox 通知（旧 WorkflowManager 的 notifyCompletion 线随 record 线退役）——CLI run 恒同步等终态，socket 面异步 run 用 `--action status` 查询。
 
 ## CLI 默认形态：daemon thin client（1.0.0 起）
 
@@ -102,7 +115,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 ## 从 dynamic-workflow 迁移
 
-原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件：5 个 workflow 逻辑零漂移（review-fix-loop 除外——其后升级 v2 批次外环与质量内核，见上文），tool 名曾从 `mcp__dynamic-workflow__zflow` 改为 `mcp__zsw__zflow`（MCP 工具面时代命名；1.0.0 工具面下线后入口为 CLI `zsw workflow` 子命令），报告品牌为 `# zsw ·`（命名体系见 CONTEXT.md）。旧插件目录保留在原 worktree 作历史归档。
+原 dynamic-workflow 插件已卸载（config.json 的 plugins 注册已移除），全部能力并入本插件；回接 2b 起 workflow 线进一步整体替换为 vendored subagent-core orchestration（5 个内置形态名保留、实现换 core 资产；旧 `script:<名>` 契约与 wf- record 状态面 break，迁移对照见「回接 2b break 变更」节）。tool 名曾从 `mcp__dynamic-workflow__zflow` 改为 `mcp__zsw__zflow`（MCP 工具面时代命名；1.0.0 工具面下线后入口为 CLI `zsw workflow` 子命令），命名体系见 CONTEXT.md。旧插件目录保留在原 worktree 作历史归档。
 
 结果全文落 `~/.zcode/zsw/outputs/<id>.md`；worktree 任务的 patch 落 `<id>.patch`（完成通知含 `git apply` 指引）。
 
@@ -110,27 +123,32 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 ```
 ~/.zcode/zsw/
-├── records.jsonl        append-only 事件流（崩溃后重放恢复）
-├── outputs/             结果全文 + patch
-├── rfl/<runId>/         review-fix-loop v2 run 目录（state.json + 各轮 reviewer 报告；非全员 clean 轮另有该轮 aggregated.md，发生修复的轮另有 fix 结果；全员 clean 轮不产 aggregated.md、轮摘要标注未聚合）
+├── records.jsonl        append-only 事件流（zsub subagent 线；崩溃后重放恢复。回接 2b 起
+│                        workflow 线不再写入——旧 wf- record 留存可读但无消费方）
+├── workflow-state/      workflow run 状态快照（core FileRunStore：<runId>.jsonl append-only，
+│                        末行有效行 = 最新状态；daemon 启动/接管时重水合孤儿 run）
+├── outputs/             subagent 结果全文 + patch（workflow 报告线已退役，CLI stdout 直出）
 ├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
 ├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
-├── logs/                appserver 引擎 stderr 实时落盘（异常诊断面，引擎正常时零输出；thinking 档位/协议交互取证面为引擎自有日志 home-appserver/.zcode/cli/log/）
+├── logs/                appserver 引擎 stderr 实时落盘 + core 编排日志（workflow-core.log）
 ├── probe-cache.json     appserver probe 结论缓存（键 = CLI 路径 + mtime，只缓存 ok）
 ├── home-<provider>-<modelShort>/  per-model 隔离 HOME 池（spawn 回退通道模型路由）
 ├── home-appserver/      appserver 默认通道单一隔离 HOME（遥测已关闭）
 └── wt-<id>/             worktree 隔离目录（任务期存在）
+
+（review-fix-loop 的 run 目录由 core 资产自管：~/.review-fix-loop/<repo-slug>/<runId>/，
+ 含 state.json 与各轮 reviewer 报告——不在 zsw 数据根下。）
 ```
 
 ## 已知边界（如实声明）
 
 - **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI daemon）任务的完成唤醒唯一路径 = CLI 阻塞进程（`wait` / `start --wait`）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
 - **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议；subagent 任务与 workflow 阶段同走）**：`zsw start` 与 workflow 的每个阶段不带任何 env 即走常驻引擎。冷启动代价按形态摊薄：daemon 形态下引擎全进程共享——每个引擎进程只惰性启动一次（~1-2s，首个任务/阶段付出），之后 subagent 会话零冷启动续聊、后续 workflow 阶段零进程重建；`zsw workflow run`（本地一次性进程）每 run 付一次引擎惰性启动。组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标；降级为**通道级**——daemon 生命周期内后续任务直接走 spawn 免重探，重启 ZCode 后重新组装、恢复探测。workflow 阶段条目落 `channel` 字段（`appserver`|`spawn`），降级混跑的报告可直接对照各阶段实际通道。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
-- **workflow 中止语义按形态如实区分**：daemon 形态（zflow 派发、执行体在 daemon 进程内）的 `abort` 是 runner 侧取消——报告立即落 `status:'aborted'`、后续阶段不再启动；但引擎侧在飞轮**不被打断**（`session/stop` 对 RPC 在飞轮无打断能力，已真机实证），该轮会跑到自然完成——这部分 token 已消耗，属 apc 通道相对 spawn 立停的已知代价。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与其拉起的引擎子进程一同退出（引擎随亡，不走 session/stop）；`zsw workflow --action abort` 对本地 run 只终态化 record、停不掉执行体（取消 bg bash 形态的本地 run 用引擎 TaskStop）。
+- **workflow 中止语义（回接 2b 后）**：daemon 形态（socket 面派发、执行体 = daemon 进程内 core worker 线程）的 `abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；但引擎侧在飞的 agent() 轮**不被打断**（`session/stop` 对 RPC 在飞轮无打断能力，已真机实证），该轮会跑到自然完成——这部分 token 已消耗，属 apc 通道相对 spawn 立停的已知代价。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的本地 run 用引擎 TaskStop。
 - **`ZSW_RUNNER=spawn` 显式回退旧通道**：subagent 每轮、workflow 每阶段各自 spawn 独立 zcode 进程（~1-2s 冷启动），故障隔离与翻转前一致。daemon 在进程启动时读一次 env——改 `ZSW_RUNNER` 后需重启 ZCode 生效。
 - **running 会话不可插话（busy，两通道同语义）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；appserver 侧 `-32010` 硬错误，探针实证；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递。
 - **工具黑名单是引擎级硬拦截（两来源并集），`tools` 白名单维持软约束**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`——默认 appserver 通道经 `session/create` 的 `toolDenylist` 引擎级拦截，spawn 回退通道维持 `--disallowed-tools` flag 硬拦截（frontmatter 来源生效，CLI 来源不消费）；`--allow-tools` 白名单同理落 `toolAllowlist`（仅 appserver）。frontmatter `tools` 白名单维持 prompt 软约束（两通道一致）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
-- **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 9 个并发阶段（默认 apc 通道下阶段共享常驻引擎、不新增进程；spawn 回退档下即 9 个 zcode 进程；workflow 池 slot 粒度 = 整个 run）。
+- **subagent 并发池与 workflow 并发治理已分治（回接 2b 后）**：subagent 池默认 3（`ZSW_MAX_CONCURRENT` 可调）仅约束 zsub start 线；workflow 线的并发由 core 资产内部形态决定（`parallel()` 共享 core 配额池、顺序编排逐个执行），zsw 侧不再有独立 workflow 槽位池，`--max-concurrent` 已废弃。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 
