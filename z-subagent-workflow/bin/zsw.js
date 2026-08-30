@@ -110,26 +110,25 @@ function csv(v) {
 }
 
 /**
- * F4 新 flag 的取值规整：parseArgs 对「--flag 后无值」产 true（布尔形态），
+ * F4 值必填 flag 的缺值规整：parseArgs 对「--flag 后无值」产 true（布尔形态），
  * 与「显式给了值」不可同路处理——缺值属用户输入错误，stderr warn + 忽略该参数
  * （容错不失败，与 D5 非法档位 warn 跳过同语义），不静默丢弃。
  */
+function requireFlagValue(name, hint, v) {
+  if (v !== true) return v;
+  process.stderr.write(`[zsw] --${name} 需要${hint}。已忽略该参数。\n`);
+  return undefined;
+}
+
 function thinkingArg(v) {
-  if (v === undefined) return undefined;
-  if (v === true) {
-    process.stderr.write('[zsw] --thinking 需要档位值（如 --thinking low）。已忽略该参数。\n');
-    return undefined;
-  }
-  const s = String(v).trim();
-  return s || undefined;
+  const s = requireFlagValue('thinking', '档位值（如 --thinking low）', v);
+  if (s === undefined) return undefined;
+  const t = String(s).trim();
+  return t || undefined;
 }
 
 function csvArg(name, v) {
-  if (v === true) {
-    process.stderr.write(`[zsw] --${name} 需要逗号分隔的工具名清单（如 --deny-tools "Bash,WebSearch"）。已忽略该参数。\n`);
-    return undefined;
-  }
-  return csv(v);
+  return csv(requireFlagValue(name, '逗号分隔的工具名清单（如 --deny-tools "Bash,WebSearch"）', v));
 }
 
 /** start 面新 flag → manager.start params（daemon 与 --local 两形态共用，防漂移）。 */

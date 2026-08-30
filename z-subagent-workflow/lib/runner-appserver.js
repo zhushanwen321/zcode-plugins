@@ -128,7 +128,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const config = require('./config');
-const { PROVIDER_ID } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）
+const { PROVIDER_ID, cleanToolNames, splitModelRef } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）。cleanToolNames/splitModelRef 为单一实现导出，禁本地复刻（D6 / 双源漂移纪律）
 
 const DEFAULT_PROVIDER_ID = PROVIDER_ID;
 
@@ -258,7 +258,7 @@ function extractAssistantText(readResult) {
   const messages = Array.isArray(readResult.messages) ? readResult.messages
     : Array.isArray(readResult) ? readResult : null;
   if (messages) {
-    const last = [...messages].reverse().find((m) => m && typeof m === 'object'
+    const last = messages.findLast((m) => m && typeof m === 'object'
       && (messageRole(m) === 'assistant' || messageRole(m) === undefined));
     if (last) {
       const t = contentToText(last.content);
@@ -299,8 +299,7 @@ function extractReadUsage(readResult) {
   const messages = Array.isArray(readResult.messages) ? readResult.messages : [];
   for (const m of [...messages].reverse()) {
     if (!m || typeof m !== 'object' || messageRole(m) !== 'assistant' || !Array.isArray(m.parts)) continue;
-    const finish = [...m.parts].reverse()
-      .find((p) => p && p.type === 'step-finish' && p.tokens && typeof p.tokens === 'object');
+    const finish = m.parts.findLast((p) => p && p.type === 'step-finish' && p.tokens && typeof p.tokens === 'object');
     if (finish) return finish.tokens;
   }
   return readResult.usage && typeof readResult.usage === 'object' ? readResult.usage : undefined;
@@ -323,15 +322,6 @@ function extractThoughtLevels(state) {
     return levels.length > 0 ? levels : null;
   }
   return null;
-}
-
-/**
- * 规范化工具名清单（裸名形态，D6：引擎以 new Set(裸名) 匹配，消费点见调研文档
- * offset 12051550）。过滤非字符串/空白项并 trim；非数组 → 空数组。
- */
-function cleanToolNames(v) {
-  if (!Array.isArray(v)) return [];
-  return v.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim());
 }
 
 function contentToText(content) {
@@ -379,7 +369,7 @@ function classifyApcError(err) {
 // 分支 B（D2 兜底）+ runtimeModel 构造（F0 buildRuntimeModel 的生产适配）
 // ---------------------------------------------------------------------------
 
-const DRIFT_FALLBACK_HINT = '或设 ZSW_RUNNER=spawn 走旧通道（每轮独立进程，无此恢复问题）';
+const DRIFT_FALLBACK_HINT = `或设 ${DRIFT_FALLBACK_ENV} 走旧通道（每轮独立进程，无此恢复问题）`;
 
 /**
  * D2 分支 B 兜底文案（复审 INFO-1：语境适配「事件流不可达/恢复失败」）。
@@ -398,6 +388,15 @@ function branchBError(reason, code) {
   err.branchB = true;
   if (code !== undefined) err.code = code;
   return err;
+}
+
+/**
+ * 恢复序各步失败的统一出口（D3 互斥）：协议漂移原样上抛交既有分类路径
+ * （不吞不重试）；其余转分支 B（语境化 reason + 透传错误码做取证）。
+ */
+function throwDriftOrBranchB(err, reason) {
+  if (classifyApcError(err)) throw err;
+  throw branchBError(reason, err && err.code);
 }
 
 /** v2 config 每次恢复时重读（apiKey/模型清单随桌面端操作变化，与 model-router 同纪律）。 */
@@ -424,15 +423,14 @@ function buildRuntimeModel(sessionModel) {
   let modelId = sessionModel && sessionModel.modelId;
   if (!providerId || !modelId) {
     // 幽灵恢复兜底（daemon 重启后 _sessions 无登记）：v2 config 的当前主模型
-    //（与 model-router defaultModelRef 的 v2 回退段同语义，避免引入其依赖）
+    //（与 model-router defaultModelRef 的 v2 回退段同语义——不直接用 defaultModelRef
+    // 因其含 CLI config 读取与 v2 清单可解析校验，语义不同；切分规则复用
+    // splitModelRef 单一实现，防恢复序解析出与路由不同的模型目标）
     const main = v2 && v2.model && typeof v2.model.main === 'string' ? v2.model.main.trim() : '';
     if (main) {
-      if (main.includes('/')) {
-        providerId = providerId || main.slice(0, main.lastIndexOf('/'));
-        modelId = modelId || main.slice(main.lastIndexOf('/') + 1);
-      } else {
-        modelId = modelId || main;
-      }
+      const { provider, short } = splitModelRef(main);
+      providerId = providerId || provider;
+      modelId = modelId || short;
     }
     providerId = providerId || DEFAULT_PROVIDER_ID;
   }
@@ -1127,6 +1125,14 @@ class AppServerRunner {
   }
 
   /**
+   * 终态事件订阅（per-session）：start 首次订阅与恢复序②重挂必须共用同一参数面
+   * ——deliveryKind 缺失时终态事件不达、会话假死（D2），两处同步演化由本方法结构保证。
+   */
+  _subscribeSession(conn, sessionId, ctlTimeout) {
+    return conn.request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' }, { timeoutMs: ctlTimeout });
+  }
+
+  /**
    * 四步恢复序本体（互斥区内执行）：
    * ① resume{sessionId, runtimeModel}（每次无条件带，F0 结论）
    * ② 重挂 subscribe（订阅 per-session，resume 不自动恢复；缺则终态不达假死）
@@ -1146,15 +1152,13 @@ class AppServerRunner {
     try {
       await conn.request('session/resume', { sessionId, runtimeModel }, { timeoutMs: ctlTimeout });
     } catch (err) {
-      if (classifyApcError(err)) throw err; // 漂移不吞：交既有分类路径出（D3 互斥）
-      throw branchBError(`resume 失败: ${err && err.message}`, err && err.code);
+      throwDriftOrBranchB(err, `resume 失败: ${err && err.message}`);
     }
     // ② 重挂订阅
     try {
-      await conn.request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' }, { timeoutMs: ctlTimeout });
+      await this._subscribeSession(conn, sessionId, ctlTimeout);
     } catch (err) {
-      if (classifyApcError(err)) throw err;
-      throw branchBError(`订阅重挂失败（事件流不可达风险）: ${err && err.message}`, err && err.code);
+      throwDriftOrBranchB(err, `订阅重挂失败（事件流不可达风险）: ${err && err.message}`);
     }
     // ③ 重试原 send（一次）
     let sent;
@@ -1162,8 +1166,7 @@ class AppServerRunner {
       sent = await conn.request('session/send', { sessionId, content }, { timeoutMs: ctlTimeout });
     } catch (err) {
       if (err && err.code === -32010) throw err; // busy：会话已恢复且有轮在跑，如实上报不落分支 B
-      if (classifyApcError(err)) throw err;
-      throw branchBError(`恢复后重试 send 失败: ${err && err.message}`, err && err.code);
+      throwDriftOrBranchB(err, `恢复后重试 send 失败: ${err && err.message}`);
     }
     if (sent && sent.accepted === false) {
       throw branchBError('恢复后重试 send 返回 accepted:false（投递未被接受）');
@@ -1218,12 +1221,12 @@ class AppServerRunner {
     const done = (async () => {
       try {
         if (ctl.cancelled) throw new Error('cancelled');
-        if (typeof createParams.thoughtLevel === 'string') {
-          const verdict = await this._resolveThinking(conn, createParams.thoughtLevel);
+        if (typeof requestedThinking === 'string') {
+          const verdict = await this._resolveThinking(conn, requestedThinking);
           if (verdict.ok) {
-            thinkingEffective = createParams.thoughtLevel;
+            thinkingEffective = requestedThinking;
           } else {
-            stderrLog(`--thinking "${createParams.thoughtLevel}" 不在当前模型可用档位 `
+            stderrLog(`--thinking "${requestedThinking}" 不在当前模型可用档位 `
               + `[${(verdict.available || []).join(', ')}] 内，跳过该参数（任务继续，跟随模型默认档）`);
             delete createParams.thoughtLevel;
             thinkingEffective = null;
@@ -1247,7 +1250,7 @@ class AppServerRunner {
             : undefined,
         });
         if (ctl.cancelled) throw new Error('cancelled');
-        await conn.request('session/subscribe', { sessionId, deliveryKind: 'desktop-continuous' }, { timeoutMs: ctlTimeout });
+        await this._subscribeSession(conn, sessionId, ctlTimeout);
         if (ctl.cancelled) throw new Error('cancelled');
         const { sent, recovered } = await this._sendWithRecovery(conn, sessionId, String(prompt), { ctlTimeout });
         if (sent && sent.accepted === false) {
@@ -1412,4 +1415,3 @@ module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
 module.exports.extractAssistantText = extractAssistantText;
 module.exports.extractReadUsage = extractReadUsage;
 module.exports.extractThoughtLevels = extractThoughtLevels;
-module.exports.cleanToolNames = cleanToolNames;

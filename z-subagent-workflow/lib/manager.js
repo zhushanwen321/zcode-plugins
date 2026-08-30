@@ -37,7 +37,7 @@
 
 const crypto = require('node:crypto');
 const config = require('./config');
-const { buildPrompt } = require('./prompt-builder');
+const { buildPrompt, toolList } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
 const { extractJsonObject } = require('./jsonout');
 
@@ -50,16 +50,6 @@ const SUMMARY_HEAD_CHARS = 500;
  * 只能以总时长近似「轮数上限」——maxTurns × 5min 作为该任务的超时预算。
  */
 const MS_PER_TURN = 300_000;
-
-/**
- * 规范化 CLI 工具名清单（F4/D6，裸工具名形态）：过滤非字符串/空白项并 trim。
- * 与 prompt-builder.toolList 同语义——manager 只依赖端口与纯函数域层，不为此
- * 引入 model-router 具体实现（其内部另有同款防御）。
- */
-function toolNameList(v) {
-  if (!Array.isArray(v)) return [];
-  return v.filter((t) => typeof t === 'string' && t.trim() !== '').map((t) => t.trim());
-}
 
 /**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
@@ -164,8 +154,8 @@ class SubagentManager {
     const thinking = typeof params.thinking === 'string' && params.thinking.trim() !== ''
       ? params.thinking.trim()
       : undefined;
-    const allowTools = toolNameList(params.allowTools);
-    const denyTools = toolNameList(params.denyTools);
+    const allowTools = toolList(params.allowTools);
+    const denyTools = toolList(params.denyTools);
     const runEnv = await this.modelRouter.prepareRunEnv(modelRef, runnerKind, {
       thinking,
       toolAllowlist: allowTools,

@@ -58,20 +58,38 @@ function resolveCliPath() {
 }
 
 /**
- * 读缓存条目。mtime 不匹配（CLI 更新）、损坏（不可解析/形态不对）、非 ok 一律
- * 按 miss 处理——缓存只做加速，任何可疑都回到真实 probe。
- * @returns {{ok: true, mtimeMs: number, protocolVersion: number|null}|null}
+ * 读取并校验缓存 JSON。不存在/损坏/形态不对（entries 非 object）返回 null——
+ * 缓存文件格式契约的唯一判定点，三个缓存函数共用。
  */
-function readProbeCacheEntry(cliPath, mtimeMs, cacheFile = probeCachePath()) {
+function loadCacheData(cacheFile) {
   let data;
   try {
     data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
   } catch {
     return null; // 不存在或损坏：视为无缓存
   }
-  const entry = data && typeof data === 'object' && data.entries && typeof data.entries === 'object'
-    ? data.entries[cliPath]
-    : null;
+  if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') return null;
+  return data;
+}
+
+/** 原子覆写缓存。tmp 名带 pid：daemon 与 --local CLI 多进程并发写同缓存时，固定
+ * tmp 名会互相踩踏（A 写 tmp → B 覆写 tmp → A rename 出 B 的内容），损坏虽被
+ * 读取侧容错为 miss 重探，仍属可避免面。 */
+function saveCacheFile(cacheFile, data) {
+  fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+  const tmp = `${cacheFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, cacheFile);
+}
+
+/**
+ * 读缓存条目。mtime 不匹配（CLI 更新）、损坏（不可解析/形态不对）、非 ok 一律
+ * 按 miss 处理——缓存只做加速，任何可疑都回到真实 probe。
+ * @returns {{ok: true, mtimeMs: number, protocolVersion: number|null}|null}
+ */
+function readProbeCacheEntry(cliPath, mtimeMs, cacheFile = probeCachePath()) {
+  const data = loadCacheData(cacheFile);
+  const entry = data ? data.entries[cliPath] : null;
   if (!entry || typeof entry !== 'object' || entry.ok !== true) return null;
   if (typeof entry.mtimeMs !== 'number' || entry.mtimeMs !== mtimeMs) return null;
   return entry;
@@ -82,13 +100,7 @@ function readProbeCacheEntry(cliPath, mtimeMs, cacheFile = probeCachePath()) {
  * 一次暂时性故障不会让 mtime 不变期间持续走 spawn 丢掉 apc 能力。
  */
 function writeProbeCacheEntry(cliPath, mtimeMs, protocolVersion, cacheFile = probeCachePath()) {
-  let data = {};
-  try {
-    data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-  } catch { /* 新建或损坏重建 */ }
-  if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
-    data = { entries: {} };
-  }
+  const data = loadCacheData(cacheFile) || { entries: {} }; // 新建或损坏重建
   data.entries[cliPath] = {
     ok: true,
     mtimeMs,
@@ -96,13 +108,7 @@ function writeProbeCacheEntry(cliPath, mtimeMs, protocolVersion, cacheFile = pro
     cachedAt: new Date().toISOString(),
   };
   try {
-    fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
-    // tmp 名带 pid：daemon 与 --local CLI 多进程并发写同缓存时，固定 tmp 名会
-    // 互相踩踏（A 写 tmp → B 覆写 tmp → A rename 出 B 的内容），损坏虽被读取
-    // 侧容错为 miss 重探，仍属可避免面
-    const tmp = `${cacheFile}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-    fs.renameSync(tmp, cacheFile);
+    saveCacheFile(cacheFile, data);
   } catch (e) {
     log(`probe 缓存写入失败（${e && e.message || e}），下次组装将重探`);
   }
@@ -110,16 +116,12 @@ function writeProbeCacheEntry(cliPath, mtimeMs, protocolVersion, cacheFile = pro
 
 /** 失效缓存条目（D1 首败失效）。无缓存/损坏时静默——本来就没有可失效的结论。 */
 function invalidateProbeCacheEntry(cliPath, cacheFile = probeCachePath()) {
+  const data = loadCacheData(cacheFile);
+  if (!data || !data.entries[cliPath]) return;
+  delete data.entries[cliPath];
   try {
-    const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-    if (data && data.entries && data.entries[cliPath]) {
-      delete data.entries[cliPath];
-      // tmp 名带 pid（与 writeProbeCacheEntry 同理：多进程并发不踩同名 tmp）
-      const tmp = `${cacheFile}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, cacheFile);
-    }
-  } catch { /* 无缓存/损坏：无需失效 */ }
+    saveCacheFile(cacheFile, data);
+  } catch { /* 写失败：缓存留旧结论，读取侧仍会按形态容错为 miss */ }
 }
 
 /**
@@ -148,12 +150,10 @@ async function resolveRunnerKind() {
   try {
     mtimeMs = fs.statSync(cliPath).mtimeMs;
   } catch { /* 坏路径：缓存必 miss，直接走 probe 得到可诊断 reason */ }
-  if (mtimeMs !== null) {
-    const hit = readProbeCacheEntry(cliPath, mtimeMs);
-    if (hit) {
-      log(`probe 缓存命中（${cliPath} mtime=${mtimeMs}），跳过 probe`);
-      return { kind: 'appserver', fromCache: true };
-    }
+  const hit = mtimeMs !== null && readProbeCacheEntry(cliPath, mtimeMs);
+  if (hit) {
+    log(`probe 缓存命中（${cliPath} mtime=${mtimeMs}），跳过 probe`);
+    return { kind: 'appserver', fromCache: true };
   }
   try {
     const probe = await runProbeSequence();
@@ -220,6 +220,14 @@ function wrapWithProbeInvalidation(inner, records) {
     }
   };
 
+  // 降级重跑的唯一入口：spawn 重跑必须同步改标 record（runnerKind/exec），两步
+  // 捆绑防漏（调用方只拿句柄，不重复写 relabel）
+  const rerunViaSpawn = async (taskCtx) => {
+    const spawnHandle = await runSpawnRound(taskCtx);
+    relabelRecord(taskCtx, spawnHandle);
+    return spawnHandle;
+  };
+
   return {
     capabilities: () => (degraded ? spawnRunner().capabilities() : inner.capabilities()),
     start(taskCtx) {
@@ -228,10 +236,8 @@ function wrapWithProbeInvalidation(inner, records) {
         // 重探」承诺兑现处）。inner 已被判定为故障通道，不再喂任何任务。
         let active = null;
         const done = (async () => {
-          const spawnHandle = await runSpawnRound(taskCtx);
-          active = spawnHandle;
-          relabelRecord(taskCtx, spawnHandle);
-          return spawnHandle.done;
+          active = await rerunViaSpawn(taskCtx);
+          return active.done;
         })();
         return {
           // 启动窗口（prepareRunEnv 的 await 段）内 exec 未定，先落 spawn 占位，
@@ -255,12 +261,8 @@ function wrapWithProbeInvalidation(inner, records) {
         if (!result || result.status !== 'error' || !isInvalidatingError(result)) return result;
         invalidateProbeCacheEntry(cliPath);
         log(`缓存命中后 session/create 失败（${String(result.error || '').slice(0, 160)}），已失效 probe 缓存，重探一次`);
-        let reprobe = { ok: false, reason: 'probe crashed（无详情）' };
-        try {
-          reprobe = await runProbeSequence();
-        } catch (e) {
-          reprobe = { ok: false, reason: String(e && e.message || e) };
-        }
+        const reprobe = await runProbeSequence()
+          .catch((e) => ({ ok: false, reason: String(e && e.message || e) }));
         if (reprobe.ok) {
           // 环境健康：失败是漂移类问题，原错误走既有错误路径（D3），不静默重试
           if (cliMtimeMs !== null) writeProbeCacheEntry(cliPath, cliMtimeMs, reprobe.protocolVersion);
@@ -268,10 +270,8 @@ function wrapWithProbeInvalidation(inner, records) {
         }
         log(`appserver 重探 FAILED（${reprobe.reason}），降级 runner=spawn 重跑本任务（后续任务免重探）`);
         degraded = true;
-        const spawnHandle = await runSpawnRound(taskCtx);
-        active = spawnHandle;
-        relabelRecord(taskCtx, spawnHandle);
-        return spawnHandle.done;
+        active = await rerunViaSpawn(taskCtx);
+        return active.done;
       })();
       return {
         exec: handle.exec,
@@ -343,11 +343,13 @@ async function assembleManager(opts = {}) {
   return { manager, wfManager, notifier, runnerKind };
 }
 
-module.exports = { assembleManager };
 // 缓存层与失效判定导出：单测注入 cacheFile / 锁定判定行为，不真跑引擎
-module.exports.probeCachePath = probeCachePath;
-module.exports.resolveCliPath = resolveCliPath;
-module.exports.readProbeCacheEntry = readProbeCacheEntry;
-module.exports.writeProbeCacheEntry = writeProbeCacheEntry;
-module.exports.invalidateProbeCacheEntry = invalidateProbeCacheEntry;
-module.exports.isInvalidatingError = isInvalidatingError;
+// （invalidateProbeCacheEntry 仅内部消费，不导出）
+module.exports = {
+  assembleManager,
+  probeCachePath,
+  resolveCliPath,
+  readProbeCacheEntry,
+  writeProbeCacheEntry,
+  isInvalidatingError,
+};

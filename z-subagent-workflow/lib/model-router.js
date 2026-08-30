@@ -325,7 +325,9 @@ class ModelRouter {
    * @param {string[]} [sessionOpts.toolAllowlist] CLI --allow-tools 来源 → create.toolAllowlist
    * @param {string[]} [sessionOpts.toolDenylist]  CLI --deny-tools 来源 → create.toolDenylist
    *        （与 frontmatter taskCtx.disallowedTools 的并集去重在 runner 组 create 时做）
-   * @returns {Promise<{env?: {HOME: string, ZSW_NESTED: string}, createParams?: {model: string}}>}
+   * @returns {Promise<{env?: {HOME: string, ZSW_NESTED: string}, createParams?: {model: string,
+   *           thoughtLevel?: string, toolAllowlist?: string[], toolDenylist?: string[]}}>}
+   *         （createParams 各能力键仅在规范化后非空时设——create schema strict，空键不占面）
    */
   async prepareRunEnv(modelRef, runnerKind, sessionOpts = {}) {
     if (!modelRef || typeof modelRef !== 'string') {
