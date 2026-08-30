@@ -361,6 +361,16 @@ function renderWorkflowRunOutput(fin, args) {
 function renderScriptResultMarkdown(scriptResult) {
   if (scriptResult === null || scriptResult === undefined) return '(无 scriptResult)';
   if (typeof scriptResult === 'string') return scriptResult;
+  // 迁移脚本兼容（D6-⑧ 改写对照的产出等价面）：旧契约脚本返回 {markdown, json}，
+  // markdown 字段为非空字符串时直接作报告主体，其余键以 json 块补齐、不重复 dump。
+  if (typeof scriptResult.markdown === 'string' && scriptResult.markdown !== '') {
+    const rest = { ...scriptResult };
+    delete rest.markdown;
+    const extra = Object.keys(rest).length > 0
+      ? `\n\n\`\`\`json\n${JSON.stringify(rest, null, 2)}\n\`\`\``
+      : '';
+    return scriptResult.markdown + extra;
+  }
   const lines = [];
   if (typeof scriptResult.message === 'string' && scriptResult.message !== '') {
     lines.push(scriptResult.message);
@@ -372,7 +382,6 @@ function renderScriptResultMarkdown(scriptResult) {
   }
   return lines.join('\n');
 }
-
 /** run action：组参 → host.runAndWait 同步等终态 → 报告 + 摘要（exit 按终态）。 */
 async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
