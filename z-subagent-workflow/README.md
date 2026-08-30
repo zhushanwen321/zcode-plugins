@@ -132,6 +132,28 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 
+## 排障
+
+### ps 里看到两个 zcode app-server 进程，是不是泄漏？
+
+大概率不是。默认通道下引擎是常驻进程，以下三种场景会出现第二个引擎进程，属正常短暂态：`--local` 调试（CLI 一次性进程自拉引擎）、probe 健康检查（探测用短命引擎）、daemon 接管切换瞬间（旧引擎退出与新引擎启动的窗口）。多引擎共存是设计内容忍面，不是缺陷。
+
+**怎么定位引擎进程**（pgrep 查不到，用 db 句柄反查）：
+
+```bash
+lsof ~/.zcode/zsw/home-appserver/.zcode/cli/db/db.sqlite
+```
+
+引擎命令行是 `node <zcode路径> app-server --cwd <工作目录>`——HOME 只在环境变量里、不在命令行参数里，所以 `pgrep -f "app-server.*home-appserver"` 恒匹配不到；而每个引擎进程都会打开会话数据库 db.sqlite，按文件句柄反查最可靠。
+
+**怎么判读**（看输出的 PID 列）：
+
+- 只有 1 个 pid：正常（单引擎）。
+- pid 数 > 1：先回想刚才是否跑过 `--local` 命令、或刚重启过 ZCode——这类短暂多开会随进程退出自行消失，等几分钟复查即可。
+- 持续多开（隔几分钟复查 pid 不减）：旧引擎残留，kill 掉多余 pid 即可（`kill <pid>`，顽固时 `kill -9`）。
+
+**kill 会不会丢数据**：不会。会话记录落在 SQLite 里多进程可读，被杀引擎名下的会话换个引擎仍可 list / resume；运行中的任务会以连接中断如实报错（重跑即可），已完成任务的结果不受影响。
+
 ## 验收手册（真机 GUI，安装后逐项执行）
 
 | # | 场景 | 步骤 | 通过标准 |

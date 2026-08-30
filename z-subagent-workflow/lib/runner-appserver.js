@@ -120,6 +120,23 @@
  * A6 session/list 返回形态：按 result.sessions[].sessionId|id 提取；解析不出
  *    数组或请求失败时保守按「存在」处理。
  *    → 只改 alive() 的提取逻辑
+ *
+ * ## 同 HOME 多引擎共存是设计内容忍面（wave2 设计 D6，F5 收口）
+ * 同一隔离 HOME（~/.zcode/zsw/home-appserver）出现第二个 app-server 进程是
+ * 合法场景而非泄漏：--local 调试后门（CLI 一次性进程自 spawn 引擎）、probe
+ * 探测（probe() 用同 HOME 独立连接）、daemon 接管瞬间（旧引擎随旧 daemon 亡，
+ * 与新引擎短暂并存）都可能多开。引擎 argv 形如
+ * `node <cliPath> app-server --cwd <workdir>`（_start()）——HOME 只在 env 不在
+ * 命令行，`pgrep -f "app-server.*home-appserver"` 恒不匹配；定位引擎进程用
+ * db 句柄（lsof 法与判读规则见 README 排障节）。
+ * 容忍依据（不建 holder 锁——锁会卡死 --local/probe 这类合法第二实例，D6 被否案）：
+ * ① 写盘面 bootstrap 是 tmp+rename 原子写 + torn-write 检测（driver.js 头注 7 /
+ *    model-router homeNeedsBootstrap），多进程并发写同 HOME 配置安全；
+ * ② 会话 persistence 落 SQLite，多进程可读（跨进程 session/list 可查）；
+ * ③ 会话各建各的（驻留互在各引擎进程内存），互不干扰。
+ * **约束未来改动**：任何引入跨会话操作的提案（全局会话清理、跨会话 list 扫描
+ * 后写等）必须先单引擎化——容忍面只覆盖「各进程各写各的」，不覆盖对同一会话
+ * 集合的并发写。全文见 docs/design/zsw-appserver-wave2-design.md §3.3 D6。
  */
 
 const { spawn } = require('node:child_process');

@@ -115,8 +115,8 @@ graph TD
 |------|------|------|----------|
 | W1-a | committed | 1 | 0c85687（测试 75/75 绿；探针 1/2 结论已回填设计文档） |
 | W1-b | committed | 1 | e97a6f6（workflow 线测试集 299/299 + run-phase 单测 9/9 + 全量 568 pass/3 skip（既有占位）；检查点 4 终论已回填设计） |
-| W1-c | committed | 1 | <W1-c commit 后回填>（翻转 70/70 + apc 主链路 3 用例 + 全量 581 pass/3 skip + B-9 两臂+变体臂） |
-| W2 | committed | 1 | <W2 commit 后回填>（83/83 + B-8 真机全链闭环） |
+| W1-c | committed | 1 | b505cbb（翻转 70/70 + apc 主链路 3 用例 + 全量 581 pass/3 skip + B-9 两臂+变体臂） |
+| W2 | committed | 1 | a0d8724（83/83 + B-8 真机全链闭环） |
 | W3 | pending | 0 | — |
 
 ## 7 残留风险与变更历史
