@@ -156,6 +156,11 @@ const REVERSE_HANDLERS = {
 const READ_FAILED_NOTE =
   '全文获取失败（session/read 与 session/messages 均不可用，且 stream.chunk 未携带文本）；session 可 resume 续聊后重试读取。';
 
+/** busy 出路指引（A-9：两条出路——等待/取消；runner 层只见 sessionId 不见
+ * subagentId，命令以占位形态给出）。resume 的 busy 门禁与 -32010 语境附加
+ * 共用，命令名变更只动这一处。 */
+const BUSY_GUIDANCE = '等待当前轮完成（zsw wait --id <subagentId>）或 zsw cancel --id <subagentId> 取消';
+
 function stderrLog(msg) {
   try { process.stderr.write(`[zsub:appserver] ${msg}\n`); } catch { /* 尽力而为 */ }
 }
@@ -536,9 +541,9 @@ class AppServerConnection {
     this._extraEnv = env;
     // D3 引擎 stderr 实时落盘：显式注入 > 默认 ~/.zcode/zsw/logs/<date>-appserver.log
     //（ZSW_ROOT env 已使测试默认路径随测试根隔离）。文件 lazy 打开：首条 stderr
-    // 才建，无 stderr 的短连接（probe）零文件。
-    this._stderrLogPath = stderrLogPath
-      || path.join(config.logsDir(), `${new Date().toISOString().slice(0, 10)}-appserver.log`);
+    // 才建，无 stderr 的短连接（probe）零文件。默认路径的 <date> 按写时刻解析
+    //（见 _appendStderrLog）——长驻连接跨午夜滚动到新文件；显式注入路径固定不轮转。
+    this._stderrLogPath = stderrLogPath || null;
     this._stderrStream = null;
     this._stderrStreamFailed = false;
     this._child = null;
@@ -602,13 +607,21 @@ class AppServerConnection {
     ));
   }
 
-  /** 引擎 stderr 实时 append 落盘（D3）。失败静默：取证面不能拖垮主通道。 */
+  /** 引擎 stderr 实时 append 落盘（D3）。失败静默：取证面不能拖垮主通道。
+   * 默认路径按写时刻取当日日期，跨日时先冲刷关闭旧文件再开新文件（文件头
+   * 「跨日另起新文件」的实现落点）。 */
   _appendStderrLog(chunk) {
     if (this._stderrStreamFailed) return;
+    const logPath = this._stderrLogPath
+      || path.join(config.logsDir(), `${new Date().toISOString().slice(0, 10)}-appserver.log`);
+    if (this._stderrStream && this._stderrStream.path !== logPath) {
+      this._stderrStream.end();
+      this._stderrStream = null;
+    }
     if (!this._stderrStream) {
       try {
-        fs.mkdirSync(path.dirname(this._stderrLogPath), { recursive: true });
-        this._stderrStream = fs.createWriteStream(this._stderrLogPath, { flags: 'a' });
+        fs.mkdirSync(path.dirname(logPath), { recursive: true });
+        this._stderrStream = fs.createWriteStream(logPath, { flags: 'a' });
         this._stderrStream.on('error', () => { this._stderrStreamFailed = true; });
       } catch {
         this._stderrStreamFailed = true;
@@ -1047,8 +1060,8 @@ class AppServerRunner {
    * （检查点面）只需改本方法内的请求 params。
    * @param {AppServerConnection} conn
    * @param {string} requested 请求档位（如 'low'）
-   * @returns {Promise<{ok: boolean, passthrough?: boolean, available?: string[]}>}
-   *          ok=true 且 passthrough=true 表示未经校验放行（校验源不可用）
+   * @returns {Promise<{ok: boolean, available?: string[]}>}
+   *          ok=false 时 available 携带可用档位（供 warn 文案）
    */
   async _resolveThinking(conn, requested) {
     let levels = this._thoughtLevelCache.get(conn);
@@ -1063,7 +1076,7 @@ class AppServerRunner {
       }
       this._thoughtLevelCache.set(conn, levels);
     }
-    if (levels === null) return { ok: true, passthrough: true };
+    if (levels === null) return { ok: true };
     return { ok: levels.includes(requested), available: levels };
   }
 
@@ -1266,18 +1279,20 @@ class AppServerRunner {
           }
           return { status: 'cancelled', sessionId: exec.sessionId, thinking: thinkingEffective };
         }
+        // D3 双落点：drift / 分支 B 先 stderr 出声再随结果上行（errorKind 仅
+        // drift 存在；record 物理落点由上层 _completeRun 透传）；普通错误不出声。
+        // errorKind 条件展开置于 error 之前——键序与原三分支 return 逐字一致
+        //（record 落盘 JSON.stringify 对键序敏感）
         const drift = classifyApcError(err);
-        if (drift) {
-          // D3 双落点：stderr 出声 + RunResult.errorKind（错误分类随结果上行，
-          // record 物理落点由上层 _completeRun 透传）
-          stderrLog(drift.hint);
-          return { status: 'error', errorKind: drift.kind, error: drift.hint, sessionId: exec.sessionId, thinking: thinkingEffective };
-        }
-        if (err && err.branchB) {
-          stderrLog(err.message); // 分支 B 同样双落点（stderr 取证 + error 文案上行）
-          return { status: 'error', error: err.message, sessionId: exec.sessionId, thinking: thinkingEffective };
-        }
-        return { status: 'error', error: err && err.message, sessionId: exec.sessionId, thinking: thinkingEffective };
+        const error = drift ? drift.hint : (err && err.message);
+        if (drift || (err && err.branchB)) stderrLog(error);
+        return {
+          status: 'error',
+          ...(drift ? { errorKind: drift.kind } : {}),
+          error,
+          sessionId: exec.sessionId,
+          thinking: thinkingEffective,
+        };
       }
     })();
 
@@ -1319,7 +1334,7 @@ class AppServerRunner {
       return {
         status: 'error',
         sessionId: exec.sessionId,
-        error: `会话 ${exec.sessionId} 仍有进行中的一轮（busy）。恢复指引：等待当前轮完成（zsw wait --id <subagentId>）或 zsw cancel --id <subagentId> 取消本轮后再续聊。`,
+        error: `会话 ${exec.sessionId} 仍有进行中的一轮（busy）。恢复指引：${BUSY_GUIDANCE}本轮后再续聊。`,
       };
     }
     // 跨重启恢复的句柄本 runner 未必认识：补登记以便 chunk 聚合与 alive 查询
@@ -1361,7 +1376,7 @@ class AppServerRunner {
       // 构造），不依赖 err.code 形态
       let errMsg = err && err.message;
       if (typeof errMsg === 'string' && /\[-32010\]/.test(errMsg)) {
-        errMsg += '（busy：该会话仍有进行中的一轮。恢复指引：等待当前轮完成（zsw wait --id <subagentId>）或 zsw cancel --id <subagentId> 取消后再投递）';
+        errMsg += `（busy：该会话仍有进行中的一轮。恢复指引：${BUSY_GUIDANCE}后再投递）`;
       }
       return { status: 'error', sessionId: exec.sessionId, error: errMsg };
     }
@@ -1408,10 +1423,5 @@ module.exports.createFrameDispatcher = createFrameDispatcher;
 module.exports.interpretEvent = interpretEvent;
 module.exports.RUNTIME_PREFERENCES = RUNTIME_PREFERENCES;
 module.exports.classifyApcError = classifyApcError;
-module.exports.branchBMessage = branchBMessage;
-module.exports.buildRuntimeModel = buildRuntimeModel;
-module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
-module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
 module.exports.extractAssistantText = extractAssistantText;
 module.exports.extractReadUsage = extractReadUsage;
-module.exports.extractThoughtLevels = extractThoughtLevels;

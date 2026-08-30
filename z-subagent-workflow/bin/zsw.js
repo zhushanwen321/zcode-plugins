@@ -128,7 +128,7 @@ function thinkingArg(v) {
 }
 
 function csvArg(name, v) {
-  return csv(requireFlagValue(name, '逗号分隔的工具名清单（如 --deny-tools "Bash,WebSearch"）', v));
+  return csv(requireFlagValue(name, `逗号分隔的工具名清单（如 --${name} "Bash,WebSearch"）`, v));
 }
 
 /** start 面新 flag → manager.start params（daemon 与 --local 两形态共用，防漂移）。 */
