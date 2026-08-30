@@ -137,6 +137,7 @@ const PROBE_BUDGET_MS = 10_000;      // probe 全程预算（启动+往返+关�
 const PROBE_SHUTDOWN_GRACE_MS = 1_500; // probe 收尾不等满 5s 宽限，快速 SIGKILL 兜底
 const READ_TIMEOUT_MS = 5_000;       // 终态后 read/messages 兜底拉取的超时
 const STOP_TIMEOUT_MS = 2_000;       // session/stop 控制超时（超了就该杀进程兜底）
+const RELEASE_CLOSE_TIMEOUT_MS = 1_500; // release 的 session/close 控制面超时（wave2 D2；与 shutdown 的 close 同值同语义）
 
 /** session/requestRuntimePreferences 的应答：逐字段对齐实测 schema，改动前先有新实测依据。 */
 const RUNTIME_PREFERENCES = Object.freeze({
@@ -1404,13 +1405,42 @@ class AppServerRunner {
     }
   }
 
+  /**
+   * 一次性会话终态释放（wave2 D2）：workflow 阶段 done 落定后调用。订阅会话免引擎
+   * 驱逐（F0 实证），不 close 会让引擎驻留池与本 runner 的 chunks 聚合缓冲双向单调
+   * 膨胀（F2）。检查点 1 探针实证（2026-08-30 真机，结论已回填设计文档）：close 把
+   * 会话从引擎 active 内存释放（close 后 send 撞 -32004），SQLite 持久化保留
+   * （session/list 可见 + close→resume→read 可读回全文）——release 只回收驻留面，
+   * 会话数据不丢。
+   * 边界：exec.sessionId 未回填（create 前失败/取消的早期终态）= no-op（无对应物）；
+   * close 失败/超时只 stderr 出声不抛（best-effort）——泄漏一个驻留会话比炸掉一个
+   * 已成功的阶段好（D2）。
+   * @param {object} exec record.exec（{kind:'apc', sessionId?}）
+   * @returns {Promise<void>}
+   */
+  async release(exec) {
+    if (!exec || exec.kind !== 'apc' || typeof exec.sessionId !== 'string' || !exec.sessionId) return;
+    // 先注销再 close：release 是终态语义，close await 期间到达的该会话推送帧按
+    // 「宁丢勿错」丢弃（A2），chunks 聚合缓冲随条目删除即时回收（F2 runner 侧半边）
+    this._sessions.delete(exec.sessionId);
+    // 连接不可用（引擎已死/从未建）时跳过 close——进程死则引擎内存随之消失，无从
+    // 释放也无须释放；不 _ensureConnection（release 不得无谓拉起新引擎进程）
+    const conn = this._conn;
+    if (!conn || conn.exited) return;
+    try {
+      await conn.request('session/close', { sessionId: exec.sessionId }, { timeoutMs: RELEASE_CLOSE_TIMEOUT_MS });
+    } catch (err) {
+      stderrLog(`release: session/close 失败（会话 ${exec.sessionId} 可能仍驻留引擎，不影响阶段结果）: ${err && err.message}`);
+    }
+  }
+
   /** 收尾：close 本 runner 登记的全部会话（best-effort）→ 杀进程链。 */
   async shutdown() {
     const conn = this._conn;
     if (!conn) return;
     this._conn = null;
     const targets = [...this._sessions.entries()].filter(([, s]) => !s.closed);
-    await Promise.allSettled(targets.map(([sid]) => conn.request('session/close', { sessionId: sid }, { timeoutMs: 1_500 })
+    await Promise.allSettled(targets.map(([sid]) => conn.request('session/close', { sessionId: sid }, { timeoutMs: RELEASE_CLOSE_TIMEOUT_MS })
       .then(() => { const s = this._sessions.get(sid); if (s) s.closed = true; })));
     await conn.shutdown();
     // 进程退出本应经 onClose 失败所有 turn，这里兜底一次（幂等）

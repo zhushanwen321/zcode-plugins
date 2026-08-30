@@ -33,6 +33,7 @@ const {
   createFrameDispatcher, interpretEvent, RUNTIME_PREFERENCES, classifyApcError,
   extractAssistantText, extractReadUsage,
 } = require('../lib/runner-appserver');
+const { wrapWithProbeInvalidation } = require('../lib/assemble');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RUNNERS = [];
@@ -274,7 +275,7 @@ after(async () => {
 
 test('AppServerRunner：方法签名与 ports.js 契约一致 + capabilities', () => {
   const r = new AppServerRunner();
-  for (const m of ['probe', 'start', 'resume', 'alive', 'capabilities', 'shutdown']) {
+  for (const m of ['probe', 'start', 'resume', 'alive', 'release', 'capabilities', 'shutdown']) {
     assert.equal(typeof r[m], 'function', `runner.${m}`);
   }
   // INFO-15：steering 与实际暴露面一致（manager 门禁 idle-only + A5 未实测）
@@ -1486,4 +1487,163 @@ test('D7：config 不再含 idleConversationTtlMs（会话回收职责归引擎�
   assert.equal('idleConversationTtlMs' in configLib.DEFAULTS, false);
   assert.equal(typeof configLib.logsDir, 'function', 'logsDir() 已就位（D3 落盘路径单一事实源）');
   assert.ok(configLib.logsDir().endsWith(path.join('logs')));
+});
+
+// ------------------------------------------------- release：一次性会话终态释放（wave2 D2）
+
+/**
+ * release 专用 fake（写进测试 TMP，after 统一清理；fixtures/fake-appserver.js 不在本
+ * 单元领地且 close 行为不可注入，按 errfake/recfake 先例 inline）。最小可走通面
+ * （create/subscribe/send/turn 终态/read）+ close 注入开关：
+ *   FAKE_CLOSE_MODE = error（close 回错误帧）| hang（close 不应答，逼控制面超时）
+ */
+let relFakeSeq = 0;
+function writeReleaseFake() {
+  const p = path.join(TMP, `relfake-${++relFakeSeq}.cjs`);
+  fs.writeFileSync(p, [
+    "'use strict';",
+    "const rl = require('node:readline').createInterface({ input: process.stdin });",
+    "const CLOSE_MODE = process.env.FAKE_CLOSE_MODE || '';",
+    "let sessSeq = 0;",
+    "const live = new Map();",
+    "const out = (f) => process.stdout.write(JSON.stringify(f) + '\\n');",
+    "out({ method: 'protocol', params: { name: 'ZCode Protocol', version: 1 } });",
+    "function simulate(sid) {",
+    "  setTimeout(() => {",
+    "    if (!live.has(sid)) return;",
+    "    out({ method: 'v4/telemetry/event', params: { kind: 'turn.terminal', status: 'success', sessionId: sid } });",
+    "    out({ method: 'session/event', params: { sessionId: sid, payload: { response: 'FAKE_REL:' + sid } } });",
+    "  }, 15);",
+    "}",
+    "rl.on('line', (line) => {",
+    "  if (!line.trim()) return;",
+    "  let f;",
+    "  try { f = JSON.parse(line); } catch { return; }",
+    "  if (!(f && f.id != null && f.method)) return;",
+    "  const { id, method, params = {} } = f;",
+    "  if (method === 'session/create') {",
+    "    const sid = 'sess_rel_' + (++sessSeq);",
+    "    live.set(sid, { subscribed: false });",
+    "    return out({ id, result: { session: { sessionId: sid } } });",
+    "  }",
+    "  if (method === 'session/subscribe') {",
+    "    const s = live.get(params.sessionId);",
+    "    if (s) s.subscribed = true;",
+    "    return out({ id, result: { subscribed: true } });",
+    "  }",
+    "  if (method === 'session/send') {",
+    "    if (!live.has(params.sessionId)) return out({ id, error: { code: -32004, message: 'not active (relfake)' } });",
+    "    out({ id, result: { accepted: true } });",
+    "    if (live.get(params.sessionId).subscribed) simulate(params.sessionId);",
+    "    return;",
+    "  }",
+    "  if (method === 'session/read') return out({ id, result: { messages: [{ role: 'assistant', content: 'FAKE_REL_READ' }], usage: { input_tokens: 1, output_tokens: 1 } } });",
+    "  if (method === 'session/close') {",
+    "    if (CLOSE_MODE === 'error') return out({ id, error: { code: -32000, message: 'close rejected (relfake)' } });",
+    "    if (CLOSE_MODE === 'hang') return; // 不应答：逼 runner 的 1.5s 控制面超时",
+    "    return out({ id, result: { closed: true } });",
+    "  }",
+    "  return out({ id, error: { code: -32601, message: 'method not found (relfake): ' + method } });",
+    "});",
+    "rl.on('close', () => process.exit(0));",
+  ].join('\n'));
+  return p;
+}
+
+test('release：调 session/close 且注销登记（chunks 缓冲随条目回收）', async () => {
+  const { runner, stateFile } = newRunner();
+  const handle = runner.start(baseTaskCtx('release 正常路径任务'));
+  await handle.done;
+  assert.ok(runner._sessions.has(handle.exec.sessionId), '前置：done 后会话仍在登记（chunks 聚合缓冲在）');
+  await runner.release(handle.exec);
+  assert.ok(
+    readState(stateFile).some((e) => e.ev === 'close' && e.sessionId === handle.exec.sessionId),
+    'session/close 已对该会话发出',
+  );
+  assert.equal(runner._sessions.has(handle.exec.sessionId), false, '登记已注销（chunks 聚合缓冲随条目删除回收）');
+  await runner.shutdown();
+});
+
+test('release：close 失败 best-effort 不抛，登记仍注销 + stderr 出声', async () => {
+  process.env.FAKE_CLOSE_MODE = 'error';
+  const { runner } = newRecoveryRunner(writeReleaseFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('close 失败任务'));
+    const result = await handle.done;
+    assert.equal(result.status, 'closed', '前置：任务正常完成');
+    const { lines } = await captureStderr(() => runner.release(handle.exec)); // 不抛即通过
+    assert.equal(runner._sessions.has(handle.exec.sessionId), false, 'close 失败仍注销登记（回收不因 close 失败回退）');
+    assert.ok(
+      lines.some((l) => l.includes('[zsub:appserver]') && l.includes('session/close 失败')),
+      `close 失败 stderr 出声，捕获: ${lines.join(' | ').slice(0, 200)}`,
+    );
+  } finally {
+    delete process.env.FAKE_CLOSE_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('release：close 挂起 → 1.5s 控制面超时 best-effort 返回不抛', { timeout: 20_000 }, async () => {
+  process.env.FAKE_CLOSE_MODE = 'hang';
+  const { runner } = newRecoveryRunner(writeReleaseFake());
+  try {
+    const handle = runner.start(recoveryTaskCtx('close 挂起任务'));
+    await handle.done;
+    const { lines } = await captureStderr(() => runner.release(handle.exec));
+    assert.equal(runner._sessions.has(handle.exec.sessionId), false, '超时路径登记仍注销');
+    assert.ok(
+      lines.some((l) => l.includes('session/close 失败')),
+      '超时按失败出声（best-effort 语义，不静默）',
+    );
+  } finally {
+    delete process.env.FAKE_CLOSE_MODE;
+    await runner.shutdown();
+    restoreFakeCli();
+  }
+});
+
+test('release：sessionId 未回填 no-op（不发任何请求、不拉起引擎连接）', async () => {
+  const { runner, stateFile } = newRunner();
+  await runner.release(undefined);
+  await runner.release({});
+  await runner.release({ kind: 'spawn', pid: 1 });
+  await runner.release({ kind: 'apc', sessionId: undefined }); // create 前失败/取消的早期终态
+  await runner.release({ kind: 'apc', sessionId: '' });
+  assert.equal(
+    readState(stateFile).filter((e) => e.ev === 'close').length, 0,
+    '未回填句柄不触发 session/close',
+  );
+  assert.equal(runner._conn, null, 'release 不得无谓拉起引擎连接（惰性连接不被破坏）');
+});
+
+test('wrapWithProbeInvalidation：release 按 exec.kind 路由转发（fromCache 包装面 release 非 undefined）', () => {
+  const released = [];
+  const fakeInner = {
+    capabilities: () => ({ kind: 'appserver', steering: 'none', coldStartMs: 0 }),
+    start: () => { throw new Error('not used'); },
+    resume: () => { throw new Error('not used'); },
+    alive: () => true,
+    shutdown: async () => {},
+    release: (exec) => released.push(exec),
+  };
+  const wrapped = wrapWithProbeInvalidation(fakeInner, null);
+  assert.equal(typeof wrapped.release, 'function', '包装面必须暴露 release（漏转发则消费方 runner.release 为 undefined）');
+  const apcExec = { kind: 'apc', sessionId: 'sess_wrap_x' };
+  wrapped.release(apcExec);
+  assert.deepEqual(released, [apcExec], 'apc 句柄原样转发 inner');
+
+  // spawn 句柄路由 spawnRunner：wrap 内部惰性 new SpawnRunner，patch prototype 计数
+  const SpawnRunner = require('../lib/runner-spawn');
+  const orig = SpawnRunner.prototype.release;
+  const spawnCalls = [];
+  SpawnRunner.prototype.release = function (exec) { spawnCalls.push(exec); };
+  try {
+    const spawnExec = { kind: 'spawn', pid: 1 };
+    wrapped.release(spawnExec);
+    assert.deepEqual(spawnCalls, [spawnExec], 'spawn 句柄转发 spawnRunner（参数原样）');
+    assert.equal(released.length, 1, 'spawn 句柄不误入 inner');
+  } finally {
+    SpawnRunner.prototype.release = orig;
+  }
 });

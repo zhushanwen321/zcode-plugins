@@ -287,6 +287,13 @@ function wrapWithProbeInvalidation(inner, records) {
       if (exec && exec.kind === 'spawn') return spawnRunner().alive(exec);
       return inner.alive(exec);
     },
+    // release 同 resume/alive 按 exec.kind 路由：fromCache 路径下消费方（workflow
+    // 阶段的全终态释放，wave2 D2）拿到的是本包装 runner，漏转发则 runner.release
+    // 是 undefined 直接 TypeError
+    release(exec) {
+      if (exec && exec.kind === 'spawn') return spawnRunner().release(exec);
+      return inner.release(exec);
+    },
     async shutdown() {
       await inner.shutdown();
       if (spawnInst && typeof spawnInst.shutdown === 'function') await spawnInst.shutdown();
@@ -344,7 +351,8 @@ async function assembleManager(opts = {}) {
 }
 
 // 缓存层与失效判定导出：单测注入 cacheFile / 锁定判定行为，不真跑引擎
-// （invalidateProbeCacheEntry 仅内部消费，不导出）
+// （invalidateProbeCacheEntry 仅内部消费，不导出）。wrapWithProbeInvalidation
+// 导出供包装层转发面直接单测（release 按 kind 路由等，不经 assembleManager 全组装）
 module.exports = {
   assembleManager,
   probeCachePath,
@@ -352,4 +360,5 @@ module.exports = {
   readProbeCacheEntry,
   writeProbeCacheEntry,
   isInvalidatingError,
+  wrapWithProbeInvalidation,
 };

@@ -100,13 +100,15 @@ graph TD
 
 | 日期 | 单元 | 偏差 | 理由 | 处置 |
 |------|------|------|------|------|
-| — | — | — | — | — |
+| 2026-08-30 | W1-a | 检查点 1 判据②③观测面修正（read 是 active 内存面方法非持久化面；引擎不为 session/close 写专属日志事件） | 探针四轮迭代实测：对照组（未 close 会话跨进程 read 同样 -32004）分辨出判据形态错误而非 close 语义错误；persistence 保留由 list/SQLite/resume→read 三面实证 | doc_errors：主 agent 已回填设计文档（G6/B-6/检查点 1/§6 变更历史五处），D2 两档降级均不触发，release 按原设计实现 |
+| 2026-08-30 | W1-a | 附带发现（非本单元领地，备查）：生产 buildRuntimeModel 的「会话登记无 model 时回退 v2 model.main」兜底在本机不可用（v2 config 无 model 键，兜底 throw） | 探针期间发现；仅影响登记缺失的幽灵恢复场景，zsub 线会话登记恒带 model 不受影响 | 登记备查，本波不动代码；后续如需修复另立单元 |
+| 2026-08-30 | W1-a | dev 实现三偏差（均采纳）：① shutdown 内联 close 超时 1_500 改引用 RELEASE_CLOSE_TIMEOUT_MS 常量（值不变，单一事实源）② assemble.js 新增导出 wrapWithProbeInvalidation（包装层转发面直测的最小通路）③ 既有契约签名用例方法列表加 release（回归钉） | ① 同语义防字面量漂移 ② 不导出则只能全组装间接覆盖，断言力不足 ③ 契约面新增方法不同步会变过时断言 | 合理偏差固化；release 内部顺序选「先注销再 close」（close await 期推送帧按 A2 宁丢勿错丢弃，close 失败注销不回退） |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| W1-a | pending | 0 | — |
+| W1-a | committed | 1 | <W1-a commit 后回填>（测试 75/75 绿；探针 1/2 结论已回填设计文档） |
 | W1-b | pending | 0 | — |
 | W1-c | pending | 0 | — |
 | W2 | pending | 0 | — |

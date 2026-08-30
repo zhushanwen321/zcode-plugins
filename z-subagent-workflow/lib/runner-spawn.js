@@ -128,6 +128,13 @@ class SpawnRunner {
   }
 
   /**
+   * 一次性会话终态释放（wave2 D2）：no-op——spawn 每轮独立进程，done 即进程退出，
+   * 会话驻留、内存缓冲等释放面都不存在，没有可释放的对应物。实现完整契约面
+   * （与 probe/alive 同理），上层可不区分通道统一调用 runner.release(exec)。
+   */
+  release(exec) {}
+
+  /**
    * 探活：pid 信号 0 探测（ESRCH → 不存在；EPERM → 存在但属主不同，按存在算）。
    */
   alive(exec) {

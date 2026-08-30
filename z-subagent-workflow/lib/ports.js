@@ -83,6 +83,15 @@ const DEFAULTS = require('./config').DEFAULTS;
  *   start(taskCtx) -> RunHandle      启动一次任务；立即返回，不等待完成
  *   resume(exec, message, opts)      续聊一轮（仅 conversation record；exec 为 record.exec）
  *   alive(exec) -> boolean           探活（崩溃恢复用）
+ *   release(exec)                    一次性会话终态释放（wave2 D2）：apc = session/close
+ *                                    （控制面 1.5s 超时 best-effort，失败/超时只出声不抛）
+ *                                    + 会话登记注销（聚合缓冲随条目回收）；spawn = no-op
+ *                                    （每轮独立进程，进程退出即一切释放，无驻留对应物）；
+ *                                    exec.sessionId 未回填（create 前失败/取消的早期终态）
+ *                                    = no-op。只服务 workflow 一次性阶段——订阅会话免
+ *                                    引擎驱逐（F0 实证），不 close 则引擎驻留池与 runner
+ *                                    侧聚合缓冲单调膨胀（F2）；zsub conversation 续聊依赖
+ *                                    驻留/恢复序，不调 release
  *   capabilities()                   能力声明
  *
  * @typedef {Object} RunHandle
