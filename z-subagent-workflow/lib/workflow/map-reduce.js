@@ -22,6 +22,9 @@
  *   （reduce 不再启动）、reduce 完成后。批中 abort 时已启动的条目跑到终态或被
  *   杀停、结果保留，未启动的由 runPhase 预检返回 aborted 条目。整体返回增量
  *   status（'ok'|'failed'|'aborted'）与 abortedAtPhase（仅 aborted 携带）。
+ * - runner（wave2 D1 RunnerPort 透传契约见 run-phase.js 头注，与 signal 同链
+ *   同构）：透传给每次 runPhase；阶段条目经 phases 带出 channel 字段（实际
+ *   执行通道）。缺省时阶段走 spawn 直调旧行为。
  */
 
 const { runPhase } = require('./phases');
@@ -44,9 +47,10 @@ function isAborted(signal) { return !!signal && signal.aborted === true; }
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @param {object} [opts.runner] RunnerPort（wave2 D1 透传契约见 run-phase.js 头注）
  */
 async function runMapReduce({
-  items, operation, task, workdir, model, signal,
+  items, operation, task, workdir, model, signal, runner,
   maxConcurrent = 3, timeoutMsPerPhase = null, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
@@ -83,7 +87,7 @@ async function runMapReduce({
         `${task ? `## 附加上下文\n${task}\n\n` : ''}` +
         `## 约束\n只处理上述单个条目；除操作指令明确要求外禁止修改文件（默认只读）。\n\n` +
         `## 输出格式\n以「## ${item.slice(0, 40)} 结果」开头的简明结论（发现/结论/异常），不超过 300 字。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
     });
     if (entry.ok) outputs[i] = entry.response;
     if (!entry.aborted) completed++;
@@ -126,7 +130,7 @@ async function runMapReduce({
       `## 你的职责\n把所有条目结果归约为单一结论。\n\n` +
       `## 输出格式\n以「## 归约结论」开头：1) 条目结果汇总表（item | 结论 | 是否异常）\n` +
       `2) 共性规律与离群项 3) 需要人工跟进的事项。不超过 500 字。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
   });
   phaseResults.push(reduce);
   if (onPhase) onPhase({ phase: 'reduce', status: reduce.aborted ? 'aborted' : reduce.ok ? 'done' : 'failed' });

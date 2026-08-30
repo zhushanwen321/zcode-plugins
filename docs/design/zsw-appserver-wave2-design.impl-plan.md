@@ -80,7 +80,7 @@ graph TD
 |----|------|------|
 | W1-a 增量 | `node --test test/appserver.test.js test/assemble.test.js` | release 单测 |
 | W1-b 增量（workflow 线测试集） | `node --test test/workflow-a.test.js test/workflow-b.test.js test/workflow-base.test.js test/workflow-manager.test.js test/workflow-script.test.js test/review-fix-loop.test.js test/manager.test.js test/execution.test.js test/cli-workflow-daemon.test.js test/appserver.test.js test/assemble.test.js` | 翻转不回归 |
-| W1-b / W1-c 全量 | `node --test test/`（~3.5 分钟，含真实模型 e2e） | 翻转点 + 收口 |
+| W1-b / W1-c 全量 | `node --test`（默认发现 test/，~3.5 分钟，含真实模型 e2e；注意本机 Node v24.11.1 下 `node --test test/` 会 MODULE_NOT_FOUND，用不带参数形态） | 翻转点 + 收口 |
 | W2 增量 | `node --test test/assemble.test.js` | 升级检测单测 |
 | W2 真机冒烟 | `node test/e2e.test.js --name apc-smoke` | B-8 清除语义（花少量 token） |
 | W3 语法 | `node --check lib/runner-appserver.js` | 头注改动 |
@@ -103,13 +103,16 @@ graph TD
 | 2026-08-30 | W1-a | 检查点 1 判据②③观测面修正（read 是 active 内存面方法非持久化面；引擎不为 session/close 写专属日志事件） | 探针四轮迭代实测：对照组（未 close 会话跨进程 read 同样 -32004）分辨出判据形态错误而非 close 语义错误；persistence 保留由 list/SQLite/resume→read 三面实证 | doc_errors：主 agent 已回填设计文档（G6/B-6/检查点 1/§6 变更历史五处），D2 两档降级均不触发，release 按原设计实现 |
 | 2026-08-30 | W1-a | 附带发现（非本单元领地，备查）：生产 buildRuntimeModel 的「会话登记无 model 时回退 v2 model.main」兜底在本机不可用（v2 config 无 model 键，兜底 throw） | 探针期间发现；仅影响登记缺失的幽灵恢复场景，zsub 线会话登记恒带 model 不受影响 | 登记备查，本波不动代码；后续如需修复另立单元 |
 | 2026-08-30 | W1-a | dev 实现三偏差（均采纳）：① shutdown 内联 close 超时 1_500 改引用 RELEASE_CLOSE_TIMEOUT_MS 常量（值不变，单一事实源）② assemble.js 新增导出 wrapWithProbeInvalidation（包装层转发面直测的最小通路）③ 既有契约签名用例方法列表加 release（回归钉） | ① 同语义防字面量漂移 ② 不导出则只能全组装间接覆盖，断言力不足 ③ 契约面新增方法不同步会变过时断言 | 合理偏差固化；release 内部顺序选「先注销再 close」（close await 期推送帧按 A2 宁丢勿错丢弃，close 失败注销不回退） |
+| 2026-08-30 | W1-b | **检查点 4 终论（超出原预期，doc_errors 已回填设计）**：session/stop 对 RPC 面在飞轮无打断能力（三态实证 + 引擎 bundle 源码对照 activeAbortController 机制）；G3/B-3/D3/§2.2 事实 4 四处按降级路径修正；附跨波发现：zsub 线 cancel 同样不打断引擎轮（登记待接线，out of scope） | dev 四轮探针「不可辨识」+ 主 agent 亲验两轮（生成中 stop 后 104s 自然完成）钉死 | 主 agent 回填设计文档五处（§6 变更历史末行）；W1-b 实现（handle.cancel→stop）不变——RPC 面无更好原语，接线点为未来 turn 级打断预留 |
+| 2026-08-30 | W1-b | dev 实现偏差（均采纳）：① channel 值域取 B-1 口径 'appserver'\|'spawn'（capabilities().kind 同源）② runner 缺省保留 spawn 直调旧行为（既有测试/直连库调用不炸，真实入口恒注入）③ review-fix-loop.js INFRA_PARAM_KEYS 加 'runner'（白名单透传必需）④ release 调用 await+吞错（条目返回=释放已发出可断言，无悬挂 promise 面）⑤ bin/zsw.js 与 dist/mcp/server.js 核对零改动（注入在 assemble 内部完成） | ① 与验收 B-1 一致 ② 原子单元中间态安全需要 ③ 不加则透传链断 ④ D2 边界 + 测试断言力 | 合理偏差固化 |
+| 2026-08-30 | W1-b | 测试命令形态修正：全量命令 `node --test test/` 在本机 Node v24.11.1 把 test/ 当模块解析报 MODULE_NOT_FOUND，实际可用形态 `node --test`（默认发现 test/ 目录），571 tests 等价覆盖 | Node 版本行为漂移，dev 实测发现 | 本计划 §4 已修正；仓库 AGENTS.md 的 `node --test test/` 同款问题登记备查（AGENTS.md 不在单元领地，留一致性审查或后续修正） |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| W1-a | committed | 1 | <W1-a commit 后回填>（测试 75/75 绿；探针 1/2 结论已回填设计文档） |
-| W1-b | pending | 0 | — |
+| W1-a | committed | 1 | 0c85687（测试 75/75 绿；探针 1/2 结论已回填设计文档） |
+| W1-b | committed | 1 | <W1-b commit 后回填>（workflow 线测试集 299/299 + run-phase 单测 9/9 + 全量 568 pass/3 skip（既有占位）；检查点 4 终论已回填设计） |
 | W1-c | pending | 0 | — |
 | W2 | pending | 0 | — |
 | W3 | pending | 0 | — |

@@ -17,22 +17,26 @@
  * - 透传 signal（AbortSignal 契约见 run-phase.js 头注）：中止条目额外落
  *   aborted:true 字段，供 workflow 编排层识别并停止后续阶段；非中止条目
  *   不带该字段（保持旧形态）。
+ * - 透传 runner（wave2 D1 RunnerPort 契约，与 signal 同链）：条目额外落
+ *   channel 字段（实际执行通道 'appserver'|'spawn'，D4 降级混跑对照面）；
+ *   result.channel 缺失时不带该字段（防旧调用方/畸形结果破坏条目形态）。
  */
 
 const { runPhase: execPhase } = require('./run-phase');
 
 /**
  * 运行单个阶段并产出报告条目。
- * @param {object} opts（prompt/cwd/modelRef/timeoutMs/signal 语义见 run-phase.js）
+ * @param {object} opts（prompt/cwd/modelRef/timeoutMs/signal/runner 语义见
+ *   run-phase.js 头注）
  * @param {string} opts.name  阶段标识（如 'analyze'）
  * @param {string} [opts.label] 人读说明，缺省回落 name
  * @returns {Promise<{phase:string,label:string,ok:boolean,sessionId:string|null,
  *   response:string|null,usage:object|null,timedOut:boolean,durationMs:number,
- *   error?:string,aborted?:true}>}
+ *   channel?:string,error?:string,aborted?:true}>}
  */
-async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs, signal }) {
+async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs, signal, runner }) {
   const started = Date.now();
-  const result = await execPhase({ prompt, cwd, modelRef, timeoutMs, signal });
+  const result = await execPhase({ prompt, cwd, modelRef, timeoutMs, signal, runner });
   return {
     phase: name,
     label: label || name,
@@ -42,6 +46,7 @@ async function runPhase({ name, label, prompt, cwd, modelRef, timeoutMs, signal 
     usage: result.usage || null,
     timedOut: result.timedOut === true,
     durationMs: Date.now() - started,
+    ...(result.channel ? { channel: result.channel } : {}),
     ...(result.error ? { error: result.error } : {}),
     ...(result.aborted ? { aborted: true } : {}),
   };

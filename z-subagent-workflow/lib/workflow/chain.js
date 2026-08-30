@@ -22,6 +22,9 @@
  *   中止后已完成阶段保留在 phases、返回增量字段 status:'aborted' +
  *   abortedAtPhase；status 现为全量返回字段（'ok'|'failed'|'aborted'），
  *   无 signal 时除新增 status 外行为与旧版完全一致。
+ * - runner：入口 opts 增加可选 runner（wave2 D1 RunnerPort 透传契约见
+ *   run-phase.js 头注，与 signal 同链同构）；阶段条目经 phases 带出 channel
+ *   字段（实际执行通道）。缺省时阶段走 spawn 直调旧行为。
  */
 
 const { runPhase } = require('./phases');
@@ -81,12 +84,13 @@ const PHASES = [
  *        状态取值 'running'|'done'|'failed'|'aborted'
  * @param {(expected:number)=>void} [opts.onPlan]
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @param {object} [opts.runner] RunnerPort（wave2 D1 透传契约见 run-phase.js 头注）
  * @returns {Promise<{ok:boolean, workflow:'chain', task:string, workdir:string,
  *   model:string, phases:object[], final:string|null, error?:string,
  *   status:'ok'|'failed'|'aborted', abortedAtPhase?:string,
  *   startedAt:string, finishedAt:string}>}
  */
-async function runChain({ task, workdir, model, timeoutMsPerPhase = null, onPhase, onPlan, signal }) {
+async function runChain({ task, workdir, model, timeoutMsPerPhase = null, onPhase, onPlan, signal, runner }) {
   const modelRef = modelRouter.resolve(model);
   const startedAt = new Date().toISOString();
   if (onPlan) onPlan(PHASES.length);
@@ -100,7 +104,7 @@ async function runChain({ task, workdir, model, timeoutMsPerPhase = null, onPhas
     const entry = await runPhase({
       name: phase.name, label: phase.label,
       prompt: phase.buildPrompt({ task, prev: prevOutputs }),
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
     });
     phaseResults.push(entry);
     if (onPhase) {

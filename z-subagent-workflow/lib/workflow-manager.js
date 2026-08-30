@@ -55,12 +55,15 @@
  *
  * ## server 接线接口（下一 agent 消费）
  *
- *   const wfManager = new WorkflowManager({
- *     records,        // 与 SubagentManager 共享同一 RecordStore 实例
- *     outputs,        // lib/output-store
- *     notifier,       // 与 SubagentManager 共享（mailbox/polling）
- *     // slots 可选：缺省独立池（limit 2）；workflows 可选：测试注入 fake
- *   });
+   *   const wfManager = new WorkflowManager({
+   *     records,        // 与 SubagentManager 共享同一 RecordStore 实例
+   *     outputs,        // lib/output-store
+   *     notifier,       // 与 SubagentManager 共享（mailbox/polling）
+   *     // slots 可选：缺省独立池（limit 2）；workflows 可选：测试注入 fake
+   *     // runner 可选（wave2 D1）：assembleManager 注入（可能被降级包装过的）
+   *     //   RunnerPort，经 _invokeEntry 挂进入口 opts / 脚本 ctx——阶段执行从
+   *   //   spawn 直调切到 RunnerPort；缺省 undefined 时入口保持 spawn 直调旧行为
+   *   });
  *   await wfManager.recover();            // server 启动时（与 subagent recover 并存，
  *                                         //   rebuild 幂等，先到的标记不会被后到的推翻）
  *   await wfManager.start({ workflow, task, workdir, model?, timeoutMs?,
@@ -132,6 +135,9 @@ class WorkflowManager {
    * @param {object} records.notifier NotifierPort（mailbox/polling）
    * @param {object} [ports.slots]    并发池（缺省独立池 limit=WORKFLOW_MAX_CONCURRENT）
    * @param {object} [ports.workflows] 内置入口映射（测试注入 fake 用）
+   * @param {object} [ports.runner]   RunnerPort（wave2 D1：assemble 注入，与
+   *                                  SubagentManager 同实例；缺省 undefined =
+   *                                  阶段保持 spawn 直调旧行为）
    */
   constructor(opts = {}) {
     const missing = ['records', 'outputs', 'notifier'].filter((k) => !opts[k]);
@@ -146,6 +152,10 @@ class WorkflowManager {
     this.notifier = opts.notifier;
     this.workflows = opts.workflows || defaultWorkflows();
     this.slots = opts.slots || createSlots({ limit: WORKFLOW_MAX_CONCURRENT });
+    // runner 可选注入（wave2 D1）：runner 是有状态对象（持连接/会话登记），
+    // 不做模块级单例——构造注入保证测试隔离与 standby→daemon 接管语义清晰
+    // （D1 被否项的镜像：可变全局态让降级翻转变隐晦）
+    this.runner = opts.runner;
     /** runId -> AbortController：abort 依据。进程重启即丢（recover 路径兜底）。 */
     this.handles = new Map();
     /** runId -> 执行体 promise：abort 时等终态落盘，避免返回早于 record。 */
@@ -432,6 +442,10 @@ class WorkflowManager {
         // 结果带回 runDir；其他内置 workflow 不认识该字段，解构忽略，无害透传）
         runId,
         signal,
+        // wave2 D1：RunnerPort 与 signal 同链透传（入口 → phases → run-phase
+        // 三行范式执行）。review-fix-loop 经 INFRA_PARAM_KEYS 白名单放行；
+        // undefined 时入口保持 spawn 直调旧行为
+        runner: this.runner,
       });
       return { kind: 'builtin', result, reportText: buildDualReport(result) };
     }
@@ -444,6 +458,7 @@ class WorkflowManager {
         cwd: plan.workdir,
         model: plan.model,
         signal,
+        runner: this.runner,
         timeoutMs: plan.timeoutMs,
         params: plan.workflowParams,
         log: (text) => this._log(runId, text),

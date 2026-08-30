@@ -342,10 +342,15 @@ async function assembleManager(opts = {}) {
     slots: opts.slots || createSlots({ limit: config.DEFAULTS.maxConcurrent }),
     worktree: opts.worktree === undefined ? createWorktreeAdapter() : opts.worktree,
   });
+  // wave2 D1：workflow 线与 zsub 共用同一 runner 实例（含 fromCache 分支的
+  // probe 失效包装形态）——probe 门控、通道级降级、降级 spawn 重跑对 workflow
+  // 阶段逐阶段生效（D4 零新增）；WorkflowManager 未注入 runner 时其阶段保持
+  // spawn 直调旧行为（真实入口组装恒注入）
   const wfManager = opts.wfManager || new WorkflowManager({
     records,
     outputs: outputsPort,
     notifier,
+    runner,
   });
   return { manager, wfManager, notifier, runnerKind };
 }

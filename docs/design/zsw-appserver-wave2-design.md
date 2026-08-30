@@ -36,7 +36,7 @@ zflow 线（本设计目标）：zsw workflow / zflow MCP tool ──► Workflo
 |---|------------------------|----------|
 | G1 | workflow 默认走 apc：`zsw workflow` / zflow run 不带任何 env 即走常驻引擎，阶段冷启动消失 | 阶段条目 sessionId 为 apc 会话形态；同 workflow 第二阶段起引擎日志无新进程启动行 |
 | G2 | 混跑不串线：workflow 阶段与 zsub 任务并发共享同一引擎连接 | 3 视角 parallel workflow + 1 个 zsub 任务同时跑，全部完成、响应不串线 |
-| G3 | 中止/超时可操作：abort 在飞阶段引擎侧无孤儿轮；timeout 语义与 spawn 通道对齐 | abort 后引擎 `session/list` 无该会话 running 轮；报告 `status:'aborted'`；timeout 条目 `timedOut:true` 两通道同形态 |
+| G3 | 中止/超时可操作：abort 语义在 runner 侧即时生效；timeout 语义与 spawn 通道对齐 | abort 后报告 `status:'aborted'` + `abortedAtPhase` + 后续阶段未启动 + stop 请求应答正常（引擎侧不打断在飞轮——检查点 4 实证，见 D3 实证边界；判据不依赖引擎侧轮状态）；timeout 条目 `timedOut:true` 两通道同形态 |
 | G4 | 降级链同构：probe 失败/缓存失效时 workflow 自动落 spawn 且如实出声 | `ZSW_ZCODE_CLI` 指向坏路径后 workflow run 仍完成，stderr 见降级日志 |
 | G5 | 引擎崩溃诚实：在飞阶段立即 error 落报告（不假死），后续 run 惰性恢复 | kill 引擎后在飞阶段条目 ok:false 带原因；不重启 daemon 直接再 run，自动重建并完成 |
 | G6 | 一次性会话不驻留：阶段终态即释放，长驻 daemon 跑 N 个 workflow 后驻留池不膨胀 | 同进程 close 后 send 撞 -32004（检查点 1 已实证）；close 动作观测面 = runner 侧证据链「close 应答 {closed:true} + 同连接 send 撞 -32004」（引擎不为 session/close 写专属日志事件，检查点 1 实测修正）；persistence 面 = 跨进程 session/list 可见 + close→resume 后 read 可读回、可恢复 |
@@ -66,7 +66,7 @@ zflow 线（本设计目标）：zsw workflow / zflow MCP tool ──► Workflo
 1. **订阅会话免驱逐**（一波 F0 实证）：zsw 形态（create 后即 subscribe）下驻留池 10min 空闲驱逐几乎不命中——这既是 zsub 线免 keep-alive 的依据，**也是 workflow 线必须做 release 的依据**（一次性会话订阅后不 close = 永久驻留）。
 2. **单连接多会话并发安全**：A-8 真机 4 并发无串线；推送帧归因单点（`extractPushSessionId` + 唯一会话兜底）已收口。
 3. **引擎随 daemon 亡**：daemon 死亡 → 引擎 stdin EOF 退出（一波 Gate B 签收，D9 登记「apc 下 daemon 死亡 = 任务 lost + 重新 start 指引，recover 幂等」）。
-4. **abort→stop 链路已验**：apc 侧 cancel 落 `session/stop`（唯一绕过请求串行队列的方法，一波 §2.2 事实 3）；zsub 的 cancel 路径 Gate B 已签。
+4. **abort→stop 链路已验（runner 侧面；引擎侧打断已实证为否，见检查点 4 终论）**：apc 侧 cancel 落 `session/stop`（唯一绕过请求串行队列的方法，一波 §2.2 事实 3——该断言仅覆盖「stop 请求被引擎立即应答」，不覆盖「打断在飞轮」）；zsub 的 cancel 路径 Gate B 已签的是 runner 侧行为（zsub 即时返回 cancelled 条目）。
 5. **隔离 HOME bootstrap 原子写**：`driver.bootstrapIsolatedHome` tmp+rename（driver.js 头注 7），`homeNeedsBootstrap` 带 torn-write 检测（`lib/model-router.js`）——多进程并发写同 HOME 配置的写盘面安全。
 6. **probe 缓存键 = CLI 路径 + mtime**：ZCode 升级换 CLI 必变 mtime → 缓存 miss → 重探天然发生（`lib/assemble.js`）；缓存条目已存 `protocolVersion` 字段。
 
@@ -185,9 +185,9 @@ daemon 形态（zflow/zsub MCP tool）：同一行提示追加在 tool 结果文
 **D3：中止/超时/崩溃的语义映射表（选定）**
 - **采用**（全部为既有机制的映射，无新机制）：
 
-| 场景 | spawn 通道现状 | apc 通道映射 | 依据 |
-|------|----------------|--------------|------|
-| abort/整体超时到点 | `run.cancel()` → SIGTERM→SIGKILL | `handle.cancel()` → turn.cancel → `session/stop` | ✅ 一波 Gate B（§2.2 事实 4） |
+  | 场景 | spawn 通道现状 | apc 通道映射 | 依据 |
+  |------|----------------|--------------|------|
+  | abort/整体超时到点 | `run.cancel()` → SIGTERM→SIGKILL（引擎侧立停） | `handle.cancel()` → turn.cancel → `session/stop`（runner 侧即时返回 cancelled；**引擎侧不打断在飞轮**，见下方实证边界段） | ✅ runner 侧机制既有；引擎侧行为检查点 4 实证 |
 | 单阶段超时 | driver 计时 → 杀进程，status:'timeout' | runner `_createTurn` 计时 → stop 清场，status:'timeout' | ✅ 同机制两通道各自既有 |
 | 引擎/CLI 进程崩溃 | 子进程退出码非零 → error 条目 | 连接 close → `_failAllTurns` → error 条目 | ✅ 既有 |
 | daemon 死亡 | spawn 孤儿进程存活（看门狗接管后续管） | 引擎随亡 → 在飞阶段 lost + 重新 run 指引 | ✅ 一波 D9 已签收，recover 幂等 |
@@ -195,6 +195,7 @@ daemon 形态（zflow/zsub MCP tool）：同一行提示追加在 tool 结果文
 
   条目映射保持现有扁平形态（ok/response/usage/exitCode/timedOut/error/aborted/stderrTail）：apc 无 exitCode 概念，成功恒 0、其余 null（与现状 spawn 非零并入 error 的语义自洽）；`timedOut` 取 `status==='timeout'`；abort 优先判定不变（run-phase.js:131 先例）。
 - **形态边界（审查补强）**：上表的 abort/stop 语义只在 **daemon 形态**（zflow MCP tool / 管理面经 daemon）内成立——run 的 AbortController 在运行进程内存（`workflow-manager.js` handles 表）。CLI `zsw workflow run` 恒本地前台阻塞（bin/zsw.js 用法头注），其 runId 对 daemon 无内存句柄（跨进程 abort 只能改 record 标 cancelled，停不掉在飞阶段——既有语义，本设计不放大不缩小）；CLI 本地形态的中止 = 进程级（Ctrl-C/SIGTERM → 引擎 stdin EOF 随亡），不走 session/stop。
+- **实证边界（W1-b 检查点 4 终论，2026-08-30 五轮真机探针 + 引擎 bundle 源码对照）**：`session/stop` 对 RPC 面的在飞轮**无打断能力**——三态实证（生成早期 send 后 1s / 生成中期首 chunk 后 2.2s / 工具执行中 bash sleep 20）stop 均应答 `{}` 成功但轮跑到自然完成（生成中期案例 stop 后 104s 自然终态；工具案例工具跑完还有第二次模型调用）；引擎日志三次 stop received 全部 `hadActivePrompt:false`；引擎 bundle 源码对照：stop handler 只调 `activeAbortController?.abort()`，而 RPC `session/send` 路径创建的 AbortController 与 stop handler 查询的对象不重叠（RPC 轮从不点亮该标志）。**因此 abort 的真实语义 = runner 侧即时取消（条目 aborted、后续阶段不启动、不等待轮完成）+ 引擎侧轮跑到自然完成**——相对 spawn 通道（SIGKILL 立停）这是 apc 通道 abort 的已知 token 代价（F3 引擎侧半边未消除，如实登记；缓解不存在：daemon 形态共享引擎不能杀进程，CLI 本地形态中止本就是进程级随亡）。stop 仍保留在 cancel 链路里：它是 RPC 面唯一绕过请求串行队列的原语，且对「排队未开始」的轮有真实取消价值（引擎未来版本若支持 turn 级打断，接线点不变）。
 - **被否**：「apc 侧加自动重试（引擎崩溃后自动重跑该阶段）」——阶段已产生的副作用不可知（可能已写文件），自动重跑是把「诚实报错」换成「静默双执行」，与 spawn 通道行为也不对称；「abort 改 session/close」——close 不保证停轮，stop 才是唯一绕过串行队列的取消面。
 - **证据**：上表依据列；busy 语义（-32010）在 workflow 线不可达（每阶段新会话，无续聊投递）。
 - **效果**：G3、G5。
@@ -223,7 +224,7 @@ daemon 形态（zflow/zsub MCP tool）：同一行提示追加在 tool 结果文
 |---|------|------|----------|------|
 | B-1 | 默认通道翻转 | 不设任何 env，`zsw workflow --workflow chain --task "三步分析本仓 README 并总结" --workdir <本仓>` | 全部阶段完成；报告阶段条目 `channel:'appserver'`、sessionId 为 apc 会话形态；引擎日志（`~/.zcode/zsw/home-appserver/.zcode/cli/log/<date>.jsonl`）仅首阶段前有进程启动行 | G1 |
 | B-2 | 混跑并发 | **daemon 形态**（共享单连接是 daemon 形态专有性质）：zcode 会话内让 agent 同时发起 zflow parallel run（3 视角）与 zsub start 一个任务；**对照臂（W3 容忍面）**：终端 A `zsw workflow run`（本地一次性进程，自 spawn 引擎）与终端 B `zsw start`（daemon 引擎）同时进行 | daemon 臂：双方全部完成、响应互不串线（对照 prompt 关键词）、报告与 record 各自完整——验证 G2；对照臂：两引擎同 HOME 并发各自完成无报错——验证多引擎容忍面（W3 断言的真机证据） | G2 |
-| B-3 | 中止（负面行为：无孤儿轮） | **daemon 形态**（abort 句柄在运行进程内存，D3 形态边界）：zcode 会话内 zflow run review-fix-loop，跑到第二批次时 zflow abort --id <runId> | 报告 `status:'aborted'` + `abortedAtPhase`；后续阶段未启动；daemon stderr/logs 无 stop 失败警告（stop 请求应答正常）；引擎侧观测面 = 引擎自有日志 jsonl（一波 D3 权威取证面）：含在飞阶段的 stop 后 turn 终止事件——该事件形态未经实证，列为检查点 4（探针不成立则本判据降级为「报告 + stop 应答正常」）。注：不能用第二个 app-server 进程的 session/list 观测——list 是 SQLite 持久化面，看不到目标引擎进程内的在飞轮 | G3 |
+| B-3 | 中止（负面行为如实） | **daemon 形态**（abort 句柄在运行进程内存，D3 形态边界）：zcode 会话内 zflow run review-fix-loop，跑到第二批次时 zflow abort --id <runId> | 报告 `status:'aborted'` + `abortedAtPhase`；后续阶段未启动；stop 请求应答正常、daemon stderr/logs 无 stop 失败警告（runner 侧证据链——检查点 4 实证引擎侧 stop 不打断在飞轮，判据按降级路径不依赖引擎侧轮状态）。注：不能用第二个 app-server 进程的 session/list 观测——list 是 SQLite 持久化面，看不到目标引擎进程内的在飞轮 | G3 |
 | B-4 | 超时对齐 | chain workflow `--timeout-per-phase 1000`（1 秒必超时）分别跑默认通道与 `ZSW_RUNNER=spawn` | 两通道条目均 `ok:false, timedOut:true`，报告均显示「超时」标记 | G3 |
 | B-5 | 引擎崩溃诚实 | daemon 形态跑 workflow，运行中定位并 kill 引擎：`lsof ~/.zcode/zsw/home-appserver/.zcode/cli/db/db.sqlite` 取 pid 后 `kill -9`（引擎 argv 不含 HOME，pgrep 模式匹配不到——用 db 句柄定位）；不重启 daemon 紧接着再跑一次同 workflow | 第一次：在飞阶段 ok:false 带连接中断原因（无悬挂等待）；第二次：自动重建引擎并完成 | G5 |
 | B-6 | 会话不驻留 | 跑完一个 6 阶段 review-fix-loop 后：① runner 侧证据链：各阶段 close 应答 + 同连接 send 撞 -32004（可用引擎日志 `mcp.server.closed` 带 sessionId 行作间接旁证——检查点 1 实测引擎不为 session/close 写专属事件）；② 另起探针引擎（同 HOME 第二进程）`session/list` 抽查阶段 sessionId（list 是持久化可见面；read 是 active 内存面方法，跨进程 read 不可用——检查点 1 实测修正） | ① 每个阶段的 close 应答 {closed:true} 真实发生且同连接 send 撞 -32004（释放动作真实——**不能用第二进程 send 撞 -32004 当判据：新进程内存本就为空，测不出原引擎是否释放**）；② list 可见（persistence 保留，会话数据不丢；深验可走 close→resume→read 链读回全文，检查点 1 已实证） | G6 |
@@ -247,7 +248,7 @@ daemon 形态（zflow/zsub MCP tool）：同一行提示追加在 tool 结果文
 1. **release 语义探针（W1-a 前置，同一引擎进程内完成）✅ 已验证（2026-08-30，探针四轮迭代）**：探针脚本持一条连接到 live app-server，create → subscribe → close 自己的会话后——① 经**同一连接**对该 sessionId send 应撞 -32004（证明 close 释放了本引擎驻留；跨进程发 send 无信息量，新进程内存本就为空）② persistence 保留（**观测面实测修正**：原判据「session/read 应仍可读」不成立——read 是 active 内存面方法，未 close 的活跃会话跨进程 read 同样撞 -32004，与 close 无关；修正后观测面 = 跨进程 `session/list` 可见 + SQLite 记录仍在 + close→resume→read 链可读回全文，三面均实证通过。附随事实：persistence:immediate 的落盘触发点是首个 send——create 后未 send 的空会话 close 后彻底无痕，从未落盘）③ close 动作痕迹（**观测面实测降级**：原判据「引擎自有日志 jsonl 可见 close 帧」不成立——引擎不为 session/close 写专属日志事件，唯一痕迹是 `mcp.server.closed`（会话 MCP 连接池随会话关闭，带 sessionId 可归因的间接旁证）；降级观测面 = runner 侧证据链「close 应答 {closed:true} + 同连接 send 撞 -32004」）④ close 后 `session/resume{sessionId, runtimeModel}` 应可恢复——判据可操作化：resume 请求应答无错误码（不撞 -32004/-32602）即为可恢复——**成立（双证：resume 无错误码 + 恢复后 read 读回模型回复全文）**，G6「可恢复」字样保留。**总裁决：D2 期望的 close 语义（active 内存释放 + SQLite 保留 + list 可见 + 可 resume）全部实证成立，两档降级路径均不触发，release 按原设计实现。**⛔→✅
 2. **highWater=16 之上订阅会话的行为**（F2 的彻底收口）✅ 已验证（2026-08-30）：实测同连接连开 17 个订阅会话（create+subscribe）全部成功、第 17 个无报错、第 1 个会话再 send 正常应答（未被驱逐出内存）、引擎日志零驱逐类事件——**订阅会话免驱逐在 highWater=16 之上依然成立**，F2 风险形态不变（不膨胀靠 release，不靠强制驱逐），G6 判据措辞无需修正。✅（与检查点 1 同批探针完成）
 3. **B-2 的并发面只验 3+1**：>4 会话长事件流的 stdio 背压维持一波观察项，不在本设计扩容。✅ 已登记
-4. **B-3 引擎侧观测面探针**：引擎自有日志 jsonl 中「stop 后 turn 终止」的事件形态未实证——W1-b 实施期先跑一次「abort 在飞会话」小探针确认 jsonl 里的可辨识帧；若形态不可辨识，B-3 引擎侧判据降级为「报告 aborted + stop 请求应答正常 + daemon 无 stop 失败警告」（runner 侧证据链），并在 B-3 行回填。⛔
+4. **B-3 引擎侧观测面探针 ✅ 已验证（2026-08-30，dev 四轮 + 主 agent 两轮，结论超出原预期）**：原判据「引擎自有日志 jsonl 含 stop 后 turn 终止事件」**不成立且根因更深**——`session/stop` 对 RPC 面在飞轮无打断能力（三态实证：生成早期/生成中期/工具执行中，stop 均应答成功但轮自然完成；引擎日志 hadActivePrompt 恒 false；bundle 源码对照 stop handler 只 abort `activeAbortController` 而 RPC send 轮不点亮该标志）。B-3 引擎侧判据按预设降级路径落地（runner 侧证据链：报告 aborted + stop 应答正常 + daemon 无 stop 失败警告），G3 判定标准同步改写；abort 的引擎侧不打断行为作为 D3 实证边界段如实登记（apc 通道 abort 相对 spawn SIGKILL 的已知 token 代价）。另附跨波发现：zsub 线 cancel 同样不打断引擎轮（zsub 用户视角取消即时不受影响，一波 Gate B 签收的即 runner 侧行为）——zsub 线改动 out of scope，登记待后续引擎支持 turn 级打断时统一接线。⛔→✅
 
 ## 6. 变更历史
 
@@ -258,3 +259,4 @@ daemon 形态（zflow/zsub MCP tool）：同一行提示追加在 tool 结果文
 | 2026-08-30 | 二轮复审修订（1 must-fix + 3 suggestion 全处理）：① DRIFT 常量导出现状更正（定义在 :349/:351 仍在、导出已被 79577a0 移除），D5/W2 领地/变更历史三处「已导出」表述改为「W2 实施须先恢复导出」；② 全文行号按新 HEAD 79577a0 重锚定（model-router :342-365、manager :150/:159/:504、argv :580 等），§2.1 锚点声明同步更新；③ §3.1 中止示例改 daemon 形态独立 runId（原示例与成功路径共用 CLI 本地 runId，恰是 D3 形态边界声明的 abort 不可达形态）；④ 检查点 1 补第④步（close 后 resume 可恢复性探针，覆盖 G6「可恢复」判据）。INFO 项（apc-smoke 清除点工程形态）维持原设计 | tech-design-review subagent round 2（1 must-fix + 3 suggestion + 1 info；报告 /tmp/design-review-zsw-wave2-round2.md；round-1 四条 must-fix 复审判定全部彻底修复） |
 | 2026-08-30 | 三轮收敛修订（0 must-fix，2 suggestion 补句级全处理）：① 检查点 1 第④步补独立降级路径（④ 单独失败时 G6/B-6 去掉「可恢复」字样，不阻塞 D2）+ 判据可操作化（resume 应答无错误码）；② D5 证据行组装时机改指 main() 调用点 :776（:351 为工厂内转发行） | tech-design-review subagent round 3（0 must-fix + 2 suggestion；报告 /tmp/design-review-zsw-wave2-round3.md，判定文档达可实施状态；三轮收敛轨迹 4→1→0） |
 | 2026-08-30 | W1-a 实施期检查点 1/2 探针结论回填（主 agent 裁决，亲验 read 用法与引擎日志后确认）：① 检查点 1 全四分支验证完成——④ 成立（close 态可 resume 且恢复后 read 读回全文，G6「可恢复」保留）；② 判据②观测面修正（read 是 active 内存面方法而非持久化面——未 close 会话跨进程 read 同样撞 -32004，对照实验分辨；persistence 保留改由 list 可见 + SQLite 记录 + close→resume→read 链三面实证；附随事实：persistence:immediate 落盘触发点是首个 send，空会话 close 无痕）；③ 判据③观测面降级（引擎不为 session/close 写专属日志事件，唯一痕迹 mcp.server.closed 为间接旁证；close 动作观测面改 runner 侧证据链「close 应答 + 同连接 send 撞 -32004」）；④ 检查点 2 验证完成（17/17 订阅会话免驱逐实锤，F2 形态不变）；G6 判定标准与 B-6 步骤/通过标准同步修正；D2 两档降级路径均不触发，release 按原设计实现 | dev-flow W1-a 探针上报（dev subagent 四轮迭代探针 + 主 agent 亲验 session/read 既有用法与引擎日志 mcp.server.closed 实物） |
+| 2026-08-30 | W1-b 实施期检查点 4 终论回填（结论超出原预期，触发 doc_errors 级修正）：session/stop 对 RPC 面在飞轮无打断能力（dev 四轮 + 主 agent 亲验两轮：生成早期/中期/工具执行中三态 stop 均应答成功但轮自然完成，引擎日志 hadActivePrompt 恒 false，bundle 源码对照确认 stop 只 abort activeAbortController 而 RPC send 轮不点亮该标志）。修正五处：§2.2 事实 4 改「runner 侧面已验」；D3 映射表 abort 行 + 新增实证边界段（abort 真实语义 = runner 侧即时取消 + 引擎侧轮自然完成，相对 spawn SIGKILL 的已知 token 代价，F3 引擎侧半边如实登记未消除）；G3 判定标准改写（判据不依赖引擎侧轮状态）；B-3 判据按预设降级路径落地（runner 侧证据链）。附跨波发现：zsub 线 cancel 同样不打断引擎轮（zsub 取消即时性不受影响），登记待引擎支持 turn 级打断时统一接线 | dev-flow W1-b 检查点 4 上报（dev subagent 探针结论「不可辨识」+ 主 agent 亲验生成中探针 104s 自然完成 + 引擎 bundle 源码 grep 定位 activeAbortController 机制） |

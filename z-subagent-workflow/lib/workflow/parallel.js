@@ -22,6 +22,9 @@
  *   终态或被 run-phase 杀停、条目保留，未启动的由 runPhase 预检返回 aborted
  *   条目。整体返回增量 status（'ok'|'failed'|'aborted'）与 abortedAtPhase
  *   （仅 aborted 携带）。
+ * - runner（wave2 D1 RunnerPort 透传契约见 run-phase.js 头注，与 signal 同链
+ *   同构）：透传给每次 runPhase；阶段条目经 phases 带出 channel 字段（实际
+ *   执行通道）。缺省时阶段走 spawn 直调旧行为。
  */
 
 const { runPhase } = require('./phases');
@@ -53,12 +56,13 @@ function isAborted(signal) { return !!signal && signal.aborted === true; }
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @param {object} [opts.runner] RunnerPort（wave2 D1 透传契约见 run-phase.js 头注）
  * @param {(e:{phase:string,status:string})=>void} [opts.onPhase]
  *        状态取值 'running'|'done'|'failed'|'aborted'
  * @param {(expected:number)=>void} [opts.onPlan]
  */
 async function runParallel({
-  task, perspectives, workdir, model, signal,
+  task, perspectives, workdir, model, signal, runner,
   maxConcurrent = 3, timeoutMsPerPhase = null, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
@@ -96,7 +100,7 @@ async function runParallel({
         `禁止修改任何文件（只读调查）。\n\n` +
         `## 输出格式\n以「## ${p} 视角分析」开头：1) 最重要的发现（按严重度排序，带文件路径证据）\n` +
         `2) 本视角下的改进建议。不超过 400 字。不要写其他视角的内容。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
     });
     if (entry.ok) outputs[i] = entry.response;
     if (!entry.aborted) completed++;
@@ -138,7 +142,7 @@ async function runParallel({
       `## 你的职责\n横向对比各视角结论，产出统一综合判断。\n\n` +
       `## 输出格式\n以「## 综合结论」开头：1) 各视角发现汇总表（视角 | 关键发现 | 严重度）\n` +
       `2) 视角间的冲突或互补点 3) 按优先级排序的行动建议（不超过 5 条）。\n不超过 600 字。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
   });
   phaseResults.push(agg);
   if (onPhase) onPhase({ phase: 'aggregate', status: agg.aborted ? 'aborted' : agg.ok ? 'done' : 'failed' });

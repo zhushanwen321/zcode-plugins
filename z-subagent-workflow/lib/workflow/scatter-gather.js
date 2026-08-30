@@ -21,6 +21,9 @@
  *   process 批中 abort 时已启动的子任务跑到终态或被杀停、结果保留，未启动的由
  *   runPhase 预检返回 aborted 条目。整体返回增量 status（'ok'|'failed'|'aborted'）
  *   与 abortedAtPhase（仅 aborted 携带）。
+ * - runner（wave2 D1 RunnerPort 透传契约见 run-phase.js 头注，与 signal 同链
+ *   同构）：透传给每次 runPhase；阶段条目经 phases 带出 channel 字段（实际
+ *   执行通道）。缺省时阶段走 spawn 直调旧行为。
  */
 
 const { runPhase } = require('./phases');
@@ -45,9 +48,10 @@ function isAborted(signal) { return !!signal && signal.aborted === true; }
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @param {object} [opts.runner] RunnerPort（wave2 D1 透传契约见 run-phase.js 头注）
  */
 async function runScatterGather({
-  task, subtaskCount, workdir, model, signal,
+  task, subtaskCount, workdir, model, signal, runner,
   maxConcurrent = 3, timeoutMsPerPhase = null, onPhase, onPlan,
 }) {
   const modelRef = modelRouter.resolve(model);
@@ -77,7 +81,7 @@ async function runScatterGather({
       `## 输出格式\n先用 2-3 句说明拆分思路，然后必须输出一个 \`\`\`json 围栏块：\n` +
       '```json\n{"subtasks":[{"name":"简短名称","description":"子任务详细描述（含涉及文件/范围）"}]}\n```\n' +
       `不要输出其他 json 块。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
   });
   if (onPhase) onPhase({ phase: 'scatter', status: scatter.aborted ? 'aborted' : scatter.ok ? 'done' : 'failed' });
   // 检查点（scatter 完成后）：aborted → process 批不启动（含 scatter 运行中被
@@ -130,7 +134,7 @@ async function runScatterGather({
         `## 你的子任务\n${st.name}: ${st.description}\n\n` +
         `## 约束\n只做本子任务边界内的事（允许修改/新建文件、运行命令验证），不要越界做其他子任务的事。\n\n` +
         `## 输出格式\n以「## ${st.name} 结果」开头：做了什么 / 改动清单（文件路径）/ 验证方式 / 未尽事项。不超过 400 字。`,
-      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+      cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
     });
     if (entry.ok) outputs[i] = entry.response;
     if (!entry.aborted) completed++;
@@ -173,7 +177,7 @@ async function runScatterGather({
       `## 你的职责\n先核对实际状态：运行 git status 与 git diff --stat（非 git 仓库用 ls 核对），对照各子任务自述。\n\n` +
       `## 输出格式\n以「## 最终报告」开头：1) 大任务整体完成度 2) 实际改动总清单 3) 子任务间的遗漏/重复/冲突\n` +
       `4) 遗留风险与建议。不超过 500 字。`,
-    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+    cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
   });
   phaseResults.push(gather);
   if (onPhase) onPhase({ phase: 'gather', status: gather.aborted ? 'aborted' : gather.ok ? 'done' : 'failed' });

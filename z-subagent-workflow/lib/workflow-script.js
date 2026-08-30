@@ -13,9 +13,10 @@
  *     run: async (ctx) => ({ markdown: '报告正文', json: {...} }),
  *   };
  *
- *   // ctx = { task, cwd, model, signal, timeoutMs,
+ *   // ctx = { task, cwd, model, signal, timeoutMs, runner?,
  *   //         runAgent: async ({prompt, cwd?, model?, timeoutMs?}) =>
- *   //              {ok, sessionId, response, usage, exitCode, timedOut, error?, aborted?, stderrTail},
+ *   //              {ok, sessionId, response, usage, exitCode, timedOut, channel,
+ *   //               error?, aborted?, stderrTail},
  *   //         log: (text) => void,   // 进度留痕（manager 侧收集，status() 可查）
  *   //         params: object }       // start 透传的 per-workflow 参数
  *   //
@@ -183,9 +184,11 @@ function findScript(name, cwd) {
 /**
  * ctx.runAgent 封装：脚本的每次 agent 调用 = 一个 zcode 无头阶段，内部走
  * lib/workflow/run-phase 的 runPhase——与内置 workflow 阶段同一执行落点
- * （AbortSignal 契约、SIGTERM→SIGKILL 超时链、结果形态完全一致）。
+ * （AbortSignal/RunnerPort 契约、超时链、结果形态完全一致）。
  * model 解析链：per-call model > 脚本级 ctx.model > ModelRouter 默认。
  * signal 透传：脚本级 signal 原样传给每个阶段（预置中止 → 零 spawn）。
+ * runner 透传（wave2 D1，与 signal 同链）：WorkflowManager 注入的 RunnerPort
+ * 原样传给每个阶段；缺省时 runPhase 保持 spawn 直调旧行为。
  */
 async function runAgent({ prompt, cwd, model, timeoutMs } = {}, baseCtx) {
   if (typeof prompt !== 'string' || prompt.trim() === '') {
@@ -201,6 +204,7 @@ async function runAgent({ prompt, cwd, model, timeoutMs } = {}, baseCtx) {
     modelRef,
     timeoutMs,
     signal: baseCtx.signal,
+    runner: baseCtx.runner,
   });
 }
 
@@ -214,7 +218,9 @@ async function runAgent({ prompt, cwd, model, timeoutMs } = {}, baseCtx) {
  *                               优先于 name/file。WorkflowManager 走此路：它需要
  *                               把「发现根 = workspace cwd」与「运行 cwd = workdir」
  *                               解耦，两个语义在直接调用方（CLI/测试）身上恰好同值）
- * @param {object} [opts.ctx]    {task, cwd, model, signal, timeoutMs, params?, log?}
+ * @param {object} [opts.ctx]    {task, cwd, model, signal, runner?, timeoutMs, params?, log?}
+ *                               （runner 为 wave2 D1 RunnerPort，缺省不传时
+ *                               runAgent 走 spawn 直调旧行为）
  * @returns {Promise<{name:string, description:string, markdown:string, json?:object}>}
  * @throws 脚本不存在/形状不合规/run 抛错/返回值不合规——均为可操作错误
  */
@@ -264,6 +270,7 @@ async function runScript({ name, file, script, ctx = {} }) {
     cwd: ctx.cwd,
     model: ctx.model,
     signal: ctx.signal,
+    runner: ctx.runner,
     timeoutMs: ctx.timeoutMs,
     params: ctx.params && typeof ctx.params === 'object' ? ctx.params : {},
     log: typeof ctx.log === 'function' ? ctx.log : () => {},

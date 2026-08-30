@@ -80,6 +80,10 @@
  * - abort（契约见 run-phase.js 头注）：opts.signal 缺省时行为完全不变；编排检查点全集
  *   见上。整体返回增量 status（'ok'|'failed'|'aborted'）与 abortedAtPhase（仅 aborted
  *   携带）；loop.status 细分终态（TERMINAL_STATUSES 的 U1 子集）。
+ * - runner（wave2 D1 RunnerPort 透传契约见 run-phase.js 头注，与 signal 同链同构）：
+ *   透传给每次 runPhase（review/aggregate/fix/fallow），阶段条目带 channel 字段；
+ *   经 INFRA_PARAM_KEYS 放行（基础设施注入键，不属 §3.4 领域参数面）。缺省时
+ *   阶段走 spawn 直调旧行为。
  */
 
 const fs = require('node:fs');
@@ -153,10 +157,11 @@ const DOMAIN_PARAM_KEYS = [
 ];
 /**
  * 基础设施注入键：WorkflowManager._invokeEntry / CLI 传入的非领域字段（不在 §3.4
- * 参数面内，但对入口可见）。白名单校验必须放行它们。
+ * 参数面内，但对入口可见）。白名单校验必须放行它们。runner 是 wave2 D1 的
+ * RunnerPort 透传（与 signal 同链，白名单不放行会被未知参数校验拒收）。
  */
 const INFRA_PARAM_KEYS = [
-  'task', 'workdir', 'model', 'signal', 'runId', 'onPhase', 'onPlan', 'maxConcurrent', 'timeoutMsPerPhase',
+  'task', 'workdir', 'model', 'signal', 'runner', 'runId', 'onPhase', 'onPlan', 'maxConcurrent', 'timeoutMsPerPhase',
 ];
 const KNOWN_PARAM_KEYS = new Set([...DOMAIN_PARAM_KEYS, ...INFRA_PARAM_KEYS]);
 /** batchN 动态键（batch1、batch2、…；N>=1，缺号报错——设计 §3.4）。 */
@@ -844,11 +849,12 @@ function normalizeParams(raw) {
  * @param {number} [opts.maxConcurrent=3]
  * @param {number} [opts.timeoutMsPerPhase] 单阶段超时（缺省 null = 无超时）
  * @param {AbortSignal} [opts.signal] 中止信号（契约见 run-phase.js 头注）
+ * @param {object} [opts.runner] RunnerPort（wave2 D1 透传契约见 run-phase.js 头注）
  * @returns {{runDir?: string}} 结果带 runDir（仅 runId 注入时）
  */
 async function runReviewFixLoop(raw = {}) {
   const P = normalizeParams(raw); // 非法参数在此可操作报错（含白名单/缺号/fallowScan 约束）
-  const { task, workdir, signal, onPhase, onPlan } = raw;
+  const { task, workdir, signal, runner, onPhase, onPlan } = raw;
   // maxConcurrent 缺省 3（v1）；边界与 run_workflow schema（minimum 1 / maximum 6）对齐：
   // zsw 无引擎层 schema 校验，等价实现为 clamp 静默修正（convergeNewIssues 同款惯例），
   // 防 runWithLimit 按超限值开满 worker 造成资源压力
@@ -1065,13 +1071,13 @@ async function runReviewFixLoop(raw = {}) {
         return runPhase({
           name: 'review', label: `R${round} 审查: ${r}`,
           prompt: fallowReviewPrompt({ instruction: reviewInstruction, base: state.meta.baseHash }),
-          cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+          cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
         });
       }
       return runPhase({
         name: 'review', label: `R${round} 审查: ${r}`,
         prompt: buildReviewPhasePrompt(r, round, scopedClean, priorActiveList, recheckScope),
-        cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+        cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
       });
     };
     // prompt 头段：审查者身份 + 限定复检标注 + 批次定位 + 任务背景 + 审查范围
@@ -1581,7 +1587,7 @@ const aggFallbackReason = (opts) => {
       const agg = await runPhase({
         name: 'aggregate', label: `R${round} 聚合`,
         prompt: buildAggregatePrompt(parsedReviews, priorActive),
-        cwd: workdir, modelRef: aggregatorModelRef, timeoutMs: timeoutMsPerPhase, signal,
+        cwd: workdir, modelRef: aggregatorModelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
       });
       phaseTimings.aggregate = Date.now() - aggMs0;
       phases.push(agg);
@@ -1960,7 +1966,7 @@ const aggFallbackReason = (opts) => {
       const fix = await runPhase({
         name: 'fix', label: `R${round} 修复 (${fixQueue.length} 项${suggestion > 0 ? ` + ${suggestion} 建议` : ''})`,
         prompt: buildFixPrompt(round, fixItems, suggestionItems, commitInstr),
-        cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal,
+        cwd: workdir, modelRef, timeoutMs: timeoutMsPerPhase, signal, runner,
       });
       phaseTimings.fix = Date.now() - fixMs0;
       phases.push(fix);
