@@ -15,7 +15,7 @@
 | 终态/机制 | §3 解决方案（§3.1 终态四路径 / §3.2 方案对比 A-D / §3.3 关键决策 D1-D6）+ §2.4 物理数据流 |
 | 验收场景表 | §4 验收（B-1 ~ B-9，含场景/步骤/通过标准/回溯列） |
 | 下一层拆分 | §5 下一层拆分（W1-a / W1-b / W1-c / W2 / W3 单元表 + 实施路径） |
-| 待验证检查点 | §5 末「待验证检查点（实施期门）」1-4（⛔ 1/2/4；✅ 3 已登记） |
+| 待验证检查点 | §5 末「待验证检查点（实施期门）」1-4（实施期均已收敛：1/2/4 ✅ 结论见设计 §5 检查点；3 ✅ 已登记） |
 
 ## 1 目标快照（逐字摘录）
 
@@ -41,7 +41,7 @@
 | Unit | 职责 | 领地（`z-subagent-workflow/` 前缀） | 依赖 | 隔离 | 验收条款 |
 |------|------|------|------|------|----------|
 | W1-a | RunnerPort 加 `release(exec)`：apc = session/close（控制面 1.5s best-effort）+ `_sessions` 注销；spawn = no-op；`exec.sessionId` 未回填 no-op。`wrapWithProbeInvalidation` 包装层按 `exec.kind` 转发 release。**先跑检查点 1 探针**（同一连接 create→subscribe→close 后 ①同连接 send 撞 -32004 ②read 仍可读 ③引擎日志 close 帧 ④close 态 resume 应答无错误码），按结论定实现形态（含两档降级）；附带检查点 2 探针（highWater=16 之上订阅会话行为），结论不阻塞 | lib/ports.js、lib/runner-appserver.js、lib/runner-spawn.js、lib/assemble.js、test/appserver.test.js | 无 | plain | ① 探针 1 四分支结论记录在案（①-④ 逐项判定；不成立项按 D2 降级并上报，主 agent 回填设计文档）② test/appserver.test.js 新增 release 单测绿：close 调用与超时 best-effort、sessionId 未回填 no-op、包装层按 kind 路由转发（fromCache 路径 release 非 undefined）③ `node --test test/appserver.test.js test/assemble.test.js` 绿 |
-| W1-b | **原子单元（设计 §5：拆开则中间态 run-phase 持 undefined runner 全线 TypeError）**：① run-phase 切 RunnerPort 三行范式（`capabilities().kind` → `prepareRunEnv(modelRef, kind)` → `runner.start`；abort 双检查窗口在「kind 读取/prepareRunEnv 之后、runner.start 之前」原样保留两点；abort 从 `run.cancel()` 改 `handle.cancel()`；条目加 `channel` 字段；done 落定后全终态 `runner.release?.(exec)` best-effort）② runner 透传链（WorkflowManager 构造注入 → `_invokeEntry` 挂 plan/opts → workflow 入口 → phases.runPhase → run-phase；workflow-script.js 脚本 ctx 同链；signal 同构先例）③ assembleManager 注入包装后 runner 实例；bin/zsw.js 与 dist/mcp/server.js 构造点核对（预期零改动——注入在 assemble 内部完成）④ 检查点 4 探针：abort 在飞会话后引擎 jsonl 的可辨识帧形态，不成立则 B-3 判据降级并上报 | lib/workflow/run-phase.js、lib/workflow/phases.js、lib/workflow/chain.js、lib/workflow/parallel.js、lib/workflow/map-reduce.js、lib/workflow/scatter-gather.js、lib/workflow/review-fix-loop.js、lib/workflow-script.js、lib/workflow-manager.js、lib/assemble.js、bin/zsw.js（核对）、dist/mcp/server.js（核对） | W1-a | plain | ① 既有 workflow 线测试全绿（行为不回归，领地内测试集见 §4）② 新增 fake-runner 单测绿：三行范式走 start、abort 双检查窗口两处、条目 channel 字段、全终态调 release ③ `node --test test/` 全量绿（翻转点跑全量，~3.5 分钟）④ 检查点 4 探针结论记录在案 |
+| W1-b | **原子单元（设计 §5：拆开则中间态 run-phase 持 undefined runner 全线 TypeError）**：① run-phase 切 RunnerPort 三行范式（`capabilities().kind` → `prepareRunEnv(modelRef, kind)` → `runner.start`；abort 双检查窗口在「kind 读取/prepareRunEnv 之后、runner.start 之前」原样保留两点；abort 从 `run.cancel()` 改 `handle.cancel()`；条目加 `channel` 字段；done 落定后全终态 `runner.release?.(exec)` best-effort）② runner 透传链（WorkflowManager 构造注入 → `_invokeEntry` 挂 plan/opts → workflow 入口 → phases.runPhase → run-phase；workflow-script.js 脚本 ctx 同链；signal 同构先例）③ assembleManager 注入包装后 runner 实例；bin/zsw.js 与 dist/mcp/server.js 构造点核对（预期零改动——注入在 assemble 内部完成）④ 检查点 4 探针：abort 在飞会话后引擎 jsonl 的可辨识帧形态，不成立则 B-3 判据降级并上报 | lib/workflow/run-phase.js、lib/workflow/phases.js、lib/workflow/chain.js、lib/workflow/parallel.js、lib/workflow/map-reduce.js、lib/workflow/scatter-gather.js、lib/workflow/review-fix-loop.js、lib/workflow-script.js、lib/workflow-manager.js、lib/assemble.js、bin/zsw.js（核对）、dist/mcp/server.js（核对）、test/run-phase.test.js（新增——dev task 声明的领地补充，run-phase 切端口后的直接单元测试面） | W1-a | plain | ① 既有 workflow 线测试全绿（行为不回归，领地内测试集见 §4）② 新增 fake-runner 单测绿：三行范式走 start、abort 双检查窗口两处、条目 channel 字段、全终态调 release ③ `node --test test/` 全量绿（翻转点跑全量，~3.5 分钟）④ 检查点 4 探针结论记录在案 |
 | W1-c | 测试翻转：既有 workflow 用例钉「spawn 显式回退」（ZSW_RUNNER=spawn 或 fake spawn runner），新增 apc 主链路用例（fake runner，不花 token）；README 已知边界重写（CLI 本地 run 每 workflow 一次引擎惰性启动 ~1-2s / CLI 本地形态 abort 为进程级语义）；CONTEXT.md env 面 | test/workflow-a.test.js、test/workflow-b.test.js、test/workflow-base.test.js、test/workflow-manager.test.js、test/workflow-script.test.js、test/review-fix-loop.test.js、（可新增 test/workflow-apc.test.js）、README.md、CONTEXT.md | W1-b | plain | ① 既有用例显式钉 spawn 回退且绿 ② 新增 apc 主链路用例绿 ③ `node --test test/` 全量绿 ④ B-9 CLI 臂真机验收：坏路径降级完成 + stderr 降级日志 + 条目 channel 如实；`ZSW_RUNNER=spawn` 对照行为不变 |
 | W2 | 升级检测出声：`resolveRunnerKind` 区分 miss 类型（「无该 CLI 条目」= 首次静默 /「有条目但 mtime 不匹配」= 升级）落 `~/.zcode/zsw/upgrade-notice.json`（`{cliPath, mtimeMs, detectedAt}` 原子写与 probe 缓存同款）；**恢复 DRIFT_SMOKE_CMD / DRIFT_FALLBACK_ENV 导出**（79577a0 已移除，恢复前 lazy require 拿到 undefined）；CLI 任意命令执行前查标记 stderr 出声；zsub/zflow MCP tool 结果尾部追加；apc-smoke 通过后删除标记 | lib/assemble.js、lib/runner-appserver.js（恢复导出）、bin/zsw.js、dist/mcp/server.js、test/e2e.test.js（apc-smoke 清除点）、test/assemble.test.js | W1-b | plain | ① test/assemble.test.js 新用例绿：miss 类型区分、标记原子写、冒烟通过清除语义、DRIFT 常量导出可 require ② B-8 CLI 臂真机验收：touch mtime → CLI stderr 提示 → 冒烟通过后标记删除提示不再出现 ③ `node --test test/assemble.test.js` 绿 |
 | W3 | 多引擎容忍面文档：runner-appserver.js 头注补「同 HOME 多引擎是设计内容忍面」断言（依据：写盘原子 + SQLite 多进程容忍 + 会话各建各的；约束未来改动：跨会话操作提案须先单引擎化）；README 排障节加条目：`lsof ~/.zcode/zsw/home-appserver/.zcode/cli/db/db.sqlite` 定位法（argv 无 HOME、pgrep 恒不匹配）+ 判读规则（短暂态 vs 残留 kill，数据不丢） | lib/runner-appserver.js（仅头注）、README.md | W1-c、W2 | plain | ① 头注断言含容忍依据与单引擎化前置约束 ② README 排障节含 lsof 定位法 + 判读规则 ③ `node --check lib/runner-appserver.js` 语法绿 |
@@ -64,13 +64,13 @@ graph TD
     U3["W3 多引擎排障文档<br/>领地: runner-appserver头注/README"]
   end
   UA -->|"release 被 W1-b 消费 + 同改 assemble.js"| UB
-  UB -->|"测试钉翻转后行为 + 同改 assemble.js"| UC
+  UB -->|"测试钉翻转后行为"| UC
   UB -->|"同改 assemble.js / bin/zsw.js / server.js"| UW
   UC -->|"同改 README.md"| U3
   UW -->|"同改 runner-appserver.js"| U3
 ```
 
-领地交集审计（全部被串行边覆盖）：assemble.js ∈ {W1-a→W1-b→W1-c, W2}；runner-appserver.js ∈ {W1-a, W2, W3}（W1-a→W1-b→W2→W3 传递覆盖）；README.md ∈ {W1-c, W3}；bin/zsw.js·dist/mcp/server.js ∈ {W1-b, W2}。Wave3 内 W1-c 与 W2 领地互斥（测试文件集不相交：workflow 6 文件 vs e2e/assemble 2 文件）。
+领地交集审计（全部被串行边覆盖）：assemble.js ∈ {W1-a, W1-b, W2}（W1-a→W1-b→W2 链覆盖）；runner-appserver.js ∈ {W1-a, W2, W3}（W1-a→W1-b→W2→W3 传递覆盖）；README.md ∈ {W1-c, W3}；bin/zsw.js·dist/mcp/server.js ∈ {W1-b, W2}。Wave3 内 W1-c 与 W2 领地互斥（测试文件集不相交：workflow 6 文件 vs e2e/assemble 2 文件）。
 
 ## 4 测试策略
 
@@ -79,7 +79,7 @@ graph TD
 | 面 | 命令 | 用途 |
 |----|------|------|
 | W1-a 增量 | `node --test test/appserver.test.js test/assemble.test.js` | release 单测 |
-| W1-b 增量（workflow 线测试集） | `node --test test/workflow-a.test.js test/workflow-b.test.js test/workflow-base.test.js test/workflow-manager.test.js test/workflow-script.test.js test/review-fix-loop.test.js test/manager.test.js test/execution.test.js test/cli-workflow-daemon.test.js test/appserver.test.js test/assemble.test.js` | 翻转不回归 |
+| W1-b 增量（workflow 线测试集） | `node --test test/run-phase.test.js test/workflow-a.test.js test/workflow-b.test.js test/workflow-base.test.js test/workflow-manager.test.js test/workflow-script.test.js test/review-fix-loop.test.js test/manager.test.js test/execution.test.js test/cli-workflow-daemon.test.js test/appserver.test.js test/assemble.test.js` | 翻转不回归 |
 | W1-b / W1-c 全量 | `node --test`（默认发现 test/，~3.5 分钟，含真实模型 e2e；注意本机 Node v24.11.1 下 `node --test test/` 会 MODULE_NOT_FOUND，用不带参数形态） | 翻转点 + 收口 |
 | W2 增量 | `node --test test/assemble.test.js` | 升级检测单测 |
 | W2 真机冒烟 | `node test/e2e.test.js --name apc-smoke` | B-8 清除语义（花少量 token） |
@@ -89,7 +89,7 @@ graph TD
 
 真机场景分层（B 表全部落在 Gate B 签收，CLI 可达臂提前到单元期）：
 
-- 单元期可跑（CLI 臂）：B-1（chain 默认通道）、B-4（超时两通道）、B-5（kill 引擎重建）、B-9（坏路径降级 + spawn 对照）、B-6①（引擎日志 close 帧）、B-7（嵌套诱导）、B-8①（CLI stderr）
+- 单元期可跑（CLI 臂）：B-1（chain 默认通道）、B-4（超时两通道）、B-5（kill 引擎重建）、B-9（坏路径降级 + spawn 对照）、B-6①（runner 侧 close 证据链：close 应答 {closed:true} + 同连接 send 撞 -32004；引擎日志 mcp.server.closed 仅旁证——检查点 1 判据③实测降级后口径）、B-7（嵌套诱导）、B-8①（CLI stderr）
 - Gate B 用户协同（daemon/MCP 形态）：B-2（daemon 臂并发 + 对照臂双终端）、B-3（zflow abort）、B-8②（MCP 结果尾部）——需 zcode 会话内调 zflow/zsub
 
 探针脚本纪律：检查点 1/2/4 探针为临时脚本，dev 收尾前清理不入库；探针结论由 dev 在返回结构 test_evidence 中给出，需回填设计文档的由主 agent 执行（doc 变更记 §6 变更历史）。
@@ -107,7 +107,8 @@ graph TD
 | 2026-08-30 | W1-b | dev 实现偏差（均采纳）：① channel 值域取 B-1 口径 'appserver'\|'spawn'（capabilities().kind 同源）② runner 缺省保留 spawn 直调旧行为（既有测试/直连库调用不炸，真实入口恒注入）③ review-fix-loop.js INFRA_PARAM_KEYS 加 'runner'（白名单透传必需）④ release 调用 await+吞错（条目返回=释放已发出可断言，无悬挂 promise 面）⑤ bin/zsw.js 与 dist/mcp/server.js 核对零改动（注入在 assemble 内部完成） | ① 与验收 B-1 一致 ② 原子单元中间态安全需要 ③ 不加则透传链断 ④ D2 边界 + 测试断言力 | 合理偏差固化 |
 | 2026-08-30 | W1-b | 测试命令形态修正：全量命令 `node --test test/` 在本机 Node v24.11.1 把 test/ 当模块解析报 MODULE_NOT_FOUND，实际可用形态 `node --test`（默认发现 test/ 目录），571 tests 等价覆盖 | Node 版本行为漂移，dev 实测发现 | 本计划 §4 已修正；仓库 AGENTS.md 的 `node --test test/` 同款问题登记备查（AGENTS.md 不在单元领地，留一致性审查或后续修正） |
 | 2026-08-30 | W2 | dev 四偏差（均采纳）：① e2e 清除点删真实 HOME 标记而非 ZSW_ROOT 隔离路径（e2e 进程隔离了 ZSW_ROOT，删隔离路径则真机清除链断裂；标记是提示性状态文件）② MCP 面挂点 = dispatchToolCall 统一出口（1.0.0+ MCP tool face offline 恒禁用消息，挂点就位 face 重启即生效；socket 面刻意不挂——CLI main 顶部已出声，重复无读者）③ DRIFT 常量行号微漂 :350/:352（预许可类别）④ CLI 面无进程内单测（真机 B-8 + 文案单测钉住，bin 导出面纪律只含纯解析函数） | ① 清除语义的真机闭环需要 ② 改动面最小 + 无重复读者 ③ 行号漂移预许可 ④ bin 形态约束 | 合理偏差固化；B-8 真机全链闭环（出声→冒烟清除→不再出声） |
-| 2026-08-30 | W1-c | dev 两偏差（均采纳）：① B-9① 判据口径收紧（路径本体缺失 → spawn 同源失败属 G5 诚实面；引擎面损坏 CLI 本体可用才是 G4 降级验证形态，变体臂实证全链）——设计 B-9 行已回填 ② README 顺带修正「最多 9 个 zcode 进程」过时表述（apc 默认下 workflow 阶段不再各自 spawn） | ① spawn 通道与 probe 同读 ZSW_ZCODE_CLI（driver.js:62），通道降级修不了 CLI 缺失 ② 翻转的应有部分避免文档自相矛盾 | 合理偏差固化；review-fix-loop.test.js 经核实为编排层状态机单测不涉通道语义，按最小改动面不翻（理由在案） |
+| 2026-08-30 | W1-c | dev 两偏差（均采纳）：① B-9① 判据口径收紧（路径本体缺失 → spawn 同源失败属 G5 诚实面；引擎面损坏 CLI 本体可用才是 G4 降级验证形态，变体臂实证全链）——设计 B-9 行已回填 ② README 顺带修正「最多 9 个 zcode 进程」过时表述（apc 默认下 workflow 阶段不再各自 spawn） | ① spawn 通道与 probe 同读 ZSW_ZCODE_CLI（driver.js:62），通道降级修不了 CLI 缺失 ② 翻转的应有部分避免文档自相矛盾 | 合理偏差固化；review-fix-loop.test.js 与 workflow-b.test.js 均为编排层状态机/行为单测不涉通道语义（grep runner = 0，全走缺省直调路径），按同一理由不翻——一致性审查 round 1 补登记 |
+| 2026-08-30 | 一致性审查 R1 | 一致性审查 round 1 reasonable 固化（8 条，区 A 3 + 区 B 5）：① release 连接不可用短路不拉起新引擎（D2 边界的实现补强）② miss 分类单点化 classifyProbeCacheLookup（缓存读取复用）③ 升级标记路径挂 config.zswRoot()（ZSW_ROOT 可覆盖，测试隔离免费获得）④ kind 读取提前到 abort 预检前（预置中止条目也带 channel）⑤ mapRunResult 提取为两路径共用映射（防条目映射漂移）⑥ phases 层 channel 条件展开（旧调用方兼容）⑦ workflow-apc 用例⑤降级翻转纳入离线回归面（优于计划覆盖）⑧ README 本地 run abort 补引擎 TaskStop 恢复指引（错误信息可操作） | 实现优于设计且不破坏设计目标，三区 reviewer 行级证据核实 | 合理偏差固化；doc_errors 12 条已由主 agent 修复（设计 6 处 + impl-plan 6 处，见设计 §6 变更历史末行与本表上下文） |
 
 ## 6 状态表
 
@@ -117,13 +118,13 @@ graph TD
 | W1-b | committed | 1 | e97a6f6（workflow 线测试集 299/299 + run-phase 单测 9/9 + 全量 568 pass/3 skip（既有占位）；检查点 4 终论已回填设计） |
 | W1-c | committed | 1 | b505cbb（翻转 70/70 + apc 主链路 3 用例 + 全量 581 pass/3 skip + B-9 两臂+变体臂） |
 | W2 | committed | 1 | a0d8724（83/83 + B-8 真机全链闭环） |
-| W3 | pending | 0 | — |
+| W3 | committed | 1 | 4aa2fa0（头注容忍断言 + README 排障节；语法绿） |
 
 ## 7 残留风险与变更历史
 
 ### 风险与已裁决偏差
 
-1. **W1-b 领地 12 文件，超全局 subagent「≤5 文件」约束**（W2 为 6 文件同类）。裁决理由：设计 §5 经三轮审查的原子性论证——执行落点与注入链拆批合入会产生「run-phase 已切端口但无人注入 runner」的破产中间态；12 文件中 7 文件为 ≤3 行机械透传（signal 同构先例）、2 文件为预期零改动核对、实质改写集中于 run-phase.js / workflow-manager.js / assemble.js；派发时 dev task 按文件逐个给精确改动点控制认知面。**此偏差需用户评审确认。**
+1. **W1-b 领地 12 文件，超全局 subagent「≤5 文件」约束**（W2 为 6 文件同类）。裁决理由：设计 §5 经三轮审查的原子性论证——执行落点与注入链拆批合入会产生「run-phase 已切端口但无人注入 runner」的破产中间态；12 文件中 7 文件为 ≤3 行机械透传（signal 同构先例）、2 文件为预期零改动核对、实质改写集中于 run-phase.js / workflow-manager.js / assemble.js；派发时 dev task 按文件逐个给精确改动点控制认知面。**此偏差已经用户评审确认（2026-08-30，dev-flow 计划评审问询：用户选「保持原子 12 文件（推荐）」并确认开工）。**
 2. 检查点 1 探针结论可能改变 release 实现形态（D2 两档降级）→ W1-a dev 上报后主 agent 改设计文档并记变更历史，不静默吸收。
 3. daemon/MCP 形态验收（B-2 daemon 臂 / B-3 / B-8②）需 zcode 会话内协同，Gate B 用户参与，不阻塞单元推进。
 4. 真机面（apc-smoke、B 场景、检查点 4 小 prompt）花少量 token，已按最小面设计。
