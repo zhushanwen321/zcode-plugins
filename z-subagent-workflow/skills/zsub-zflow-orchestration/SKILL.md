@@ -150,7 +150,7 @@ return { summary: '结果' };                     // scriptResult（任意可结
 
 要点：
 
-- `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道：appserver/spawn 同 zsub 线）；模型解析链 per-call model > run 级 `--model` > 默认。
+- `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道 = core zcode engine spawn 单轮，同 zsub 线）；模型解析链 per-call model > run 级 `--model` > 默认。
 - 脚本抛错 / worker 崩溃 = run 落 `done,failed`（core error-recovery 含崩溃重试）；abort 后 pending 的 agent() 调用立即拒绝。
 - 脚本同目录依赖用 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱内相对路径以 cwd 为基准，不能写相对 require）。
 - 开发流程：写脚本 → `lint` 校验（core lintScript）→ `scripts` 确认被发现 → `node bin/zsw.js workflow --workflow script:<名> --task ... --workdir ...`。

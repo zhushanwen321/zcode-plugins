@@ -15,9 +15,10 @@
          orchestration-host（workflow 编排宿主 = vendored subagent-core orchestration：
          configureCore 宿主端口 + FileRunStore + WorkerHostImpl + registry 内置资产注册，
          AgentRunner port 经 lib/agent-runner-adapter.js 桥回 zsw RunnerPort）
-端口层   RunnerPort        NotifierPort        ModelRouterPort
-          ├ SpawnRunner      ├ MailboxNotifier    ├ home-pool（spawn 配套）
-          └ AppServerRunner  └ PollingNotifier    └ per-session（apc 配套）
+端口层   RunnerPort                  NotifierPort        ModelRouterPort
+         └ runner-core（core zcode    ├ MailboxNotifier    └ 清单器（2c 瘦身，执行
+            engine spawn 单轮适配；    └ PollingNotifier      解析归 core 引擎
+            appserver 通道已退役）                            preparer）
 域层     resolver / prompt-builder / record-store / output-store / worktree / jsonout
          vendored core（lib/vendor/subagent-core/）：runWorkflow/lifecycle/error-recovery
          + workflows/ 内置 5 资产（chain/parallel/map-reduce/scatter-gather/review-fix-loop）
@@ -50,7 +51,7 @@ workflow 管理面（zflow 面六 action 的 CLI 入口；状态面 = `<zsw 数�
 
 ```bash
 # run（--action 缺省；恒本地同步执行，执行体 = CLI 进程，跑到终态退出并打报告。
-# agent() 调用默认走常驻引擎通道（apc），一次性进程每 run 付一次引擎惰性启动 ~1-2s。
+# agent() 每次调用 spawn 一个独立无头 zcode 进程（core zcode engine 单轮，~1-2s 冷启动/次）。
 # 需要「派发后做别的、完成唤醒」时用 Bash run_in_background 包裹整条命令，CLI 退出即引擎原生通知）
 node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
@@ -96,6 +97,49 @@ zsw 自有 workflow 运行时（WorkflowManager + lib/workflow/ 管线 + workflo
 | 返回 `{markdown, json}` 或字符串 | `return <scriptResult>`（任意可结构化克隆值；CLI 渲染为「message 行 + JSON 块」双段） |
 | 四根发现（`.agents/workflows` > `.zsw/workflows` 两级 × ws/HOME） | core 发现面（`.pi/workflows`、`.agents/workflows` × ws/HOME、`~/.zsw/workflows`）+ `<ws>/.zsw/workflows` 手工根；旧根大多保留但同名遮蔽优先级变化 |
 | 脚本同目录 require 相对路径（进程 cwd） | 必须 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱相对路径以 cwd 为基准） |
+
+**迁移对照完整示例**（任务「统计 src/ 代码量并总结质量」，`--subdirs` 自定义参数透传，无需特殊工具的形态）：
+
+```js
+// ---- 旧契约（lib/workflow-script.js 时代，已废弃）----
+// CJS module.exports + run(ctx)，daemon 内 fresh-require 执行
+module.exports = {
+  name: 'code-stats',
+  description: '统计 src/ 代码量并总结质量',
+  async run(ctx) {
+    ctx.log(`统计目录：${ctx.params.subdirs || 'src'}`);
+    const r1 = await ctx.runAgent({                       // r1 = {ok, sessionId, response, usage, ...}
+      prompt: `统计 ${ctx.cwd}/${ctx.params.subdirs || 'src'} 下 .js 文件数与总行数，只报数字`,
+      cwd: ctx.cwd, model: ctx.model, timeoutMs: 300000,
+    });
+    const r2 = await ctx.runAgent({
+      prompt: `基于统计结果写两句话质量总结：\n${r1.response}`, cwd: ctx.cwd, model: ctx.model,
+    });
+    return { markdown: `## 代码统计总结\n${r2.response}`, json: { stats: r1.response } };
+  },
+};
+```
+
+```js
+// ---- 新契约（core worker 脚本）----
+// @pi-meta 块注释 + top-level await，core worker 线程内执行
+/* @pi-meta
+name: code-stats
+description: 统计 src/ 代码量并总结质量
+phases: [stats, summarize]
+*/
+const target = `${$WORKSPACE}/${$ARGS.subdirs || 'src'}`;   // $ARGS = run 透传参数（--subdirs 白名单外 flag 自动进）
+const stats = await agent({
+  prompt: `统计 ${target} 下 .js 文件数与总行数，只回 JSON：{"files":n,"lines":n}`,
+  timeoutMs: 300000,                                        // model 缺省继承 run 级 --model
+  schema: { type: 'object', properties: { files: { type: 'number' }, lines: { type: 'number' } },
+            required: ['files', 'lines'] },                 // schema 传入 → 返回结构化对象
+});
+log(`统计完成：${stats.files} 文件 / ${stats.lines} 行`);    // core log 通道（stderr + 落盘）
+const summary = await agent({ prompt: `基于统计结果写两句话质量总结：${stats.files} 个文件，共 ${stats.lines} 行` });
+return { summary, stats };                                  // scriptResult（任意可结构化克隆值）
+```
+
 
 **D7 旧 wf- record 不可读**：旧 WorkflowManager 把 run 状态写 `~/.zcode/zsw/records.jsonl`（`recordType:'workflow'` 事件流）+ 报告落 `outputs/<runId>.md`，该线已退役——新 run 的状态面是 `<zsw 数据根>/workflow-state/<runId>.jsonl`（core FileRunStore append-only 快照，`status` action 的 `stateFile` 字段即此路径），报告不落盘（CLI stdout 直出 scriptResult）。旧 record/报告文件留在原位可人工查阅，但 CLI/MCP 不再解析。
 

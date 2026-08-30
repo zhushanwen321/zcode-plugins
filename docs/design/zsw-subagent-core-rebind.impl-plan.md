@@ -76,9 +76,9 @@ graph LR
 |------|------|------|----------|
 | U0-core-barrel | committed | 0 | 88d7eadc6（xyz-agent feat-subagent-core-host-surface：2336 测试绿/typecheck 零错/闭包守卫+--self-test 绿/bundle 704KB 自包含 17fn+3class 探针 11+/findIssueKey·translateId·R1 登记 Object.hasOwn 加固；node:sqlite 命中为 reader 惰性动态 import 字符串，node 内建非 npm 依赖，node20/21 降级路径与未打包一致——已知事实非缺陷） |
 | U1-vendor | committed | 0 | 8b8bc78（vendored npm@0.2.0 / 32 文件 / check-sync+check-pack 双绿 / 幂等+sha256 自检） |
-| U2-utils-2a | committed | 2 | dc6a771（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9） |
-| U3-flow-2b | committed | 0 | <U3 commit>（orchestration-host 9/0 + agent-runner-adapter 7/0 + 受影响面逐文件绿（非 e2e 全量绿）；CLI 冒烟：scripts 出 vendored 内置 5 + 四根用户脚本、lint 走 core lintScript；旧引用 grep 零残留、lib/workflow/ 目录删除；真机 run 留 U4/U5） |
-| U4-exec-2c | pending | 0 | — |
+| U2-utils-2a | committed | 2 | 691f393（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9；注：dc6a771 被 amend 为 691f393 以回填本表证据指针） |
+| U3-flow-2b | committed | 0 | 26175c7（orchestration-host 9/0 + agent-runner-adapter 7/0 + 受影响面逐文件绿（非 e2e 全量绿）；CLI 冒烟：scripts 出 vendored 内置 5 + 四根用户脚本、lint 走 core lintScript；旧引用 grep 零残留、lib/workflow/ 目录删除；真机 run 留 U5） |
+| U4-exec-2c | committed | 0 | 84b63a0（runner-core 20/0 含 V3 三形态断言；非 e2e 全量 302/302 绿；ZSW_RUNNER=appserver 退役报错；grep 零残留；检查点 3 调研记录入 §7；净删 ~6500 行） |
 | U5-accept | pending | 0 | — |
 
 ## 7 残留风险与变更历史
