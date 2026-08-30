@@ -4,17 +4,25 @@
  * review-fix-loop-utils 纯函数单测（u-foundation）。
  *
  * 隔离说明（对比 workflow-b.test.js 的 env 隔离头注惯例）：本文件只测纯函数——
- * 无 I/O、无 spawn、不触碰 ~/.zcode 与工作目录，被测模块零 require，
- * 因此无需 ZSW_ROOT/HOME/ZCODE_MAILBOX_ROOT 隔离，也不需要临时 workdir。
+ * 无 I/O、无 spawn、不触碰 ~/.zcode 与工作目录（被测 vendored 资产仅顶层
+ * require node:path，无副作用；常量断言块额外 require 编排层 review-fix-loop.js，
+ * 其模块加载同样无 I/O），因此无需 ZSW_ROOT/HOME/ZCODE_MAILBOX_ROOT 隔离，
+ * 也不需要临时 workdir。
  *
  * 用例语义对齐 pi 仓 src/__tests__/review-fix-loop-utils.test.ts（vitest），
- * 以 node:test 重写；每个 vendor 函数覆盖主路径 + 边界（漂移 ID/空入参/幂等等）。
+ * 以 node:test 重写；每个 vendored core 纯函数覆盖主路径 + 边界（漂移 ID/空入参/
+ * 幂等等）。纯函数层经 lib/core-ref 解析 vendored subagent-core 资产；zsw 侧
+ * 契约常量（SEVERITIES 等 5 个）pi 源无对应物，在编排层 review-fix-loop.js
+ * 定义——见文末常量断言块。
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const u = require('../lib/workflow/review-fix-loop-utils');
+const { workflowAssetPath } = require('../lib/core-ref');
+const loop = require('../lib/workflow/review-fix-loop');
+
+const u = require(workflowAssetPath('review-fix-loop-utils.cjs'));
 
 // ── wrapUntrusted（D10 防注入包裹）────────────────────────────────
 
@@ -147,18 +155,20 @@ test('findIssueKey: 边界——空入参/非 string/null issues → undefined�
 
 test('findIssueKey: 原型链保留键不判追踪（MF-1）——修复前空表 "__proto__" 命中 Object.prototype', () => {
   // 修复前：首行 truthy 查表让 ({})['__proto__'] 命中 Object.prototype 返回 '__proto__'，
-  // 未追踪条目被误判已追踪，下游 issues[key].status 写入污染原型
-  assert.equal(u.findIssueKey({}, '__proto__'), undefined);
-  assert.equal(u.findIssueKey({}, 'constructor'), undefined);
+  // 未追踪条目被误判已追踪，下游 issues[key].status 写入污染原型。
+  // zsw 实际调用面是编排层的消毒包装（vendored 原版仍为 truthy 查表，待上游对齐），
+  // 护栏测包装出口 loop.findIssueKey
+  assert.equal(loop.findIssueKey({}, '__proto__'), undefined);
+  assert.equal(loop.findIssueKey({}, 'constructor'), undefined);
 
   const issues = { 'MF-1': { severity: 'major' } };
-  assert.equal(u.findIssueKey(issues, '__proto__'), undefined);
-  assert.equal(u.findIssueKey(issues, 'constructor'), undefined);
-  assert.equal(u.findIssueKey(issues, 'prototype'), undefined);
+  assert.equal(loop.findIssueKey(issues, '__proto__'), undefined);
+  assert.equal(loop.findIssueKey(issues, 'constructor'), undefined);
+  assert.equal(loop.findIssueKey(issues, 'prototype'), undefined);
   // 原型链无污染、漂移容忍不受影响（"只换首行查表"的回归护栏）
   assert.equal(Object.keys(issues).length, 1);
-  assert.equal(u.findIssueKey(issues, 'mf-1'), 'MF-1');
-  assert.equal(u.findIssueKey(issues, 'MF-1 (fixed)'), 'MF-1');
+  assert.equal(loop.findIssueKey(issues, 'mf-1'), 'MF-1');
+  assert.equal(loop.findIssueKey(issues, 'MF-1 (fixed)'), 'MF-1');
 });
 
 test('normIssueId: 大小写/尾注/trim 归一；空与非字符串兜底', () => {
@@ -477,19 +487,19 @@ test('updateStuckState: 下降重置后重新累计（[5,4,4,4] 第 4 轮 stuck�
   assert.equal(u.updateStuckState(-1, 999, 0, 1).stuckCount, 0);
 });
 
-// ── zsw 侧契约常量 ────────────────────────────────────────────────
+// ── zsw 侧契约常量（pi/core 源无对应物，新家在编排层 review-fix-loop.js）──
 
 test('契约常量: TERMINAL_STATUSES 对齐设计 §3.4 十值终态枚举', () => {
-  assert.deepEqual(u.TERMINAL_STATUSES, [
+  assert.deepEqual(loop.TERMINAL_STATUSES, [
     'clean', 'converged', 'stuck', 'needs-redesign', 'max-rounds',
     'fixed-unverified', 'review-failed', 'fix-failed', 'aggregator-failure', 'aborted',
   ]);
 });
 
 test('契约常量: ISSUE_STATUSES 五值；severity 集合与排序权重一致', () => {
-  assert.deepEqual(u.ISSUE_STATUSES, ['open', 'fix-attempted', 'fixed', 'regressed', 'deferred']);
-  assert.deepEqual(u.SEVERITIES, ['critical', 'major', 'minor']);
-  assert.deepEqual(u.MUST_FIX_SEVERITIES, ['critical', 'major']);
-  assert.ok(u.SEVERITY_RANK.critical > u.SEVERITY_RANK.major);
-  assert.ok(u.SEVERITY_RANK.major > u.SEVERITY_RANK.minor);
+  assert.deepEqual(loop.ISSUE_STATUSES, ['open', 'fix-attempted', 'fixed', 'regressed', 'deferred']);
+  assert.deepEqual(loop.SEVERITIES, ['critical', 'major', 'minor']);
+  assert.deepEqual(loop.MUST_FIX_SEVERITIES, ['critical', 'major']);
+  assert.ok(loop.SEVERITY_RANK.critical > loop.SEVERITY_RANK.major);
+  assert.ok(loop.SEVERITY_RANK.major > loop.SEVERITY_RANK.minor);
 });

@@ -1,6 +1,6 @@
 # zsw 回接 subagent-core（P2）实施计划
 
-基线: <本文件基线 commit，见状态表> | 来源设计: `/Users/zhushanwen/Code/xyz-agent-workspace/dev-0.9.11/docs/design/subagent-core-package-extraction.md`（权威，两轮对抗审查 must_fix==0 + 实现后一致性审查 r5 收敛 0/0/0） | 日期: 2026-08-30
+基线: 6c2151f | 来源设计: `/Users/zhushanwen/Code/xyz-agent-workspace/main/docs/design/subagent-core-package-extraction.md`（权威，两轮对抗审查 must_fix==0 + 实现后一致性审查 r5 收敛 0/0/0；原 dev-0.9.11 分支已于 2026-08-30 经 PR #194 合入 main 并删除，core 0.2.0 已发 npm） | 日期: 2026-08-30
 
 用户授权（2026-08-30 本会话原话）：「整体可以将当前项目的插件删除重构，或者你认为的最合适的方式进行重构。历史代码可以不需要不保留」——据此：appserver 通道按 D6-⑥ 直接退役、`script:<name>` 旧契约按 D6-⑧ 显式 break（不保留降级旧通道）、不受「复刻旧段」义务约束的壳面简化均可做。
 
@@ -63,14 +63,17 @@ graph LR
 | 4 | D6-⑧ 降级路径不启用（不保留 workflow-script.js 旧契约通道） | 「降级路径：壳侧保留 workflow-script.js 作自定义脚本专用通道」 | 用户删除重构授权；旧通道与新 worker 契约双轨即新分叉源，与设计根因（双权威源）相悖 |
 | 5 | dev-flow「用户评审计划」门以用户会话内显式授权替代 | dev-flow plan.md [MANDATORY] | 用户 2026-08-30 原话授权「你认为的最合适的方式进行重构」；DAG/单元切分沿设计 D6 自身的三步次序，低争议 |
 | 6 | 零依赖红线条款修订为「vendored 例外」而非「dependencies 允许名单」 | handoff 决策 #1「check-sync 放行方案（允许名单/豁免）」 | check-sync 规则 4 本体不动（package.json 仍零 dependencies）；例外落点为「构建期 vendor 产物 + 刷新脚本 + 字节校验」，与仓内 shared/ 先例同构 |
+| 7 | vendor 源首选 npm tarball（0.2.0 已发布），本地 core 构建为 0.3.0 预留 `--local` 通道 | 设计 §4 前置门「file: 本地链接联调」 | core 0.2.0 已发 npm（registry versions=[0.2.0]）；npm 源的溯源链（版本+sha256）强于本地路径链接，file: 联调的等价物降级为 `--local` 通道（bundle 落地前 requireCore 不可用，capability 如实记录） |
+| 8 | 5 个 zsw 契约常量（SEVERITIES/SEVERITY_RANK/MUST_FIX_SEVERITIES/TERMINAL_STATUSES/ISSUE_STATUSES）迁入编排层 `review-fix-loop.js` 自有+转出口 | 分叉点③登记「zsw 侧新增，pi 无此形态」 | 常量是编排契约面而非纯函数层内容；归位消费方后分叉点③消灭，不向 core 注入 pi 没有的形态；U3 切 core 编排资产后自然消亡 |
+| 9 | `findIssueKey` 编排层消毒包装（`Object.hasOwn` 首行），MF-1 护栏改测包装出口 | 分叉点⑥（2026-08-30 zsw 侧 MF-1 修复，core 资产为 pi 原版 truthy 查表） | vendored 资产禁改 + 护栏不削；上游修复（core workflows 资产 findIssueKey + 主脚本自查）已记入 U0 批次，落地后包装变恒等、随上游对齐拆除（登记「待上游对齐」）——本条即设计失败模式 B（行为不一致各自修）的活案例与根治路径 |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| U0-core-barrel | pending | 0 | — |
-| U1-vendor | pending | 0 | — |
-| U2-utils-2a | pending | 0 | — |
+| U0-core-barrel | blocked（待用户授权 xyz-agent 仓新分支/worktree；范围追加上游 MF-1 加固） | 0 | — |
+| U1-vendor | committed | 0 | 8b8bc78（vendored npm@0.2.0 / 32 文件 / check-sync+check-pack 双绿 / 幂等+sha256 自检） |
+| U2-utils-2a | committed | 2 | dc6a771（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9） |
 | U3-flow-2b | pending | 0 | — |
 | U4-exec-2c | pending | 0 | — |
 | U5-accept | pending | 0 | — |
@@ -85,4 +88,6 @@ graph LR
 5. core 仓 dev-0.9.11 分支未 push（ahead 110）——本计划 U0 在其上追加 commit，不 push（授权留用户）。
 
 **变更历史**：
-- 2026-08-30 计划创建（基线 commit 见 git log）。
+- 2026-08-30 计划创建（基线 6c2151f）。
+- 2026-08-30 U0 改道：原目标分支 dev-0.9.11 被用户合并（PR #194）并删除、core 0.2.0 发 npm——U0 改为基于 main 的新分支，**因全局规则 17（新分支/worktree 须用户授权）阻塞待裁决**；U1 vendor 源相应改为 npm tarball 优先（偏差 #7）。执行期间 dev-0.9.11 worktree 消失导致首个 U0 worker 产出丢失（未在任何分支留痕，无污染）。
+- 2026-08-30 U1 committed（8b8bc78）；U2 执行中发现分叉点③（常量）与⑥（MF-1 消毒）为实质内容差异，处置见偏差 #8/#9。

@@ -11,7 +11,7 @@
  *   maxFixAttempts/aggregatorModel/reviewPrompt/fixPrompt/fallowScan/autoCommit
  *   （U1 只接收+校验+透传，U2/U3 接线消费）；未知参数名一律报错并列合法清单（防 batchN 拼错静默失效）。
  * - 批次外环：批间串行，前一批非 clean 即终止整个 run（前置批次失败后续审查无意义）；
- *   跨批 skip 用 vendor 纯函数（shouldSkipAgent/recordAgentClean/recordAgentDirty）
+ *   跨批 skip 用 vendored core 纯函数（shouldSkipAgent/recordAgentClean/recordAgentDirty）
  *   维护 agentStatus——维度在某批 clean 时快照 fixCount，后续批启动时其 clean 批次更早
  *   且 fixCount 未变 → 跳过该维度（S4）。clean 集合语义统一为「维度名」。
  * - runDir（D4）：runId 由 WorkflowManager._invokeEntry 注入，建 ~/.zcode/zsw/rfl/<runId>/；
@@ -84,6 +84,10 @@
  *   透传给每次 runPhase（review/aggregate/fix/fallow），阶段条目带 channel 字段；
  *   经 INFRA_PARAM_KEYS 放行（基础设施注入键，不属 §3.4 领域参数面）。缺省时
  *   阶段走 spawn 直调旧行为。
+ * - 纯函数层（reconcile 状态机/fixer 契约校验/跨批 skip 状态机/防注入包裹等）
+ *   require vendored subagent-core 资产（lib/vendor/subagent-core/workflows/，
+ *   经 lib/core-ref 单一解析点——仓内不再维护拷贝）；zsw 侧契约常量（SEVERITIES
+ *   等 5 个，设计 §3.4）pi 源无对应物，由本模块自行定义（见契约常量块）。
  */
 
 const fs = require('node:fs');
@@ -96,12 +100,21 @@ const config = require('../config');
 // git 出口一律 execFileSync 参数数组（不经 shell，对齐 lib/worktree.js 不变量——
 // target 等外部输入做 argv 元素传给 git，杜绝元字符在 shell 层被解释）
 const { execFileSync } = require('node:child_process');
+const { workflowAssetPath } = require('../core-ref');
+// 纯函数层（reconcile 状态机/fixer 契约校验/跨批 skip 状态机/防注入包裹等）require
+// vendored subagent-core 资产——经 core-ref 单一解析点取路径（vendor 布局调整只改
+// core-ref，禁止各自拼路径或走 node_modules 解析）。zsw 侧契约常量（SEVERITIES 等
+// 5 个）pi 源无对应物、不在此资产内，由本模块自有（见下方契约常量块）。
 const {
   shouldSkipAgent,
   recordAgentClean,
   recordAgentDirty,
   updateStuckState,
-  findIssueKey,
+  // vendored findIssueKey 以别名引入：原版首行 truthy 查表会让原型链属性
+  // （"__proto__"/"constructor"/"toString" 等）命中——MF-1；编排层调用点统一走
+  // 下方同名消毒包装 findIssueKey。normIssueId 为包装的归一化回退段所用
+  findIssueKey: findIssueKeyRaw,
+  normIssueId,
   filterActiveIds,
   wrapUntrusted,
   reconcileIssues,
@@ -111,10 +124,7 @@ const {
   computeKnownRemaining,
   normalizeFixResult,
   validateFixResult,
-  SEVERITIES,
-  SEVERITY_RANK,
-  MUST_FIX_SEVERITIES,
-} = require('./review-fix-loop-utils');
+} = require(workflowAssetPath('review-fix-loop-utils.cjs'));
 const { buildPrompt } = require('../prompt-builder');
 
 // 模块级单例：resolve 无解析状态；与 run-phase.js 同一约定（见其头注）。
@@ -130,6 +140,27 @@ const DEFAULT_CONVERGE_ROUNDS = 2;
 const DEFAULT_MAX_FIX_ATTEMPTS = 2;
 const TARGET_TYPES = ['git-diff', 'file', 'dir', 'text'];
 const DEFAULT_TARGET_TEXT = 'git 未提交改动';
+
+// ── zsw 侧契约常量（设计 §3.4；pi/core 源无对应物，vendored 资产不含——编排层自有）──
+
+/** loop 终态枚举（设计 §3.4）：state.meta.terminated 与 loop.status 的值域（fixed-unverified 为 zsw 特有保留）。 */
+const TERMINAL_STATUSES = [
+  "clean", "converged", "stuck", "needs-redesign", "max-rounds",
+  "fixed-unverified", "review-failed", "fix-failed", "aggregator-failure", "aborted",
+];
+
+/** state.issues[].status 值域（设计 §3.4 state 字段）。 */
+const ISSUE_STATUSES = ["open", "fix-attempted", "fixed", "regressed", "deferred"];
+
+/** severity 全等级集合（reviewer/聚合契约枚举，设计 §3.4）。 */
+const SEVERITIES = ["critical", "major", "minor"];
+
+/** must-fix 等级集合（聚合 must_fix 计数与 ES3 硬校验的判定面）。 */
+const MUST_FIX_SEVERITIES = ["critical", "major"];
+
+/** severity 排序权重（越大越严重；v2 编排的条目排序/最高等级归并比较用）。 */
+const SEVERITY_RANK = { critical: 3, major: 2, minor: 1 };
+
 // 审查材料尺寸护栏阈值（材料注入设计 §3.3 D2）：材料总字符超过即不整块注入，改为
 // 按文件分组轮转分配（组数 = 活跃 reviewer 数）。约 40 万 tokens，为 GLM 上下文留
 // ≥4 倍余量；硬编码不可配（v1 不加参数，YAGNI——实测需要时再加）。
@@ -335,6 +366,26 @@ function safeReviewerKey(name) {
   const sanitized = `${name}_`;
   process.stderr.write(`[zsw] WARN: reviewer 维度名 "${name}" 为原型链保留键，已消毒为 "${sanitized}" 入 skip 状态机\n`);
   return sanitized;
+}
+
+/**
+ * MF-1 键消毒版 findIssueKey（待上游对齐）：vendored core 资产原版（findIssueKeyRaw）
+ * 首行 truthy 查表会让原型链属性（"__proto__"/"constructor"/"toString" 等）命中——
+ * 空表传入 "__proto__" 即返回 '__proto__'，未追踪被误判已追踪，下游 issues[key].status
+ * 写入污染原型。编排层全部调用点（alignIssueToState / reconciliation prev_id 归一 /
+ * fixer fixes·deferred 交叉核对）统一走本包装：首查改 Object.hasOwn 自有属性判定，
+ * 漂移容忍语义（normIssueId 归一化回退）与 pi 原版逐字一致。上游 core 资产修复后
+ * 本包装变恒等，届时随上游对齐拆除（分叉点⑥登记「待上游对齐」）。
+ */
+function findIssueKey(issues, issueId) {
+  if (!issues || typeof issueId !== "string" || !issueId) return undefined;
+  if (Object.hasOwn(issues, issueId)) return issueId;
+  const norm = normIssueId(issueId);
+  if (!norm) return undefined;
+  for (const key of Object.keys(issues)) {
+    if (normIssueId(key) === norm) return key;
+  }
+  return undefined;
 }
 
 /**
@@ -2273,10 +2324,19 @@ function lastActiveBatch(summaries, batchTotal) {
 module.exports = {
   runReviewFixLoop,
   DEFAULT_REVIEWERS,
+  // zsw 侧契约常量（pi/core 源无对应物，编排层自有——review-fix-loop-utils.test.js
+  // 常量断言块消费；纯函数面在 vendored core 资产，不经本模块转出口）
+  TERMINAL_STATUSES,
+  ISSUE_STATUSES,
+  SEVERITIES,
+  MUST_FIX_SEVERITIES,
+  SEVERITY_RANK,
   // 测试触达面（review-fix-loop-utils.test.js 同构）：MF-1 键消毒原语与追踪表
   // 直写点——编排层闭包（consumeFixResults/recordRoundAgents 等）不可直接
-  // require，经这几处覆盖
+  // require，经这几处覆盖。findIssueKey 为消毒包装出口（待上游对齐，见其注释），
+  // 护栏用例守护 zsw 实际调用面
   safeIssueKey,
   safeReviewerKey,
+  findIssueKey,
   updateIssuesFromAggregation,
 };

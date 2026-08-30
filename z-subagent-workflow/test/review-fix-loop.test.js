@@ -4,13 +4,14 @@
  * review-fix-loop.js 编排层单测（MF-1 原型链键消毒，2026-08-30）：
  * safeIssueKey 原语 + updateIssuesFromAggregation 直写点。闭包内写点
  * （consumeFixResults deferred 分支、collectReconDecls prev_id 兜底）经同一
- * 原语消毒，不重复搭 LLM 桩；vendor 侧（findIssueKey/reconcileIssues）回归在
- * review-fix-loop-utils.test.js。runReviewFixLoop 全链路由 e2e 覆盖。
+ * 原语消毒，不重复搭 LLM 桩；vendored core 资产侧（findIssueKey/reconcileIssues）
+ * 回归在 review-fix-loop-utils.test.js。runReviewFixLoop 全链路由 e2e 覆盖。
  */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
+const { workflowAssetPath } = require('../lib/core-ref');
 const loop = require('../lib/workflow/review-fix-loop');
 
 // stderr WARN 捕获（safeIssueKey 重写必留痕，防静默丢弃回归）
@@ -75,7 +76,7 @@ test('updateIssuesFromAggregation: 既有条目 upsert 语义不变（消毒对�
 });
 
 test('safeReviewerKey: "__proto__"/"constructor" 维度名消毒——recordAgentClean/Dirty 写侧不污染原型（MF-1 同族）', () => {
-  const { recordAgentClean, recordAgentDirty } = require('../lib/workflow/review-fix-loop-utils');
+  const { recordAgentClean, recordAgentDirty } = require(workflowAssetPath('review-fix-loop-utils.cjs'));
 
   const [cleanKey, cleanWarns] = captureWarn(() => loop.safeReviewerKey('__proto__'));
   assert.equal(cleanKey, '__proto___');
