@@ -54,6 +54,12 @@ const BIN = path.join(REPO, 'bin', 'zsw.js');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-e2e-daemon-'));
 
+// 测试进程数据根隔离（config.zswRoot() 调用时读 env，gate 首次运行前生效即可）：
+// modelGate 的 `new CoreRunner()` 配额探测会引导引擎池 HOME 目录——不隔离则落在
+// 真实 ~/.zcode/zsw/engines/（凭据源 v2ConfigPath 冻结自真实 HOME，与 ZSW_ROOT
+// 无关，隔离无副作用）。daemon 子进程另有场景级 env（newScenario）。
+process.env.ZSW_ROOT = path.join(TMP, 'gate-zsw-root');
+
 const MODEL = process.env.ZSW_E2E_MODEL || 'GLM-5.3'; // 真机模型可配置（与现有 e2e 同款约定）
 const MODEL_REF = MODEL.includes('/') ? MODEL : `builtin:bigmodel-coding-plan/${MODEL}`;
 const GAP_MS = Number(process.env.ZSW_E2E_GAP_MS || 20000);

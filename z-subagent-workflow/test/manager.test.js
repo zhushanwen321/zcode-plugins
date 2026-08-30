@@ -730,6 +730,115 @@ test('recover：共享 store 的 workflow record 不进 subagent 探活循环', 
   assert.equal(records.get(wf).lostReason, undefined, '事件流未被 subagent 语义的 lostReason 污染');
 });
 
+// ------------------------------------- exec 异步回填 pid 持久化（A5 回归）
+
+/**
+ * 模拟 core 引擎形态的 fake runner：start 返回的 exec 无 pid，异步分阶段
+ * 回填 engineId → pid 并回调 hooks.onExec 快照——钉「running 转换事件落盘的
+ * exec 无 pid 时，pid 就绪必须追加 update 事件」的持久化通道（standby 从
+ * 磁盘 rebuild 后 alive 探活的依据；e2e-daemon A5 红 1 的根因形态）。
+ */
+class AsyncExecPidRunner {
+  constructor() {
+    this.startCalls = 0;
+    this.livePids = new Set();
+    this._resolveDone = null;
+    this.exec = null;
+  }
+  capabilities() { return { kind: 'spawn', steering: 'none', coldStartMs: 0 }; }
+  start(taskCtx, hooks = {}) {
+    this.startCalls += 1;
+    const exec = { kind: 'spawn', pid: undefined, sessionId: undefined, engineId: undefined, cwd: taskCtx.cwd };
+    this.exec = exec;
+    // 快照通道契约：record.exec 被 update 快照替换后不再共享本引用——所有
+    // 回填点（含 done 前 sessionId）都必须经 onExec 通知，同真 CoreRunner
+    this._hooks = hooks;
+    const pid = 41000 + this.startCalls;
+    const notify = () => { if (hooks.onExec) hooks.onExec({ ...exec }); };
+    // 引擎异步 prepare（路由）→ spawn 两阶段回填，与 CoreRunner 真实时序同构：
+    // start() 同步返回后 pid 才出现（exec 对象变异）
+    setTimeout(() => { exec.engineId = 'zcode'; notify(); }, 5);
+    setTimeout(() => { exec.pid = pid; this.livePids.add(pid); notify(); }, 15);
+    const done = new Promise((res) => { this._resolveDone = res; });
+    return { exec, cancel: () => this._resolveDone({ status: 'cancelled', response: '' }), done };
+  }
+  /** 对齐 CoreRunner 语义：done 前 sessionId 回填并经 onExec 通知落盘。 */
+  finish(result) {
+    if (result && result.sessionId && this.exec) {
+      this.exec.sessionId = result.sessionId;
+      if (this._hooks && this._hooks.onExec) this._hooks.onExec({ ...this.exec });
+    }
+    this._resolveDone(result);
+  }
+  resume() { throw new Error('测试用 runner 不支持 resume'); }
+  alive(x) { return Boolean(x && this.livePids.has(x.pid)); }
+}
+
+test('exec 异步回填 pid：running 事件无 pid 时追加 update 事件，磁盘 rebuild 后 alive 可判（A5 回归）', async () => {
+  const c = ctx();
+  const runner = new AsyncExecPidRunner();
+  const { manager, records } = buildManager({ runner });
+  const h = await manager.start({ task: '长任务书', slug: 'async-pid' }, c);
+
+  // running 转换事件已落盘，且其序列化的 exec 无 pid（JSON 丢 undefined——
+  // 与真 core 引擎「transition 先于 spawn」的时序一致，即 A5 红 1 场景）
+  await waitFor(() => records.get(h.subagentId).status === 'running');
+  const events = () => fs.readFileSync(recordsPath(), 'utf8').trim().split('\n')
+    .filter((l) => l !== '').map((l) => JSON.parse(l));
+  const runningEv = events().find((e) => e.type === 'transition' && e.to === 'running');
+  assert.ok(runningEv, 'running 转换事件已落盘');
+  assert.ok(!(runningEv.exec && Number.isInteger(runningEv.exec.pid)),
+    'running 事件序列化时 exec 无 pid（异步 spawn 形态，测试前提成立）');
+
+  // pid 就绪 → 必须追加 update 事件（磁盘获得 pid）
+  await waitFor(() => {
+    const r = records.get(h.subagentId);
+    return r && r.exec && Number.isInteger(r.exec.pid) ? r : null;
+  });
+  assert.ok(events().some((e) => e.type === 'update' && e.exec && Number.isInteger(e.exec.pid)),
+    'pid 就绪后必须追加含 pid 的 update 事件（standby 探活的磁盘依据）');
+
+  // standby 形态：全新 RecordStore 从磁盘 rebuild，fold 后 exec.pid 可判活
+  const store2 = new RecordStore();
+  store2.rebuildFromLog();
+  const rec2 = store2.get(h.subagentId);
+  assert.ok(rec2 && Number.isInteger(rec2.exec && rec2.exec.pid), 'rebuild 后 record.exec.pid 必须存在');
+  assert.equal(runner.alive(rec2.exec), true, 'rebuild 后 alive 判活（orphan/dead 分流前提）');
+
+  // 收尾：任务完成终态化（终态 exec 重写含全字段）
+  runner.finish({ status: 'closed', response: 'ok', sessionId: 'sess-async-pid' });
+  const fin = await waitFor(() => {
+    const r = records.get(h.subagentId);
+    return r && r.status === 'closed' ? r : null;
+  });
+  assert.equal(fin.exec.sessionId, 'sess-async-pid', '终态 exec 重写含 sessionId');
+  assert.equal(fin.exec.pid, 41001, '终态 exec 重写保住 pid');
+});
+
+test('conversation 首轮 wait=true 返回 rounds=1；续聊失败轮不计（E3 回归）', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '首轮回答', sessionId: 'sess-rounds-1' }), 20);
+  const res = await manager.start(
+    { task: '对话任务书', slug: 'chat-rounds', conversation: true, wait: true },
+    c,
+  );
+  assert.equal(res.status, 'idle', 'conversation 首轮完成终态 idle（非 closed）');
+  assert.equal(res.rounds, 1, 'wait=true 投影必须带完成计数（E3 断言面，此前缺字段）');
+
+  // 续聊失败轮：resume 抛错（core 面无 resume 入口的真实形态）→ error 终态，
+  // rounds 维持 1——「成功完成的轮数」语义，失败轮不得虚增
+  runner.resume = () => { throw new Error('CoreRunner.resume: core zcode engine 的 EnginePort 面无 resume 入口'); };
+  const r = await manager.message(res.subagentId, '追问');
+  assert.equal(r.status, 'running');
+  const fin = await waitFor(() => {
+    const rec = records.get(res.subagentId);
+    return rec && rec.status === 'error' ? rec : null;
+  });
+  assert.match(fin.error, /无 resume 入口/);
+  assert.equal(fin.rounds, 1, '失败轮不计入完成数');
+});
+
 test('排队期 cancel：槽位占满时取消 → 零 spawn 直接终态化', async () => {
   // 阻塞 slots：第一次 acquire 挂起（占满），手动放行
   let releaseFirst;

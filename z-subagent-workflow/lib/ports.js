@@ -86,10 +86,16 @@ const DEFAULTS = require('./config').DEFAULTS;
  *   probe()                          启动探针（透传 core ProbeReport；不再做
  *                                    组装期门控/降级决策——routeEngine 每任务
  *                                    真探，引擎实例内缓存）
- *   start(taskCtx) -> RunHandle      启动一次任务；立即返回，不等待完成；
+ *   start(taskCtx, hooks?) -> RunHandle
+ *                                    启动一次任务；立即返回，不等待完成；
  *                                    prepare 期错误（凭据缺失/模型不可用/路由
  *                                    失败）在 done promise 上 reject（调用方
- *                                    catch 收口）
+ *                                    catch 收口）。hooks.onExec(snapshot) 在
+ *                                    exec 字段异步就绪时回调浅拷贝快照
+ *                                    （engineId/pid/poolKey/sessionId 各一次）
+ *                                    ——manager 据此追加 update 事件持久化
+ *                                    pid（running 事件序列化于 spawn 之前，
+ *                                    不补落盘则重启 rebuild 后探活无依据）
  *   resume(exec, message, opts)      续聊：core EnginePort 面无 resume 入口，
  *                                    显式报可操作错误（P3 常驻实现回归路线）
  *   alive(exec) -> boolean           探活（崩溃恢复用；pid 信号 0 探测）
@@ -101,7 +107,10 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @typedef {Object} RunHandle
  * @property {object} exec            不透明会话句柄，原样存入 record.exec（manager
  *                                    不解读）：{kind:'spawn', pid, sessionId?,
- *                                    engineId?, poolKey?, cwd}
+ *                                    engineId?, poolKey?, cwd}。字段异步回填
+ *                                    （可变引用）——消费方需要落盘时机的，经
+ *                                    start 的 hooks.onExec 快照通道订阅，不要
+ *                                    轮询引用
  * @property {function(): void} cancel   取消（AbortSignal → core 杀链
  *                                    SIGTERM→grace→SIGKILL）
  * @property {Promise<RunResult>} done    完成 promise（含超时/取消终态）

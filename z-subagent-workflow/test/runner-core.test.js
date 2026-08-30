@@ -113,6 +113,32 @@ function taskCtx(patch = {}) {
 
 // ------------------------------------------------------------ start / 终态映射
 
+test('start hooks.onExec：字段就绪时回调浅拷贝快照（早期快照不被后续回填串改）', async () => {
+  const seen = [];
+  const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
+  const handle = runner.start(taskCtx(), { onExec: (snap) => seen.push(snap) });
+  await handle.done;
+  // 顺序：engineId（路由后）→ poolKey → pid（spawn 回调）→ sessionId（done 前）
+  assert.ok(seen.length >= 4, `onExec 至少 4 次（各字段就绪各一次），实际 ${seen.length}`);
+  const first = seen[0];
+  assert.equal(first.engineId, 'zcode');
+  assert.equal(first.pid, undefined, '首个快照在 spawn 前（running 事件同款形态：无 pid）');
+  const last = seen[seen.length - 1];
+  assert.equal(last.pid, 4242);
+  assert.equal(last.sessionId, 'sess-zcode');
+  assert.equal(last.engineId, 'zcode');
+  assert.equal(last.poolKey, 'home-fake-zcode');
+  // 快照拷贝证据：与 exec 非同引用，且后续回填（sessionId）不串入早期快照
+  assert.ok(seen.every((s) => s !== handle.exec), '快照必须是拷贝而非 exec 引用');
+  assert.equal(first.sessionId, undefined, 'done 后 exec.sessionId 回填不得串改已发出的快照');
+  // 钩子抛错不炸穿执行体（终态 exec 重写兜底）
+  const runner2 = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
+  const r2 = await runner2.start(taskCtx(), {
+    onExec: () => { throw new Error('落盘失败（测试模拟）'); },
+  }).done;
+  assert.equal(r2.status, 'closed', 'onExec 异常不得影响任务终态');
+});
+
 test('start 成功：closed + usage snake_case 映射 + exec 回填（pid/sessionId/engineId/poolKey）', async () => {
   const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
   const handle = runner.start(taskCtx());

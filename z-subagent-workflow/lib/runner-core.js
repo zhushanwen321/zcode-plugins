@@ -26,6 +26,10 @@
  *     一致，D7 旧数据可读不受影响）
  *   - pid：onChildSpawned 回调回填（可变引用，崩溃恢复探活依据）
  *   - sessionId/poolKey：done 后回填（P3 冷续聊回归时的定位锚）
+ *   - 字段异步就绪（route → spawn → done 各阶段），start(taskCtx, hooks) 的
+ *     hooks.onExec(snapshot) 在每次回填后回调浅拷贝快照——manager 据此追加
+ *     update 事件持久化 pid（running 转换事件序列化于 spawn 之前，无 pid；
+ *     不补落盘的话 standby 从磁盘 rebuild 后 alive 探活无依据，A5）
  *
  * 行为边界（README「回接 2c break 变更」节对应）：
  *   - resume（conversation 续聊）：core EnginePort 面无 resume 入口
@@ -219,11 +223,16 @@ class CoreRunner {
    * 收尾后合成终态；null/undefined = 不限时（对齐 DEFAULTS.timeoutMs=null）。
    *
    * @param {TaskCtx} taskCtx 见 ports.js（runEnv 字段已随 model-router 瘦身废弃）
+   * @param {object} [hooks] exec 变异通知（manager 的 pid 持久化通道，A5）
+   * @param {(snapshot: object) => void} [hooks.onExec] exec 字段就绪时回调
+   *        （engineId/pid/poolKey/sessionId 各一次），参数是 exec 的浅拷贝
+   *        快照——调用方落盘后不受 exec 后续回填串扰。钩子异常不炸穿执行体
+   *        （done 后 manager 的终态 exec 重写是兜底通道）。
    * @returns {{exec: object, cancel: function(): void, done: Promise<RunResult>}}
    *          done 对 prepare 期错误（凭据缺失/模型不可用/路由失败）reject——
    *          manager._execRound 与 agent-runner-adapter 的 catch 均已收口。
    */
-  start(taskCtx) {
+  start(taskCtx, hooks = {}) {
     if (!taskCtx || typeof taskCtx.prompt !== 'string' || taskCtx.prompt === '') {
       throw new Error(
         'CoreRunner.start: taskCtx.prompt 必填（收到空值）。'
@@ -240,6 +249,16 @@ class CoreRunner {
       cwd: taskCtx.cwd,
     };
     let abortCause = null; // 先到者定语义：'cancel' | 'timeout'
+    // exec 变异通知（A5）：回调浅拷贝快照而非引用——调用方持久化后不受后续
+    // 回填串扰；异常吞掉只记日志（终态 exec 重写是兜底，不能让落盘失败炸穿执行体）
+    const notifyExec = () => {
+      if (typeof hooks.onExec !== 'function') return;
+      try {
+        hooks.onExec({ ...exec });
+      } catch (e) {
+        this._log(`onExec 钩子失败（忽略，终态 exec 重写兜底）: ${e && e.message || e}`);
+      }
+    };
     const timeoutMs = Number.isFinite(taskCtx.timeoutMs) && taskCtx.timeoutMs > 0 ? taskCtx.timeoutMs : null;
     const timer = timeoutMs !== null
       ? setTimeout(() => {
@@ -269,6 +288,7 @@ class CoreRunner {
           listEnginesFn: () => this._listEngines(),
         });
         exec.engineId = route.engineId;
+        notifyExec();
         if (route.engineFallback) {
           // D9① fallback 留痕出声（record 面由 RunResult.engineFallback 透传）
           this._log(`engine fallback: ${route.engineFallback.from} → ${route.engineId}（${route.engineFallback.reason}）`);
@@ -291,12 +311,20 @@ class CoreRunner {
           // onPoolResolved 回填 exec 供诊断与 P3 冷续聊定位
           poolKey: 'shared',
           signal: controller.signal,
-          onChildSpawned: (child) => { if (child && Number.isInteger(child.pid)) exec.pid = child.pid; },
-          onPoolResolved: (poolKey) => { exec.poolKey = poolKey; },
+          onChildSpawned: (child) => {
+            if (child && Number.isInteger(child.pid)) {
+              exec.pid = child.pid;
+              notifyExec(); // pid 是崩溃恢复探活依据，必须第一时间通知落盘（A5）
+            }
+          },
+          onPoolResolved: (poolKey) => { exec.poolKey = poolKey; notifyExec(); },
           engineFallback: route.engineFallback,
         };
         const { outcome } = await route.engine.run(spec, runCtx);
-        if (outcome.sessionId !== undefined) exec.sessionId = outcome.sessionId;
+        if (outcome.sessionId !== undefined) {
+          exec.sessionId = outcome.sessionId;
+          notifyExec();
+        }
         return outcomeToRunResult(outcome, abortCause, route.engineFallback);
       } finally {
         if (timer !== null) clearTimeout(timer);

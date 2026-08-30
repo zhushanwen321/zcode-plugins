@@ -246,6 +246,9 @@ class SubagentManager {
         patchFile: fin.patchFile,
         error: finRec ? finRec.error : null,
         usage: fin.result ? fin.result.usage : null,
+        // rounds 完成计数（E3）：wait=true 面与 record 同读——conversation 首轮
+        // 成功即 1（终态 idle），失败/取消轮不计
+        rounds: finRec ? finRec.rounds : undefined,
         // SUGGESTION-4：schema 提取产物（closed 轮才提取；失败见 schemaParseFailed）
         structured: finRec && finRec.structured !== undefined ? finRec.structured : undefined,
         schemaParseFailed: finRec && finRec.schemaParseFailed === true ? true : undefined,
@@ -504,11 +507,28 @@ class SubagentManager {
       }
       let result;
       if (plan.kind === 'first') {
-        const handle = this.runner.start(plan.taskCtx);
+        // exec 异步回填的持久化通道（A5 修复）：runner（core 引擎）返回的 exec
+        // 是可变引用——pid 在 spawn 后、sessionId 在 done 后才回填，而 running
+        // 转换事件序列化于 spawn 之前（无 pid）。不补落盘的话 standby 从磁盘
+        // rebuild 后 alive 探活无依据，孤儿进程被误判 dead。经 onExec 钩子在
+        // 字段就绪时追加 update 事件，磁盘 exec 与内存保持同步。
+        // created 期（transition 前）暂存：update 若先于 running 事件落盘，
+        // 会被转换事件携带的旧 exec 覆盖（append-only 按序重放），transition
+        // 后立即 flush。当前 runner 的首次 onExec 必在 routeEngine 异步段，
+        // 天然晚于同步的 transition——暂存是对未来同步回调实现的防御。
+        let stagedExec = null;
+        const handle = this.runner.start(plan.taskCtx, {
+          onExec: (snapshot) => {
+            const cur0 = this.records.get(id);
+            if (cur0 && cur0.status === 'created') { stagedExec = snapshot; return; }
+            this.records.update(id, { exec: snapshot });
+          },
+        });
         this.handles.set(id, handle);
         // exec 随 running 事件持久化（此刻无 sessionId；done 后由 _completeRun
         // 重写回填版——重启后 resume 依赖它）
         this.records.transition(id, 'created', 'running', { exec: handle.exec });
+        if (stagedExec !== null) this.records.update(id, { exec: stagedExec });
         try {
           result = await handle.done;
         } finally {
