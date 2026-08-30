@@ -122,6 +122,12 @@ graph TD
 
 ## 7 残留风险与变更历史
 
+### 双级验收结论（2026-08-30）
+
+- **Gate A 绿**：全量 585 tests / 582 pass / 0 fail / 3 skip（既有真机占位）/ exit 0；语法门禁 24/24；零绕过检查通过。首轮 1 fail（既有并发计数用例测量面 flaky）已正面修复（8c6e2fd：pairwise 重叠计数 → 扫描线，断言未削弱，饱和压力 3 轮零失败）后重跑全绿。
+- **Gate B 签收**：9 场景 = 8 pass / 0 fail / 3 blocked。blocked 三项（B-2 daemon 臂 / B-3 / B-8②）因 zsw 1.0.0+ MCP tool face offline 物理不可达（workflow run 恒本地前台），等价证据面 = 单测 + 检查点探针链 + 对照臂真机，无 mock 冒充；设计 §4 表后已补可达性签收注记。B-6 按 token 纪律降档 chain 3 阶段（判据面不变）。
+- 真机 token 消耗：单元期（探针 + B-9 两臂 + apc-smoke）+ Gate B 约 22 个阶段轮，全部最小任务书。
+
 ### 风险与已裁决偏差
 
 1. **W1-b 领地 12 文件，超全局 subagent「≤5 文件」约束**（W2 为 6 文件同类）。裁决理由：设计 §5 经三轮审查的原子性论证——执行落点与注入链拆批合入会产生「run-phase 已切端口但无人注入 runner」的破产中间态；12 文件中 7 文件为 ≤3 行机械透传（signal 同构先例）、2 文件为预期零改动核对、实质改写集中于 run-phase.js / workflow-manager.js / assemble.js；派发时 dev task 按文件逐个给精确改动点控制认知面。**此偏差已经用户评审确认（2026-08-30，dev-flow 计划评审问询：用户选「保持原子 12 文件（推荐）」并确认开工）。**
@@ -129,9 +135,13 @@ graph TD
 3. daemon/MCP 形态验收（B-2 daemon 臂 / B-3 / B-8②）需 zcode 会话内协同，Gate B 用户参与，不阻塞单元推进。
 4. 真机面（apc-smoke、B 场景、检查点 4 小 prompt）花少量 token，已按最小面设计。
 5. 一波遗留（zsw 1.2.0 未发布、分支未合 main）不属本计划范围；本波完成后与本波改动一并走合流。
+6. 仓库 AGENTS.md「常用命令」的 `node --test test/` 形态在本机 Node v24.11.1 下 MODULE_NOT_FOUND（正确形态 `node --test`）——AGENTS.md 不在本波任何单元领地，登记残留风险待后续独立修正。
+7. 验收后的环境事实：本机存在 8/26 起的既有 zsw 插件宿主进程（plugins/cache 1.1.0 版，standby 看门狗形态）长期存活——与测试 daemon 的锁竞选属产品设计内多实例共存行为（W3 容忍面），无需处理，记录备查。
+8. buildRuntimeModel 的 v2 model.main 兜底在本机不可用（幽灵恢复场景，zsub 线登记恒带 model 不受影响）——偏差表已登记，后续如需修复另立单元。
 
 ### 变更历史
 
 | 日期 | 变更 | 触发 |
 |------|------|------|
 | 2026-08-30 | 初版（W1-a/W1-b/W1-c/W2/W3 五单元四波；W1-b 原子单元 12 文件偏差登记待用户确认） | dev-flow 阶段 1 |
+| 2026-08-30 | 执行期多轮更新（探针结论回填、各单元 hash 回填、偏差登记 10 组、测试命令形态修正）；一致性审查 R1 清零（12 doc_errors 修 + 3 unreasonable 修 + 8 reasonable 固化）；双级验收双绿（Gate A 585/582/0/3 exit 0 + Gate B 8 pass/3 blocked 签收）——全波交付完成，终态 HEAD 8c6e2fd + 验收回填 | dev-flow 阶段 2-5 |
