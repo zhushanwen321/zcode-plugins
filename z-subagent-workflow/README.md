@@ -24,6 +24,8 @@
 
 三个决策位（执行引擎 / 回流通道 / 入口形态）正交且各自可换——更换实现不动 manager。执行引擎缺省 appserver（D1 翻转；`ZSW_RUNNER=spawn` 显式回退），平台版本漂移被限制在端口实现内部消化（`interpretEvent` 等单点防洪堤）。
 
+core 资产消费形态：对 npm 包 `@zhushanwen/subagent-core` 的消费（当前面为其 `workflows/*` 资产）采用构建期 vendored 副本（`lib/vendor/subagent-core/`，`scripts/vendor-subagent-core.js` 刷新 + `lib/core-ref.js` 单一解析点，VENDOR-MANIFEST.json 溯源），运行时不依赖 node_modules 解析面。规范见 workspace 仓 `docs/standards.md`「vendored 核心包消费」节。
+
 ## 安装（一次性）
 
 1. 注册插件目录：`~/.zcode/cli/config.json` 的 `plugins.dirs` 数组追加本插件绝对路径（`<repo>/z-subagent-workflow`），重启 ZCode。

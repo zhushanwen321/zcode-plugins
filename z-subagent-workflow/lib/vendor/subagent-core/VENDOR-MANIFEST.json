@@ -1,0 +1,138 @@
+{
+  "source": "npm@0.2.0",
+  "fetchedAt": "2026-08-30T10:04:33.192Z",
+  "capabilities": {
+    "workflowsAssets": true,
+    "selfContainedIndex": false
+  },
+  "files": [
+    {
+      "path": "dist/chunk-3VOERJPJ.js",
+      "sha256": "97945f3db575d987c1b7b699e02417bf4235227027d075b3ec9041774ea5aa69"
+    },
+    {
+      "path": "dist/chunk-A4IVZWVX.js",
+      "sha256": "02f42250579cf76ab657c3437acf76699d5cb0a4bd364405b8bc4379ce9ed4d5"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/constants.cjs",
+      "sha256": "a63ff04cbb4ff364d64163464f986f5496627f7fb7855f7948cf5328b5653645"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/constants.d.cts",
+      "sha256": "db620152b2b758e244ff576500aee8b5def28907c7ae9169b1fd0a8527a233b6"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/constants.d.ts",
+      "sha256": "db620152b2b758e244ff576500aee8b5def28907c7ae9169b1fd0a8527a233b6"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/constants.js",
+      "sha256": "29bfa4a877d555a1d77f3b76c459e8d5ce165f4f7655bf7a6f225a590402c437"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/reader.cjs",
+      "sha256": "a7c3b543c24f8ecb4e45cfb685c7c4a15e164568a4423a452c753c60f67865c0"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/reader.d.cts",
+      "sha256": "8dcaf32e9f7ea4d0e4a69d2d7efd9b9be03ec40bec398c75847d39f235c081de"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/reader.d.ts",
+      "sha256": "80ec2a7f6d813606de17a25720ba1ba1d9fb175184d3cff7246811009e47d34c"
+    },
+    {
+      "path": "dist/execution/engine/engines/zcode/reader.js",
+      "sha256": "656f3b3a326bb7fd4115f14bbc15100e84b0f933b1f5a464534746533fa755e1"
+    },
+    {
+      "path": "dist/execution/engine/paths.cjs",
+      "sha256": "037ab2bb8ee05be89f63254ad15958eac4770754c7ebc89ea96923688172f52c"
+    },
+    {
+      "path": "dist/execution/engine/paths.d.cts",
+      "sha256": "9130fc0fbca965390088105059666a478d4a1630f80b7679994929b6c45e8ade"
+    },
+    {
+      "path": "dist/execution/engine/paths.d.ts",
+      "sha256": "9130fc0fbca965390088105059666a478d4a1630f80b7679994929b6c45e8ade"
+    },
+    {
+      "path": "dist/execution/engine/paths.js",
+      "sha256": "676d2117ccad8c71df72c75a4c4d9584514923f5c6134babad997bb8df1c0021"
+    },
+    {
+      "path": "dist/execution/relay-env.cjs",
+      "sha256": "9dd2910472ad7986800e2dac805d9966724ca0df6c24952f9d62cabf3291efda"
+    },
+    {
+      "path": "dist/execution/relay-env.d.cts",
+      "sha256": "8668b9da12c6c0eecb2d8b24676ec2c5693df92721b835e04ed232ca5098b086"
+    },
+    {
+      "path": "dist/execution/relay-env.d.ts",
+      "sha256": "8668b9da12c6c0eecb2d8b24676ec2c5693df92721b835e04ed232ca5098b086"
+    },
+    {
+      "path": "dist/execution/relay-env.js",
+      "sha256": "c65c484aa80bc8126b898cbce6c53baf58cc7fbfd34f97dbec24390bbbc49d73"
+    },
+    {
+      "path": "dist/index.cjs",
+      "sha256": "b1e8c9e6087c39e13ceaee2515780eb1c7a328d21026a167e8c52a62888b1bec"
+    },
+    {
+      "path": "dist/index.d.cts",
+      "sha256": "af72f03f1b5ad0e56a651c9fc0b565082e7dcb332c8948d2b557a487981625b0"
+    },
+    {
+      "path": "dist/index.d.ts",
+      "sha256": "ae7f0e9fdd440f550e5827f3468f382e499b7a4c0505003cc376b4b462ab3cea"
+    },
+    {
+      "path": "dist/index.js",
+      "sha256": "b3224802600ef700ab79b8d9795ba4ca61ac5a86422da3b0b661e7533f2ca119"
+    },
+    {
+      "path": "dist/types-BxyAidGf.d.cts",
+      "sha256": "16009c094357a5376b61bb273a5d77c6b77704a74b19fb80d3ec37bcce8b8749"
+    },
+    {
+      "path": "dist/types-BxyAidGf.d.ts",
+      "sha256": "16009c094357a5376b61bb273a5d77c6b77704a74b19fb80d3ec37bcce8b8749"
+    },
+    {
+      "path": "package.json",
+      "sha256": "2712788a4487763b6a529d112c72c07e6131ac27df98db7f90c3e999ee3de5f5"
+    },
+    {
+      "path": "workflows/_shared/agent-refs.cjs",
+      "sha256": "c5e2c861fa8d80fcbbdf845a2ddc21dd20abcd4d3a5b45d00fc408b1dfb24282"
+    },
+    {
+      "path": "workflows/chain.js",
+      "sha256": "cb1e3bbdde43130128f624ed7783000fa970fe513c25b654540b196d80021f9e"
+    },
+    {
+      "path": "workflows/map-reduce.js",
+      "sha256": "db33e6741da402cda5a92f4e95ab672e23baf8234072ff03f81eac81f62f3b3f"
+    },
+    {
+      "path": "workflows/parallel.js",
+      "sha256": "e1b66f275ddf23974a12b7c3a37c071027ef1ff11bdd8ee70095f368a601430d"
+    },
+    {
+      "path": "workflows/review-fix-loop-utils.cjs",
+      "sha256": "8631c7e0d7e69aa21343c7c28f5be44d94083445f369046c9cf6023302593677"
+    },
+    {
+      "path": "workflows/review-fix-loop.js",
+      "sha256": "64bca664d6f1e88f10cb5e6266c16bdec867786507c64eaa56c6abadca3e514f"
+    },
+    {
+      "path": "workflows/scatter-gather.js",
+      "sha256": "9f77f901556a79218de523f92ba11f69eba1b219d4e23227559eda5565ee7282"
+    }
+  ]
+}

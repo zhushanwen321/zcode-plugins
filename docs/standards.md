@@ -15,6 +15,29 @@
 - Node 版本跟随本机 LTS；不使用 ESM 顶层 await（CLI 入口需 12+ 兼容写法保持简单）。
 - 禁止 TypeScript 构建链（与零依赖原则冲突）；需要类型表达力时用 JSDoc 注释。
 
+## vendored 核心包消费
+
+- **动机**：插件三形态（inline 直载 / marketplace 副本 / npm 包内容）都没有 node_modules
+  解析面，npm 包 `@zhushanwen/subagent-core` 只能以**构建期 vendored 副本**形态进插件目录
+  （`z-subagent-workflow/lib/vendor/subagent-core/`，与 `shared/` 构建期 vendor 同一模式）；
+  运行时 node_modules 解析面仍然禁止，插件 package.json 不得声明 dependencies（红线不变）。
+- **流程**：workspace 根执行 `node scripts/vendor-subagent-core.js --npm <version>`（registry
+  tarball 源，npm pack 带超时）或 `--local <core-checkout-path>`（本地构建源）。脚本幂等
+  （先清空目标目录再拷），拷贝后逐文件 sha256 与源比对自检，并把溯源信息落盘产物目录的
+  `VENDOR-MANIFEST.json`（`source` / `fetchedAt` / `capabilities` / 逐文件 `files[].sha256`）；
+  vendored `package.json` 仅重写 name/version 两个字段，依赖声明绝不 vendor 进来。运行时消费
+  统一走插件内 `lib/core-ref.js` 单一解析点（`workflowAssetPath` / `requireCore` /
+  `vendorManifest`），禁止消费方自行拼路径。
+- **升级路径**：升 registry 版本 = 换 `--npm <version>` 重跑；core 本地开发验证 = `--local`
+  指向 core checkout（源存在 `dist.bundle/index.cjs` 时优先拷 bundle，统一落位 vendored
+  `dist/`，为 0.3.0 自包含 bundle 预留）。当前 0.2.0 主入口依赖 ajv/yaml/proper-lockfile，
+  `capabilities.selfContainedIndex` 如实记录为 false——`requireCore()` 对该形态只提供
+  「指向 0.3.0 bundle + `--local` 刷新命令」的可操作报错；workflow 资产（`workflows/*.js|.cjs`，
+  零依赖自包含）不受影响，`workflowAssetPath` 直接可用。
+- **与 check-sync 的关系**：check-sync 规则 4（零依赖红线，查插件 package.json 的依赖声明）
+  不受本节影响——vendored 副本是构建期产物不是依赖声明；vendored `package.json` 已精简为
+  name/version，不会被误读为引入依赖。
+
 ## 代码规范
 
 1. **注释解释为什么**（约束、坑、决策理由），不复述代码在做什么。涉及逆向结论（如引擎行为）

@@ -61,6 +61,12 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 - **零依赖 plain Node CJS 优先**：插件 package.json 仅作 npm 发布清单（name/version/files/bin），
   **不得声明 dependencies**（check-sync 强制）。引入依赖需评估对「inline 加载 + marketplace 副本 +
   无构建链安装」三种形态的影响，见 docs/standards.md。
+
+  例外（构建期 vendored 核心包副本）：允许以 `z-subagent-workflow/lib/vendor/subagent-core/`
+  目录形态消费 `@zhushanwen/subagent-core`——由 `scripts/vendor-subagent-core.js` 构建期刷新
+  （产物入 git，VENDOR-MANIFEST.json 溯源 + 逐文件 sha256 自检），运行时统一经插件内
+  `lib/core-ref.js` 单一解析点访问。运行时 node_modules 解析面仍然禁止；package.json
+  不得声明 dependencies 的红线不变。流程与升级路径见 docs/standards.md「vendored 核心包消费」节。
 - 插件 manifest 必需字段仅 `name`（`^[a-z0-9][a-z0-9._-]{0,127}$`）；`agents` 字段当前「记录不执行」。
   字段规范见 development-guide。
 - MCP server 的 **stdout 是 JSON-RPC 通道**：人读日志/进度一律走 stderr 并落盘
