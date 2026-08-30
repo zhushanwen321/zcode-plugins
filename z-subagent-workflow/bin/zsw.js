@@ -24,10 +24,11 @@
  *        [--conversation] [--timeout-ms <n>] [--wait]
  *        [--thinking <low|high|max>]
  *        [--allow-tools <逗号分隔工具名>] [--deny-tools <逗号分隔工具名>]
- *        （--thinking：appserver 通道映射 create.thoughtLevel，非法档位 warn
- *         跳过不失败，spawn 回退通道不可用并如实标注；--allow-tools/--deny-tools：
- *         appserver 通道 create.toolAllowlist/toolDenylist，deny 与 agent .md
- *         frontmatter disallowedTools 并集去重，spawn 通道不消费）
+ *        （--thinking：spawn 单轮通道不消费该请求值，终态 record 落
+ *         thinking="null (spawn 降级)" 如实标注；--allow-tools：无白名单
+ *         flag 通道不消费，终态 record 落 toolsNote 如实标注；--deny-tools：
+ *         与 agent .md frontmatter disallowedTools 并集去重后落引擎
+ *         --disallowed-tools flag 硬生效）
  *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
  *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
  *         partial 结果，exit 2）
@@ -576,8 +577,10 @@ async function runDaemonCommand(cmd, args, rest) {
         worktree: args.worktree === true,
         conversation: args.conversation === true,
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
-        // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——appserver 通道落
-        // create 面；spawn 回退通道 manager 如实标注（thinking: null (spawn 降级)）
+        // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——thinking/allow
+        // 请求值 spawn 单轮通道不消费，manager 终态如实标注（thinking:
+        // null (spawn 降级)；allow 侧 toolsNote）；deny 侧并集落引擎
+        // --disallowed-tools 硬生效
         ...startCapabilityArgs(args),
       };
       break;

@@ -14,13 +14,33 @@ const path = require('node:path');
 
 const VENDOR_DIR = path.join(__dirname, 'vendor', 'subagent-core');
 
-/** 报错附带的刷新指引：能读到 vendored package.json 就给具体版本，否则占位符。 */
+/**
+ * 报错附带的刷新指引。按 VENDOR-MANIFEST.json 的 source 分流：
+ * - `local:<core 仓路径>@<版本>`：vendored 副本来自本地 core 构建时，npm 上
+ *   尚无等价产物（0.3.0 未发布），按 --npm 刷会回退到扩面前的旧 npm tarball
+ *   ——指引必须指向 --local 通道（core 仓路径即 source 记录的路径）；
+ * - 其余（npm@<版本> / manifest 缺失或损坏）：给 --npm <版本> 形态（能读到
+ *   vendored package.json 就给具体版本，否则占位符）。
+ */
 function refreshHint() {
+  const cmd = 'node scripts/vendor-subagent-core.js';
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(VENDOR_DIR, 'VENDOR-MANIFEST.json'), 'utf8'));
+    const source = typeof manifest.source === 'string' ? manifest.source : '';
+    if (source.startsWith('local:')) {
+      // source 形态 = local:<srcRoot>@<version>（vendor 脚本生成）；剥尾部
+      // @版本取 core 仓路径（lastIndexOf 防路径自身含 @ 时误切）
+      const raw = source.slice('local:'.length);
+      const at = raw.lastIndexOf('@');
+      const corePath = at > 0 ? raw.slice(0, at) : raw;
+      return `恢复指引：workspace 根执行 ${cmd} --local ${corePath}（待 core 0.3.0 发布后可用 ${cmd} --npm 0.3.0）`;
+    }
+  } catch { /* manifest 缺失/损坏：走 npm 版本形态指引 */ }
   let version = '<version>';
   try {
     version = JSON.parse(fs.readFileSync(path.join(VENDOR_DIR, 'package.json'), 'utf8')).version;
   } catch { /* 未 vendor / 清单损坏：占位符形态已可操作 */ }
-  return `恢复指引：workspace 根执行 node scripts/vendor-subagent-core.js --npm ${version}`;
+  return `恢复指引：workspace 根执行 ${cmd} --npm ${version}`;
 }
 
 function vendorDir() {

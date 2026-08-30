@@ -563,10 +563,12 @@ class SubagentManager {
         // F4/D5：thinking 请求值随首轮下行——终态标注的判定依据（resume 轮无
         // create 面，会话级设置随会话驻留，不改写首轮标注）
         thinkingRequested: plan.kind === 'first' ? plan.taskCtx.thinking : undefined,
-        // F4/D6（G6 标注面对称）：CLI 工具限制请求值随首轮下行——最终通道为
-        // spawn 时限制静默失效，终态落 toolsNote 如实标注
+        // F4/D6（G6 标注面对称）：CLI 工具限制中 allow 侧请求值随首轮下行——
+        // spawn 单轮通道无白名单 flag 通道，请求了 allowlist 即终态落
+        // toolsNote 如实标注；deny 侧并集落引擎 --disallowed-tools 硬生效
+        // （runner-core mergeDenyTools），无失效面，不参与标注判定
         toolsRequested: plan.kind === 'first'
-          ? Boolean(plan.taskCtx.toolAllowlist || plan.taskCtx.toolDenylist)
+          ? Boolean(plan.taskCtx.toolAllowlist)
           : undefined,
       });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
@@ -668,9 +670,10 @@ class SubagentManager {
       transitionPatch.thinking = 'null (spawn 降级)';
     }
     // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
-    // 键」纪律）：请求了 allow/deny 且通道为 spawn 单轮（恒真，appserver 已退役）
-    // = 限制未生效白名单侧未落 flag，落 toolsNote。denylist 侧在 runner-core
-    // 并入引擎 --disallowed-tools（硬约束生效），此处标注只覆盖 allow 语义
+    // 键」纪律）：toolsRequested 已收紧为仅 allowlist 存在——deny-only 在
+    // runner-core 并入引擎 --disallowed-tools 硬约束生效，落「未生效」标注
+    // 就是失真（缺标注可容忍，错标注不可容忍）；通道为 spawn 单轮（恒真，
+    // appserver 已退役）= allow 白名单侧无 flag 通道，落 toolsNote 如实标注
     if (toolsRequested && before.runnerKind !== 'appserver') {
       transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
     }

@@ -999,14 +999,14 @@ test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 
   assert.equal(rec2.get(res2.subagentId).errorKind, undefined);
 });
 
-test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools → toolsNote；appserver / 未请求 → 不落', async () => {
+test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 allowlist → toolsNote；deny-only / appserver / 未请求 → 不落', async () => {
   const settle = (records, id) =>
     waitFor(() => {
       const r = records.get(id);
       return r && ['closed', 'idle'].includes(r.status) ? r : null;
     });
 
-  // ① spawn 回退通道请求了工具限制：spawn 无 flag 通道 → 静默失效，toolsNote 如实标注
+  // ① spawn 回退通道请求了 allowlist：无白名单 flag 通道 → 静默失效，toolsNote 如实标注
   {
     const runner = runnerWithKind('spawn');
     const { manager, runner: r, records } = buildManager({ runner });
@@ -1016,7 +1016,7 @@ test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools 
     );
     r.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
-    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道工具限制失效必须可见');
+    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道 allow 白名单失效必须可见');
   }
   // ② appserver 通道请求了工具限制：正常消费（create 面），不落降级标注
   {
@@ -1035,6 +1035,16 @@ test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools 
     r.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.toolsNote, undefined, '未请求 tools 不落 toolsNote');
+  }
+  // ④ spawn 通道仅请求 denylist：deny 并集落引擎 --disallowed-tools 硬生效
+  // （runner-core mergeDenyTools），无失效面——落「未生效」标注即失真，不得标
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-deny-only', denyTools: ['Bash'] }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, 'deny-only 硬生效，不得失真标注为未生效');
   }
 });
 

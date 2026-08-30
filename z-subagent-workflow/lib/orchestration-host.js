@@ -144,14 +144,17 @@ async function loadScriptFromPath(file, core) {
 /**
  * zsw Registry：core WorkflowScriptRegistry port 的包装实现。
  *
- * 发现面合并（同名先到先得，列表序即优先级序）：
+ * 发现面合并（同名先到先得，外层层级序即优先级序；第 2 层内部遮蔽序 =
+ * core buildScanTargets 实际扫描序，user 级先于 workspace 级）：
  * 1. vendored 内置 5 资产（scriptPath 锚定 vendored 目录，D1 硬前提；内置名
  *    不可被用户脚本遮蔽——run "chain" 恒跑 vendored 资产，行为可预期）；
- * 2. core 发现面 discoverWorkflows({ cwd })——含 <wsRoot>/.pi/workflows（+tmp）、
- *    <wsRoot>/.agents/workflows、~/.agents/workflows、~/.zsw/workflows（后者
- *    经 discoveryRoots user-pi 槽注入）；
+ * 2. core 发现面 discoverWorkflows({ cwd })，遮蔽序：~/.zsw/workflows（经
+ *    discoveryRoots 注入，借 user-pi 槽，先于 core 自带根）>
+ *    ~/.agents/workflows > <wsRoot>/.pi/workflows（+tmp）>
+ *    <wsRoot>/.agents/workflows；
  * 3. <cwd>/.zsw/workflows 手工根（zsw workspace 级特有根，core 扫描布局无
- *    此槽位；meta 退化走 getWorkflowByPath 的 stem fallback）。
+ *    此槽位；byName 兜底末位，不覆盖前两层已有名；meta 退化走
+ *    getWorkflowByPath 的 stem fallback）。
  */
 function createRegistry(core) {
   const zswWsRoot = (cwd) => path.join(cwd, '.zsw', 'workflows');

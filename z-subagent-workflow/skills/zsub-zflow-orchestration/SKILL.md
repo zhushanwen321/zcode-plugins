@@ -110,20 +110,20 @@ node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本�
 | 已知 items 数组逐个处理再归总 | `map-reduce` | `--operation` + `--items` 必填，并行 map → 单 agent reduce |
 | 单一目标多视角审查后聚合 | `parallel` | `--task`（作 target）或显式 `--target`；默认 security/performance/maintainability，可传 `--perspectives` |
 | 大任务先拆分再并行再合并 | `scatter-gather` | `--task` 必填（自适应拆分，无 subtask-count 参数） |
-| 批次审查 → 聚合裁决 → 修复 → 对账重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）。`--batch1..--batchN`（值 = agent .md 绝对路径，逗号分隔；至少一个批次）、`--target-type` + `--target` 必填（git-diff 传 base ref）、`--max-rounds`（默认 10）/`--stuck-threshold`（默认 3）/`--skip-clean-agents`（默认 true）/`--recheck-after-fix`（默认 false）/`--aggregator-model` 等可调，参数全集 `zsw workflow --help`。旧 `--reviewers`（自由文本维度）已废弃，显式报错 |
+| 批次审查 → 聚合裁决 → 修复 → 对账重审到 clean | `review-fix-loop` | 唯一写文件的工作流（fix 阶段）。`--batch1..--batchN`（值 = agent .md 绝对路径，逗号分隔；至少一个批次）、`--target` 必填（git-diff 传 base ref）、`--target-type` 缺省 text、`--max-rounds`（默认 10）/`--stuck-threshold`（默认 3）/`--skip-clean-agents`（默认 true）/`--recheck-after-fix`（默认 false）/`--aggregator-model` 等可调，参数全集 `zsw workflow --help`。旧 `--reviewers`（自由文本维度）已废弃，显式报错 |
 | 固定 分析 → 变换 → 综合 管线 | `chain` | `--task` 必填，三步顺序链，上阶段结论注入下阶段 |
 
 通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，agent() 调用在其下工作）；`--model`（模型引用优先取上下文 `<zsw-resources>` 快照；快照缺失或疑过期再现查 `node bin/zsw.js models`）/ `--timeout-ms`（整体墙钟预算 RunSpec.budgetTimeMs，不设则无限制）。`--max-concurrent` / `--timeout-per-phase` / `--subtask-count` 已废弃（core 编排无对应面）——传入会 stderr 显式 warning，不静默。运行可达数分钟——run_in_background 包裹时完成通知自动到达。
 
 ### 自定义 workflow 脚本（script:<name>）
 
-内置 5 种之外的编排用 core 契约脚本扩展，调用形态 `--workflow script:<脚本名>`（或直接给脚本绝对路径）。发现面 = core 发现面 + zsw 特有根（同名先到先得，即列表序）：
+内置 5 种之外的编排用 core 契约脚本扩展，调用形态 `--workflow script:<脚本名>`（或直接给脚本绝对路径）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序）：
 
 ```
-vendored 内置 5（名不可被遮蔽）
-> <ws>/.pi/workflows/（+ .tmp）> <ws>/.agents/workflows/   （core 发现面，cwd 推导 workspace 根）
-> ~/.agents/workflows/  >  ~/.zsw/workflows/               （core user 根 + discoveryRoots 注入）
-> <ws>/.zsw/workflows/                                      （zsw workspace 级特有根，host 手工扫）
+vendored 内置 5（名不可被遮蔽——registry 内置优先于一切发现面）
+> ~/.zsw/workflows/  >  ~/.agents/workflows/               （core user 级发现面；前者经 discoveryRoots 注入、借 user-pi 槽，先于 core 自带 user 根）
+> <ws>/.pi/workflows/  >  <ws>/.pi/workflows/.tmp/  >  <ws>/.agents/workflows/   （core workspace 级发现面，cwd 推导 workspace 根）
+> <ws>/.zsw/workflows/                                      （zsw workspace 级特有根，host 手工扫，byName 兜底末位——不遮蔽前面任何根）
 ```
 
 脚本契约（**core worker 契约**，权威定义在 vendored `workflows/chain.js` 等资产源码；与旧 zsw 契约不兼容，迁移对照见 README）：

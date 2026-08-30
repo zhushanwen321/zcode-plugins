@@ -114,6 +114,23 @@ test('错误路径：VENDOR-MANIFEST.json 缺失 → vendorManifest 报错含刷
   }
 });
 
+test('恢复指引分流：manifest source 为 local: 前缀时指向 --local 通道（防 --npm 刷回扩面前旧产物）', () => {
+  // 当前真实 vendored 即 local 源（core 0.3.0 未发 npm）——错误指引会让人把
+  // vendored 副本刷回 0.2.0 npm 旧 tarball（无自包含 bundle），本测试钉住分流
+  const { mod, tmp } = makeFakeCoreRef({
+    'package.json': '{"version":"0.2.0"}',
+    'VENDOR-MANIFEST.json': '{"source":"local:/tmp/fake-core@0.2.0"}',
+  });
+  try {
+    assert.throws(() => mod.workflowAssetPath('no-such-asset.js'), (err) =>
+      err.message.includes('vendor-subagent-core.js --local /tmp/fake-core')
+      && err.message.includes('待 core 0.3.0 发布后可用')
+      && !err.message.includes('--npm 0.2.0')); // 不得指引刷回 0.2.0 npm 旧产物
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('解析行为：dist 候选缺失时回退根位 index.cjs（INDEX_CANDIDATES 兼容位）', () => {
   const { mod, tmp } = makeFakeCoreRef({ 'index.cjs': 'module.exports = { sentinel: 42 };' });
   try {
