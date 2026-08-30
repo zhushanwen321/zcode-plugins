@@ -247,6 +247,50 @@ module.exports = {
   assert.ok(out.markdown.includes('sid=null')); // 契约 1：零 spawn
 });
 
+test('runScript：runner 透传到 runAgent——注入 fake runner 后阶段走 RunnerPort；未注入保持 spawn 直调（wave2 D1 同链钉）', async () => {
+  writeV2Config();
+  // ① 注入：脚本内 runAgent 经 baseCtx.runner 走端口（start 被调、channel 如实）
+  const startCalls = [];
+  const fakeRunner = {
+    capabilities: () => ({ kind: 'appserver', steering: 'none', coldStartMs: 0 }),
+    start: (taskCtx) => {
+      startCalls.push(taskCtx);
+      return {
+        exec: { kind: 'apc', sessionId: 'sess_apc_script' },
+        cancel: () => {},
+        done: Promise.resolve({ status: 'closed', response: 'via-runner', sessionId: 'sess_apc_script' }),
+      };
+    },
+    release: () => {},
+  };
+  writeScript(WS_ZSUB, 'runpass', `'use strict';
+module.exports = {
+  name: 'runpass', description: 'runner 透传',
+  run: async (ctx) => {
+    const r = await ctx.runAgent({ prompt: '走 runner 通道的脚本阶段' });
+    return 'ok=' + r.ok + ' ch=' + r.channel + ' resp=' + r.response;
+  },
+};`);
+  const out = await wfScript.runScript({ name: 'runpass', ctx: { cwd: WS, runner: fakeRunner } });
+  assert.equal(startCalls.length, 1); // 阶段确实走了端口（未落回 driver 直调）
+  assert.equal(startCalls[0].runEnv.createParams.model.modelId, 'GLM-5.3'); // appserver 通道按 createParams 备环境
+  assert.ok(out.markdown.includes('ok=true'));
+  assert.ok(out.markdown.includes('ch=appserver'));
+
+  // ② 未注入：ctx.runner === undefined → runPhase spawn 直调旧行为（fake CLI 通路，
+  // 与上方「ctx.runAgent 真调 runPhase」用例同链——此处只钉缺省面在脚本链的位置）
+  writeScript(WS_ZSUB, 'runfallback', `'use strict';
+module.exports = {
+  name: 'runfallback', description: '缺省回退',
+  run: async (ctx) => {
+    const r = await ctx.runAgent({ prompt: '缺省回退的脚本阶段不止二十个字符' });
+    return 'ch=' + r.channel;
+  },
+};`);
+  const out2 = await wfScript.runScript({ name: 'runfallback', ctx: { cwd: WS } });
+  assert.ok(out2.markdown.includes('ch=spawn')); // B-9② 对照面（脚本链）
+});
+
 test('runScript：runAgent 缺 prompt → 可操作错误（不落到 driver）', async () => {
   writeScript(WS_ZSUB, 'noprompt', `'use strict';
 module.exports = {

@@ -128,6 +128,9 @@ test('runChain：三阶段串行，后阶段 prompt 拼接前阶段输出；报�
   assert.equal(result.phases.length, 3);
   const [analyze, transform, synthesize] = result.phases;
   assert.ok(analyze.ok && transform.ok && synthesize.ok);
+  // runner 未注入 = spawn 通道行为（wave2 W1-b 缺省回退，B-9② 对照面）——
+  // chain 入口层用条目 channel:'spawn' 钉住回退面；apc 主链路对照在 test/workflow-apc.test.js
+  assert.ok(result.phases.every((p) => p.channel === 'spawn'));
   // fake CLI 回显 prompt → 后阶段 prompt 内嵌前阶段完整输出（未超 16000 不截断）
   assert.ok(transform.response.includes(analyze.response));
   assert.ok(synthesize.response.includes(analyze.response));
@@ -158,6 +161,8 @@ test('runChain：阶段失败 → 终止后续阶段 + 失败条目与原因进�
     assert.equal(result.phases.length, 2); // synthesize 未启动
     assert.equal(result.phases[0].ok, true);
     assert.equal(result.phases[1].ok, false);
+    // 失败链两阶段同样钉 spawn 回退（成功与失败条目通道标注一致）
+    assert.ok(result.phases.every((p) => p.channel === 'spawn'));
     assert.equal(result.final, null);
     assert.match(result.error, /阶段 transform（实现）失败/);
     assert.match(result.error, /退出码/);

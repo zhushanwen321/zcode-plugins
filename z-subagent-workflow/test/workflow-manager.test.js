@@ -87,6 +87,7 @@ function buildManager(overrides = {}) {
     notifier: overrides.notifier || new MailboxNotifier(),
     workflows: overrides.workflows,
     slots: overrides.slots,
+    runner: overrides.runner, // wave2 D1：未传 = undefined（spawn 回退面）
   });
   return { manager, records };
 }
@@ -383,6 +384,30 @@ test('不传 timeoutMs：慢 workflow 不被立即超时（回归：setTimeout(c
   });
   assert.equal(rec.status, 'closed');
   assert.equal(rec.closedReason, 'completed');
+});
+
+test('runner 透传（wave2 D1）：构造注入 → 入口 opts.runner 即注入实例；未注入 → undefined（spawn 回退面钉住）', async () => {
+  // ① 注入：_invokeEntry 把 this.runner 原样挂进入口 opts（assemble 注入链的
+  // manager 侧接缝——真实入口再沿 phases → run-phase 消费，链路测试在 apc 文件）
+  const fakeRunner = { capabilities: () => ({ kind: 'appserver' }) };
+  const seenInjected = [];
+  const m1 = buildManager({
+    runner: fakeRunner,
+    workflows: { chain: async (opts) => { seenInjected.push(opts.runner); return okResult(opts); } },
+  });
+  await m1.manager.start({ workflow: 'chain', task: '注入透传', workdir: TMP, wait: true }, ctx());
+  assert.equal(seenInjected.length, 1);
+  assert.equal(seenInjected[0], fakeRunner); // 同一引用：注入的是 assemble 包装后实例本身
+
+  // ② 未注入：opts.runner === undefined → 入口保持 spawn 直调旧行为（B-9② 对照面
+  // 的 manager 层钉）；脚本 ctx 同链（workflow-script 透传用例另钉）
+  const seenDefault = [];
+  const m2 = buildManager({
+    workflows: { chain: async (opts) => { seenDefault.push(opts.runner); return okResult(opts); } },
+  });
+  await m2.manager.start({ workflow: 'chain', task: '缺省回退', workdir: TMP, wait: true }, ctx());
+  assert.equal(seenDefault.length, 1);
+  assert.equal(seenDefault[0], undefined);
 });
 
 test('script: 前缀：分发到真实 workflow-script 发现层，报告 = 脚本 markdown + json 围栏', async () => {

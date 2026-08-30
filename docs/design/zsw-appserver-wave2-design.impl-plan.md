@@ -106,15 +106,17 @@ graph TD
 | 2026-08-30 | W1-b | **检查点 4 终论（超出原预期，doc_errors 已回填设计）**：session/stop 对 RPC 面在飞轮无打断能力（三态实证 + 引擎 bundle 源码对照 activeAbortController 机制）；G3/B-3/D3/§2.2 事实 4 四处按降级路径修正；附跨波发现：zsub 线 cancel 同样不打断引擎轮（登记待接线，out of scope） | dev 四轮探针「不可辨识」+ 主 agent 亲验两轮（生成中 stop 后 104s 自然完成）钉死 | 主 agent 回填设计文档五处（§6 变更历史末行）；W1-b 实现（handle.cancel→stop）不变——RPC 面无更好原语，接线点为未来 turn 级打断预留 |
 | 2026-08-30 | W1-b | dev 实现偏差（均采纳）：① channel 值域取 B-1 口径 'appserver'\|'spawn'（capabilities().kind 同源）② runner 缺省保留 spawn 直调旧行为（既有测试/直连库调用不炸，真实入口恒注入）③ review-fix-loop.js INFRA_PARAM_KEYS 加 'runner'（白名单透传必需）④ release 调用 await+吞错（条目返回=释放已发出可断言，无悬挂 promise 面）⑤ bin/zsw.js 与 dist/mcp/server.js 核对零改动（注入在 assemble 内部完成） | ① 与验收 B-1 一致 ② 原子单元中间态安全需要 ③ 不加则透传链断 ④ D2 边界 + 测试断言力 | 合理偏差固化 |
 | 2026-08-30 | W1-b | 测试命令形态修正：全量命令 `node --test test/` 在本机 Node v24.11.1 把 test/ 当模块解析报 MODULE_NOT_FOUND，实际可用形态 `node --test`（默认发现 test/ 目录），571 tests 等价覆盖 | Node 版本行为漂移，dev 实测发现 | 本计划 §4 已修正；仓库 AGENTS.md 的 `node --test test/` 同款问题登记备查（AGENTS.md 不在单元领地，留一致性审查或后续修正） |
+| 2026-08-30 | W2 | dev 四偏差（均采纳）：① e2e 清除点删真实 HOME 标记而非 ZSW_ROOT 隔离路径（e2e 进程隔离了 ZSW_ROOT，删隔离路径则真机清除链断裂；标记是提示性状态文件）② MCP 面挂点 = dispatchToolCall 统一出口（1.0.0+ MCP tool face offline 恒禁用消息，挂点就位 face 重启即生效；socket 面刻意不挂——CLI main 顶部已出声，重复无读者）③ DRIFT 常量行号微漂 :350/:352（预许可类别）④ CLI 面无进程内单测（真机 B-8 + 文案单测钉住，bin 导出面纪律只含纯解析函数） | ① 清除语义的真机闭环需要 ② 改动面最小 + 无重复读者 ③ 行号漂移预许可 ④ bin 形态约束 | 合理偏差固化；B-8 真机全链闭环（出声→冒烟清除→不再出声） |
+| 2026-08-30 | W1-c | dev 两偏差（均采纳）：① B-9① 判据口径收紧（路径本体缺失 → spawn 同源失败属 G5 诚实面；引擎面损坏 CLI 本体可用才是 G4 降级验证形态，变体臂实证全链）——设计 B-9 行已回填 ② README 顺带修正「最多 9 个 zcode 进程」过时表述（apc 默认下 workflow 阶段不再各自 spawn） | ① spawn 通道与 probe 同读 ZSW_ZCODE_CLI（driver.js:62），通道降级修不了 CLI 缺失 ② 翻转的应有部分避免文档自相矛盾 | 合理偏差固化；review-fix-loop.test.js 经核实为编排层状态机单测不涉通道语义，按最小改动面不翻（理由在案） |
 
 ## 6 状态表
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
 | W1-a | committed | 1 | 0c85687（测试 75/75 绿；探针 1/2 结论已回填设计文档） |
-| W1-b | committed | 1 | <W1-b commit 后回填>（workflow 线测试集 299/299 + run-phase 单测 9/9 + 全量 568 pass/3 skip（既有占位）；检查点 4 终论已回填设计） |
-| W1-c | pending | 0 | — |
-| W2 | pending | 0 | — |
+| W1-b | committed | 1 | e97a6f6（workflow 线测试集 299/299 + run-phase 单测 9/9 + 全量 568 pass/3 skip（既有占位）；检查点 4 终论已回填设计） |
+| W1-c | committed | 1 | <W1-c commit 后回填>（翻转 70/70 + apc 主链路 3 用例 + 全量 581 pass/3 skip + B-9 两臂+变体臂） |
+| W2 | committed | 1 | <W2 commit 后回填>（83/83 + B-8 真机全链闭环） |
 | W3 | pending | 0 | — |
 
 ## 7 残留风险与变更历史

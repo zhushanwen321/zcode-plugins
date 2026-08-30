@@ -47,6 +47,8 @@ workflow 管理面（zflow 面六 action 的 CLI 入口；record/outputs 同源�
 
 ```bash
 # run（--action 缺省；恒本地同步执行，执行体 = CLI 进程，跑到终态退出并打报告。
+# 阶段默认走常驻引擎通道（apc），一次性进程每 run 付一次引擎惰性启动 ~1-2s；
+# 中止 = 进程级（Ctrl-C 时引擎随亡），详见「已知边界」。
 # 需要「派发后做别的、完成唤醒」时用 Bash run_in_background 包裹整条命令，CLI 退出即引擎原生通知）
 node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
@@ -121,11 +123,12 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ## 已知边界（如实声明）
 
 - **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI daemon）任务的完成唤醒唯一路径 = CLI 阻塞进程（`wait` / `start --wait`）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
-- **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议）**：`zsw start` 不带任何 env 即走常驻引擎，conversation 零冷启动续聊；组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标；降级为**通道级**——daemon 生命周期内后续任务直接走 spawn 免重探，重启 ZCode 后重新组装、恢复探测。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
-- **`ZSW_RUNNER=spawn` 显式回退旧通道**：每轮 spawn 独立 zcode 进程（~1-2s 冷启动），故障隔离与翻转前一致。daemon 在进程启动时读一次 env——改 `ZSW_RUNNER` 后需重启 ZCode 生效。
+- **默认执行通道 = appserver（常驻 `zcode app-server`，apc 协议；subagent 任务与 workflow 阶段同走）**：`zsw start` 与 workflow 的每个阶段不带任何 env 即走常驻引擎。冷启动代价按形态摊薄：daemon 形态下引擎全进程共享——每个引擎进程只惰性启动一次（~1-2s，首个任务/阶段付出），之后 subagent 会话零冷启动续聊、后续 workflow 阶段零进程重建；`zsw workflow run`（本地一次性进程）每 run 付一次引擎惰性启动。组装前 probe 健康检查失败自动降级 spawn。probe ok 结论落盘 `~/.zcode/zsw/probe-cache.json`（键 = CLI 路径 + mtime，只缓存 ok；CLI 更新即失效重探）——`--local` 每条命令是一次性进程、daemon 启动只组装一次，落盘让两形态共享探针结论；缓存命中后首次会话创建失败（-32603/-32601/-32602）会失效缓存并重探一次，重探失败则本任务转 spawn 重跑且 record 如实改标；降级为**通道级**——daemon 生命周期内后续任务直接走 spawn 免重探，重启 ZCode 后重新组装、恢复探测。workflow 阶段条目落 `channel` 字段（`appserver`|`spawn`），降级混跑的报告可直接对照各阶段实际通道。断链自愈：会话被引擎驱逐或引擎进程崩溃后，下一次交互自动 `session/resume`（携带 runtimeModel）重试一次；不可恢复时报「会话弃用 + `zsw start` 重建指引」而非裸错误码。-32004 的主来源是引擎进程死亡与 close（订阅会话免空闲驱逐）。协议漂移（-32601/-32602）分类为 protocol-drift 并给升级冒烟指引（`node test/e2e.test.js --name apc-smoke`）。
+- **workflow 中止语义按形态如实区分**：daemon 形态（zflow 派发、执行体在 daemon 进程内）的 `abort` 是 runner 侧取消——报告立即落 `status:'aborted'`、后续阶段不再启动；但引擎侧在飞轮**不被打断**（`session/stop` 对 RPC 在飞轮无打断能力，已真机实证），该轮会跑到自然完成——这部分 token 已消耗，属 apc 通道相对 spawn 立停的已知代价。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与其拉起的引擎子进程一同退出（引擎随亡，不走 session/stop）；`zsw workflow --action abort` 对本地 run 只终态化 record、停不掉执行体（取消 bg bash 形态的本地 run 用引擎 TaskStop）。
+- **`ZSW_RUNNER=spawn` 显式回退旧通道**：subagent 每轮、workflow 每阶段各自 spawn 独立 zcode 进程（~1-2s 冷启动），故障隔离与翻转前一致。daemon 在进程启动时读一次 env——改 `ZSW_RUNNER` 后需重启 ZCode 生效。
 - **running 会话不可插话（busy，两通道同语义）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；appserver 侧 `-32010` 硬错误，探针实证；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递。
 - **工具黑名单是引擎级硬拦截（两来源并集），`tools` 白名单维持软约束**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`——默认 appserver 通道经 `session/create` 的 `toolDenylist` 引擎级拦截，spawn 回退通道维持 `--disallowed-tools` flag 硬拦截（frontmatter 来源生效，CLI 来源不消费）；`--allow-tools` 白名单同理落 `toolAllowlist`（仅 appserver）。frontmatter `tools` 白名单维持 prompt 软约束（两通道一致）：zcode CLI 无 allowlist flag（`--allowed-tools` 拒收），白名单只能约束意图不能拦截行为。
-- **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 9 个 zcode 进程（workflow 池 slot 粒度 = 整个 run）。
+- **subagent 与 workflow 的并发池相互独立**：subagent 池默认 3；workflow 池默认 2（单 workflow 内部阶段并发默认 3，maxConcurrent 可调）——双池互不占位，满载 3 + 2×3 最多 9 个并发阶段（默认 apc 通道下阶段共享常驻引擎、不新增进程；spawn 回退档下即 9 个 zcode 进程；workflow 池 slot 粒度 = 整个 run）。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 

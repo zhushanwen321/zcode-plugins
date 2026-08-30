@@ -45,6 +45,11 @@
 |-----|------|------|------|
 | `ZSW_RUNNER` | `spawn` \| `appserver` | `appserver` | 执行引擎通道。未设置 = 缺省 appserver（组装前 probe 健康检查，失败自动降级 spawn，ok 结论落盘 `probe-cache.json`）；`spawn` = 显式回退旧通道（每轮独立进程）；`appserver` = 显式定向（跳过 probe）。daemon 在进程启动时读一次 env——改后需重启 ZCode 生效 |
 
+> wave2 批注（2026-08-30 核对）：workflow 阶段经同一 runner 端口执行，同受本 env
+> 管辖——spawn 档对 workflow 阶段即「每阶段独立进程」。阶段条目落 `channel`
+> 字段（`appserver`|`spawn`）标注实际通道；channel 是条目字段非 env，不入本清单。
+> W1-b/W1-c 未新增 env，本节仅加此批注。
+
 > 迁移说明：2026-08 重构前数据根为 `~/.zcode/zsub/`。插件 0.1.0 未发布、无外部
 > 用户，不做自动迁移；旧目录若存在属于历史残留，可人工删除。
 

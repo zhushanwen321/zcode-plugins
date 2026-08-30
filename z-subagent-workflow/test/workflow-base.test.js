@@ -102,6 +102,9 @@ test('runPhase：成功 → 旧扁平形态全字段映射 + HOME 池已 bootstr
   assert.equal(result.timedOut, false);
   assert.equal(result.error, undefined);
   assert.equal(result.stderrTail, null);
+  // runner 未注入 = spawn 通道行为（wave2 W1-b 缺省回退，B-9② 对照面）：
+  // 条目 channel:'spawn' 是「回退面被钉住」的最直接断言
+  assert.equal(result.channel, 'spawn');
   // per-model HOME 池由 prepareRunEnv bootstrap（model.main = modelRef）
   const poolCfg = path.join(config.homePoolDir('GLM-4.7-Flash'), '.zcode', 'cli', 'config.json');
   assert.equal(JSON.parse(fs.readFileSync(poolCfg, 'utf8')).model.main, MODEL_REF);
@@ -135,6 +138,7 @@ test('runPhase：CLI 非零退出 → ok:false + error 含退出码', async () =
     assert.equal(result.timedOut, false);
     assert.equal(result.exitCode, null);
     assert.match(result.error, /退出码/);
+    assert.equal(result.channel, 'spawn'); // 失败条目同样钉 spawn 回退
   } finally {
     process.env.ZSW_ZCODE_CLI = saved;
   }
@@ -162,6 +166,7 @@ test('runPhase：超时 → timedOut:true + error 含超时说明，response 带
     assert.equal(result.timedOut, true);
     assert.equal(result.exitCode, null);
     assert.match(result.error, /超时/);
+    assert.equal(result.channel, 'spawn'); // 超时条目同样钉 spawn 回退
     assert.ok(result.response.includes('sleeping before exit'));
   } finally {
     delete process.env.FAKE_SLEEP_MS;
@@ -183,6 +188,7 @@ test('phases.runPhase：包装出报告条目（phase/label/durationMs/timedOut�
   assert.equal(entry.usage.input_tokens, 1);
   assert.equal(entry.timedOut, false);
   assert.equal(entry.error, undefined);
+  assert.equal(entry.channel, 'spawn'); // 包装层透传 channel（缺省回退面钉住）
   assert.ok(Number.isFinite(entry.durationMs) && entry.durationMs >= 0);
 });
 
@@ -237,6 +243,8 @@ test('runPhase：signal 预置 aborted → 零 spawn + aborted 条目（契约 1
     assert.equal(result.timedOut, false);
     assert.equal(result.exitCode, null);
     assert.equal(result.stderrTail, null);
+    // 预置中止条目同样钉 spawn 回退（channel 由实际通道如实标注，B-9② 对照面）
+    assert.equal(result.channel, 'spawn');
     // marker CLI 只要被 spawn 就会落文件 → 不存在即零 spawn
     assert.equal(fs.existsSync(marker), false);
   } finally {
@@ -260,6 +268,7 @@ test('runPhase：运行中 abort → kill 子进程 + aborted 条目（契约 2�
     assert.equal(result.error, 'aborted');
     assert.equal(result.aborted, true);
     assert.equal(result.timedOut, false); // 是被杀，不是超时
+    assert.equal(result.channel, 'spawn'); // 运行中中止条目同样钉 spawn 回退
     // cancelled 终态携带 stdout 尾部 → 证明子进程确实跑起来后被杀
     assert.ok(String(result.response).includes('sleeping before exit'));
     assert.ok(elapsed < 10000, `abort 后应及时返回（实际 ${elapsed}ms）`);
@@ -303,6 +312,7 @@ test('runChain：signal 预置 aborted → 零阶段启动 + status=aborted（�
     assert.equal(result.phases.length, 1);
     assert.equal(result.phases[0].phase, 'analyze');
     assert.equal(result.phases[0].aborted, true);
+    assert.equal(result.phases[0].channel, 'spawn'); // chain 入口层钉 spawn 回退（B-9② 对照面）
     assert.equal(fs.existsSync(marker), false); // 零 spawn
   } finally {
     restoreCli();
@@ -328,6 +338,7 @@ test('runChain：运行中 abort → 进程被杀、条目 aborted、后续阶�
     assert.equal(entry.aborted, true);
     assert.equal(entry.ok, false);
     assert.equal(entry.error, 'aborted');
+    assert.equal(entry.channel, 'spawn'); // 运行中止条目同样钉 spawn 回退
     // 被杀的子进程跑过（stdout 尾部带回），且非超时路径
     assert.ok(String(entry.response).includes('sleeping before exit'));
     assert.equal(entry.timedOut, false);
@@ -352,6 +363,8 @@ test('runChain：无 signal → status=ok 增量字段，条目不带 aborted（
     assert.equal(p.ok, true);
     assert.equal(p.aborted, undefined);
   }
+  // 全成功链的三阶段条目全部钉 spawn 回退（runner 未注入 = spawn 通道行为）
+  assert.ok(result.phases.every((p) => p.channel === 'spawn'));
 });
 
 test('runChain：阶段失败 → status=failed（现有失败语义映射）', async () => {
