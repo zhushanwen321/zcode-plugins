@@ -49,6 +49,12 @@ const {
   readProbeCacheEntry,
   writeProbeCacheEntry,
   isInvalidatingError,
+  classifyProbeCacheLookup,
+  upgradeNoticePath,
+  readUpgradeNotice,
+  writeUpgradeNotice,
+  clearUpgradeNotice,
+  buildUpgradeNoticeMessage,
 } = require('../lib/assemble');
 const AppServerRunner = require('../lib/runner-appserver');
 const driver = require('../lib/driver');
@@ -399,3 +405,148 @@ test('通道级降级后第二个任务免重探：直接走 spawn，probe 与 i
     delete process.env.ZSW_ZCODE_CLI;
   }
 });
+
+// ------------------------------------------------- 升级检测出声（wave2 D5）
+
+/** 升级标记清理（用例隔离；与 clearProbeCache 同款尽力语义）。 */
+function clearUpgradeNoticeFile() {
+  try { fs.rmSync(upgradeNoticePath(), { force: true }); } catch { /* 尽力 */ }
+}
+
+test('DRIFT 常量导出可 require 且值与 runner-appserver 内部定义一致（恢复 79577a0 移除的导出）', () => {
+  assert.equal(AppServerRunner.DRIFT_SMOKE_CMD, 'node test/e2e.test.js --name apc-smoke');
+  assert.equal(AppServerRunner.DRIFT_FALLBACK_ENV, 'ZSW_RUNNER=spawn');
+  // 同源钉：classifyApcError 的恢复指引文案由同两常量拼装（单一事实源不漂移）
+  const hint = AppServerRunner.classifyApcError({ code: -32601, message: 'unit' }).hint;
+  assert.ok(hint.includes(AppServerRunner.DRIFT_SMOKE_CMD), 'hint 复用 DRIFT_SMOKE_CMD');
+  assert.ok(hint.includes(AppServerRunner.DRIFT_FALLBACK_ENV), 'hint 复用 DRIFT_FALLBACK_ENV');
+});
+
+test('classifyProbeCacheLookup：命中 null / 无条目 first / mtime 不匹配 stale / 损坏 first', () => {
+  const cacheFile = path.join(TMP, 'classify-cache.json');
+  fs.rmSync(cacheFile, { force: true });
+  assert.equal(classifyProbeCacheLookup(FAKE_CLI, 123, cacheFile), 'first', '无缓存文件 = 首次（静默）');
+  writeProbeCacheEntry(FAKE_CLI, 123, 1, cacheFile);
+  assert.equal(classifyProbeCacheLookup(FAKE_CLI, 123, cacheFile), null, '同路径同 mtime = 命中');
+  assert.equal(classifyProbeCacheLookup(FAKE_CLI, 456, cacheFile), 'stale', '条目在但 mtime 不匹配 = 升级');
+  assert.equal(classifyProbeCacheLookup('/other/cli', 123, cacheFile), 'first', '无该 CLI 条目 = 首次（静默）');
+  fs.writeFileSync(cacheFile, '{not json');
+  assert.equal(classifyProbeCacheLookup(FAKE_CLI, 123, cacheFile), 'first', '损坏缓存容错为首次');
+  fs.rmSync(cacheFile, { force: true });
+});
+
+test('首次 miss（无条目）静默：组装不落升级标记', async () => {
+  delete process.env.ZSW_RUNNER;
+  clearProbeCache();
+  clearUpgradeNoticeFile();
+  process.env.ZSW_ZCODE_CLI = FAKE_CLI;
+  const probe = setProbe(null);
+  try {
+    const a = await assembleManager();
+    assert.equal(a.runnerKind, 'appserver');
+    assert.ok(!fs.existsSync(upgradeNoticePath()), '首次 miss 不落标记（升级检测只认 mtime 变化）');
+    await a.manager.runner.shutdown();
+  } finally {
+    probe.restore();
+    delete process.env.ZSW_ZCODE_CLI;
+  }
+});
+
+test('stale miss（条目在但 mtime 不匹配 = CLI 更新）→ 落升级标记后照常重探（不阻塞不改探测行为）', async () => {
+  delete process.env.ZSW_RUNNER;
+  clearProbeCache();
+  clearUpgradeNoticeFile();
+  process.env.ZSW_ZCODE_CLI = FAKE_CLI;
+  const probe = setProbe(null);
+  try {
+    writeProbeCacheEntry(FAKE_CLI, fakeCliMtime(), 1);
+    const later = new Date(Date.now() + 120_000);
+    fs.utimesSync(FAKE_CLI, later, later); // 模拟 CLI 更新（fixtures 测试文件，非真实 CLI——既有 mtime 用例同款先例）
+    const a = await assembleManager();
+    assert.equal(a.runnerKind, 'appserver', '落标记不改探测行为：重探 ok 仍 appserver');
+    assert.equal(probe.count(), 1, '重探照常发生');
+    const notice = readUpgradeNotice();
+    assert.ok(notice, 'stale miss 必须落升级标记');
+    assert.equal(notice.cliPath, FAKE_CLI, '标记记录 CLI 路径');
+    assert.equal(notice.mtimeMs, fakeCliMtime(), '标记记录升级后的 mtime');
+    assert.ok(typeof notice.detectedAt === 'string' && !Number.isNaN(Date.parse(notice.detectedAt)),
+      `detectedAt 应为可解析时间戳: ${notice.detectedAt}`);
+    await a.manager.runner.shutdown();
+  } finally {
+    probe.restore();
+    delete process.env.ZSW_ZCODE_CLI;
+  }
+});
+
+test('缓存命中不落升级标记（hit 路径零检测动作）', async () => {
+  delete process.env.ZSW_RUNNER;
+  clearProbeCache();
+  clearUpgradeNoticeFile();
+  process.env.ZSW_ZCODE_CLI = FAKE_CLI;
+  const probe = setProbe(null);
+  try {
+    writeProbeCacheEntry(FAKE_CLI, fakeCliMtime(), 1);
+    const a = await assembleManager();
+    assert.equal(a.runnerKind, 'appserver');
+    assert.equal(probe.count(), 0, '命中跳过 probe');
+    assert.ok(!fs.existsSync(upgradeNoticePath()), '命中路径不落标记');
+    await a.manager.runner.shutdown();
+  } finally {
+    probe.restore();
+    delete process.env.ZSW_ZCODE_CLI;
+  }
+});
+
+test('升级标记原子写与清除：形态 {cliPath, mtimeMs, detectedAt}、无 tmp 残留、清除后读为 null', () => {
+  clearUpgradeNoticeFile();
+  writeUpgradeNotice(FAKE_CLI, 123.5);
+  const notice = readUpgradeNotice();
+  assert.ok(notice, '写入后可读回');
+  assert.deepEqual(Object.keys(notice).sort(), ['cliPath', 'detectedAt', 'mtimeMs'], '标记形态恰为三字段');
+  assert.equal(notice.cliPath, FAKE_CLI);
+  assert.equal(notice.mtimeMs, 123.5);
+  // 原子写（tmp+rename，与 probe 缓存同款）证据：目录无 .tmp 残留（写完即 rename）
+  const leftovers = fs.readdirSync(path.dirname(upgradeNoticePath())).filter((f) => f.includes('.tmp'));
+  assert.deepEqual(leftovers, [], `tmp 残留: ${leftovers}`);
+  // 损坏容错：读侧按形态契约返回 null（投递面不输出垃圾内容）
+  fs.writeFileSync(upgradeNoticePath(), '{broken');
+  assert.equal(readUpgradeNotice(), null, '损坏标记读为 null');
+  // 清除语义（冒烟通过的 lib 面；真机清除链见 e2e apc-smoke ⑨）
+  clearUpgradeNoticeFile();
+  assert.equal(readUpgradeNotice(), null, '清除后读为 null');
+  assert.ok(!fs.existsSync(upgradeNoticePath()), '清除后文件不存在');
+});
+
+test('buildUpgradeNoticeMessage：复用 DRIFT 常量拼装（冒烟命令与回退 env 不自造漂移）', () => {
+  const msg = buildUpgradeNoticeMessage();
+  assert.ok(msg.includes('检测到 ZCode CLI 已更新'), '基调对齐设计 §3.1 样例');
+  assert.ok(msg.includes(AppServerRunner.DRIFT_SMOKE_CMD), '冒烟命令复用常量');
+  assert.ok(msg.includes(AppServerRunner.DRIFT_FALLBACK_ENV), '回退开关复用常量');
+});
+
+test('MCP 投递面：标记存在时 tools/call 结果文本尾部追加提示，无标记不追加', async () => {
+  clearUpgradeNoticeFile();
+  const { createServer } = require('../dist/mcp/server');
+  const call = (server) => server.handleMessage({
+    jsonrpc: '2.0', id: 1, method: 'tools/call',
+    params: { name: 'zsub', arguments: { action: 'list' } },
+  });
+  const bare = await call(createServer({ manager: null, wfManager: null, nested: false }));
+  assert.ok(!bare[0].result.content[0].text.includes('检测到 ZCode CLI 已更新'), '无标记不追加提示');
+  // 构造标记（真机链路由 resolveRunnerKind 的 stale miss 落盘，此处直写同一事实源）
+  writeUpgradeNotice(FAKE_CLI, fakeCliMtime());
+  const withNotice = await call(createServer({ manager: null, wfManager: null, nested: false }));
+  const text = withNotice[0].result.content[0].text;
+  assert.ok(text.startsWith('zsub/zflow 工具面已下线'), '原结果文本保留在前（追加非替换）');
+  assert.ok(text.includes('检测到 ZCode CLI 已更新'), '结果文本尾部出现升级提示');
+  assert.ok(text.includes(AppServerRunner.DRIFT_SMOKE_CMD), '提示含冒烟命令（常量复用）');
+  assert.ok(text.includes(AppServerRunner.DRIFT_FALLBACK_ENV), '提示含回退开关（常量复用）');
+  clearUpgradeNoticeFile();
+});
+
+// CLI 投递面（bin/zsw.js main() 顶部的 notifyUpgradeNotice）不设单测：bin 的
+// 导出面纪律只含纯解析函数，main 顶部出声是进程级 stderr 行为，进程内无法
+// 单测捕获（require bin 即触发 require.main 守卫外的副作用也无必要）。验证
+// 方式 = B-8 CLI 臂真机：手工构造 ~/.zcode/zsw/upgrade-notice.json → 跑任意
+// zsw 命令 → stderr 出现本提示；删除标记后再跑 → 不再出声。文案本体由
+// buildUpgradeNoticeMessage 用例钉住（CLI 面只加 [zsub] 前缀与换行，无第二份文案）。

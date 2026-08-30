@@ -1455,3 +1455,8 @@ module.exports.RUNTIME_PREFERENCES = RUNTIME_PREFERENCES;
 module.exports.classifyApcError = classifyApcError;
 module.exports.extractAssistantText = extractAssistantText;
 module.exports.extractReadUsage = extractReadUsage;
+// wave2 D5 恢复导出（曾在 79577a0 code-simplify 批次被当作死代码移除）：
+// 升级提示文案（assemble 的 buildUpgradeNoticeMessage）复用这两个常量拼装，
+// 不自造文案漂移——恢复前消费侧 lazy require 拿到 undefined
+module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
+module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;

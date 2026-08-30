@@ -684,7 +684,24 @@ function collectIds(rest) {
   return ids;
 }
 
+/**
+ * 升级提示投递（wave2 D5，CLI 面）：任意 zsw 命令执行前检查升级标记，存在即
+ * stderr 出声。检测发生在组装期（resolveRunnerKind 的 stale miss 落标记），
+ * 与投递解耦——daemon thin client 形态下本进程不组装，标记由 daemon/MCP
+ * server 侧检测落盘，本面只读标记出声。调用点放 main 最前：workflow/hook/
+ * daemon/local/usage 各分发路径（含全部早期 return）一次覆盖。lazy require：
+ * 无标记的常态下零模块加载开销。
+ */
+function notifyUpgradeNotice() {
+  try {
+    const { readUpgradeNotice, buildUpgradeNoticeMessage } = require('../lib/assemble');
+    if (!readUpgradeNotice()) return;
+    process.stderr.write(`[zsub] ${buildUpgradeNoticeMessage()}\n`);
+  } catch { /* 投递失败不影响命令本身 */ }
+}
+
 async function main() {
+  notifyUpgradeNotice();
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）

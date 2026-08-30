@@ -685,6 +685,18 @@ test('E9 apc-smoke 升级冒烟（D3/G3）：create(toolDenylist+persistence) �
       // ⑧ close（冒烟收尾显式面）
       const closed = await conn.request('session/close', { sessionId: sid }, { timeoutMs: 15_000 });
       console.error(`[e2e] apc-smoke close 应答: ${JSON.stringify(closed).slice(0, 200)}`);
+
+      // ⑨ 升级标记清除（wave2 D5 清除语义）：冒烟通过 = 被指引的动作完成，
+      // 提示即消；上方任一断言失败（异常）都到不了此处——失败不删，指引保留。
+      // 删的是真实 HOME 的标记而非 ZSW_ROOT 隔离路径：本文件把 ZSW_ROOT 指到
+      // 临时目录（record/outputs 隔离纪律），但标记是「用户可见提示状态」而非
+      // 测试数据，真机链路「CLI 出声 → 冒烟 → 不再出声」必须闭环在真实部署
+      // 路径上（与 config.zswRoot() 缺省形态同源，os.homedir() 动态推导）。
+      // 标记仅为提示性状态文件，删除无数据损失（手动清除 = 删文件，同语义）。
+      const realNoticePath = path.join(os.homedir(), '.zcode', 'zsw', 'upgrade-notice.json');
+      const hadNotice = fs.existsSync(realNoticePath);
+      try { fs.rmSync(realNoticePath, { force: true }); } catch { /* 清除失败不炸冒烟 */ }
+      console.error(`[e2e] apc-smoke 升级标记清除: ${hadNotice ? '已删除 ' + realNoticePath : '无标记（本来就不存在）'}`);
     } finally {
       await runner.shutdown(); // 内部 close 已 close 的会话失败为 allSettled，不炸收尾
     }

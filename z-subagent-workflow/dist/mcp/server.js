@@ -627,6 +627,25 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
    * zsub 的 switch(action) / zflow 的 switch(workflow) 见
    * buildToolHandlers）。
    */
+  /**
+   * 升级提示投递（wave2 D5，MCP 面）：标记存在时在 tool 结果文本尾部追加提示行
+   * （daemon 形态经 agent 转达用户）。挂 dispatchToolCall 返回处 = MCP tools/call
+   * 面的唯一统一出口（1.0.0 终态下 tool 结果恒为本函数产出的拒绝指引文本）；
+   * socket 面刻意不挂——其唯一消费者是 CLI thin client，CLI 侧 main() 顶部已对
+   * 同一标记出声，重复投递无读者。lazy require + 容错：投递失败不影响 tool 结果。
+   */
+  function appendUpgradeNotice(wrapped) {
+    try {
+      const { readUpgradeNotice, buildUpgradeNoticeMessage } = require('../../lib/assemble');
+      if (!readUpgradeNotice()) return wrapped;
+      const block = wrapped && Array.isArray(wrapped.content) ? wrapped.content[0] : null;
+      if (block && typeof block.text === 'string') {
+        block.text += `\n\n[zsub] ${buildUpgradeNoticeMessage()}`;
+      }
+    } catch { /* 投递失败不影响 tool 结果 */ }
+    return wrapped;
+  }
+
   async function dispatchToolCall(params) {
     // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
     // 常开（一行 jsonl，成本可忽略）；ZSW_ROOT 隔离的测试环境天然不污染。
@@ -642,8 +661,9 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
       }) + '\n');
     } catch { /* 诊断失败不影响服务 */ }
     // 工具面恒拒绝（1.0.0 终态，D1：agent 交互全走 CLI；嵌套环境同文案——
-    // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）
-    return errContent(toolsDisabledMessage());
+    // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）。
+    // 返回前经升级提示投递（wave2 D5）：标记存在即文本尾部追加提示行
+    return appendUpgradeNotice(errContent(toolsDisabledMessage()));
   }
 
   async function handleMessage(msg) {

@@ -25,6 +25,16 @@
  * 重探失败则补做降级判定，本任务转 spawn 重跑 + record 如实改标 + 通道级降级
  * （capabilities 翻转后 start 分流直接走 spawn，daemon 生命周期内后续任务免重探；
  * daemon 随 ZCode 重启后重新组装、恢复探测）。
+ *
+ * 升级检测出声（wave2 D5）：读缓存区分两种 miss——「无该 CLI 条目」（首次）静默；
+ * 「有条目但 mtime 不匹配」（CLI 已更新）落升级标记 ~/.zcode/zsw/upgrade-notice.json
+ * （{cliPath, mtimeMs, detectedAt}，原子写与 probe 缓存同款）后照常重探。标记是
+ * 两个投递面的共享事实源（检测与投递解耦）：① 任意 zsw CLI 命令执行前检查标记
+ * stderr 出声；② zsub/zflow MCP tool 结果文本尾部追加。daemon/GUI 主形态下组装
+ * 发生在进程启动时且其 stderr 非用户可见面，纯 stderr 方案对主形态不生效，故以
+ * 落盘标记为媒介。清除语义：升级冒烟（node test/e2e.test.js --name apc-smoke）
+ * 通过后删除标记；手动清除 = 删文件。提示文案复用 D3 的 DRIFT_SMOKE_CMD/
+ * DRIFT_FALLBACK_ENV 常量（buildUpgradeNoticeMessage）。
  */
 
 const fs = require('node:fs');
@@ -83,16 +93,28 @@ function saveCacheFile(cacheFile, data) {
 }
 
 /**
+ * 缓存查找分类（wave2 D5）：命中返回 null；无该 CLI 条目（缓存文件不存在/
+ * 损坏/条目缺失/非 ok）返回 'first'（首次组装，静默）；有条目但 mtime 不匹配
+ * （CLI 已更新）返回 'stale'（升级事实已发生，落升级标记）。readProbeCacheEntry
+ * 与 resolveRunnerKind 共用本判定，防两种 miss 的区分逻辑漂移。
+ * @returns {null|'first'|'stale'}
+ */
+function classifyProbeCacheLookup(cliPath, mtimeMs, cacheFile = probeCachePath()) {
+  const data = loadCacheData(cacheFile);
+  const entry = data ? data.entries[cliPath] : null;
+  if (!entry || typeof entry !== 'object' || entry.ok !== true) return 'first';
+  if (typeof entry.mtimeMs !== 'number' || entry.mtimeMs !== mtimeMs) return 'stale';
+  return null;
+}
+
+/**
  * 读缓存条目。mtime 不匹配（CLI 更新）、损坏（不可解析/形态不对）、非 ok 一律
  * 按 miss 处理——缓存只做加速，任何可疑都回到真实 probe。
  * @returns {{ok: true, mtimeMs: number, protocolVersion: number|null}|null}
  */
 function readProbeCacheEntry(cliPath, mtimeMs, cacheFile = probeCachePath()) {
-  const data = loadCacheData(cacheFile);
-  const entry = data ? data.entries[cliPath] : null;
-  if (!entry || typeof entry !== 'object' || entry.ok !== true) return null;
-  if (typeof entry.mtimeMs !== 'number' || entry.mtimeMs !== mtimeMs) return null;
-  return entry;
+  if (classifyProbeCacheLookup(cliPath, mtimeMs, cacheFile) !== null) return null;
+  return loadCacheData(cacheFile).entries[cliPath];
 }
 
 /**
@@ -124,6 +146,66 @@ function invalidateProbeCacheEntry(cliPath, cacheFile = probeCachePath()) {
   } catch { /* 写失败：缓存留旧结论，读取侧仍会按形态容错为 miss */ }
 }
 
+// ------------------------------------------------------ 升级检测出声（wave2 D5）
+
+const UPGRADE_NOTICE_FILE = 'upgrade-notice.json';
+
+/** 升级标记落盘路径（zswRoot 下，ZSW_ROOT 可覆盖——测试隔离与 probe 缓存同款免费获得）。 */
+function upgradeNoticePath() {
+  return path.join(config.zswRoot(), UPGRADE_NOTICE_FILE);
+}
+
+/**
+ * 读升级标记。不存在/损坏/形态不对返回 null——形态契约（cliPath 必须是
+ * string）的唯一判定点，防损坏文件让投递面输出垃圾内容。
+ */
+function readUpgradeNotice(noticeFile = upgradeNoticePath()) {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(noticeFile, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || typeof data.cliPath !== 'string') return null;
+  return data;
+}
+
+/**
+ * 落升级标记（原子写，复用 probe 缓存同款 tmp+rename）。stale miss（CLI mtime
+ * 变化）时调用：标记是 CLI stderr 与 MCP tool 结果两个投递面的共享事实源，
+ * daemon（组装发生在进程启动）与 CLI（--local 每次组装）两形态据此共享同一次
+ * 检测。重复检测幂等覆写（detectedAt 刷新为最近一次检测时间）。写失败只出声
+ * 不影响组装——提示缺失的最坏后果是漂移发现时机退回任务失败，不是功能故障。
+ */
+function writeUpgradeNotice(cliPath, mtimeMs, noticeFile = upgradeNoticePath()) {
+  try {
+    saveCacheFile(noticeFile, { cliPath, mtimeMs, detectedAt: new Date().toISOString() });
+  } catch (e) {
+    log(`升级标记写入失败（${e && e.message || e}），不影响组装`);
+  }
+}
+
+/** 清除升级标记（D5 清除语义：冒烟通过即被指引的动作完成，提示消除；手动清除 = 删文件）。 */
+function clearUpgradeNotice(noticeFile = upgradeNoticePath()) {
+  try {
+    fs.rmSync(noticeFile, { force: true });
+  } catch { /* 清除失败留标记：提示误存续无害，下次冒烟再消 */ }
+}
+
+/**
+ * 升级提示文案（单一事实源，两个投递面共用，防文案漂移）。复用 D3 的
+ * DRIFT_SMOKE_CMD/DRIFT_FALLBACK_ENV 常量拼装（79577a0 曾移除导出，wave2 已
+ * 恢复），不自造漂移。基调对齐设计 §3.1 升级提示路径样例。
+ * @returns {string} 不含投递面前缀/换行，由各投递面按自身惯例包装
+ */
+function buildUpgradeNoticeMessage() {
+  const { DRIFT_SMOKE_CMD, DRIFT_FALLBACK_ENV } = require('./runner-appserver');
+  return '检测到 ZCode CLI 已更新（mtime 变化）。若 zsub/zflow 出现协议类报错，'
+    + `先跑升级冒烟 \`${DRIFT_SMOKE_CMD}\` 核对漂移面；`
+    + `确认不兼容期间设 ${DRIFT_FALLBACK_ENV} 回退。`
+    + '（跑通冒烟后本提示自动消除；手动清除 = 删除 upgrade-notice.json）';
+}
+
 /**
  * probe 序列：先经 model-router bootstrap 隔离 HOME 再 probe——app-server 进程
  * 启动即要求 $HOME 有模型/provider 配置（e2e 实测 2026-08-23：无配置时
@@ -150,11 +232,17 @@ async function resolveRunnerKind() {
   try {
     mtimeMs = fs.statSync(cliPath).mtimeMs;
   } catch { /* 坏路径：缓存必 miss，直接走 probe 得到可诊断 reason */ }
-  const hit = mtimeMs !== null && readProbeCacheEntry(cliPath, mtimeMs);
-  if (hit) {
+  // 两种 miss 区分（wave2 D5）：'first'（无条目/坏路径/损坏缓存）静默；
+  // 'stale'（条目在但 mtime 不匹配 = CLI 已更新）落升级标记后照常重探——
+  // 不阻塞、不改探测行为，标记供 CLI/MCP 两个投递面出声
+  const missKind = mtimeMs === null
+    ? 'first'
+    : classifyProbeCacheLookup(cliPath, mtimeMs);
+  if (missKind === null) {
     log(`probe 缓存命中（${cliPath} mtime=${mtimeMs}），跳过 probe`);
     return { kind: 'appserver', fromCache: true };
   }
+  if (missKind === 'stale') writeUpgradeNotice(cliPath, mtimeMs);
   try {
     const probe = await runProbeSequence();
     if (probe.ok) {
@@ -357,7 +445,9 @@ async function assembleManager(opts = {}) {
 
 // 缓存层与失效判定导出：单测注入 cacheFile / 锁定判定行为，不真跑引擎
 // （invalidateProbeCacheEntry 仅内部消费，不导出）。wrapWithProbeInvalidation
-// 导出供包装层转发面直接单测（release 按 kind 路由等，不经 assembleManager 全组装）
+// 导出供包装层转发面直接单测（release 按 kind 路由等，不经 assembleManager 全组装）。
+// 升级检测面（wave2 D5）：miss 分类、标记读写清与提示文案导出——CLI/MCP 两个
+// 投递面与单测共用同一事实源
 module.exports = {
   assembleManager,
   probeCachePath,
@@ -366,4 +456,10 @@ module.exports = {
   writeProbeCacheEntry,
   isInvalidatingError,
   wrapWithProbeInvalidation,
+  classifyProbeCacheLookup,
+  upgradeNoticePath,
+  readUpgradeNotice,
+  writeUpgradeNotice,
+  clearUpgradeNotice,
+  buildUpgradeNoticeMessage,
 };
