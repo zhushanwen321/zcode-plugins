@@ -81,7 +81,7 @@ graph LR
 | U2-utils-2a | committed | 2 | 691f393（40/40 + 89/89 绿 / V2 grep 零残留 / 常量迁编排层偏差 #8 + MF-1 包装偏差 #9；注：dc6a771 被 amend 为 691f393 以回填本表证据指针） |
 | U3-flow-2b | committed | 0 | 26175c7（orchestration-host 9/0 + agent-runner-adapter 7/0 + 受影响面逐文件绿（非 e2e 全量绿）；CLI 冒烟：scripts 出 vendored 内置 5 + 四根用户脚本、lint 走 core lintScript；旧引用 grep 零残留、lib/workflow/ 目录删除；真机 run 留 U5） |
 | U4-exec-2c | committed | 0 | 84b63a0（runner-core 20/0 含 V3 三形态断言；非 e2e 全量 302/302 绿；ZSW_RUNNER=appserver 退役报错；grep 零残留；检查点 3 调研记录入 §7；净删 ~6500 行） |
-| U5-accept | pending | 0 | — |
+| U5-accept | committed | 2 | 93b23a5（U5a：core-ref 守卫 7 用例 + 文档收口）→ f1a243d（Gate A 首跑 320/322 → A5 异步 exec pid 落盘 + E3 rounds 投影修复，含 e2e-daemon 测试隔离洞修补）→ 0a21e80（V5-④ 渲染等价）→ fff30c1（一致性审查 1 不合理 + 8 doc_error 清零）。终态 Gate A：全量 326/326 绿（含真机 e2e）；V2 grep 零残留；V5-④ 真机跑通（迁移脚本 → completed，markdown+json 双段，stateFile 落盘）；check-sync/check-pack 双绿 |
 
 ## 7 残留风险与变更历史
 
@@ -124,3 +124,4 @@ graph LR
 - 2026-08-30 计划创建（基线 6c2151f）。
 - 2026-08-30 U0 改道：原目标分支 dev-0.9.11 被用户合并（PR #194）并删除、core 0.2.0 发 npm——U0 改为基于 main 的新分支，**因全局规则 17（新分支/worktree 须用户授权）阻塞待裁决**；U1 vendor 源相应改为 npm tarball 优先（偏差 #7）。执行期间 dev-0.9.11 worktree 消失导致首个 U0 worker 产出丢失（未在任何分支留痕，无污染）。
 - 2026-08-30 U1 committed（8b8bc78）；U2 执行中发现分叉点③（常量）与⑥（MF-1 消毒）为实质内容差异，处置见偏差 #8/#9。
+- 2026-08-30 U0-U4 全链 committed（88d7eadc6 / dc27b1d / 26175c7 / 84b63a0）；U5 双门收口：Gate A 全量 326/326 绿（含真机 e2e；首跑 2 红根因 = runner-core 异步 exec.pid 未落盘 + start 投影缺 rounds，修复 f1a243d），一致性审查 4 合理 / 1 不合理 / 8 doc_error 全清（fff30c1），V5-④ 真机验收通过。交付态：全单元 committed，无冻结/未裁决单元。遗留用户裁决项：push / 合 main / zsw 发版（breaking → 建议 major 2.0.0）/ xyz-agent 分支 push 与 core 0.3.0 发版（changeset 已备）。
