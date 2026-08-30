@@ -291,6 +291,15 @@ test('isInvalidatingError：-32603/-32601/-32602 命中，其余不命中', () =
   assert.equal(isInvalidatingError({ status: 'closed' }), false);
 });
 
+test('isInvalidatingError：轮中错误形态不命中（D4 spawn 重跑安全边界回归钉）', () => {
+  // spawn 重跑只允许发生在 create/probe 阶段（prompt 投递被接受之前）。轮中失败
+  // 出口（_failAllTurns 连接中断的纯 reason / 分支 B 文案）不设 errorKind 且文案
+  // 无 [-326xx] ——若未来轮中错误携带漂移分类，副作用阶段会被静默双执行（设计
+  // D3 明文否决的形态），本钉在该性质退化时变红
+  assert.equal(isInvalidatingError({ status: 'error', error: 'app-server 连接中断: 进程退出（code=null signal=SIGKILL）' }), false);
+  assert.equal(isInvalidatingError({ status: 'error', error: '会话恢复失败（resume 失败: [-32031] runtime model unavailable），该会话已弃用。恢复指引: 用 zsw start 重建任务' }), false);
+});
+
 test('缓存命中后首次 create 失败 + 重探 OK → 原错误上行（不静默重试），缓存写回', async () => {
   delete process.env.ZSW_RUNNER;
   clearProbeCache();

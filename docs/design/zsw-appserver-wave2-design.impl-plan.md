@@ -84,7 +84,7 @@ graph TD
 | W2 增量 | `node --test test/assemble.test.js` | 升级检测单测 |
 | W2 真机冒烟 | `node test/e2e.test.js --name apc-smoke` | B-8 清除语义（花少量 token） |
 | W3 语法 | `node --check lib/runner-appserver.js` | 头注改动 |
-| Gate A 全量 | `node --test test/` | 收尾门 |
+| Gate A 全量 | `node --test` | 收尾门 |
 | Gate B 真机场景 | B-1 ~ B-9 逐行签收（见 §5 分层：CLI 可达臂单元期跑；daemon/MCP 臂 Gate B 用户协同） | 验收门 |
 
 真机场景分层（B 表全部落在 Gate B 签收，CLI 可达臂提前到单元期）：
@@ -146,3 +146,4 @@ graph TD
 | 2026-08-30 | 初版（W1-a/W1-b/W1-c/W2/W3 五单元四波；W1-b 原子单元 12 文件偏差登记待用户确认） | dev-flow 阶段 1 |
 | 2026-08-30 | 执行期多轮更新（探针结论回填、各单元 hash 回填、偏差登记 10 组、测试命令形态修正）；一致性审查 R1 清零（12 doc_errors 修 + 3 unreasonable 修 + 8 reasonable 固化）；双级验收双绿（Gate A 585/582/0/3 exit 0 + Gate B 8 pass/3 blocked 签收）——全波交付完成，终态 HEAD 8c6e2fd + 验收回填 | dev-flow 阶段 2-5 |
 | 2026-08-30 | 验收后残留独立修正两件（§7 残留 6/8 收口）：① 仓库 AGENTS.md 全量测试命令改无参形态 `node --test`（Node v24 下 `node --test test/` 把 test/ 当模块解析报 MODULE_NOT_FOUND）；② buildRuntimeModel 幽灵恢复兜底改经 defaultModelRef 同链 + v2 清单解析闸门（zcode 桌面端不写 v2 config 的 model 键，旧「仅 v2 model.main」兜底在这类机器恒 throw；现 cli config main 可解析即恢复可用，链产物全不可解析保持显式 throw）。增量验证：appserver+assemble 87/87 绿 + 真机零 token 探针 | 用户指令（验收后残留修复） |
+| 2026-08-30 | 交付后一致性复审（双 reviewer：0 must-fix / 3 suggestion / 3 doc_error，承重断言经主 agent 亲验）+ 修复：① 本表 §4 Gate A 命令行漏同步改无参形态（doc_error，同表 :83 注记自相矛盾）；② buildRuntimeModel 闸门外 `providerId\|\|DEFAULT_PROVIDER_ID` 兜底行移除——部分登记边界下会构造「默认 provider + 登记modelId」杂交组合而不落显式 throw，与 §7 残留 8 声明不符（登记点恒成对构造故现行不可达，防御边界收紧）；③ 闸门注释两处更正（resolvableInV2 只查清单可解析，凭据由 provider 条目检查兜住）；④ 直测用例①登记值改 GLM-5.3-Flash（原值与兜底产物同值，钉不住「登记优先」）；⑤ 新增 D4 安全边界回归钉（轮中错误形态不触发 isInvalidatingError → 不 spawn 重跑副作用阶段）。设计文档同步三处（D2 失效模式更正 / D4 安全边界补强 / D5 行号重锚），见设计 §6 变更历史末行 | tech-design-review subagent R1/R2（报告 /tmp/design-review-zsw-wave2-post-R1.md、-R2.md）|

@@ -51,8 +51,9 @@
  *     无法得知引擎是否被外部重启，且构造成本为零）。runtimeModel 构造见
  *     _buildRuntimeModel()（model 目标 = 会话登记的 create model → 默认模型链
  *     cli config / v2 config model.main 兜底（经 defaultModelRef 同链 + v2 清单
- *     解析闸门）；provider 传输配置唯一权威源 = v2 config，与 model-router
- *     bootstrap 同源；apiKey 仅回传引擎，不落日志）。
+ *     解析闸门；兜底链含 CLI config 同步读盘与 cli main 不可解析时的一次 stderr
+ *     诊断——defaultModelRef 既有副作用）；provider 传输配置唯一权威源 = v2
+ *     config，与 model-router bootstrap 同源；apiKey 仅回传引擎，不落日志）。
  *   ② 重挂 session/subscribe {sessionId, deliveryKind:"desktop-continuous"}——
  *     订阅是 per-session 的，resume 不自动恢复订阅（F0/源码双证）；缺此步则
  *     send accepted 但 turn 终态事件不达，恢复变假死。
@@ -146,9 +147,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const config = require('./config');
-const { PROVIDER_ID, cleanToolNames, splitModelRef, defaultModelRef, resolvableInV2 } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）。cleanToolNames/splitModelRef/defaultModelRef/resolvableInV2 为单一实现导出，禁本地复刻（D6 / 双源漂移纪律）
-
-const DEFAULT_PROVIDER_ID = PROVIDER_ID;
+const { cleanToolNames, splitModelRef, defaultModelRef, resolvableInV2 } = require('./model-router'); // driver→config 单向依赖，无环。cleanToolNames/splitModelRef/defaultModelRef/resolvableInV2 为单一实现导出，禁本地复刻（D6 / 双源漂移纪律）
 
 const REQUEST_TIMEOUT_MS = 15_000;   // 控制面请求默认超时（create/subscribe/send 等）
 const PROBE_BUDGET_MS = 10_000;      // probe 全程预算（启动+往返+关闭）
@@ -448,7 +447,8 @@ function buildRuntimeModel(sessionModel) {
   if (!providerId || !modelId) {
     // 幽灵恢复兜底（daemon 重启后 _sessions 无登记）：经 defaultModelRef 同链取
     // 当前主模型（cli config main → v2 config main → 内置）。链产物必须过 v2 清单
-    // 解析闸门——恢复目标要在 v2 config 有带凭据的 provider 条目，桌面端 router/…
+    // 解析闸门——恢复目标要可被 v2 清单解析（凭据存在性由下方 provider 条目检查
+    // 兜住），桌面端 router/…
     // 命名空间与内置兜底过不了闸门时保持显式 throw（错误可操作，好过落到下方
     // provider 条目缺失的含糊报错）。解析与判定复用 model-router 单一实现，
     // 防恢复序解析出与路由不同的模型目标（W1-a 附带发现收口：zcode 桌面端
@@ -459,7 +459,6 @@ function buildRuntimeModel(sessionModel) {
       providerId = providerId || provider;
       modelId = modelId || short;
     }
-    providerId = providerId || DEFAULT_PROVIDER_ID;
   }
   if (!providerId || !modelId) {
     throw new Error('无法确定恢复目标模型（会话登记缺失，且默认模型链 cli config / v2 config model.main 均无 v2 清单可解析条目）');

@@ -146,9 +146,11 @@ fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify(V2_FIXTURE, null, 2));
 const CLI_FIXTURE_DIR = path.join(process.env.HOME, '.zcode', 'cli');
 
 test('buildRuntimeModel 幽灵恢复兜底：会话登记优先于任何兜底层', () => {
-  const rt = buildRuntimeModel({ providerId: 'prov-fake', modelId: 'GLM-5.3' });
+  // 登记值取 GLM-5.3-Flash（与 v2 fixture model.main 的 GLM-5.3 不同）——若实现
+  // 忽略登记直走兜底，本用例应红
+  const rt = buildRuntimeModel({ providerId: 'prov-fake', modelId: 'GLM-5.3-Flash' });
   assert.equal(rt.model.providerId, 'prov-fake');
-  assert.equal(rt.model.modelId, 'GLM-5.3');
+  assert.equal(rt.model.modelId, 'GLM-5.3-Flash');
 });
 
 test('buildRuntimeModel 幽灵恢复兜底：v2 config model.main 层（既有行为钉住）', () => {
