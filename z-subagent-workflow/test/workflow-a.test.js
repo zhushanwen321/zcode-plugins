@@ -80,7 +80,19 @@ function writeV2Config() {
   fs.writeFileSync(config.V2_CONFIG_PATH, JSON.stringify(base, null, 2));
 }
 
-/** 扫描并发观测目录，按各进程活跃区间重叠数求实际最大并发。 */
+/**
+ * 扫描并发观测目录，扫描线求瞬时并发峰值（任一毫秒同时活跃的最大进程数）。
+ *
+ * 为什么不用「逐对区间求重叠数再取最大」：pairwise 计的是「与某区间存在
+ * 任意重叠的区间总数」，不等于瞬时并发——池上限 2 时 3 个 span 可形成链式
+ * 重叠（A∩B、B∩C、A∩C=∅），对 B 的 pairwise 计数 = 3，但任一毫秒活跃数
+ * 只有 2。全量套件高负载下 B 的定时器唤醒/退出被 OS 调度拉长、w1→C 交接
+ * 窗口相对压缩，s_C < e_B 成立即测得虚高 3（本用例曾因此 flaky 3 !== 2；
+ * 实现侧 pool 严格 2 worker + close 后放槽，真实并发恒 ≤ 2，测量假象）。
+ * 同毫秒 tie-break 取 s 先于 e（保守方向，宁可误报不漏报）：下一进程要
+ * 完整 node 启动后才落 s，与上一进程的 e 同毫秒碰撞实际不可达；若池真
+ * 放出 3 个并发，3 span 会真实同时活跃，扫描线照样计 3——断言意图不变。
+ */
 function maxConcurrency(dir) {
   const spans = new Map();
   for (const f of fs.readdirSync(dir)) {
@@ -91,15 +103,17 @@ function maxConcurrency(dir) {
     span[m[1]] = t;
     spans.set(m[2], span);
   }
+  const events = [];
+  for (const span of spans.values()) {
+    if (span.s == null || span.e == null) continue; // 无 e（进程未跑到终态）不计
+    events.push([span.s, 1], [span.e, -1]);
+  }
+  events.sort((a, b) => a[0] - b[0] || b[1] - a[1]); // 同毫秒：s(+1) 先于 e(-1)
+  let cur = 0;
   let max = 0;
-  for (const a of spans.values()) {
-    if (a.s == null || a.e == null) continue;
-    let n = 0;
-    for (const b of spans.values()) {
-      if (b.s == null || b.e == null) continue;
-      if (b.s < a.e && a.s < b.e) n++; // 开区间重叠判定（含自身）
-    }
-    max = Math.max(max, n);
+  for (const [, delta] of events) {
+    cur += delta;
+    max = Math.max(max, cur);
   }
   return max;
 }
