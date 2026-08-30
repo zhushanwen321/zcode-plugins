@@ -32,7 +32,7 @@ const outputs = require('../lib/output-store');
 const { recordsPath } = require('../lib/config');
 const { MailboxNotifier, PollingNotifier } = require('../lib/notifier-mailbox');
 const {
-  WorkflowManager, WORKFLOW_MAX_CONCURRENT, DEFAULT_WORKFLOW_TIMEOUT_MS,
+  WorkflowManager, WORKFLOW_MAX_CONCURRENT,
 } = require('../lib/workflow-manager');
 
 /** 每测试独立会话 id：mailbox 目录与 envelope 计数按会话隔离。 */

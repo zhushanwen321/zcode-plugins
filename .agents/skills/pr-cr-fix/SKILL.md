@@ -29,7 +29,7 @@ reviewer 契约不兼容（见差异表），**两引擎统一走 zsw CLI**—�
 | PR/push 阶段 | 阶段 1 开 PR / 阶段 3 推 PR | 阶段 3（review 闭环后一次性 push + 开 PR） | 远端 2026-08-23 绑定（zhushanwen321/zcode-plugins）后补齐；review 前不开 PR（review 中分支还会变） |
 | 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | quality-gate.js（零依赖：单测执行 + 增量覆盖率 ratchet + 新增函数圈复杂度 fail + CRAP warn 靶子） | 零依赖红线：NODE_V8_COVERAGE 原生产物 + V8 函数区间 decision-point 启发式（口径与取舍见脚本头部声明）；不搬死代码/循环依赖/重复检测（需依赖图分析，单插件仓收益不抵成本） |
 | changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack + check-release-needed | 本仓发布走 tag 直发（非 changesets）：三件套一致性 + 包内容 + 改动-发版关联检测（UNDECLARED 等价物） |
-| reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；契约不匹配 = parseFail 按 clean 处理，静默漏审 |
+| reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；本项目 v2 契约不匹配 = parseFail 即 review-failed 结构化终止（响亮失败，不静默漏审）；pi 原生版才是 parseFail 按 clean 处理（禁用原因，见阶段 2 MANDATORY 节） |
 | agent.md 消费方式 | pi workflow batch1 传 agent 路径 | task 内映射表 + reviewer 自行 Read | 本项目 reviewers 是视角名（非 agent .md 引用），workflow prompt 模板不挂 agent |
 | 审查维度 | 8 维（含 electron-build/extension-api 等） | 5 维（zsw 领域重划） | 本仓是零依赖 Node CLI/MCP server，无 Electron/monorepo |
 
@@ -100,7 +100,11 @@ node z-subagent-workflow/bin/zsw.js workflow \
   --reviewers "arch-boundary,concurrency,business-logic,mcp-contract,test-coverage" \
   --review-target "git diff main...HEAD 的全部变更（分支整体，含 z-subagent-workflow/lib、bin、dist、test、skills 与 workspace 级 scripts/、.github/、.githooks/、docs/）" \
   --max-rounds 3
-# 大 diff 建议 --timeout-per-phase 1200000 --timeout-ms 7200000（默认 10min/30min）
+# [MANDATORY] 不传 --timeout-per-phase / --timeout-ms：体系默认无超时（config.DEFAULTS
+# .timeoutMs=null、timeoutMsPerPhase 缺省无、CLI 不传则无）。review/fix 是时长不可
+# 预测的 LLM 长任务，死线超时到期 = SIGKILL 毁掉全部在途工作（fix 半成品灾难，
+# 2026-08-29 run2 实证：20min 死线杀掉完成度 90% 的 fixer）。仅用户明确要求死线
+# （如 CI 硬预算）时才由用户显式传参
 # --model 不传：review/fix 是重量任务，跟随默认主模型（纪律见 zsub-zflow-orchestration skill）
 ```
 
@@ -124,12 +128,25 @@ node z-subagent-workflow/bin/zsw.js workflow \
 **Gate-2**（按 CLI 输出 JSON 摘要段的 `loop.status` 判读；markdown 报告段含轮次明细
 与剩余 must-fix）：
 
+**失败停机归因总则 [MANDATORY]**：workflow 以非 clean 终态（尤其 `review-failed` /
+`fix-failed`）退出时，**禁止直接重跑**——先停下做根因三分类，否则同类失败无限重放：
+
+1. **基础设施故障**（provider 错误/流中断/网络）：特征是 runFail 或输出截断（围栏未闭合）。
+   单 phase 级瞬时故障可重跑一次；重复出现说明是调用形态问题（如并发巨上下文会话），
+   归入第 3 类。
+2. **参数不适配**：特征是明确的参数错误。校准参数后重跑（注意：超时不在此列——
+   体系默认无超时，见阶段 2 参数纪律）。
+3. **脚本自身缺陷**：dogfooding 暴露的 zsw/review-fix-loop 缺陷（错误分类误导、
+   半成品无处置、上下文注入架构放大故障面等）。**停下来修脚本**——本仓跑 pr-cr-fix
+   的分支往往正是在修这条链路，workflow 的失败就是分支工作项的直接证据。修复后
+   从阶段 1 重来。
+
 | `loop.status` | 动作 |
 |---------------|------|
 | `clean`（exit 0） | 全审查者无 must-fix → 进阶段 3 |
 | `fixed-unverified` | 轮数耗尽且最后一步是修复成功、未复核 → 再跑一轮确认 |
-| `stuck` | must-fix 连续 2 轮不降 → 读报告逐条判定：误报人工 ack，真问题人工介入 |
-| `review-failed` / `fix-failed` | 环境问题（审查者全部执行/解析失败、修复阶段失败）：调大 `--timeout-per-phase` 重跑一次，再败走降级路径或上报用户 |
+| `stuck` | 问题连续 3 轮未收敛（stuckThreshold 缺省 3，对齐 pi）→ 读报告逐条判定：误报人工 ack，真问题人工介入 |
+| `review-failed` / `fix-failed` | 按上方「失败停机归因总则」三分类处置；禁止未归因直接重跑 |
 | `aborted` | 被 abort：确认是否有意为之，无意则重跑 |
 
 ### 降级路径（zsw CLI 链路不可用时）
@@ -266,7 +283,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | 反模式 | 后果 |
 |------|------|
 | reviewer 不读 agent.md 直接凭感觉审 | 维度漂移，checklist 形同虚设 |
-| agent.md 输出格式写成 YAML frontmatter（xyz-agent 契约） | 本项目 workflow parseFail → 按 clean 处理 → 静默漏审 |
+| agent.md 输出格式写成 YAML frontmatter（xyz-agent 契约） | 本项目 workflow parseFail → review-failed 结构化终止（响亮停机不漏审，代价是整轮审查作废重跑） |
 | pi 会话改走 pi 原生 review-fix-loop（batch1 喂本仓 agent .md） | reviewer 契约不匹配（YAML/structured-output vs json 围栏）→ parseFail 按 clean 处理 → 静默漏审；统一走 zsw CLI |
 | agent.md 改双契约混写（json 围栏 + YAML 并存） | 两套解析器都可能取错段，parseFail 风险翻倍 |
 | 风格问题标 major/critical | 聚合器误触发 fix 轮次，浪费 |
@@ -293,8 +310,8 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | Gate-1 check-pack 包缺文件 | package.json `files` 白名单补齐后重跑 |
 | workflow run 环境错（zcode CLI 缺失/崩溃） | 读报告 error 字段恢复指引；重跑一次仍败走降级路径（引擎原生 subagent 手工编排） |
 | Gate-2 `stuck` | 看报告剩余 must-fix：误报人工 ack，真问题人工介入 |
-| Gate-2 `review-failed` / `fix-failed` | 调大 `--timeout-per-phase` 重跑一次；再败上报用户 |
-| reviewer parseFail 告警（轮次摘要有「输出无法解析，按 clean 处理」） | 重跑该维度（输出格式漂移，检查 agent.md 输出契约节） |
+| Gate-2 `review-failed` / `fix-failed` | 按阶段 2「失败停机归因总则」三分类处置：基础设施故障重跑一次；重复出现或属脚本缺陷 → 停下修脚本后从阶段 1 重来 |
+| reviewer parseFail（终态 `review-failed`，轮次摘要注明「输出解析失败（parseFail）→ 按 D3 结构化终止」） | 按阶段 2「失败停机归因总则」三分类处置：多为输出格式漂移——核对 agent.md 输出契约节后重跑；重复出现按总则归因，禁未归因直接重跑 |
 | 修复后测试回归 | 从阶段 1 重来（Gate-1 → 阶段 2） |
 | push 冲突 | `git fetch` 后按全局规范 merge（禁 rebase）重试；重写历史后重审未解决的 review 线程 |
 | PR CI FAIL（真失败，有 step 记录） | 按日志修复 → push 新 commit → Gate-3 有限轮询直至绿 |

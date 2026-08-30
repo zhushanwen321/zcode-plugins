@@ -103,7 +103,7 @@ function buildToolDefinition() {
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
       + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
-      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。\n'
+      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。all=true 出全 provider 视图（跨 provider 引用须全名 <provider>/<model>）。\n'
       + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
       + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
       + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
@@ -134,6 +134,7 @@ function buildToolDefinition() {
         subagentId: { type: 'string', description: 'status/cancel/message/close 必填。start 返回的任务 id' },
         ids: { type: 'array', items: { type: 'string' }, description: 'wait 必填。要等待的 subagentId 数组（来自 start 返回 / list 查询）' },
         text: { type: 'string', description: 'message 必填。续聊消息文本' },
+        all: { type: 'boolean', description: 'models 可选。true = 全 provider 视图（模型为全名 <provider>/<model>），缺省仅默认 provider' },
       },
       required: ['action'],
     },
@@ -217,15 +218,75 @@ function buildRunWorkflowToolDefinition() {
         },
         reviewTarget: {
           type: 'string',
-          description: 'review-fix-loop only. What to review (e.g. "git 未提交改动" or specific files). Defaults to uncommitted changes.',
+          description: 'review-fix-loop only (legacy sugar). Same as targetType="text" + target=<value>. Defaults to uncommitted changes.',
+        },
+        targetType: {
+          type: 'string', enum: ['git-diff', 'file', 'dir', 'text'],
+          description: 'review-fix-loop only. Target kind. Default "text".',
+        },
+        target: {
+          type: 'string',
+          description: 'review-fix-loop only. What to review, interpreted per targetType. Required when targetType is git-diff (base ref, e.g. main / HEAD~1), file or dir — missing/empty target with a non-text targetType is an operational error. Default "git 未提交改动" applies to text only.',
+        },
+        batch1: {
+          type: 'array', items: { type: 'string' },
+          description: `review-fix-loop only. Reviewer dims of batch 1; pass batch2, batch3... the same way for more batches (same array form). Batches run serially: a batch starts only after the previous one finishes clean; dims clean in an earlier batch with no fix since are skipped. Overrides the legacy "reviewers" sugar when both are given.`,
+        },
+        batchNames: {
+          type: 'array', items: { type: 'string' },
+          description: 'review-fix-loop only. Display names for batches; count must match the number of batchN. Defaults batch-1..N.',
         },
         reviewers: {
           type: 'array', items: { type: 'string' },
-          description: `review-fix-loop only. Review focuses. Default [${DEFAULT_REVIEWERS.join(', ')}].`,
+          description: `review-fix-loop only (legacy sugar). Review focuses wrapped as a single batch. Default [${DEFAULT_REVIEWERS.join(', ')}]. Ignored when batchN is given.`,
         },
         maxRounds: {
-          type: 'integer', minimum: 1, maximum: 10,
-          description: 'review-fix-loop only. Max review-fix rounds. Default 5.',
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Max review-fix rounds per batch. Default 10.',
+        },
+        stuckThreshold: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Declare stuck after this many consecutive rounds without must-fix decrease. Default 3.',
+        },
+        skipCleanAgents: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Skip reviewers that reported clean (within the batch and across batches while no fix happened). Default true.',
+        },
+        recheckAfterFix: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt (review only what the fix touched). Default false (clean reviewers stay skipped).',
+        },
+        convergeNewIssues: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Convergence: max new findings per round. Default 1.',
+        },
+        convergeRounds: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Convergence: consecutive rounds within convergeNewIssues before converging. Default 2.',
+        },
+        maxFixAttempts: {
+          type: 'integer', minimum: 1,
+          description: 'review-fix-loop only. Regressed fix attempts per issue before needs-redesign. Default 2.',
+        },
+        aggregatorModel: {
+          type: 'string',
+          description: 'review-fix-loop only. Model for the aggregation phase (full "<provider>/<model>" name or short name (resolved via the default provider)). Default: same as the run model.',
+        },
+        reviewPrompt: {
+          type: 'string',
+          description: 'review-fix-loop only. Extra guidance appended to every reviewer prompt.',
+        },
+        fixPrompt: {
+          type: 'string',
+          description: 'review-fix-loop only. Extra guidance appended to the fixer prompt.',
+        },
+        fallowScan: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Run a fallow static scan as a leading batch (requires targetType=git-diff). Default false.',
+        },
+        autoCommit: {
+          type: 'boolean',
+          description: 'review-fix-loop only. Let the fixer stage/commit its changes. Default false (changes left uncommitted).',
         },
         maxConcurrent: {
           type: 'integer', minimum: 1, maximum: 6,
@@ -386,6 +447,27 @@ function buildToolHandlers({ manager, wfManager, nested = false, waitHandler } =
               'models 需要 modelRouter 端口（v2 config 模型清单），当前 manager 未注入。'
               + '恢复指引：其他 action 不受影响；models 排障查 lib/assemble.js 的 modelRouter 组装。'
             );
+          }
+          // --all（跨 provider 兜底链闭合）：默认 provider 不可用时模型路由
+          // 仍可走其他带凭据 provider，但查询面此前只有默认 provider 视图，
+          // 兜底链在「查」这一环断头。--all 出全 provider 视图；缺省行为
+          // （默认 provider 单视图）完全不变，既有消费方零感知。
+          // --all 数据源 = router.allProviders()（下沉后的单一实现，本入口
+          // 零复制）；清单不可读的可操作错误由外层 catch 原样透传。
+          if (args.all === true) {
+            // allProviders 端口守卫（与 listModels 同口径）：换实现缺该方法时给
+            // 可操作错误，而非 TypeError 崩溃（契约声明见 lib/ports.js ModelRouterPort）
+            if (typeof router.allProviders !== 'function') {
+              return errContent(
+                'models --all 需要 modelRouter 端口实现 allProviders()（跨 provider 模型清单），当前实现未提供。'
+                + '恢复指引：缺省 models（不带 all）仍可查默认 provider 视图；排障查 lib/model-router.js 的 allProviders 与 lib/assemble.js 的 modelRouter 组装。'
+              );
+            }
+            return okContent({
+              all: true,
+              providers: router.allProviders(),
+              guidance: '跨 provider 引用必须用全名 <provider>/<model> 传 model；default 标记 = 该 provider 的默认模型。',
+            });
           }
           // listModels 抛的清单不可读错误是可操作错误（含恢复指引），
           // 由外层 catch 原样透传
@@ -613,6 +695,14 @@ function createServer({ manager, wfManager, nested = false, log = () => {}, emit
 
   return { handleMessage, dispatchToolCall, toolHandlers };
 }
+
+/**
+ * models action 的 --all 全 provider 视图数据源已整体下沉为
+ * ModelRouter#allProviders（lib/model-router.js，「合格 provider 判定 + 全
+ * provider 模型视图」的单一实现，SessionStart 注入块同口径）：v2 config 读取、
+ * 资格过滤（带凭据且清单非空）、全名升格都不在本入口层复制——平台配置结构
+ * 知识只活在端口实现内，server 只经 router 端口消费。
+ */
 
 function requireSubagentId(args) {
   if (typeof args.subagentId !== 'string' || args.subagentId.trim() === '') {

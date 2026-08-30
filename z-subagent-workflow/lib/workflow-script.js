@@ -55,7 +55,6 @@ const modelRouter = new ModelRouter();
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** lint 的 node --check 子进程超时：正常语法检查毫秒级，10s 只防子进程挂死。 */
-const LINT_CHECK_TIMEOUT_MS = 10_000;
 
 /** 四根优先级文案（错误信息复用，与 scriptRoots 保持同一顺序）。 */
 const ROOTS_DESC = '<ws>/.agents/workflows > <ws>/.zsw/workflows > ~/.agents/workflows > ~/.zsw/workflows';
@@ -129,6 +128,40 @@ function listScripts(cwd) {
     }
   }
   return [...byName.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * 列出全部脚本名（name-only 版 listScripts）。
+ *
+ * 仅 readdir 四根收集顶层 *.js 的文件名去扩展名——与 listScripts 的 name
+ * 来源完全一致（listScripts 的 name 取 `e.name.slice(0, -3)`，来自文件名而
+ * 非模块导出的 name 字段），故结果是 listScripts 名单的安全子集。
+ * 同名高优先级根胜出 = Set 去重（与 listScripts 先到先得同语义），按名排序
+ * 与 listScripts 同序。绝不 require 脚本、不读文件内容：listScripts 会
+ * freshRequire 每个脚本读 description（触发脚本体顶层副作用），只需名单的
+ * 场景（如注入块、只读诊断）应走本函数。
+ *
+ * @param {string} cwd workspace 根（ws 两根的定位基准）
+ * @returns {string[]} 按名排序
+ */
+function listScriptNames(cwd) {
+  if (typeof cwd !== 'string' || cwd.trim() === '') {
+    throw new Error(`listScriptNames 需要 cwd（workspace 根，用于定位 ${ROOTS_DESC} 中的 ws 侧两根）。`);
+  }
+  const names = new Set();
+  for (const root of scriptRoots(cwd)) {
+    let entries;
+    try {
+      entries = fs.readdirSync(root.base, { withFileTypes: true });
+    } catch {
+      continue; // 根不存在/不可读 = 该根无脚本，不是错误
+    }
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.js')) continue;
+      names.add(e.name.slice(0, -3));
+    }
+  }
+  return [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 /**
@@ -286,7 +319,7 @@ async function lintScript(file) {
   // ① 语法层
   const syntaxErr = await new Promise((resolve) => {
     execFile(
-      process.execPath, ['--check', abs], { timeout: LINT_CHECK_TIMEOUT_MS },
+      process.execPath, ['--check', abs],
       (err, _stdout, stderr) => resolve(err ? String(stderr || err.message).trim() : null),
     );
   });
@@ -310,4 +343,4 @@ async function lintScript(file) {
   return { ok: errors.length === 0, errors };
 }
 
-module.exports = { listScripts, findScript, runScript, lintScript, scriptRoots, NAME_RE };
+module.exports = { listScripts, listScriptNames, findScript, runScript, lintScript, scriptRoots, NAME_RE };

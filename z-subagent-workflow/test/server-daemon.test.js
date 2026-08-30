@@ -273,8 +273,13 @@ test('zsub inputSchema：action enum 含 wait，ids 参数在 schema 内（防�
   );
   assert.equal(tool.inputSchema.properties.ids.type, 'array');
   assert.equal(tool.inputSchema.properties.ids.items.type, 'string');
+  // models --all（全 provider 视图）声明面：handler 已实现（all===true →
+  // router.allProviders()），schema 漏声明 = MCP 调用方按 inputSchema 不可发现
+  assert.equal(tool.inputSchema.properties.all.type, 'boolean');
+  assert.ok(tool.inputSchema.properties.all.description.includes('全 provider'));
   // description 速查行同步（enum 与速查漂移会让模型知道 enum 却不知道用法）
   assert.match(tool.description, /- wait：/);
+  assert.match(tool.description, /- models：.*all=true/);
 });
 
 // ------------------------------------------------ e) 帧cwd 传导（MF7）

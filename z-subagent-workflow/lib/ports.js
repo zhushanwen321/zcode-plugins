@@ -116,6 +116,11 @@ const DEFAULTS = require('./config').DEFAULTS;
  *
  * 契约：
  *   resolve(requested?, agentDefault?) -> modelRef   未知模型抛可操作错误（列可用清单）
+ *   listModels(provider?) -> 模型条目数组             缺省 = 默认 provider 视图（models action
+ *                                                     数据源）；清单不可读抛可操作错误
+ *   allProviders() -> [{provider, models}]            全 provider 结构化视图（models --all 数据源；
+ *                                                     只列合格 provider，模型名升格全名）；
+ *                                                     清单不可读抛可操作错误，无合格 provider 返回 []
  *   prepareRunEnv(modelRef, runnerKind, sessionOpts?) ->
  *       （runnerKind 必填：调用方按 capabilities().kind 显式传，实现无缺省值）
  *       spawn     场景 {env:{HOME, ZSW_NESTED}}   per-model 隔离 HOME；sessionOpts 整体忽略
