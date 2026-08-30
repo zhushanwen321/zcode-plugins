@@ -49,8 +49,9 @@
  *     resume 带 runtimeModel 则 warning 根本不设置。「接种效应」（runtimeModel 一旦
  *     在引擎进程内应用，同进程后续 plain resume 不再设 warning）不可依赖——runner
  *     无法得知引擎是否被外部重启，且构造成本为零）。runtimeModel 构造见
- *     _buildRuntimeModel()（model 目标 = 会话登记的 create model → v2 config
- *     model.main 兜底；provider 传输配置唯一权威源 = v2 config，与 model-router
+ *     _buildRuntimeModel()（model 目标 = 会话登记的 create model → 默认模型链
+ *     cli config / v2 config model.main 兜底（经 defaultModelRef 同链 + v2 清单
+ *     解析闸门）；provider 传输配置唯一权威源 = v2 config，与 model-router
  *     bootstrap 同源；apiKey 仅回传引擎，不落日志）。
  *   ② 重挂 session/subscribe {sessionId, deliveryKind:"desktop-continuous"}——
  *     订阅是 per-session 的，resume 不自动恢复订阅（F0/源码双证）；缺此步则
@@ -145,7 +146,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const config = require('./config');
-const { PROVIDER_ID, cleanToolNames, splitModelRef } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）。cleanToolNames/splitModelRef 为单一实现导出，禁本地复刻（D6 / 双源漂移纪律）
+const { PROVIDER_ID, cleanToolNames, splitModelRef, defaultModelRef, resolvableInV2 } = require('./model-router'); // 默认 provider（runtimeModel 幽灵恢复兜底；driver→config 单向依赖，无环）。cleanToolNames/splitModelRef/defaultModelRef/resolvableInV2 为单一实现导出，禁本地复刻（D6 / 双源漂移纪律）
 
 const DEFAULT_PROVIDER_ID = PROVIDER_ID;
 
@@ -445,20 +446,23 @@ function buildRuntimeModel(sessionModel) {
   let providerId = sessionModel && sessionModel.providerId;
   let modelId = sessionModel && sessionModel.modelId;
   if (!providerId || !modelId) {
-    // 幽灵恢复兜底（daemon 重启后 _sessions 无登记）：v2 config 的当前主模型
-    //（与 model-router defaultModelRef 的 v2 回退段同语义——不直接用 defaultModelRef
-    // 因其含 CLI config 读取与 v2 清单可解析校验，语义不同；切分规则复用
-    // splitModelRef 单一实现，防恢复序解析出与路由不同的模型目标）
-    const main = v2 && v2.model && typeof v2.model.main === 'string' ? v2.model.main.trim() : '';
-    if (main) {
-      const { provider, short } = splitModelRef(main);
+    // 幽灵恢复兜底（daemon 重启后 _sessions 无登记）：经 defaultModelRef 同链取
+    // 当前主模型（cli config main → v2 config main → 内置）。链产物必须过 v2 清单
+    // 解析闸门——恢复目标要在 v2 config 有带凭据的 provider 条目，桌面端 router/…
+    // 命名空间与内置兜底过不了闸门时保持显式 throw（错误可操作，好过落到下方
+    // provider 条目缺失的含糊报错）。解析与判定复用 model-router 单一实现，
+    // 防恢复序解析出与路由不同的模型目标（W1-a 附带发现收口：zcode 桌面端
+    // 不写 v2 config 的 model 键，旧「仅 v2 model.main」兜底在这类机器上恒 throw）
+    const ref = defaultModelRef(v2);
+    if (resolvableInV2(v2, ref)) {
+      const { provider, short } = splitModelRef(ref);
       providerId = providerId || provider;
       modelId = modelId || short;
     }
     providerId = providerId || DEFAULT_PROVIDER_ID;
   }
   if (!providerId || !modelId) {
-    throw new Error('无法确定恢复目标模型（会话登记与 v2 config model.main 均未提供 provider/model）');
+    throw new Error('无法确定恢复目标模型（会话登记缺失，且默认模型链 cli config / v2 config model.main 均无 v2 清单可解析条目）');
   }
   const entry = v2 && v2.provider && v2.provider[providerId];
   if (!entry || !entry.options || !entry.options.apiKey) {
@@ -1477,3 +1481,6 @@ module.exports.extractReadUsage = extractReadUsage;
 // 不自造文案漂移——恢复前消费侧 lazy require 拿到 undefined
 module.exports.DRIFT_SMOKE_CMD = DRIFT_SMOKE_CMD;
 module.exports.DRIFT_FALLBACK_ENV = DRIFT_FALLBACK_ENV;
+// 幽灵恢复兜底直测面（wrapWithProbeInvalidation 导出同款理由）：默认模型链与
+// v2 清单解析闸门的组合行为不依赖引擎进程，导出后单测零 token 覆盖
+module.exports.buildRuntimeModel = buildRuntimeModel;

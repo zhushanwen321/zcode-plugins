@@ -43,7 +43,7 @@ node scripts/check-release-needed.js              # 改动-发版关联：列出
 node scripts/release.js <plugin> <patch|minor|major>   # 发版：bump 三处版本 + commit + tag（不 push）
 
 # 插件目录内（cwd = <plugin>/）
-node --test test/                                # 全量测试（node 内置 test runner，禁 node:test 之外框架引入需评估）
+node --test                                      # 全量测试（node 内置 test runner，禁 node:test 之外框架引入需评估；须用无参形态——Node v24 下 `node --test test/` 会把 test/ 当模块解析报 MODULE_NOT_FOUND）
 node bin/<cli>.js <cmd> --task "..." --workdir /tmp/xxx   # CLI 直跑（不经 MCP）
 
 # MCP server 冒烟（握手 + 工具列表）

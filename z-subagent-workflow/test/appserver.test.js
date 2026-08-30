@@ -31,7 +31,7 @@ process.env.ZSW_ZCODE_CLI = path.join(__dirname, '..', 'fixtures', 'fake-appserv
 const AppServerRunner = require('../lib/runner-appserver');
 const {
   createFrameDispatcher, interpretEvent, RUNTIME_PREFERENCES, classifyApcError,
-  extractAssistantText, extractReadUsage,
+  extractAssistantText, extractReadUsage, buildRuntimeModel,
 } = require('../lib/runner-appserver');
 const { wrapWithProbeInvalidation } = require('../lib/assemble');
 
@@ -135,6 +135,58 @@ const V2_FIXTURE = {
 };
 fs.mkdirSync(path.dirname(V2_FIXTURE_PATH), { recursive: true });
 fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify(V2_FIXTURE, null, 2));
+
+// ------------------------------------------- 幽灵恢复兜底直测（默认模型链 + v2 解析闸门）
+
+// W1-a 附带发现收口：zcode 桌面端不写 v2 config 的 model 键，旧「仅 v2 model.main」
+// 兜底在这类机器上恒 throw。修复后兜底经 defaultModelRef 同链（cli config main →
+// v2 config main → 内置）+ v2 清单解析闸门。CLI_CONFIG_PATH 同样在模块加载期冻结
+// （$HOME/.zcode/cli/config.json），fixture 写 TMP 内即隔离；用例内改写 v2 fixture
+// 后 finally 原样还原，不污染下游恢复序用例（它们依赖 V2_FIXTURE 的 model.main）。
+const CLI_FIXTURE_DIR = path.join(process.env.HOME, '.zcode', 'cli');
+
+test('buildRuntimeModel 幽灵恢复兜底：会话登记优先于任何兜底层', () => {
+  const rt = buildRuntimeModel({ providerId: 'prov-fake', modelId: 'GLM-5.3' });
+  assert.equal(rt.model.providerId, 'prov-fake');
+  assert.equal(rt.model.modelId, 'GLM-5.3');
+});
+
+test('buildRuntimeModel 幽灵恢复兜底：v2 config model.main 层（既有行为钉住）', () => {
+  // cli config 不存在（fixture 未写）→ 链落到 v2 model.main
+  const rt = buildRuntimeModel(undefined);
+  assert.equal(rt.model.providerId, 'prov-fake');
+  assert.equal(rt.model.modelId, 'GLM-5.3');
+  assert.equal(rt.provider.baseURL, 'https://fake.example/api');
+  assert.equal(rt.provider.apiKey.value, 'sk-fake-secret-123');
+});
+
+test('buildRuntimeModel 幽灵恢复兜底：v2 无 model 键时走 cli config main（本机失效场景）', () => {
+  const v2Bak = fs.readFileSync(V2_FIXTURE_PATH, 'utf8');
+  try {
+    fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify({ provider: V2_FIXTURE.provider }));
+    fs.mkdirSync(CLI_FIXTURE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(CLI_FIXTURE_DIR, 'config.json'),
+      JSON.stringify({ model: { main: 'prov-fake/GLM-5.3-Flash' } }));
+    const rt = buildRuntimeModel(undefined);
+    assert.equal(rt.model.providerId, 'prov-fake');
+    assert.equal(rt.model.modelId, 'GLM-5.3-Flash');
+  } finally {
+    fs.writeFileSync(V2_FIXTURE_PATH, v2Bak);
+    fs.rmSync(CLI_FIXTURE_DIR, { recursive: true, force: true });
+  }
+});
+
+test('buildRuntimeModel 幽灵恢复兜底：默认模型链全不可解析时显式 throw（闸门）', () => {
+  const v2Bak = fs.readFileSync(V2_FIXTURE_PATH, 'utf8');
+  try {
+    // v2 无 model 键 + cli config 不存在 → 链落内置兜底（prov-fake 清单外的
+    // provider/model）→ 闸门拒绝 → 显式 throw（不落到 provider 条目缺失的含糊报错）
+    fs.writeFileSync(V2_FIXTURE_PATH, JSON.stringify({ provider: V2_FIXTURE.provider }));
+    assert.throws(() => buildRuntimeModel(undefined), /无法确定恢复目标模型/);
+  } finally {
+    fs.writeFileSync(V2_FIXTURE_PATH, v2Bak);
+  }
+});
 
 /**
  * 恢复序专用 fake（写进测试 TMP，after 统一清理；fixtures/fake-appserver.js 不在本

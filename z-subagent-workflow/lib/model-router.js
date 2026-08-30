@@ -382,6 +382,9 @@ module.exports.defaultModelRef = defaultModelRef;
 module.exports.availableModels = availableModels;
 module.exports.splitModelRef = splitModelRef;
 module.exports.defaultModelFor = defaultModelFor;
+// 引用能否被 v2 清单解析——runner-appserver 恢复序的兜底闸门消费（恢复目标须有
+// v2 凭据条目），与 defaultModelRef 内部同一判定，禁复刻防两套口径漂移
+module.exports.resolvableInV2 = resolvableInV2;
 module.exports.hasProviderCredentials = driver.hasProviderCredentials;
 // 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
 // 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻（全 provider
