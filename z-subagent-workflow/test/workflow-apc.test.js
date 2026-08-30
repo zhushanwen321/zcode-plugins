@@ -1,12 +1,13 @@
 'use strict';
 
 /**
- * workflow 线 apc 主链路测试（wave2 W1-c）：fake runner 驱动 runChain 走全链，
- * 钉住「真实入口经注入走常驻 app-server 通道」的翻转面（impl-plan W1-c 验收②；
+ * workflow 线 apc 主链路测试（wave2 W1-c）：fake runner 驱动 runChain 走全链 +
+ * runScatterGather 非 chain 入口（透传回归防线），钉住「真实入口经注入走常驻
+ * app-server 通道」的翻转面（impl-plan W1-c 验收②；
  * spawn 缺省回退面由 workflow-base/workflow-a 的 channel:'spawn' 断言钉住，
  * 与本文件构成 B-9 两臂的离线对照）。
  *
- * 覆盖五类（任务书 A）：
+ * 覆盖六类（impl-plan W1-c 验收②）：
  * ① 阶段条目 channel:'appserver'（chain 全部阶段）
  * ② runner.start 收到 {prompt, cwd, modelRef, runEnv, timeoutMs}（D1 三行范式
  *    的 taskCtx 契约；runEnv 为 appserver 形态 {createParams}）
@@ -15,6 +16,11 @@
  * ⑤ 降级翻转形态：首阶段 capabilities kind 'appserver'、次阶段起翻转为 'spawn'
  *   （模拟 probe 失效后的通道级降级，D4 阶段级重读）——两阶段 channel 各自如实，
  *    且第二阶段 runEnv 按新通道备成 spawn 形态 {env}
+ * ⑥ 非 chain 入口透传防线：runScatterGather 最小三阶段（scatter/1 process/
+ *    gather）注入同款 fake runner——start 调用数 = 实际执行阶段数、taskCtx
+ *    来自端口、条目 channel 如实、release 数与阶段数一致（review/aggregate/fix
+ *    等 11 处非 chain 透传点同链同构，此处一例守面；未来重构漏传 runner 会
+ *    静默落回 spawn 直调，本例防其测试全绿地溜过去）
  *
  * fake runner 形态复用 test/run-phase.test.js 的 W1-b 惯例（start 可编程结果、
  * holdUntilCancel、release 记录），本文件只加两点：capabilities 按调用序消费
@@ -55,6 +61,7 @@ after(() => { ModelRouter.prototype.prepareRunEnv = origPrepareRunEnv; });
 // env 隔离完成后才允许 require lib（见文件头注释）
 const config = require('../lib/config');
 const { runChain } = require('../lib/workflow/chain');
+const { runScatterGather } = require('../lib/workflow/scatter-gather');
 
 const MODEL_REF = 'builtin:bigmodel-coding-plan/GLM-4.7-Flash';
 const WORKDIR = path.join(TMP, 'work');
@@ -243,4 +250,72 @@ test('runChain 注入 fake runner：首阶段 appserver 次阶段 kind 翻转 sp
   assert.equal(calls.start[2].runEnv.env.ZSW_NESTED, '1');
   // release 按 exec.kind 路由（包装层转发契约的同构断言面）
   assert.deepEqual(calls.release.map((e) => e.kind), ['apc', 'spawn', 'spawn']);
+});
+
+// ── ⑥ 非 chain 入口透传防线：runScatterGather 最小三阶段 ─────────────
+// chain 之外的 runPhase 调用点（review-fix-loop/scatter-gather/parallel/map-reduce
+// 共 11 处）与 chain 同链同构；此处以调用面最简单的 scatter-gather 钉一道离线
+// 防线——透传链重构若漏传 runner，非 chain 入口会静默落回 spawn 直调且其余
+// 用例（全部走 chain）依旧全绿，本例使该回归出声（对照：signal 在同入口有
+// workflow-b.test.js 的编排检查点覆盖先例）。
+
+test('runScatterGather 注入 fake runner：三阶段 start 调用数与阶段数一致，taskCtx 来自端口，条目 channel 如实，release 与阶段数一致', async () => {
+  writeV2Config();
+  // scatter 响应必须可解析出 subtasks（拆 1 个子任务 → process 批恰好 1 阶段，
+  // 全程 scatter/process/gather 共 3 阶段 = 非 chain 入口的最小规模运行）
+  const scatterPlan = '```json\n{"subtasks":[{"name":"子任务A","description":"只做一个子任务"}]}\n```';
+  const { runner, calls } = makeFakeRunner({
+    kindSequence: 'appserver',
+    results: [
+      { status: 'closed', response: scatterPlan, sessionId: 'sess_sg_scatter' },
+      { status: 'closed', response: '## 子任务A 结果\n完成。', sessionId: 'sess_sg_process' },
+      { status: 'closed', response: '## 最终报告\n全部完成。', sessionId: 'sess_sg_gather' },
+    ],
+  });
+  const result = await runScatterGather({
+    task: 'scatter-gather runner 透传验证', workdir: WORKDIR, model: 'GLM-4.7-Flash',
+    timeoutMsPerPhase: 5000, runner,
+  });
+
+  // 走通的是成功主链路（防失败分支误过四断言）
+  assert.equal(result.status, 'ok');
+  assert.deepEqual(result.phases.map((p) => p.phase), ['scatter', 'process', 'gather']);
+  assert.ok(result.sections[0].body.includes('子任务A'), 'scatter 拆分应进报告子任务清单');
+
+  // ① start 调用数 = 实际执行阶段数（3）
+  assert.equal(calls.start.length, 3);
+
+  // ② 每次调用的 taskCtx 形态来自端口：恰五字段，逐字段来自 runPhase 入参
+  //   （prompt=各阶段任务书 / cwd / modelRef=resolve 产物 / runEnv=prepareRunEnv
+  //   按通道备的 createParams 形态 / timeoutMs 透传）
+  const promptMarks = ['scatter 者', '处理者', 'gather 者'];
+  calls.start.forEach((taskCtx, i) => {
+    assert.deepEqual(
+      Object.keys(taskCtx).sort(),
+      ['cwd', 'modelRef', 'prompt', 'runEnv', 'timeoutMs'],
+      `阶段 ${i} taskCtx 应恰为 D1 三行范式的五字段`,
+    );
+    assert.ok(taskCtx.prompt.includes(promptMarks[i]), `阶段 ${i} prompt 应为 scatter-gather 对应阶段任务书`);
+    assert.equal(taskCtx.cwd, WORKDIR);
+    assert.equal(taskCtx.modelRef, MODEL_REF);
+    assert.equal(taskCtx.timeoutMs, 5000);
+    assert.deepEqual(
+      taskCtx.runEnv.createParams,
+      { model: { providerId: 'builtin:bigmodel-coding-plan', modelId: 'GLM-4.7-Flash' } },
+    );
+  });
+
+  // ③ 条目 channel:'appserver'（三阶段全部如实标注）
+  for (const p of result.phases) {
+    assert.equal(p.channel, 'appserver', `阶段 ${p.phase} 条目应标 appserver 通道`);
+    assert.equal(p.ok, true);
+  }
+
+  // ④ release 调用数与阶段数一致（全终态释放），exec 为 apc 形态且带 sessionId
+  assert.equal(calls.release.length, 3);
+  assert.deepEqual(calls.release.map((e) => e.kind), ['apc', 'apc', 'apc']);
+  assert.deepEqual(
+    calls.release.map((e) => e.sessionId),
+    ['sess_sg_scatter', 'sess_sg_process', 'sess_sg_gather'],
+  );
 });

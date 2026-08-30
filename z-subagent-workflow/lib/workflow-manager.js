@@ -55,15 +55,15 @@
  *
  * ## server 接线接口（下一 agent 消费）
  *
-   *   const wfManager = new WorkflowManager({
-   *     records,        // 与 SubagentManager 共享同一 RecordStore 实例
-   *     outputs,        // lib/output-store
-   *     notifier,       // 与 SubagentManager 共享（mailbox/polling）
-   *     // slots 可选：缺省独立池（limit 2）；workflows 可选：测试注入 fake
-   *     // runner 可选（wave2 D1）：assembleManager 注入（可能被降级包装过的）
-   *     //   RunnerPort，经 _invokeEntry 挂进入口 opts / 脚本 ctx——阶段执行从
-   *   //   spawn 直调切到 RunnerPort；缺省 undefined 时入口保持 spawn 直调旧行为
-   *   });
+ *   const wfManager = new WorkflowManager({
+ *     records,        // 与 SubagentManager 共享同一 RecordStore 实例
+ *     outputs,        // lib/output-store
+ *     notifier,       // 与 SubagentManager 共享（mailbox/polling）
+ *     // slots 可选：缺省独立池（limit 2）；workflows 可选：测试注入 fake
+ *     // runner 可选（wave2 D1）：assembleManager 注入（可能被降级包装过的）
+ *     //   RunnerPort，经 _invokeEntry 挂进入口 opts / 脚本 ctx——阶段执行从
+ *     //   spawn 直调切到 RunnerPort；缺省 undefined 时入口保持 spawn 直调旧行为
+ *   });
  *   await wfManager.recover();            // server 启动时（与 subagent recover 并存，
  *                                         //   rebuild 幂等，先到的标记不会被后到的推翻）
  *   await wfManager.start({ workflow, task, workdir, model?, timeoutMs?,
