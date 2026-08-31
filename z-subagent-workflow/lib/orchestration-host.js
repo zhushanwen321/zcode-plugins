@@ -247,12 +247,12 @@ function normalizeRunParams(params) {
   // review-fix-loop 旧 sugar：无法映射的显式报错（新契约批次值 = agent .md
   // 路径，旧自由文本维度没有等价物，静默映射会跑错对象）
   if (name === 'review-fix-loop' && Array.isArray(params.reviewers)) {
-    throw new Error(
-      'review-fix-loop 已不再支持 --reviewers（旧语义 = 自由文本审查维度）。'
-      + '新契约：批次 batch1..batchN，值 = agent .md 绝对路径（逗号分隔多 agent）。'
-      + '恢复指引：zsw workflow --workflow review-fix-loop --target-type <t> --target <t> '
-      + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时改用自定义脚本（.js 绝对路径，可经 script-generate 创作）传自由文本维度。'
-    );
+      throw new Error(
+        'review-fix-loop 已不再支持 --reviewers（旧语义 = 自由文本审查维度）。'
+        + '新契约：批次 batch1..batchN，值 = agent .md 绝对路径（逗号分隔多 agent）。'
+        + `恢复指引：node "${config.zswCliPath()}" workflow --workflow review-fix-loop --target-type <t> --target <t> `
+        + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时改用自定义脚本（.js 绝对路径，可经 script-generate 创作）传自由文本维度。'
+      );
   }
   for (const key of ['maxConcurrent', 'timeoutMsPerPhase']) {
     if (params[key] !== undefined) {
@@ -463,7 +463,7 @@ function createOrchestrationHost(opts = {}) {
         status: 'running',
         stateFile: store.stateFilePath(runId),
         warnings: norm.warnings,
-        guidance: `完成查询：node bin/zsw.js workflow --action status --id ${runId}（CLI run 恒同步等终态，本形态主要服务 socket 面）`,
+        guidance: `完成查询：node "${config.zswCliPath()}" workflow --action status --id ${runId}（CLI run 恒同步等终态，本形态主要服务 socket 面）`,
       };
     },
 

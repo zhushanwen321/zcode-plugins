@@ -514,12 +514,15 @@ test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', as
  * （报错同源基准，xyz-agent 仓 packages/subagent-core/src/execution/agent-registry.ts）：
  *   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>).`
  * zsw 侧主句与其逐字同源（尾部括号内恢复指引按 zsw 双出口适配：注入段
- * location 或 zsw agents 查路径）。人工对照锚点：本硬编码断言只锁 zsw 侧文案
- * 形态（zsw 侧漂移在此暴露）；与 core 源的逐字对齐它测不出来（core 侧文案
- * 变更不会让本断言失败）——靠 review 对照/对照探针维护。
+ * location 或 zsw agents 查路径；F12 起查询命令为完整可执行形态）。人工对照
+ * 锚点：本硬编码断言只锁 zsw 侧文案形态（zsw 侧漂移在此暴露）；与 core 源的
+ * 逐字对齐它测不出来（core 侧文案变更不会让本断言失败）——靠 review 对照维护。
  */
 const CORE_INVALID_AGENT_REF_PREFIX = (ref) =>
   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`;
+
+/** F12：指引文案里的 CLI 完整可执行形态（测试进程未设 ZCODE_PLUGIN_ROOT → 仓库内插件根）。 */
+const ZSW_CLI = process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js');
 
 test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中均为可操作错误', async () => {
   const { manager } = buildManager();
@@ -530,11 +533,12 @@ test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中�
     () => manager.start({ task: '任务书', slug: 'x' }, { targetSessionId: 'sess_x' }),
     /cwd/,
   );
-  // D-4a：名字形态拒——文案与 core agent-registry 同源（主句逐字一致）
+  // D-4a：名字形态拒——文案与 core agent-registry 同源（主句逐字一致）；
+  // F12：查询指引为完整可执行 CLI 形态（node "<abs>/bin/zsw.js" agents）
   await assert.rejects(
     () => manager.start({ task: '任务书', slug: 'x', agent: 'reviewer' }, c),
     (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('reviewer'))
-      && e.message.includes('zsw agents'),
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
   );
   // 相对路径与非 .md 引用同拒（core normalizeRef 口径）
   await assert.rejects(
@@ -549,7 +553,7 @@ test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中�
   await assert.rejects(
     () => manager.start({ task: '任务书', slug: 'x', agent: '/fake/missing.md' }, c),
     (e) => e.message.startsWith('Agent file not found or unreadable: /fake/missing.md.')
-      && e.message.includes('zsw agents'),
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
   );
 });
 
@@ -816,7 +820,8 @@ test('recordType 越界：wf record 不经 zsub 面 status/cancel/close（_mustG
     () => manager.cancel(wf),
     () => manager.close(wf),
   ]) {
-    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message) && /zsw workflow --action/.test(err.message));
+    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message)
+      && err.message.includes(`node "${ZSW_CLI}" workflow --action`));
   }
   // record 未被越界改写（终态化/transition 都没发生）
   assert.equal(records.get(wf).status, 'created');

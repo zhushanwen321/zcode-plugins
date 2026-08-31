@@ -1,6 +1,6 @@
 {
-  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.2.0",
-  "fetchedAt": "2026-08-31T01:33:51.654Z",
+  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
+  "fetchedAt": "2026-08-31T10:46:11.931Z",
   "capabilities": {
     "workflowsAssets": true,
     "agentsAssets": true,
@@ -29,11 +29,11 @@
     },
     {
       "path": "agents/general-purpose.md",
-      "sha256": "d7c3fe41499a8be8ff2a49567566ad754f3716f777a34070634ede81ee2e9d99"
+      "sha256": "d9d3a138dda4bdf4f37436151c5ac1b906ffb7e204da6b23febfdbf1ed4ac087"
     },
     {
       "path": "agents/orchestrator.md",
-      "sha256": "2edc2cfecb5d124bed25248f9a69c60aeed9bf74b970c38b7b41ce1cf2e80442"
+      "sha256": "ac9b9cb53f6f7df88442bb2651ed6abb955e05aa14933ef427e2c5da2963fab1"
     },
     {
       "path": "agents/planner.md",
@@ -41,7 +41,7 @@
     },
     {
       "path": "agents/researcher.md",
-      "sha256": "c6a62aa93af84414abb80a906952b74717e6f299dcda73a47b74ed3846ffedf5"
+      "sha256": "6dd72ed1753f7df53e43dd7e690d961d14e369f89b98b235c870bdf5173d77d9"
     },
     {
       "path": "agents/reviewer.md",
@@ -53,7 +53,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "2712788a4487763b6a529d112c72c07e6131ac27df98db7f90c3e999ee3de5f5"
+      "sha256": "3b3659ccc8880dced0df3de1a6a7228d11c35b016f2631a68314e08c38165965"
     },
     {
       "path": "workflows/_shared/agent-refs.cjs",
@@ -61,15 +61,15 @@
     },
     {
       "path": "workflows/chain.js",
-      "sha256": "cb1e3bbdde43130128f624ed7783000fa970fe513c25b654540b196d80021f9e"
+      "sha256": "92715ad9c2425eaa7031715b3002516482a8a1fae91ac47ef7249e4b8c55286f"
     },
     {
       "path": "workflows/map-reduce.js",
-      "sha256": "db33e6741da402cda5a92f4e95ab672e23baf8234072ff03f81eac81f62f3b3f"
+      "sha256": "0c85822819ebdc9192302a531bfcf8be7079ca7afdba33c6ab9332bf3feac9fc"
     },
     {
       "path": "workflows/parallel.js",
-      "sha256": "e1b66f275ddf23974a12b7c3a37c071027ef1ff11bdd8ee70095f368a601430d"
+      "sha256": "5cd987c38c56fab38a8245a0f9b333e92092dea3ed4925c081ebf41e68f42157"
     },
     {
       "path": "workflows/review-fix-loop-utils.cjs",
@@ -77,11 +77,11 @@
     },
     {
       "path": "workflows/review-fix-loop.js",
-      "sha256": "a07d85d81c8587f476063de4a1727972381d09bba758b06a18ba1d1257a8b148"
+      "sha256": "9fcd796018439f108f28b0623e5c6915d00b5644c03e7a29bf44dea47278f28e"
     },
     {
       "path": "workflows/scatter-gather.js",
-      "sha256": "9f77f901556a79218de523f92ba11f69eba1b219d4e23227559eda5565ee7282"
+      "sha256": "50defefb74d66833acca45c3b2fe33103fad0817e565543f368be11e41eb4f3c"
     }
   ]
 }

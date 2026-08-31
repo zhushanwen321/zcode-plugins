@@ -377,7 +377,7 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
   handlers[TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
       return errContent(
-        '嵌套调用已拒绝：ZSW_NESTED=1 环境下 zsub 不提供编排（防递归第二重门禁，D10）。'
+        '嵌套调用已拒绝：嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）下 zsub 不提供编排（防递归第二重门禁，D10）。'
         + '恢复指引：这是预期行为，subagent 会话内不要调用 zsub。'
       );
     }
@@ -488,7 +488,7 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
   handlers[RUN_WORKFLOW_TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
       return errContent(
-        '嵌套调用已拒绝：ZSW_NESTED=1 环境下不提供 zflow（防递归第二重门禁，D10）。'
+        '嵌套调用已拒绝：嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）下不提供 zflow（防递归第二重门禁，D10）。'
         + '恢复指引：这是预期行为，workflow 阶段会话内不要调用 zflow。'
       );
     }
@@ -811,7 +811,7 @@ async function main() {
   let manager = null;
   let wfHost = null;
   if (config.NESTED) {
-    log('ZSW_NESTED=1：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
+    log('嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
     // 执行通道（回接 2c）：runner 恒为 core zcode engine 的 spawn 单轮
     // （lib/assemble.js 组装；appserver 通道已按 D6-⑥ 退役，ZSW_RUNNER=appserver

@@ -26,7 +26,10 @@ examples:
 
 ## How to work（启发式，非死规则）
 
-**工具**：用 `tavily-web-search` skill 做所有搜索。Pi 会把可用 skill 注入 `<available_skills>`——先 `read` 它的 `SKILL.md` 看命令语法（通常是 `tavily search "..."` 和 `tavily extract <url>`），再用 `bash` 跑。Pi 没有内置 `web_search` 或 `Skill` 工具；skill 不可用时报告并停止，不猜。
+**工具**：所有搜索走环境提供的**显式搜索工具**，按可用性降级选择，禁止凭记忆作答：
+- 若环境提供内置 WebSearch 类搜索工具 → 直接使用
+- 若环境提供 skill 注入段（如 `<available_skills>`）→ 找搜索类 skill（如 `tavily-web-search`），先 `read` 它的 `SKILL.md` 看命令语法（tavily 类通常是 `tavily search "..."` 和 `tavily extract <url>`），再用 `bash` 跑
+- 两者都不可用 → 报告搜索能力缺失并停止，不猜
 
 **effort budget + 停止条件**：基础事实用 basic depth + 3-5 结果；深度对比用 advanced depth。找不到完美源时，几次工具调用后可停——"没找到"也是有效结论，不要无限搜索。
 

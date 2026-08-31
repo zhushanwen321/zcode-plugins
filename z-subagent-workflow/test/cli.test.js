@@ -54,6 +54,7 @@ function run(args, extraEnv = {}) {
           HOME: path.join(TMP, 'home'),
           ZCODE_PROJECT_DIR: TMP,
           ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖
+          XYZ_AGENT_SUBAGENT: '', // F03：core 引擎嵌套标记同款清掉（嵌套宿主下跑测试防误拒）
           ...extraEnv,
         },
       },
@@ -97,6 +98,7 @@ function runHook(binPath, args, extraEnv = {}) {
           ...process.env,
           HOME: HOOK_HOME,
           ZSW_NESTED: '',
+          XYZ_AGENT_SUBAGENT: '', // F03：core 引擎嵌套标记同款清掉
           ZCODE_PROJECT_DIR: TMP,
           ...extraEnv,
         },
@@ -501,6 +503,14 @@ test('ZSW_NESTED=1：start --local 被拒（exit 1 + 恢复指引），与 daemo
   const daemon = await run(['list'], { ZSW_NESTED: '1' });
   assert.equal(daemon.code, 1);
   assert.match(daemon.stderr, /嵌套环境禁止编排/);
+});
+
+test('XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）：CLI 同款拒绝（F03 双标记判定）', async () => {
+  // core 引擎 spawn 的 zcode 子进程只带 XYZ_AGENT_SUBAGENT=1（ZSW_NESTED 被剥
+  // 离）——只查 ZSW_NESTED 时嵌套派发会话内的 CLI 面第二重门禁失效
+  const r = await run(['list'], { ZSW_NESTED: '', XYZ_AGENT_SUBAGENT: '1' });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）/);
 });
 
 // ------------------------------------------------- models --all（跨 provider 视图）

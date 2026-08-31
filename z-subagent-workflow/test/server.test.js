@@ -908,8 +908,9 @@ test('zflow abort（真实 orchestration-host）：hanging runner → abort 落 
 
 // ---------------------------------------------------------- 进程级测试
 
-/** spawn 真实 server 进程：发送 initialize + tools/list，收帧后关 stdin。 */
-function runServerProc({ nested, timeoutMs = 15000 } = {}) {
+/** spawn 真实 server 进程：发送 initialize + tools/list，收帧后关 stdin。
+ *  nestedMarker：置 '1' 的嵌套标记键（F03 双标记：ZSW_NESTED | XYZ_AGENT_SUBAGENT）。 */
+function runServerProc({ nested, nestedMarker = 'ZSW_NESTED', timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -917,8 +918,11 @@ function runServerProc({ nested, timeoutMs = 15000 } = {}) {
       ZCODE_MAILBOX_ROOT: path.join(TMP, 'mailbox-proc'),
       ZSW_ZCODE_CLI: '/nonexistent', // 防御：即使误启 runner 也不碰真 CLI
     };
-    if (nested) env.ZSW_NESTED = '1';
-    else delete env.ZSW_NESTED;
+    if (nested) env[nestedMarker] = '1';
+    else {
+      delete env.ZSW_NESTED;
+      delete env.XYZ_AGENT_SUBAGENT; // F03：core 引擎嵌套标记同款清掉（嵌套宿主下跑测试防误拒）
+    }
 
     const child = spawn(process.execPath, [SERVER_PATH], { env, stdio: ['pipe', 'pipe', 'pipe'] });
     const frames = [];
@@ -985,6 +989,14 @@ test('进程级：NESTED 档不注册工具，仍正常应答协议后退出', a
   const tl = r.frames.find((f) => f.id === 2);
   assert.deepEqual(tl.result.tools, []);
   assert.match(r.stderr, /ZSW_NESTED/);
+});
+
+test('进程级：XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）同款不注册工具（F03 双标记判定）', async () => {
+  const r = await runServerProc({ nested: true, nestedMarker: 'XYZ_AGENT_SUBAGENT' });
+  assert.equal(r.code, 0);
+  const tl = r.frames.find((f) => f.id === 2);
+  assert.deepEqual(tl.result.tools, []);
+  assert.match(r.stderr, /XYZ_AGENT_SUBAGENT/);
 });
 
 // ------------------------------------------------ R4：async manager.message

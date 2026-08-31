@@ -24,7 +24,8 @@
  * 自检：拷贝后逐文件 sha256 与源比对；workflows/review-fix-loop-utils.cjs 必须
  * 存在，否则 exit 1。capabilities.selfContainedIndex 如实记录：vendored index
  * 产物内容无 ajv/yaml/proper-lockfile 外部 require 才为 true（npm 0.2.0 dist
- * 依赖 ajv → false，lib/core-ref.js 的 requireCore 据此只提供可操作报错）。
+ * 依赖 ajv → false，lib/core-ref.js 的 requireCore 据此分流恢复指引——true 指
+ * 向重刷 + manifest sha256 自检，false 保留「等自包含 bundle 发布」旧文案）。
  *
  * 用法：node scripts/vendor-subagent-core.js (--npm <version> | --local <path>)
  *   退出码 0 = 刷新成功；1 = 失败（错误信息含恢复方向）。

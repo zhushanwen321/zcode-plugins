@@ -104,6 +104,40 @@ test('错误路径：主入口损坏（require 即抛）→ 报错保留底层�
   }
 });
 
+test('F04 分流：selfContainedIndex=true → 指向重刷 + sha256 自检（不再误称「非自包含、等 0.4.0」）', () => {
+  // 当前 vendored 即自包含 bundle 形态（manifest 如实记录 true）——主入口损坏时
+  // 旧静态文案会误导排障方向（让人等一个已发布的 bundle）
+  const { mod, tmp } = makeFakeCoreRef({
+    'package.json': '{"version":"0.3.0"}',
+    'VENDOR-MANIFEST.json': '{"capabilities":{"selfContainedIndex":true}}',
+    'dist/index.cjs': "throw new Error('boom: broken bundle');",
+  });
+  try {
+    assert.throws(mod.requireCore, (err) =>
+      err.message.includes('应已自包含')
+      && err.message.includes('vendor-subagent-core.js --local <core-checkout>')
+      && err.message.includes('sha256')
+      && !err.message.includes('等 @zhushanwen/subagent-core 0.4.0'));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('F04 分流：selfContainedIndex=false → 保留旧文案（非自包含，等自包含 bundle 发布）', () => {
+  const { mod, tmp } = makeFakeCoreRef({
+    'package.json': '{"version":"0.2.0"}',
+    'VENDOR-MANIFEST.json': '{"capabilities":{"selfContainedIndex":false}}',
+    'dist/index.cjs': "throw new Error('boom: legacy dist');",
+  });
+  try {
+    assert.throws(mod.requireCore, (err) =>
+      err.message.includes('非自包含')
+      && err.message.includes('等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布'));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test('错误路径：VENDOR-MANIFEST.json 缺失 → vendorManifest 报错含刷新命令', () => {
   const { mod, tmp } = makeFakeCoreRef({ 'package.json': '{"version":"0.2.0"}' });
   try {

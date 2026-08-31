@@ -73,6 +73,7 @@ function run(extraEnv = {}, opts = {}) {
           ...process.env,
           HOME,
           ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖
+          XYZ_AGENT_SUBAGENT: '', // F03：core 引擎嵌套标记同款清掉（嵌套宿主下跑测试防误拒）
           ZCODE_PROJECT_DIR: PROJECT,
           ...extraEnv,
         },
@@ -112,6 +113,12 @@ test('ZSW_NESTED=1 → stdout 解析为 {} 且 exit code 0（P-nested-guard）',
   const r = await run({ ZSW_NESTED: '1' });
   // 只验输出不验 exit code 会漏掉 exit 1 违规形态（非零退出会在会话启动
   // raise error，D5 禁止）——两者都断言
+  assert.equal(r.code, 0, `exit code 须为 0，实际 ${r.code}，stderr: ${r.stderr}`);
+  assert.deepEqual(JSON.parse(r.stdout), {});
+});
+
+test('XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）→ 同款 {} + exit 0（F03 双标记判定）', async () => {
+  const r = await run({ ZSW_NESTED: '', XYZ_AGENT_SUBAGENT: '1' });
   assert.equal(r.code, 0, `exit code 须为 0，实际 ${r.code}，stderr: ${r.stderr}`);
   assert.deepEqual(JSON.parse(r.stdout), {});
 });

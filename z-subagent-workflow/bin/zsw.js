@@ -77,6 +77,7 @@
 
 const path = require('node:path');
 const os = require('node:os');
+const { isNestedEnv, zswCliPath } = require('../lib/config');
 const { assembleManager } = require('../lib/assemble');
 const { callDaemon } = require('../lib/cli-client');
 const { TERMINAL_STATUSES } = require('../lib/record-store');
@@ -714,8 +715,9 @@ async function runWorkflowCommand(rest) {
  * 数据组装/渲染/降级语义（D4/D5/D6 三条硬约束与口径）见 lib/hook-source.js 头注。
  */
 function runHookCommand(rest) {
-  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用零开销退出）
-  if (process.env.ZSW_NESTED === '1') {
+  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用零开销退出；
+  // F03 双标记判定，谓词权威源 lib/config isNestedEnv）
+  if (isNestedEnv()) {
     process.stdout.write('{}\n');
     return; // 自然退出 = exit 0；不用 process.exit 防 stdout 未 flush
   }
@@ -743,10 +745,12 @@ function runHookCommand(rest) {
  * 共用同一文案与退出码，防两处漂移。
  */
 function ensureNotNested() {
-  if (process.env.ZSW_NESTED === '1') {
+  // F03 双标记判定（isNestedEnv）：core 引擎嵌套派发的会话只带
+  // XYZ_AGENT_SUBAGENT=1，只查 ZSW_NESTED 会让 CLI 面第二重门禁失效
+  if (isNestedEnv()) {
     // 防递归边界从 MCP 工具面平移到 CLI 面（DESIGN-v4 §7 要点 4）
     process.stderr.write(
-      '嵌套环境禁止编排（防递归，ZSW_NESTED=1）。'
+      '嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）。'
       + '恢复指引：subagent 会话内不要编排，由主会话派发。\n'
     );
     process.exit(1);

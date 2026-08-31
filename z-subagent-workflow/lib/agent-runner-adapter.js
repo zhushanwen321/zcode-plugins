@@ -27,8 +27,8 @@
  *   schema        → buildPrompt 契约段 + done 后 jsonout 三级容错提取为
  *                   parsedOutput（core 语义：schema 提供且输出可解析才有）
  *   thinkingLevel / skill / scene / maxTurns / fork / worktree / returnMeta 等
- *                   zsw 通道无对应面，静默不消费（差异清单见 README 回接
- *                   说明）
+ *                   zsw 通道无对应面，静默不消费（差异清单见 README「回接 2b
+ *                   break 变更」节内「workflow agent() opts 差异清单」小节）
  *
  * AbortSignal 契约（对齐 run-phase 旧语义）：启动前 aborted → 直接回
  * AbortError（core 的 dispatchCall 预检分支按 name 判定跳过记错）；运行中

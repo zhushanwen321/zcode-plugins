@@ -313,7 +313,7 @@ test('A7 嵌套拒绝：ZSW_NESTED=1 下 CLI立即 exit 1 + 可操作文案，da
   // 嵌套门禁在 runDaemonCommand 入口第一道闸——先于任何 socket 交互
   const denied = await runCli(sc, ['list'], { envExtra: { ZSW_NESTED: '1' } });
   assert.equal(denied.code, 1, `exit 应为 1，实际 ${denied.code}（stderr: ${denied.stderr}）`);
-  assert.match(denied.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1）/);
+  assert.match(denied.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）/);
   assert.match(denied.stderr, /恢复指引/);
   assert.equal(denied.stdout, '', '拒绝路径不产生业务输出');
 

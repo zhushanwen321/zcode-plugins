@@ -58,6 +58,34 @@ function workflowAssetPath(name) {
 // dist/，入口路径跨 core 版本稳定）；根位 index.cjs 为兼容候选
 const INDEX_CANDIDATES = ['dist/index.cjs', 'index.cjs'];
 
+/**
+ * 主入口 require 失败的恢复指引（F04 按 VENDOR-MANIFEST.json 的
+ * capabilities.selfContainedIndex 分流——旧静态文案声称「非自包含、等 0.4.0」，
+ * 与当前 vendored 已是自包含 bundle 的事实相反，会误导排障方向）：
+ * - true：副本应已自包含，加载失败多为副本不完整/损坏 → 指向重刷与 sha256 自检；
+ * - false 或 manifest 缺失/损坏（保守回落）：非自包含旧文案，等自包含 bundle 发布。
+ * vendorManifest() 在此刻意 try 包裹：本函数是报错文案组装，manifest 读不到时
+ * 不能反客为主吞掉底层 require 错误主句。
+ */
+function requireLoadHint() {
+  let selfContained = false;
+  try {
+    selfContained = vendorManifest().capabilities.selfContainedIndex === true;
+  } catch { /* manifest 缺失/损坏：按非自包含旧文案（保守指引） */ }
+  if (selfContained) {
+    return '当前 vendored 副本应已自包含（VENDOR-MANIFEST.json capabilities.selfContainedIndex=true），'
+      + '主入口加载失败多为副本不完整或损坏。'
+      + '恢复路径：在 workspace 根重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新 vendored 副本，'
+      + '或核对 VENDOR-MANIFEST.json 逐文件 sha256 完整性'
+      + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。';
+  }
+  return '当前 vendored 主入口非自包含（ajv/yaml/proper-lockfile 外部依赖未 vendor，'
+    + 'VENDOR-MANIFEST.json 的 capabilities.selfContainedIndex 如实记录）。'
+    + '恢复路径：等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布后，'
+    + '在本地 core checkout 构建并执行 node scripts/vendor-subagent-core.js --local <core-path> 刷新'
+    + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。';
+}
+
 function requireCore() {
   for (const rel of INDEX_CANDIDATES) {
     const entry = path.join(VENDOR_DIR, rel);
@@ -67,11 +95,7 @@ function requireCore() {
     } catch (err) {
       throw new Error(
         `加载 vendored subagent-core 主入口失败（${entry}: ${err.code ? `${err.code} ` : ''}${err.message}）。`
-        + '当前 vendored 主入口非自包含（ajv/yaml/proper-lockfile 外部依赖未 vendor，'
-        + 'VENDOR-MANIFEST.json 的 capabilities.selfContainedIndex 如实记录）。'
-        + '恢复路径：等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布后，'
-        + '在本地 core checkout 构建并执行 node scripts/vendor-subagent-core.js --local <core-path> 刷新'
-        + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。',
+        + requireLoadHint(),
       );
     }
   }

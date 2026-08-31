@@ -32,6 +32,7 @@
  */
 
 const { PROVIDER_ID, availableModels, qualifiedProviders } = require('./model-router');
+const { zswCliPath } = require('./config');
 const coreRef = require('./core-ref');
 
 /** subagents 段条目预算（D-3a：开箱 10 内置 + 5 用户余量）。 */
@@ -39,9 +40,16 @@ const AGENTS_MAX_ENTRIES = 15;
 /** workflows 段条目预算（D-3a：内置 5 + 自定义余量）。 */
 const WORKFLOWS_MAX_ENTRIES = 10;
 
-/** 截断兜底指引（段末追加行；文案与 zsw CLI 查询面对齐）。 */
-const AGENTS_TRUNCATION_NOTICE = '  …（截断，完整清单：zsw agents）';
-const WORKFLOWS_TRUNCATION_NOTICE = '  …（截断，完整清单：zsw workflow --action scripts）';
+/**
+ * zsw CLI 完整可执行形态（F12）：注入段给主 agent 的指引必须「照抄即可执行」
+ * ——marketplace/inline 形态下裸 `zsw` 不在 PATH；路径经单源 config.zswCliPath
+ * （ZCODE_PLUGIN_ROOT > 模块相对），双引号包裹防路径含空格。
+ */
+const ZSW_CLI = zswCliPath();
+
+/** 截断兜底指引（段末追加行；文案与 zsw CLI 查询面对齐，命令为完整可执行形态）。 */
+const AGENTS_TRUNCATION_NOTICE = `  …（截断，完整清单：node "${ZSW_CLI}" agents）`;
+const WORKFLOWS_TRUNCATION_NOTICE = `  …（截断，完整清单：node "${ZSW_CLI}" workflow --action scripts）`;
 
 /**
  * zsw 版 subagents 段引导（agent 参数契约 = W6b 收紧后语义：仅 .md 绝对路径，
@@ -51,19 +59,25 @@ const SUBAGENTS_GUIDE =
   'The following subagents are available. PRIORITY: when a task involves reading 3+ files,'
   + ' writing 100+ lines, parallel research, or specialized review, delegate to a matching subagent'
   + ' FIRST instead of doing it yourself — this keeps your context focused on orchestration.'
-  + ' When starting one via the zsw CLI, pass the <location> path (absolute .md path) as the'
+  + ` When starting one via node "${ZSW_CLI}" start, pass the <location> path (absolute .md path) as the`
   + ' --agent param — bare names are rejected. If no agent matches your task, omit --agent'
   + ' (a general-purpose agent is used) and put all role-specific instructions in the task text.';
 
 /**
  * zsw 版 workflows 段引导（workflow 引用契约：内置名或 .js 绝对路径——
  * script:<名> 形态已拒，与 pi 版 WORKFLOW_LIST_GUIDE 同构、按 zsw CLI 语境改写）。
+ * F8-zsw 追加双引擎语法声明：脚本头 usage 示例是 pi 宿主 `--args k=v` 语法，
+ * zsw CLI 用直参 flag——不声明会让照抄 usage 的调用被 CLI 拒收。
  */
 const WORKFLOWS_GUIDE =
-  'The following workflows are available. Run them via the zsw CLI workflow subcommand:'
+  'The following workflows are available. Run them via the zsw CLI workflow subcommand'
+  + ` (node "${ZSW_CLI}" workflow --workflow <name-or-.js-path> --task "<task>" --workdir <abs-dir> ...):`
   + ' built-in names are passed to --workflow <name> directly; custom scripts must be passed'
   + ' by their <location> absolute .js path (script:<name> refs are rejected).'
-  + ' For parameter details, read the <location> script file (header @pi-meta has parameters + usage).';
+  + ' For parameter details, read the <location> script file (header @pi-meta has parameters + usage).'
+  + ' Note: the `workflow run <name> --args k=v` form in the script header usage is pi-host syntax —'
+  + ' the zsw CLI takes direct flags instead (e.g. --task/--workdir plus per-workflow flags);'
+  + ' see the @pi-meta parameters in the script header for parameter semantics.';
 
 /**
  * zsw 版 models 段引导（动态：快照时戳 + 当前默认模型）。旧块的「当前默认：」
@@ -73,7 +87,7 @@ const WORKFLOWS_GUIDE =
  * @param {string} cliModelMain 默认模型引用（defaultModelRef 回退链产物；空则不加默认句）
  */
 function modelsGuide(nowIso, cliModelMain) {
-  let g = 'The following models are available. Use these ids when passing --model to zsw start / zsw workflow:'
+  let g = `The following models are available. Use these ids when passing --model to node "${ZSW_CLI}" start / node "${ZSW_CLI}" workflow:`
     + ' cross-provider refs must use the full <provider>/<model> id exactly as shown'
     + ` (short names only work for the default provider ${PROVIDER_ID}).`
     + ' Match the model to the task — strong reasoners for design/architecture/deep research,'
@@ -85,7 +99,7 @@ function modelsGuide(nowIso, cliModelMain) {
   }
   if (nowIso) g += ` Snapshot generated ${nowIso} at session start; GUI config changes mid-session may make it stale.`;
   g += ' On a wrong model name the error output includes the authoritative available list;'
-    + ' or run "zsw models" (default provider) / "zsw models --all" (all qualified providers) to refresh.';
+    + ` or run node "${ZSW_CLI}" models (default provider) / node "${ZSW_CLI}" models --all (all qualified providers) to refresh.`;
   return g;
 }
 

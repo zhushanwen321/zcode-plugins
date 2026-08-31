@@ -56,7 +56,30 @@ test('prompt-builder: 四段固定顺序拼装', () => {
   assert.ok(out.includes('- /s/a/SKILL.md') && out.includes('- /s/b/SKILL.md'));
 });
 
-test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化；空输入为空串', () => {
+test('prompt-builder: 运行环境段恒在场（F6+F7-zsw）——单轮无派发工具/有 WebSearch/任务书自包含', () => {
+  // 有角色、无角色两形态都在场（全部 agent 一致注入，不特判角色）；
+  // 环境事实让 core 角色正文的条件句（「若宿主提供派发工具…」「若环境提供内置
+  // WebSearch…」）稳定落定分支
+  for (const out of [
+    buildPrompt({ agentProfile: { name: 'coder', body: '你是编码助手' }, task: 't' }),
+    buildPrompt({ task: 't' }),
+  ]) {
+    assert.ok(out.includes('## 运行环境'), '环境段在场');
+    assert.ok(out.includes('没有子代理派发工具') && out.includes('直接产出计划/结果文本'), '单轮无派发工具事实（编排任务直接产出文本）');
+    assert.ok(out.includes('内置 WebSearch 类工具'), 'WebSearch 事实（条件检索分支成立）');
+    assert.ok(out.includes('任务书自包含') && out.includes('以任务书与注入段为准'), '任务书自包含事实');
+  }
+  // 段序：角色设定 → 运行环境 → 工具约束 → 任务（环境事实先于约束与任务；
+  // 用 '## 任务' 段头定位——环境段正文含「任务」字样，裸词会误配）
+  const ordered = buildPrompt({
+    agentProfile: { name: 'a', body: 'b', tools: ['read'] },
+    task: 't',
+  });
+  const idx = ['角色设定', '运行环境', '工具约束', '## 任务'].map((s) => ordered.indexOf(s));
+  assert.ok(idx[0] < idx[1] && idx[1] < idx[2] && idx[2] < idx[3], '角色 < 运行环境 < 工具约束 < 任务');
+});
+
+test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化；空输入只剩环境段（F6+F7 起环境段恒在场）', () => {
   const noProfile = buildPrompt({ task: '做点事' });
   assert.ok(!noProfile.includes('角色设定'));
   assert.ok(noProfile.includes('做点事'));
@@ -65,8 +88,12 @@ test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化
   assert.ok(objSchema.includes('"type": "object"'));
   assert.ok(!objSchema.includes('参考技能'), '无 skillRefs 省略技能段');
 
-  assert.equal(buildPrompt({}), '');
-  assert.equal(buildPrompt(), '');
+  // 旧契约「空输入 → 空串」随 F6+F7 环境段推翻：环境事实必须全 agent 一致在场
+  //（空任务书的裸跑同样要拿到单轮/无派发工具事实），故空输入 = 仅环境段
+  for (const empty of [buildPrompt({}), buildPrompt()]) {
+    assert.ok(empty.includes('## 运行环境'), '空输入仍带环境段');
+    assert.ok(!empty.includes('## 任务') && !empty.includes('角色设定') && !empty.includes('MANDATORY'), '且仅环境段');
+  }
 });
 
 test('prompt-builder: 工具约束段——tools 白名单声明「只允许」+ disallowedTools 重申（MUST_FIX-3）', () => {

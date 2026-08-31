@@ -57,8 +57,11 @@ const DEFAULTS = require('./config').DEFAULTS;
  *                                  未映射该请求值，请求了不生效（record 如实
  *                                  标注「请求未生效」）
  * @property {string[]} [toolAllowlist] CLI --allow-tools 来源（F4/D6）：引擎无
- *                                  白名单 flag 通道，请求不消费（record 如实
- *                                  标注）
+ *                                  白名单 flag 通道，请求不消费——不进 prompt
+ *                                  也不进引擎通道，唯一效果是终态 record
+ *                                  toolsNote 标注「请求未生效」；工具软约束走
+ *                                  frontmatter tools 的 prompt 约束段
+ *                                  （prompt-builder buildToolConstraint）
  * @property {string[]} [toolDenylist]  CLI --deny-tools 来源（F4/D6）：与
  *                                  disallowedTools 并集去重入引擎 denylist
  */

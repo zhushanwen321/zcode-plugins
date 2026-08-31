@@ -22,9 +22,10 @@
 //
 // 用法：
 //   workflow run review-fix-loop --args targetType=git-diff target=main \
-//     batch1="/path/reviewer-a.md,/path/reviewer-b.md" autoCommit=true
+//     batch1="/path/reviewer-a.md,/path/reviewer-b.md" autoCommit=true（pi 宿主语法）
 //   workflow run review-fix-loop --args targetType=file target=/path/to/doc.md \
-//     batch1="/path/doc-reviewer.md" autoCommit=false
+//     batch1="/path/doc-reviewer.md" autoCommit=false（pi 宿主语法）
+//   zsw workflow --workflow review-fix-loop --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag --target-type/--target/--batch1 等，语义见 @pi-meta parameters）
 //
 // S4 路径统一：batch1..batchN/fixAgent 值 = agentRef（.md 绝对路径，<available_subagents> 的
 // <location>）；fallowScan=true 独立参数前置插入静态分析批次（不占 batchN）。
@@ -75,7 +76,8 @@ usage: |
   - batch1..batchN 与 agents 互斥（至少传一个 batchN）；值 = agentRef（.md 绝对路径，<available_subagents> 的 <location>）
   - fixAgent：fix 阶段执行者（agentRef），缺省用通用 subagent + 内联 fixPrompt
   - fallowScan=true 仅 targetType=git-diff 合法（前置静态分析批次，不占 batchN）
-  - 示例：workflow run review-fix-loop --args targetType=git-diff target=main batch1="/path/fallow-agent.md,/path/reviewer.md" autoCommit=true
+  - 示例（pi 宿主语法）：workflow run review-fix-loop --args targetType=git-diff target=main batch1="/path/fallow-agent.md,/path/reviewer.md" autoCommit=true
+  - 示例（zsw 宿主直参语法）：zsw workflow --workflow review-fix-loop --task "<任务书>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag --target-type/--target/--batch1 等，语义见 @pi-meta parameters）
 */
 
 // ── 参数解析 + 白名单校验（fail-fast） ────────────────────────────
@@ -187,9 +189,10 @@ const skipCleanAgents = coerceBool($ARGS.skipCleanAgents, true);
 // RC-5（fix 后全批全量重审放大 token）在默认场景消失。传 true 启用可选强回归模式：fix 后重派
 // 全批，clean agent 走限定 prompt（buildScopedRecheckPrompt，只审 modifiedFiles，5.5）。
 const recheckAfterFix = coerceBool($ARGS.recheckAfterFix, false);
-// fixAgent（5.3）：值语义同 batchN 的 agent 项（内置名 / agent.md 路径），解析复用
-// resolveAgentDefs 白名单与加载逻辑。传入时 fix 阶段用 agent({agent: ...}) 派发（代码场景
-// 的 verify 命令写在该 agent.md 内）；未传保持现状（通用 subagent + 内联 prompt）。
+// fixAgent（5.3）：值 = .md 绝对路径（同 batchN 的 agent 项值域）；`fallow-scan` 是
+// fallowScan 参数的内部保留字，不属于 fixAgent 值域。解析复用 resolveAgentDefs 白名单与
+// 加载逻辑。传入时 fix 阶段用 agent({agent: ...}) 派发（代码场景的 verify 命令写在该
+// agent.md 内）；未传保持现状（通用 subagent + 内联 prompt）。
 const FIX_AGENT_RAW = typeof $ARGS.fixAgent === "string" && $ARGS.fixAgent.trim()
   ? $ARGS.fixAgent.trim() : undefined;
 const FIX_DEF = FIX_AGENT_RAW ? resolveAgentDefs([FIX_AGENT_RAW])[0] : null;

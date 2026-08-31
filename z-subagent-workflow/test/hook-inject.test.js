@@ -18,6 +18,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 const {
   renderResourcesBlock,
@@ -29,6 +30,10 @@ const { PROVIDER_ID } = require('../lib/model-router');
 
 assert.equal(AGENTS_MAX_ENTRIES, 15, 'D-3a：subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）');
 assert.equal(WORKFLOWS_MAX_ENTRIES, 10, 'D-3a：workflows 段条目预算 10');
+
+// F12：指引文案的 CLI 完整可执行形态（与 hook-inject 内 config.zswCliPath 同
+// 解析链；测试进程未设 ZCODE_PLUGIN_ROOT 时 = 仓库内插件根的 bin/zsw.js）
+const ZSW_CLI = process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js');
 
 const NOW = '2026-08-29T12:00:00.000Z';
 const DEFAULT_REF = `${PROVIDER_ID}/GLM-5.3-Flash`;
@@ -106,7 +111,28 @@ test('段引导（guide 宿主注入）：三段各自引导文案在场（model
   assert.ok(ctx.includes(guide), 'models guide（动态拼接产物）在场');
   assert.ok(guide.includes(`Current default model: ${DEFAULT_REF}`), 'guide 含当前默认模型');
   assert.ok(guide.includes(`Snapshot generated ${NOW}`), 'guide 含快照时戳句');
-  assert.ok(guide.includes('zsw models --all'), 'guide 含现查兜底指引');
+  // F12：现查兜底指引给完整可执行形态（node "<abs>/bin/zsw.js" models …）
+  assert.ok(guide.includes(`node "${ZSW_CLI}" models --all`), 'guide 含现查兜底指引（完整 CLI 形态）');
+});
+
+test('F12：指引文案的 CLI 均为完整可执行形态（node + zsw.js 绝对路径，无裸 zsw 短命令）', () => {
+  // agents/workflows 超预算触发截断兜底行（未截断时兜底行不注入）
+  const mkA = (n) => Array.from({ length: n }, (_, i) => agent(`a-${String(i).padStart(2, '0')}`));
+  const mkW = (n) => Array.from({ length: n }, (_, i) => workflow(`wf-${String(i).padStart(2, '0')}`));
+  const ctx = render({ agents: mkA(16), workflows: mkW(11) });
+  assert.ok(ctx.includes(`完整清单：node "${ZSW_CLI}" agents`), 'agents 截断兜底完整形态');
+  assert.ok(ctx.includes(`完整清单：node "${ZSW_CLI}" workflow --action scripts`), 'workflows 截断兜底完整形态');
+  assert.ok(ctx.includes(`node "${ZSW_CLI}" start`), 'subagents guide 派发命令完整形态');
+  assert.ok(ctx.includes(`node "${ZSW_CLI}" workflow --workflow`), 'workflows guide 运行命令完整形态');
+  assert.ok(!/\bzsw (agents|models|workflow|start)\b/.test(ctx), '不得残留裸 zsw 短命令（marketplace/inline 形态下不在 PATH）');
+});
+
+test('F8-zsw：workflows guide 声明脚本头 usage 为 pi 宿主语法、zsw CLI 用直参 flag', () => {
+  const ctx = render();
+  assert.ok(ctx.includes('`workflow run <name> --args k=v` form in the script header usage is pi-host syntax'),
+    'pi 侧 --args 语法声明在场');
+  assert.ok(ctx.includes('the zsw CLI takes direct flags instead (e.g. --task/--workdir plus per-workflow flags)'),
+    'zsw CLI 直参 flag 指引在场');
 });
 
 // ---------------------------------------------------------------------------
@@ -230,23 +256,23 @@ test('预算边界（subagents）：恰 15 条不截（无兜底行）；16 条�
   const mk = (n) => Array.from({ length: n }, (_, i) => agent(`a-${String(i).padStart(2, '0')}`));
   const exact = render({ agents: mk(15) });
   assert.equal(agentNames(exact).length, 15, '恰预算：全量保留');
-  assert.ok(!exact.includes('完整清单：zsw agents'), '未截断不得出现兜底行');
+  assert.ok(!exact.includes(`完整清单：node "${ZSW_CLI}" agents`), '未截断不得出现兜底行');
 
   const over = render({ agents: mk(16) });
   const names = agentNames(over);
   assert.equal(names.length, 15, '16 条 → 保留 15');
   assert.ok(names.includes('a-14') && !names.includes('a-15'), '码点序尾部条目被裁');
-  assert.ok(over.includes('完整清单：zsw agents'), '截断态兜底指引在场');
+  assert.ok(over.includes(`完整清单：node "${ZSW_CLI}" agents`), '截断态兜底指引在场');
 });
 
-test('预算边界（workflows）：恰 10 条不截；11 条截尾 + 「完整清单：zsw workflow --action scripts」兜底', () => {
+test('预算边界（workflows）：恰 10 条不截；11 条截尾 + 「完整清单：node …/zsw.js workflow --action scripts」兜底', () => {
   const mk = (n) => Array.from({ length: n }, (_, i) => workflow(`wf-${String(i).padStart(2, '0')}`));
-  assert.ok(!render({ workflows: mk(10) }).includes('完整清单：zsw workflow --action scripts'), '恰预算不截');
+  assert.ok(!render({ workflows: mk(10) }).includes(`完整清单：node "${ZSW_CLI}" workflow --action scripts`), '恰预算不截');
   const over = render({ workflows: mk(11) });
   const names = [...over.matchAll(/<workflow><name>([^<]+)<\/name>/g)].map((m) => m[1]);
   assert.equal(names.length, 10, '11 条 → 保留 10');
   assert.ok(names.includes('wf-09') && !names.includes('wf-10'), '尾部裁');
-  assert.ok(over.includes('完整清单：zsw workflow --action scripts'), '兜底指引在场');
+  assert.ok(over.includes(`完整清单：node "${ZSW_CLI}" workflow --action scripts`), '兜底指引在场');
 });
 
 test('20+ agents：subagents 段码点序截尾（非 locale 序）+ 兜底指引；workflows/models 段不受影响完整在场', () => {
@@ -264,7 +290,7 @@ test('20+ agents：subagents 段码点序截尾（非 locale 序）+ 兜底指�
   // 码点序断言：A-agent 与 Z-agent 均小于一切 m-*/a-/b- 小写名，必在保留集且排最前
   assert.deepEqual(names.slice(0, 2), ['A-agent', 'Z-agent'], '码点序（大写排前），非 locale 序（locale 常将大小写混排）');
   assert.ok([...names].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0)).every((n, i) => n === names[i]), '保留集整体码点有序');
-  assert.ok(ctx.includes('完整清单：zsw agents'), 'subagents 兜底指引在场');
+  assert.ok(ctx.includes(`完整清单：node "${ZSW_CLI}" agents`), 'subagents 兜底指引在场');
 
   // workflows 段不受 agents 超预算影响：4 条全在、无截断行
   const wfNames = [...ctx.matchAll(/<workflow><name>([^<]+)<\/name>/g)].map((m) => m[1]);
@@ -281,7 +307,7 @@ test('models 段完整永不截：30+ 模型全量渲染（无预算参数），
   const v2 = { provider: { [PROVIDER_ID]: { models } } };
   const ctx = render({ v2, agents: Array.from({ length: 30 }, (_, i) => agent(`x-${i}`)) });
   assert.equal([...ctx.matchAll(/<id>[^/]*\/model-\d+<\/id>/g)].length, 30, '30 模型一个不少');
-  assert.ok(ctx.includes('完整清单：zsw agents'), 'subagents 照常截断（分段预算互不影响）');
+  assert.ok(ctx.includes(`完整清单：node "${ZSW_CLI}" agents`), 'subagents 照常截断（分段预算互不影响）');
 });
 
 test('内置条目无截断豁免（D-3 红线）：内置名码点序排尾部时照常被裁（不做两段式保留）', () => {
@@ -294,7 +320,7 @@ test('内置条目无截断豁免（D-3 红线）：内置名码点序排尾部�
   const names = agentNames(ctx);
   assert.equal(names.length, 15, '统一截尾到预算');
   assert.ok(!names.includes('reviewer'), '内置 reviewer 无豁免：码点序尾部照裁');
-  assert.ok(ctx.includes('完整清单：zsw agents'), '兜底指引可恢复');
+  assert.ok(ctx.includes(`完整清单：node "${ZSW_CLI}" agents`), '兜底指引可恢复');
 });
 
 // ---------------------------------------------------------------------------

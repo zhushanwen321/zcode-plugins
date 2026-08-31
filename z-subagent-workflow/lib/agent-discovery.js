@@ -55,6 +55,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { zswCliPath } = require('./config');
 const coreRef = require('./core-ref');
 
 /** agent 参数缺省角色名（D-4 缺省语义统一：两侧同走 general-purpose 内置角色）。 */
@@ -242,11 +243,12 @@ async function resolveDefaultAgent(cwd, opts = {}) {
  * 非法 agent 引用报错（与 core agent-registry `loadByPath(ref, true)` 的
  * Invalid agent ref 文案同源——主句逐字一致，括号内恢复指引按 zsw 双出口
  * 适配：注入段 location（W7 起注入块为 <available_subagents> 三段 XML 形态，
- * 条目带 <location>）或 zsw agents 查路径清单）。
+ * 条目带 <location>）或 zsw agents 查路径清单；查询命令给完整可执行形态
+ * （F12：marketplace/inline 形态下裸 `zsw` 不在 PATH，路径单源 config.zswCliPath）。
  */
 function invalidAgentRefMessage(ref) {
   return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`
-    + ' (use <location> from <available_subagents>, or run "zsw agents" to list paths).';
+    + ` (use <location> from <available_subagents>, or run node "${zswCliPath()}" agents to list paths).`;
 }
 
 /**
@@ -255,7 +257,7 @@ function invalidAgentRefMessage(ref) {
  */
 function agentFileNotFoundMessage(filePath) {
   return `Agent file not found or unreadable: ${filePath}.`
-    + ' Use an absolute path from <available_subagents> <location>, or run "zsw agents" to list paths.';
+    + ` Use an absolute path from <available_subagents> <location>, or run node "${zswCliPath()}" agents to list paths.`;
 }
 
 /**

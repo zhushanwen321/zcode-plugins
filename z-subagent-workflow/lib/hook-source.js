@@ -12,8 +12,9 @@
  *
  * 三条硬约束（继承 bin/zsw.js runHookCommand 语义，设计 D4/D5，
  * docs/design/zsw-session-start-injection-design.md）：
- *   1. 嵌套守卫最前：ZSW_NESTED=1 → stdout {} + 返回（exit 0 语义）。不
- *      process.exit——由入口自然退出，防 stdout 未 flush。
+ *   1. 嵌套守卫最前：ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1（core 引擎嵌套
+ *      标记，F03 双标记判定；谓词权威源 config.isNestedEnv）→ stdout {} +
+ *      返回（exit 0 语义）。不 process.exit——由入口自然退出，防 stdout 未 flush。
  *   2. stdout 是协议通道：严格单行 JSON（hookSpecificOutput）；人读诊断走
  *      stderr（与 MCP server 的 stdout 纪律同构）。
  *   3. 数据读取/渲染任一异常 → stdout {} + stderr 一行 [zsw:hook] 诊断
@@ -38,7 +39,8 @@ function countUsableProviders(v2) {
  * hook 选项与 IO 通道解析（全部副作用注入点，缺省回落 process.*）。
  *
  * @param {object} [opts]
- *   - env {object}      环境变量（缺省 process.env；读 ZSW_NESTED / ZCODE_PROJECT_DIR）
+ *   - env {object}      环境变量（缺省 process.env；读 ZSW_NESTED /
+ *                       XYZ_AGENT_SUBAGENT / ZCODE_PROJECT_DIR）
  *   - cwd {string}      projectDir 的回退基准（缺省 process.cwd()）
  *   - stdout {{write}}  协议输出通道（缺省 process.stdout）
  *   - stderr {{write}}  诊断输出通道（缺省 process.stderr）
@@ -104,6 +106,12 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // 体——旧 name-only 的零执行纪律不变）；unavailable 条目（meta 校验失败
   // 占位）不进注入段（对齐 pi 侧 discoverAllWorkflows 过滤）。
   const core = coreRef.requireCore();
+  // F02：hook 路径必须同样走进程级 configureCore——CLI/daemon 入口经
+  // createOrchestrationHost 时才 configure，本路径直接 createRegistry 会跳过
+  // 它，discoveryRoots（~/.zsw/workflows 借 user-pi 槽）不注入 → core 发现面
+  // 静默降级，注入段清单与 CLI/daemon 口径漂移。幂等（进程级 flag），已配置
+  // 时零开销；在 try 内，失败随整体降级 {}
+  orchestrationHost.ensureConfigured();
   const registry = orchestrationHost.createRegistry(core);
   const workflows = [];
   for (const name of orchestrationHost.BUILTIN_WORKFLOW_NAMES) {
@@ -157,8 +165,12 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
 async function runSessionStartHook(opts) {
   const { env, cwd, out, err, now, startMs } = resolveHookIO(opts);
 
-  // 嵌套守卫最前（守卫优先于一切 IO；嵌套下任何 hook 调用零开销退出）
-  if (env.ZSW_NESTED === '1') {
+  // 嵌套守卫最前（守卫优先于一切 IO；嵌套下任何 hook 调用零开销退出）。
+  // F03 双标记：core 引擎 spawn 的 zcode 子进程带 XYZ_AGENT_SUBAGENT=1 且被剥
+  // 离 ZSW_NESTED（nesting-guard），只查 ZSW_NESTED 会漏掉嵌套派发会话。谓词
+  // 权威源 = config.isNestedEnv——此处刻意内联同款表达式而非 require：守卫先于
+  // 一切 require（D5 零失败面，config 损坏时守卫仍能输出 {}），不引入新失败模式
+  if (env.ZSW_NESTED === '1' || env.XYZ_AGENT_SUBAGENT === '1') {
     out.write('{}\n');
     return;
   }

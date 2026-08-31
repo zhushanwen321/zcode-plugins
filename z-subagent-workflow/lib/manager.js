@@ -795,14 +795,15 @@ class SubagentManager {
     if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
       throw new Error(
         `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
-        + '恢复指引：wf- 前缀的 runId 请用 CLI `zsw workflow --action abort|status --id <runId>`'
+        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\``
         + '（管理面默认经 daemon，--local 本地）。'
       );
     }
     return rec;
   }
 
-  /** 嵌套深度（D11）：本 server 若运行在 ZSW_NESTED=1 环境，子任务算 depth 1。 */
+  /** 嵌套深度（D11）：本 server 若运行在嵌套环境（ZSW_NESTED=1 或
+   *  XYZ_AGENT_SUBAGENT=1，config.isNestedEnv 判定），子任务算 depth 1。 */
   _depth() {
     return config.NESTED ? 1 : 0;
   }

@@ -45,11 +45,11 @@ const path = require('node:path');
 
 /**
  * zsw CLI 可执行路径（给主 agent 照抄执行，必须绝对可定位——主 agent cwd 是
- * 项目目录，裸 `node bin/zsw.js` 会 ENOENT）：优先插件根 env，回退模块相对
- * （npm 包/inline/marketplace 副本三形态下 lib 的上级都是插件根，路径一致）。
+ * 项目目录，裸 `node bin/zsw.js` 会 ENOENT）：解析规则（插件根 env 优先、回退
+ * 模块相对）单源 lib/config zswCliPath（F12 收敛，原就地 path.join 表达式退役）。
  */
-const ZSW_CLI = path.join(process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..'), 'bin', 'zsw.js');
-const { mailboxRoot, outputsDir } = require('./config');
+const { mailboxRoot, outputsDir, zswCliPath } = require('./config');
+const ZSW_CLI = zswCliPath();
 
 /** 引擎同款会话 id 校验（zcode.cjs zti）：drain 侧 sessionDir 对目录名强制此格式 */
 const SESSION_ID_RE = /^sess_[A-Za-z0-9._-]+$/;

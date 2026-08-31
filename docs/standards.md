@@ -30,10 +30,14 @@
   `vendorManifest`），禁止消费方自行拼路径。
 - **升级路径**：升 registry 版本 = 换 `--npm <version>` 重跑；core 本地开发验证 = `--local`
   指向 core checkout（源存在 `dist.bundle/index.cjs` 时优先拷 bundle，统一落位 vendored
-  `dist/`，为 0.3.0 自包含 bundle 预留）。当前 0.2.0 主入口依赖 ajv/yaml/proper-lockfile，
-  `capabilities.selfContainedIndex` 如实记录为 false——`requireCore()` 对该形态只提供
-  「指向 0.3.0 bundle + `--local` 刷新命令」的可操作报错；workflow 资产（`workflows/*.js|.cjs`，
-  零依赖自包含）不受影响，`workflowAssetPath` 直接可用。
+  `dist/`）。vendored 主入口为**自包含形态**（`dist.bundle` 优先落位 vendored `dist/`，
+  `capabilities.selfContainedIndex=true`，无 ajv/yaml/proper-lockfile 外部依赖），
+  `requireCore()` 直接可用；workflow 资产（`workflows/*.js|.cjs`，零依赖自包含）不受
+  形态影响，`workflowAssetPath` 直接可用。**版本口径统一 0.4.0**：当前 vendored 基线为
+  本地构建的 0.3.0（npm 上 0.2.0 已被同号不同物占用、0.3.0 永不单独发布——2026-08-30
+  用户裁决），核心包正式发布落点 **0.4.0**（minor changeset = 本地基线 0.3.0 + minor
+  bump）；core 发版后 `--npm 0.4.0` 即可用 registry 源刷新，当前刷新统一走 `--local`
+  （与 `lib/core-ref.js` 刷新指引同口径）。
 - **与 check-sync 的关系**：check-sync 规则 4（零依赖红线，查插件 package.json 的依赖声明）
   不受本节影响——vendored 副本是构建期产物不是依赖声明；vendored `package.json` 已精简为
   name/version，不会被误读为引入依赖。

@@ -41,6 +41,7 @@ const { BUILTIN_WORKFLOW_NAMES } = require('../lib/orchestration-host');
 const { PROVIDER_ID } = require('../lib/model-router');
 
 fs.mkdirSync(path.join(HOME, '.zcode'), { recursive: true }); // 存在但暂无 v2/cli config
+fs.mkdirSync(path.join(HOME, '.zsw', 'workflows'), { recursive: true }); // F02：HOME 用户级 workflow 根
 fs.mkdirSync(path.join(PROJECT, '.zcode', 'agents'), { recursive: true });
 fs.mkdirSync(path.join(PROJECT, '.zsw', 'workflows'), { recursive: true });
 
@@ -56,6 +57,17 @@ fs.writeFileSync(
 fs.writeFileSync(
   path.join(PROJECT, '.zsw', 'workflows', 'probe-script.js'),
   `/* @pi-meta\nname: probe-script\ndescription: x\nphases: [run]\n*/\n`
+  + `const fs = require('node:fs');\n`
+  + `fs.writeFileSync(${JSON.stringify(MARKER)}, 'executed');\n`
+  + `await agent({ prompt: 'x' });\n`,
+);
+
+// F02：HOME 用户级根（~/.zsw/workflows）脚本 fixture——该根经 ensureConfigured
+// 的 discoveryRoots（user-pi 槽）注入 core 发现面；hook 路径漏掉 ensureConfigured
+// 时此条目缺席（回归锚）。顶层 marker 副本探针：零执行纪律对 core 发现面同样成立
+fs.writeFileSync(
+  path.join(HOME, '.zsw', 'workflows', 'home-script.js'),
+  `/* @pi-meta\nname: home-script\ndescription: home user workflow\nphases: [run]\n*/\n`
   + `const fs = require('node:fs');\n`
   + `fs.writeFileSync(${JSON.stringify(MARKER)}, 'executed');\n`
   + `await agent({ prompt: 'x' });\n`,
@@ -87,6 +99,21 @@ test('ZSW_NESTED=1 → stdout 单行 {} 且零诊断（守卫最前，零 IO 退
   assert.equal(r.out, '{}\n');
   assert.equal(r.err, '', '嵌套守卫零开销：不得产生任何 stderr 诊断');
   assert.ok(!fs.existsSync(MARKER), '嵌套路径同样不触发脚本顶层代码');
+});
+
+test('XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）→ 同款 {} 守卫（F03 双标记判定）', async () => {
+  // core 引擎 spawn 的 zcode 子进程统一注入 XYZ_AGENT_SUBAGENT=1 并剥离
+  // ZSW_NESTED（nesting-guard）——只查 ZSW_NESTED 时本用例会漏成正常路径
+  const r = await runHook({ env: { XYZ_AGENT_SUBAGENT: '1' } });
+  assert.equal(r.out, '{}\n');
+  assert.equal(r.err, '', '嵌套守卫零开销：不得产生任何 stderr 诊断');
+});
+
+test('两标记均无 → 不触发守卫（空 env 走到装配面，v2 缺失出诊断而非空守卫）', async () => {
+  // 「过守卫」的行为锚：env 纯对象无任一标记 → 进入装配（此处 v2 未就绪，
+  // 降级诊断即装配面证据——若误触发守卫则 stderr 为空）
+  const r = await runHook({ env: {} });
+  assert.match(r.err, /^\[zsw:hook\] .+\n$/, '无标记不得被守卫拦截（应走到装配降级诊断）');
 });
 
 // ------------------------------- v2 config 缺失降级（此时 fixture 尚无 v2 config）
@@ -172,6 +199,13 @@ test('正常路径 → 严格单行协议 JSON：三段 XML 在场（vendored lo
     ctx.includes(`<location>${path.join(PROJECT, '.zsw', 'workflows', 'probe-script.js')}</location>`),
     '自定义脚本 location = 其绝对路径',
   );
+  // F02 回归锚：HOME 用户级根（~/.zsw/workflows）脚本进注入段——hook 路径漏调
+  // orchestrationHost.ensureConfigured 时 discoveryRoots 不注入，此条目缺席
+  assert.ok(ctx.includes('<name>home-script</name>'), 'home-script 条目在场');
+  assert.ok(
+    ctx.includes(`<location>${path.join(HOME, '.zsw', 'workflows', 'home-script.js')}</location>`),
+    'HOME 用户级 ~/.zsw/workflows 脚本经 core 发现面（discoveryRoots）进注入段',
+  );
 
   // models 段：v2 真实形态字段（id 全名 / caps / contextWindow）+ guide 默认句
   assert.ok(ctx.includes(`<id>${PROVIDER_ID}/GLM-5.3</id>`), 'id 全名形态');
@@ -186,10 +220,10 @@ test('正常路径 → 严格单行协议 JSON：三段 XML 在场（vendored lo
   assert.ok(!fs.existsSync(MARKER), '脚本顶层代码未执行（组装只读文件解析 @pi-meta）');
   // 成功可观测性诊断：单行 [zsw:hook]，计数与 fixture 一致（W6a 起 core
   // 发现面含 vendored 内置 10 角色：agents = 10 内置 + 1 项目级 fixture；
-  // W7 起 workflows = 内置 5 + probe-script 1）
+  // W7 起 workflows = 内置 5 + probe-script 1；F02 起 + home-script 1）
   assert.match(
     r.err,
-    /^\[zsw:hook\] projectDir=.+ source=cwd providers=2 agents=11 workflows=6 elapsed=\d+ms\n$/,
+    /^\[zsw:hook\] projectDir=.+ source=cwd providers=2 agents=11 workflows=7 elapsed=\d+ms\n$/,
   );
 });
 

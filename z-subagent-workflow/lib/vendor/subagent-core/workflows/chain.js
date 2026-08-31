@@ -4,7 +4,8 @@
 // 适用于需要"先分析、再变换、最后综合"的多阶段任务。
 //
 // 用法：
-//   workflow run chain --args task="把这段需求文档拆成技术任务：..."
+//   workflow run chain --args task="把这段需求文档拆成技术任务：..."（pi 宿主语法）
+//   zsw workflow --workflow chain --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 //
 // ⚠️ lintScript 约束（本脚本已遵守）：
 //   - 含 agent() 入口
@@ -25,7 +26,8 @@ usage: |
   ## 使用说明
   - 顺序三步链：analyze（提取要点）→ transform（产出方案）→ synthesize（合成结论）
   - agents：逗号分隔的 agent .md 绝对路径，按顺序对应三步（少于 3 个尾部用默认执行者）
-  - 示例：workflow run chain --args task="<任务描述>" agents="/path/analyzer.md,/path/planner.md"
+  - 示例（pi 宿主语法）：workflow run chain --args task="<任务描述>" agents="/path/analyzer.md,/path/planner.md"
+  - 示例（zsw 宿主直参语法）：zsw workflow --workflow chain --task "<任务描述>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 */
 
 // ── 入参（$ARGS）──────────────────────────────────────────────────

@@ -17,6 +17,9 @@
  *   ZCODE_MESSAGE_ENABLED   引擎 mailbox 开关（"1"/"true" 开）——未启用时通知降级 polling
  *   ZCODE_MAILBOX_ROOT      mailbox 根覆盖（默认 ~/.zcode/mailbox）
  *   ZSW_NESTED=1           防递归标记（D10）：本进程若在嵌套环境直接拒绝服务
+ *   XYZ_AGENT_SUBAGENT=1   core 引擎嵌套标记（同 D10 判定）：core 引擎 spawn 的
+ *                          zcode 子进程统一注入此标记并剥离 ZSW_NESTED
+ *                          （nesting-guard），嵌套会话内再起的 zsw 进程只看得到它
  *   ZSW_MAX_CONCURRENT     并发槽位上限覆盖（正整数；非法值忽略并警告，缺省 3）
  */
 
@@ -48,6 +51,29 @@ function mailboxEnabled() {
 }
 
 /**
+ * 嵌套环境判定（D10 防递归的单一谓词，F03 双标记）：zsw 自有通道沿用
+ * ZSW_NESTED=1（hook/daemon spawn 显式注入）；core 引擎 spawn 的 zcode 子进程
+ * 则统一注入 XYZ_AGENT_SUBAGENT=1 并剥离 ZSW_NESTED（vendored core
+ * nesting-guard）——嵌套派发的 zcode 会话里再起的 zsw 进程只能看到后者，只查
+ * ZSW_NESTED 会让第二重门禁失效。两标记任一命中即嵌套。
+ * @param {object} [env] 注入式测试用 env（缺省 process.env）
+ */
+function isNestedEnv(env) {
+  const e = env || process.env;
+  return e.ZSW_NESTED === '1' || e.XYZ_AGENT_SUBAGENT === '1';
+}
+
+/**
+ * zsw CLI 可执行绝对路径（agent 面文案的唯一权威源：注入段指引/报错恢复指引
+ * 必须给「照抄即可执行」的完整形态——主 agent cwd 是项目目录，裸 `zsw` 短命令
+ * 与相对 `bin/zsw.js` 都会 ENOENT）。优先插件根 env（marketplace 副本形态），
+ * 回退模块相对（lib 的上级 = 插件根，inline/npm/marketplace 三形态一致）。
+ */
+function zswCliPath() {
+  return path.join(process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..'), 'bin', 'zsw.js');
+}
+
+/**
  * ZSW_MAX_CONCURRENT 解析（MF5）：覆盖并发槽位上限（DEFAULTS.maxConcurrent
  * 的唯一消费点是 assemble 的 createSlots）。正整数生效；非法值忽略并
  * stderr 警告一次，回落缺省 3。模块加载期求值——require 缓存保证每进程
@@ -72,7 +98,7 @@ const DEFAULTS = {
   // zsw 侧不再持有同名配置；会话空闲回收归引擎（D7 注记同旧）
 };
 
-const NESTED = process.env.ZSW_NESTED === '1';
+const NESTED = isNestedEnv();
 
 module.exports = {
   V2_CONFIG_PATH,
@@ -83,6 +109,8 @@ module.exports = {
   logsDir,
   mailboxRoot,
   mailboxEnabled,
+  isNestedEnv,
+  zswCliPath,
   DEFAULTS,
   NESTED,
   path, os,

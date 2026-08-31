@@ -190,7 +190,7 @@ test('opts.agent → resolver.resolve（prompt 拼角色段）；非法引用/�
   await assert.rejects(
     adapter.run({ prompt: 'p', agent: 'nope' }, undefined),
     (e) => e.message.startsWith('Invalid agent ref: nope. Agent refs must be absolute paths to .md files')
-      && e.message.includes('zsw agents'),
+      && e.message.includes(`node "${process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js')}" agents`),
   );
   // 路径合法但不可读：Agent file not found 同款
   await assert.rejects(
