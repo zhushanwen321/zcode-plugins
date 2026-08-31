@@ -89,8 +89,8 @@ graph TD
 |------|------|------|----------|
 | V0a | blocked（G-user：并行清理批次未落库） | - | - |
 | V0b | blocked（G-user） | - | - |
-| V0c | blocked（G-user，随批齐走） | - | - |
-| V0d | blocked（G-user，随批齐走） | - | - |
+| V0c | in-progress | 1 | 408ea95 基线后主 agent 撰写 `docs/design/zsw-manager-convergence.md` |
+| V0d | in-progress | 1 | u-dev 后台执行中（test/fixtures/ 两件新增，零交集领地） |
 | V8g | blocked（G-core） | - | - |
 | V1a | blocked（G-core） | - | - |
 | V2p | blocked（V1a） | - | - |
@@ -112,3 +112,4 @@ graph TD
 
 **变更历史**
 - 2026-08-31：起草。分工裁决（用户原话）：「xyz的我单独处理了，已经在开发中。你直接开发本项目的即可。」——xyz 侧 U1-U12 用户领走，本计划只覆盖 zsw 侧消费改造；计划评审随起草同轮提交用户。
+- 2026-08-31：用户评审确认（切分/worktree/验收三项均确认）+ G-user 门裁决「先做无交集项 V0c/V0d」（并行清理批次持续增长中：检查期间 17→23→37 个 M 文件）。基线 commit 408ea95。
