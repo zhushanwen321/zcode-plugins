@@ -11,6 +11,8 @@
  *
  * 拷贝规则（目标 z-subagent-workflow/lib/vendor/subagent-core/，先清空再拷）：
  *   workflows/    全量 .js/.cjs（含子目录；README 等非资产文件不进 vendor）
+ *   agents/       全量 .md（core ≥0.4.0 内置 agent 模板；源无该目录则跳过且
+ *                 capabilities.agentsAssets=false——兼容旧版本 --npm 刷新）
  *   dist/         源有即拷；源存在 dist.bundle/index.cjs 时优先拷 dist.bundle/
  *                 （为 core 0.3.0 自包含 bundle 预留），统一落位 vendored dist/
  *   package.json  仅重写 name/version 两个字段（精简版，依赖声明绝不 vendor 进来）
@@ -38,6 +40,9 @@ const ROOT = path.resolve(__dirname, '..');
 const TARGET = path.join(ROOT, 'z-subagent-workflow', 'lib', 'vendor', 'subagent-core');
 const NPM_TIMEOUT_MS = 120000; // 网络命令必须带超时：卡死走 SIGTERM 兜底而非挂起
 const REQUIRED_ASSET = path.join('workflows', 'review-fix-loop-utils.cjs');
+// agents/ 的代表性资产（capabilities.agentsAssets 判定锚；general-purpose 是
+// zsw 缺省角色的依赖面，缺失即 vendored agent 模板集不可用）
+const REQUIRED_AGENT_ASSET = path.join('agents', 'general-purpose.md');
 // 主入口自包含判定：这些外部依赖出现在 require(...) 即非自包含（单双引号都算）
 const EXTERNAL_DEP_RE = /require\((["'])(ajv|yaml|proper-lockfile)\1\)/;
 
@@ -122,6 +127,13 @@ fs.mkdirSync(TARGET, { recursive: true });
 
 copyTree(path.join(srcRoot, 'workflows'), path.join(TARGET, 'workflows'), (name) => /\.(js|cjs)$/.test(name));
 
+// agents/（core ≥0.4.0）：源无该目录则跳过（capabilities.agentsAssets=false，
+// 兼容旧版本 --npm 刷新路径）；源有该目录但缺代表性资产 = 资产集异常，自检拦截
+const srcAgentsDir = path.join(srcRoot, 'agents');
+if (fs.existsSync(srcAgentsDir)) {
+  copyTree(srcAgentsDir, path.join(TARGET, 'agents'), (name) => name.endsWith('.md'));
+}
+
 // dist 源选择：dist.bundle/index.cjs 存在则优先（0.3.0 自包含 bundle 预留），
 // 拷入 vendored dist/ —— lib/core-ref.js 的入口路径跨 core 版本稳定
 const distIsBundle = fs.existsSync(path.join(srcRoot, 'dist.bundle', 'index.cjs'));
@@ -145,6 +157,9 @@ for (const rel of listFiles(TARGET)) {
 const vendoredPkg = JSON.parse(fs.readFileSync(path.join(TARGET, 'package.json'), 'utf8'));
 if (vendoredPkg.name !== srcPkg.name || vendoredPkg.version !== srcPkg.version) problems.push('package.json: name/version 与源不符');
 if (!fs.existsSync(path.join(TARGET, REQUIRED_ASSET))) problems.push(`必需资产缺失: ${REQUIRED_ASSET}（core workflows 资产集变化？）`);
+if (fs.existsSync(srcAgentsDir) && !fs.existsSync(path.join(TARGET, REQUIRED_AGENT_ASSET))) {
+  problems.push(`必需资产缺失: ${REQUIRED_AGENT_ASSET}（core agents 模板集变化？）`);
+}
 if (problems.length > 0) {
   for (const p of problems) console.error(`  - ${p}`);
   die(`完整性自检失败 ${problems.length} 处`);
@@ -156,7 +171,11 @@ const selfContainedIndex = !!indexPath && !EXTERNAL_DEP_RE.test(fs.readFileSync(
 const manifest = {
   source,
   fetchedAt: new Date().toISOString(),
-  capabilities: { workflowsAssets: fs.existsSync(path.join(TARGET, REQUIRED_ASSET)), selfContainedIndex },
+  capabilities: {
+    workflowsAssets: fs.existsSync(path.join(TARGET, REQUIRED_ASSET)),
+    agentsAssets: fs.existsSync(path.join(TARGET, REQUIRED_AGENT_ASSET)),
+    selfContainedIndex,
+  },
   files: listFiles(TARGET).map((rel) => ({ path: rel, sha256: sha256(path.join(TARGET, rel)) })),
 };
 fs.writeFileSync(path.join(TARGET, 'VENDOR-MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);

@@ -1,9 +1,11 @@
 'use strict';
 /**
- * 域层单测：agent-md-resolver / prompt-builder / record-store / output-store。
+ * 域层单测：prompt-builder / record-store / output-store。
+ * （agent 发现与 frontmatter 解析的测试自本文件迁出——W6a 切 core 发现面后
+ * 落 test/agent-discovery.test.js；旧自写 resolver 已退役。）
  *
  * 隔离原则：所有落盘走临时目录（mkdtemp），record/output 经 ZSW_ROOT 指向
- * 临时目录，resolver 经 homeDir 注入临时 HOME——绝不触碰真实 ~/.zcode。
+ * 临时目录——绝不触碰真实 ~/.zcode。
  */
 
 const { test } = require('node:test');
@@ -12,7 +14,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { AgentMdResolver, parseAgentMd } = require('../lib/agent-md-resolver');
 const { buildPrompt } = require('../lib/prompt-builder');
 const { RecordStore } = require('../lib/record-store');
 const outputStore = require('../lib/output-store');
@@ -30,190 +31,9 @@ function setupRoot(t) {
   return root;
 }
 
-/** 在 rootDir 下写一个 agent .md（自动建父目录）。 */
-function mkAgent(rootDir, rel, content) {
-  const file = path.join(rootDir, rel);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
-  return file;
-}
-
 // ---------------------------------------------------------------------------
-// agent-md-resolver
+// agent 发现 + frontmatter 解析：见 test/agent-discovery.test.js（W6a 迁移）
 // ---------------------------------------------------------------------------
-
-test('resolver: 四根优先级 ws/.agents > ws/.zcode > ~/.agents > ~/.zcode', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const ws = path.join(tmp, 'ws');
-  const home = path.join(tmp, 'home');
-  const roots = [
-    path.join(ws, '.agents', 'agents'),
-    path.join(ws, '.zcode', 'agents'),
-    path.join(home, '.agents', 'agents'),
-    path.join(home, '.zcode', 'agents'),
-  ];
-  roots.forEach((r, i) => {
-    mkAgent(r, 'reviewer.md',
-      `---\nname: reviewer\ndescription: from root ${i}\n---\n\nbody-root-${i}\n`);
-  });
-  const resolver = new AgentMdResolver({ homeDir: home });
-
-  // 逐级删除高优先级文件，验证胜出顺序逐级下移
-  for (let i = 0; i < roots.length; i++) {
-    const p = resolver.resolve('reviewer', ws);
-    assert.ok(p, `第 ${i} 级应有 reviewer`);
-    assert.equal(p.description, `from root ${i}`);
-    assert.equal(p.filePath, path.join(roots[i], 'reviewer.md'));
-    assert.equal(p.body.trim(), `body-root-${i}`);
-    fs.rmSync(path.join(roots[i], 'reviewer.md'));
-  }
-  assert.equal(resolver.resolve('reviewer', ws), null, '四根删空应返回 null');
-});
-
-test('resolver: 文件级 symlink 指向根外文件可被发现（引擎扫描会跳过，本模块不能）', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'local.md', '---\nname: local\ndescription: d\n---\n\nlocal body\n');
-  const outside = mkAgent(path.join(tmp, 'lib'), 'impl/coder.md',
-    '---\nname: coder\ndescription: via symlink\n---\n\nsymlinked body\n');
-  fs.symlinkSync(outside, path.join(root, 'coder.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const names = resolver.list(path.join(tmp, 'ws')).map((p) => p.name);
-  assert.deepEqual(names.sort(), ['coder', 'local']);
-  const coder = resolver.resolve('coder', path.join(tmp, 'ws'));
-  assert.equal(coder.description, 'via symlink');
-  assert.equal(coder.body.trim(), 'symlinked body');
-});
-
-test('resolver: 目录级 symlink 递归展开且 realpath 去重不重复收集', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const wsRoot = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(wsRoot, 'own.md', '---\nname: own\ndescription: d\n---\n\nb\n');
-  const libImpl = path.join(tmp, 'lib', 'impl');
-  mkAgent(libImpl, 'deep.md', '---\nname: deep\ndescription: nested\n---\n\nb\n');
-  // 目录链接 + 同一文件的第二个链接（去重验证：deep 只出现一次）
-  fs.symlinkSync(libImpl, path.join(wsRoot, 'sub'));
-  fs.symlinkSync(path.join(libImpl, 'deep.md'), path.join(wsRoot, 'deep-alias.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const profiles = resolver.list(path.join(tmp, 'ws'));
-  const deepOnes = profiles.filter((p) => p.name === 'deep');
-  assert.equal(deepOnes.length, 1, '同一真实文件经多链接只收集一次');
-  assert.equal(profiles.filter((p) => p.name === 'own').length, 1);
-  // 目录链接内的文件可按名字解析
-  assert.equal(resolver.resolve('deep', path.join(tmp, 'ws')).description, 'nested');
-});
-
-test('resolver: symlink 环与 broken link 不挂起不报错', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'ok.md', '---\nname: ok\ndescription: d\n---\n\nb\n');
-  fs.symlinkSync(root, path.join(root, 'loop')); // 指向自身的目录环
-  fs.symlinkSync(path.join(tmp, 'no-such.md'), path.join(root, 'broken.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const names = resolver.list(path.join(tmp, 'ws')).map((p) => p.name);
-  assert.deepEqual(names, ['ok'], '环被剪枝、broken 被跳过、正常文件保留');
-});
-
-test('resolver: 递归子目录收集 + 无 frontmatter 文件按文件名命名', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'team/impl-helper.md', '# 只有正文\n\n没有 frontmatter\n');
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const p = resolver.resolve('impl-helper', path.join(tmp, 'ws'));
-  assert.equal(p.name, 'impl-helper');
-  assert.equal(p.description, '');
-  assert.ok(p.body.startsWith('# 只有正文'));
-});
-
-test('resolver: resolve 支持绝对路径 / 相对路径 / 名字带 .md 后缀 / 未命中返回 null', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const ws = path.join(tmp, 'ws');
-  const root = path.join(ws, '.agents', 'agents');
-  const file = mkAgent(root, 'reviewer.md', '---\nname: reviewer\ndescription: d\n---\n\nb\n');
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-
-  assert.equal(resolver.resolve(file, ws).filePath, file); // 绝对路径
-  assert.equal(resolver.resolve('./.agents/agents/reviewer.md', ws).name, 'reviewer'); // 相对路径
-  assert.equal(resolver.resolve('reviewer.md', ws).name, 'reviewer'); // 名字带 .md
-  assert.equal(resolver.resolve('not-exist', ws), null); // 未命中
-  assert.equal(resolver.resolve(path.join(ws, 'nope.md'), ws), null); // 路径不存在
-});
-
-test('frontmatter: 正常全字段（行数组 + 行内数组 + maxTurns 数值化）', () => {
-  const md = [
-    '---',
-    'name: reviewer',
-    'description: "代码审查员"',
-    'model: glm-5.3',
-    'tools:',
-    '  - read',
-    '  - bash',
-    'disallowedTools: [web-search, mcp]',
-    'skills:',
-    '  - /path/to/skill/SKILL.md',
-    'maxTurns: 25',
-    '---',
-    '',
-    '正文内容',
-  ].join('\n');
-  const p = parseAgentMd(md, '/x/reviewer.md');
-  assert.equal(p.name, 'reviewer');
-  assert.equal(p.description, '代码审查员'); // 引号被去除
-  assert.equal(p.model, 'glm-5.3');
-  assert.deepEqual(p.tools, ['read', 'bash']); // 行数组
-  assert.deepEqual(p.disallowedTools, ['web-search', 'mcp']); // 行内数组
-  assert.deepEqual(p.skills, ['/path/to/skill/SKILL.md']);
-  assert.equal(p.maxTurns, 25); // 数值化
-  assert.equal(p.body, '\n正文内容');
-  assert.equal(p.filePath, '/x/reviewer.md');
-});
-
-test('frontmatter: 缺 name 取文件名（去 .md）；maxTurns 字符串数值化', () => {
-  const p = parseAgentMd('---\ndescription: d\nmaxTurns: "8"\n---\n\nb', '/x/impl-helper.md');
-  assert.equal(p.name, 'impl-helper');
-  assert.equal(p.maxTurns, 8);
-  assert.equal(p.tools, undefined);
-  assert.equal(p.disallowedTools, undefined);
-  assert.equal(p.skills, undefined);
-});
-
-test('frontmatter: 无 frontmatter / 围栏未闭合 / maxTurns 非法值', () => {
-  const noFm = parseAgentMd('# hi\n\nbody', '/x/a.md');
-  assert.equal(noFm.name, 'a');
-  assert.equal(noFm.description, '');
-  assert.equal(noFm.body, '# hi\n\nbody');
-
-  // 未闭合围栏：整体当 body（宽容，不抛错）
-  const unclosed = parseAgentMd('---\nname: x\n没有闭合行', '/x/b.md');
-  assert.equal(unclosed.name, 'b');
-  assert.ok(unclosed.body.includes('name: x'));
-
-  const badTurns = parseAgentMd('---\nname: c\nmaxTurns: abc\n---\nb', '/x/c.md');
-  assert.equal(badTurns.maxTurns, undefined, '非法 maxTurns 丢弃');
-});
-
-test('frontmatter: when 字段（「何时用我」索引提示）可选透出', () => {
-  const withWhen = parseAgentMd(
-    '---\nname: reviewer\ndescription: d\nwhen: 代码审查、修复方案验证\n---\n\nb',
-    '/x/reviewer.md',
-  );
-  assert.equal(withWhen.when, '代码审查、修复方案验证');
-  // 缺 when 不造默认值（server 视图统一容忍为空串）
-  const noWhen = parseAgentMd('---\nname: a\ndescription: d\n---\n\nb', '/x/a.md');
-  assert.equal(noWhen.when, undefined);
-  // 非字符串（行数组形态）按消费契约丢弃，不抛错
-  const arrWhen = parseAgentMd('---\nname: b\nwhen:\n  - x\n---\nb', '/x/b.md');
-  assert.equal(arrWhen.when, undefined);
-});
 
 // ---------------------------------------------------------------------------
 // prompt-builder

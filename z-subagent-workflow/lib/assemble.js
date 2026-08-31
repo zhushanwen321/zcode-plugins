@@ -74,7 +74,7 @@ async function assembleManager(opts = {}) {
   const { SubagentManager } = require('./manager');
   const { createOrchestrationHost } = require('./orchestration-host');
   const { createWorktreeAdapter } = require('./worktree-adapter');
-  const resolver = require('./agent-md-resolver');
+  const resolver = require('./agent-discovery');
 
   // runnerKind 参数面保留（opts.runnerKind 显式注入仍接受——测试组装便捷），
   // 值维度已消失：唯一通道 = core zcode engine（capabilities().kind 恒 'spawn'）
@@ -91,7 +91,7 @@ async function assembleManager(opts = {}) {
     runner,
     modelRouter,
     notifier,
-    resolver: opts.resolver || resolver, // 模块对象自带 resolve(nameOrPath, cwd)，天然满足端口契约
+    resolver: opts.resolver || resolver, // 模块对象自带 resolve(nameOrPath, cwd)（async，core 发现面），天然满足端口契约
     records,
     outputs: outputsPort,
     slots: opts.slots || createSlots({ limit: config.DEFAULTS.maxConcurrent }),

@@ -85,7 +85,8 @@ function abortError() {
  * @param {object} opts.runner        zsw RunnerPort（assemble 组装，与 zsub 线共享同一实例）
  * @param {object} [opts.modelRouter] 模型清单器（2c 后执行链不再消费；参数保留
  *        兼容 orchestration-host 组装面）
- * @param {object} [opts.resolver]    agent .md 四根发现（lib/agent-md-resolver 类或模块）
+ * @param {object} [opts.resolver]    agent .md 发现（lib/agent-discovery 类或模块，
+ *        async resolve 契约——W6a 起 core discoverResources 接线）
  * @param {string} [opts.fallbackCwd] opts.cwd 缺省时的工作目录（= run 的 workdir）
  * @returns {{ run(opts: object, signal: AbortSignal) => Promise<object> }}
  */
@@ -114,15 +115,17 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
       if (signal && signal.aborted) throw abortError();
 
       // agent .md 解析（可选）：内置资产传入绝对路径，用户脚本可传名字。
-      // 找不到直接抛——比带着空角色跑完再发现用错 agent 便宜（manager.start 同款决策）
+      // resolve 是 async（W6a 起发现走 core discoverResources）；sync 注入的
+      // resolver 经 await 透明兼容。找不到直接抛——比带着空角色跑完再发现
+      // 用错 agent 便宜（manager.start 同款决策）
       let profile = null;
       if (opts.agent != null && opts.agent !== '') {
         const resolve = resolver
-          || require('./agent-md-resolver');
-        profile = resolve.resolve(opts.agent, cwdBase);
+          || require('./agent-discovery');
+        profile = await resolve.resolve(opts.agent, cwdBase);
         if (!profile) {
           throw new Error(
-            `workflow agent() 引用的 agent "${opts.agent}" 未找到（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根）。`
+            `workflow agent() 引用的 agent "${opts.agent}" 未找到（发现面：vendored 内置 + 项目 .agents/agents > .zcode/agents > HOME 同构两根）。`
             + '恢复指引：检查 agent .md 路径，或先经 zsw agents 查名。'
           );
         }

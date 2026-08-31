@@ -365,7 +365,8 @@ function runSummary(run, store) {
  * @param {object} opts
  * @param {object} opts.runner       zsw RunnerPort（assemble 组装注入；与 zsub 线共享）
  * @param {object} [opts.modelRouter] ModelRouter（缺省模块级 new）
- * @param {object} [opts.resolver]   agent .md 四根发现（缺省 lib/agent-md-resolver 模块）
+ * @param {object} [opts.resolver]   agent .md 发现（缺省 lib/agent-discovery 模块，
+ *                                   async resolve——W6a 起 core discoverResources）
  * @param {object} [opts.agentRunner] core AgentRunner（缺省经 adapter 从 runner 桥接；测试注入 fake）
  * @param {object} [opts.registry]   脚本 registry（缺省 createRegistry；测试注入 fake）
  * @param {object} [opts.store]      RunStore（缺省 FileRunStore；测试注入内存实现）
@@ -376,7 +377,7 @@ function createOrchestrationHost(opts = {}) {
   const core = coreRef.requireCore();
   const log = opts.log || ((msg) => process.stderr.write(`[zsw-wfhost] ${new Date().toISOString()} ${msg}\n`));
   const modelRouter = opts.modelRouter || new (require('./model-router'))();
-  const resolver = opts.resolver || require('./agent-md-resolver');
+  const resolver = opts.resolver || require('./agent-discovery');
   const registry = opts.registry || createRegistry(core);
   const store = opts.store || new core.FileRunStore();
   const workerHost = new core.WorkerHostImpl();

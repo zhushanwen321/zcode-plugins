@@ -132,13 +132,15 @@ class SubagentManager {
       );
     }
 
-    // ② agent 解析（可选）：找不到立刻报错比带着空角色跑完再发现用错 agent 便宜
+    // ② agent 解析（可选）：找不到立刻报错比带着空角色跑完再发现用错 agent 便宜。
+    // resolve 是 async（W6a 起发现走 core discoverResources）；sync 注入的测试
+    // fake resolver 经 await 透明兼容
     let profile = null;
     if (params.agent != null && params.agent !== '') {
-      profile = this.resolver.resolve(params.agent, ctx.cwd);
+      profile = await this.resolver.resolve(params.agent, ctx.cwd);
       if (!profile) {
         throw new Error(
-          `未找到 agent "${params.agent}"（四根发现：项目 .agents/agents > .zcode/agents，`
+          `未找到 agent "${params.agent}"（发现面：vendored 内置 + 项目 .agents/agents > .zcode/agents，`
           + '再到 HOME 下同名两根；支持名字或 ./ 相对路径 / 绝对路径）。'
           + '恢复指引：检查名字拼写，或改用 agent .md 的绝对路径。'
         );

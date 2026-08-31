@@ -10,11 +10,13 @@
  * 回接 2b：runSessionStartHook 已 async 化（core 发现面异步）——测试统一
  * await。脚本 fixture 改 core 契约（@pi-meta 块）仍验 name-only 语义。
  * HOME 隔离：本文件在任何 ../lib/* require 之前把 process.env.HOME 指到
- * fixture——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 与 agent-md-resolver
- * 的 defaultResolver homeDir 都在模块加载期经 os.homedir()（POSIX 读 $HOME）
- * 冻结。v2/cli config 的「缺失 → 齐备」两阶段靠 fixture 文件系统状态按测试
- * 顺序演进（node:test 顶层 test 默认串行；写文件的动作放在独立 setup test
- * 内——test 声明之间的顶层代码会先于全部 test 执行，不能用来做阶段 setup）。
+ * fixture——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 在模块加载期经
+ * os.homedir()（POSIX 读 $HOME）冻结；W6a 起 agent 清单走 core 发现面
+ * （agent-discovery 的 homeDir 基准与 core 硬编码 user-agents 槽都在调用期
+ * 现取 $HOME，同一 env 即同源）。v2/cli config 的「缺失 → 齐备」两阶段靠
+ * fixture 文件系统状态按测试顺序演进（node:test 顶层 test 默认串行；写文件
+ * 的动作放在独立 setup test 内——test 声明之间的顶层代码会先于全部 test
+ * 执行，不能用来做阶段 setup）。
  */
 
 const fs = require('node:fs');
@@ -133,10 +135,11 @@ test('正常路径 → 严格单行协议 JSON：agent/脚本/内置名在场，
   assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'cli config model.main → 默认标记链路生效');
   // name-only 发现的核心回归：脚本顶层代码不得被 hook 触发
   assert.ok(!fs.existsSync(MARKER), '脚本顶层代码未执行（listScriptNames 零 require）');
-  // 成功可观测性诊断：单行 [zsw:hook]，计数与 fixture 一致
+  // 成功可观测性诊断：单行 [zsw:hook]，计数与 fixture 一致（W6a 起 core
+  // 发现面含 vendored 内置 10 角色：agents = 10 内置 + 1 项目级 fixture）
   assert.match(
     r.err,
-    /^\[zsw:hook\] projectDir=.+ source=cwd providers=2 agents=1 scripts=1 elapsed=\d+ms\n$/,
+    /^\[zsw:hook\] projectDir=.+ source=cwd providers=2 agents=11 scripts=1 elapsed=\d+ms\n$/,
   );
 });
 

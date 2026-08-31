@@ -62,7 +62,6 @@
  * require.main === module 时启动，require 零副作用。
  */
 
-const os = require('node:os');
 const path = require('node:path');
 const config = require('../../lib/config');
 const { PROVIDER_ID } = require('../../lib/model-router');
@@ -102,7 +101,7 @@ function buildToolDefinition() {
       + '- message：向 idle 的 conversation 任务投递续聊消息（subagentId + text）。\n'
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
-      + '- agents：列出可用 agent .md（四根发现：项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
+      + '- agents：列出可用 agent .md（core 发现面：vendored 内置 10 角色 + 项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
       + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。all=true 出全 provider 视图（跨 provider 引用须全名 <provider>/<model>）。\n'
       + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
       + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
@@ -410,14 +409,16 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
           // 本 action——Z1 结论：MCP tool 常驻注入贵，按需查询零常驻成本。
           // resolver 取 manager.resolver（lib/assemble.js 组装进 manager 的
           // 公开端口字段，构造直存）：server 不再注入第二份，必然同一实例。
+          // W6a 起数据源 = core 发现面（lib/agent-discovery，async list——
+          // vendored 内置 10 角色 + 四根 + 目录 symlink 展开）。
           const resolver = manager.resolver;
           if (!resolver || typeof resolver.list !== 'function') {
             return errContent(
-              'agents 需要 resolver 端口（agent .md 四根发现），当前 manager 未注入。'
+              'agents 需要 resolver 端口（agent .md 发现），当前 manager 未注入。'
               + '恢复指引：其他 action 不受影响；agents 排障查 lib/assemble.js 的 resolver 组装。'
             );
           }
-          return okContent(agentListView(resolver, ctx.cwd));
+          return okContent(await agentListView(resolver, ctx.cwd));
         }
         case 'models': {
           // 模型清单按需查询（与 agents 同理：常驻注入贵，按需零成本）。
@@ -723,37 +724,37 @@ function requireRunId(args) {
 }
 
 /**
- * agents action 的来源标签推断：AgentProfile.filePath → 四根标签。
- * resolver.list（lib/agent-md-resolver.js）不带来源根信息，且 lib 默认
- * 形态是模块对象（读不到 homeDir/roots），source 只能按路径特征推断——
- * list 只扫四根，filePath 必落其一：cwd 前缀 → project-*，否则 HOME 前缀
- * → user-*（项目常开在 HOME 下，必须先判 cwd 才能区分项目根与用户根）；
- * 目录段 .zcode/agents → -zcode，否则 .agents/agents → -agents。
+ * agents action 的来源标签映射：core 发现面（lib/agent-discovery）在 profile
+ * 上带 core 槽位标签（profile.source），此处映射为 zsw 面向用户的来源根标签
+ * ——四根标签与旧版一致（project-zcode/project-agents/user-zcode/user-agents），
+ * 新增 vendored 内置（core-vendored）与 pi 生态透传源（project-pi/npm-dev/
+ * user-extension-paths，zsw 用户目录里通常缺席）。
  */
-function agentSourceOf(filePath, cwd, homeDir) {
-  const scope = filePath.startsWith(cwd + path.sep) ? 'project'
-    : filePath.startsWith(homeDir + path.sep) ? 'user'
-    : 'project'; // 两个前缀都不中：理论不可达（list 只扫四根），兜底不丢行
-  const kind = filePath.includes(`${path.sep}.zcode${path.sep}agents${path.sep}`) ? 'zcode' : 'agents';
-  return `${scope}-${kind}`;
+function agentSourceLabel(coreSource) {
+  switch (coreSource) {
+    case 'user-pi': return 'user-zcode';
+    case 'user-agents': return 'user-agents';
+    case 'npm': return 'core-vendored';
+    case 'project-host': return 'project-zcode';
+    case 'project-agents': return 'project-agents';
+    default: return coreSource; // project-pi / npm-dev / user-extension-paths 等透传
+  }
 }
 
 /**
  * agents action 的精简视图：只透出索引五字段——name / description（截
- * 200，索引不是正文）/ when（「何时用我」提示，截 200）/ source（四根
+ * 200，索引不是正文）/ when（「何时用我」提示，截 200）/ source（来源根
  * 标签）/ file（绝对路径，可直接作 start 的 agent 参数）。body/model/
  * tools 等 profile 字段不透出：索引的价值在省 token，正文按 file 路径
- * 按需读。
+ * 按需读。list 是 async（core 发现链），handler 侧 await。
  */
-function agentListView(resolver, cwd) {
-  // homeDir：注入实例（AgentMdResolver 类形态）带真实基准；模块对象形态
-  // 无此字段，回落 os.homedir()——与 lib 默认 resolver 的 homeDir 同源，无漂移
-  const homeDir = typeof resolver.homeDir === 'string' ? resolver.homeDir : os.homedir();
-  return resolver.list(cwd).map((p) => ({
+async function agentListView(resolver, cwd) {
+  const agents = await resolver.list(cwd);
+  return agents.map((p) => ({
     name: p.name,
     description: typeof p.description === 'string' ? p.description.slice(0, 200) : '',
     when: typeof p.when === 'string' ? p.when.slice(0, 200) : '',
-    source: agentSourceOf(p.filePath || '', cwd, homeDir),
+    source: agentSourceLabel(p.source || ''),
     file: p.filePath,
   }));
 }

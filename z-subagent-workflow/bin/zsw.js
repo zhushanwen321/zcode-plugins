@@ -83,7 +83,7 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
     + '  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）\n'
     + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
-    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
+    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 前查名）\n'
     + '  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）\n'
     + '  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
@@ -589,7 +589,8 @@ async function runDaemonCommand(cmd, args, rest) {
       params = { action: 'list' };
       break;
     case 'agents':
-      // 四根 agent .md 发现（start 前不确定 agent 名时先查，M1 起 CLI 唯一入口）
+      // agent .md 发现（W6a 起 core 发现面：vendored 内置 10 角色 + 四根，daemon
+      // 侧 handler 数据源 = lib/agent-discovery；start 前不确定 agent 名时先查）
       params = { action: 'agents' };
       break;
     case 'models':

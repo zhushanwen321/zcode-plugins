@@ -1,14 +1,55 @@
 {
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.2.0",
-  "fetchedAt": "2026-08-30T10:41:13.872Z",
+  "fetchedAt": "2026-08-31T01:33:51.654Z",
   "capabilities": {
     "workflowsAssets": true,
+    "agentsAssets": true,
     "selfContainedIndex": true
   },
   "files": [
     {
+      "path": "agents/analyst.md",
+      "sha256": "896f2acd7483523e8096afe1d55016e7124298971230773640f54fdc623bdab1"
+    },
+    {
+      "path": "agents/coder.md",
+      "sha256": "f7342caadb74d4458fe663ec3bb17aa259cdc5f4b956a10c28f35cc27e268b9b"
+    },
+    {
+      "path": "agents/debugger.md",
+      "sha256": "48127bffe1c507b60b2d6f754ec7ba7a405d76ca6758baca85e7fcaf38708eb9"
+    },
+    {
+      "path": "agents/doc-reviewer.md",
+      "sha256": "7198ff90921c21718a012a0990605a225faa7628b712b454863ee5a4cbfdb5ad"
+    },
+    {
+      "path": "agents/explorer.md",
+      "sha256": "47137e1b54815358af18b24e372e795c3ac75e3ba77699d5703bf4d70539e2b5"
+    },
+    {
+      "path": "agents/general-purpose.md",
+      "sha256": "d7c3fe41499a8be8ff2a49567566ad754f3716f777a34070634ede81ee2e9d99"
+    },
+    {
+      "path": "agents/orchestrator.md",
+      "sha256": "2edc2cfecb5d124bed25248f9a69c60aeed9bf74b970c38b7b41ce1cf2e80442"
+    },
+    {
+      "path": "agents/planner.md",
+      "sha256": "b5ce8133993f7cb07c4014bd3fd482d28fa0a32c2eeb1b555a5037351ed58409"
+    },
+    {
+      "path": "agents/researcher.md",
+      "sha256": "c6a62aa93af84414abb80a906952b74717e6f299dcda73a47b74ed3846ffedf5"
+    },
+    {
+      "path": "agents/reviewer.md",
+      "sha256": "dc2851ad77b686617e3705f61fb36e52287a189e8d6a822bbf3c9ee84eecaccc"
+    },
+    {
       "path": "dist/index.cjs",
-      "sha256": "527917ef49fe9e81880b8037a5b655a762dc93ce752ecd35e2faaa49529883a9"
+      "sha256": "d3a83dc047e3c2ac844c6d07bf0441160342bb58aa206b2fd4f6a7008aed0297"
     },
     {
       "path": "package.json",

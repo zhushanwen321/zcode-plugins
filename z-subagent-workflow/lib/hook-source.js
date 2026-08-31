@@ -7,7 +7,7 @@
  * exit 1 → 每会话启动 raise error（D5 降级承诺违规；2026-08 实测复现：删
  * lib/assemble.js → `node bin/zsw.js hook session-start` exit 1）。本模块
  * **顶层零 require**：hook 链路依赖（config/model-router/hook-inject/
- * agent-md-resolver/orchestration-host）全部在函数体内 require 且被整体 try
+ * agent-discovery/orchestration-host）全部在函数体内 require 且被整体 try
  * 包裹——任一模块缺失/损坏 → stdout {} 降级而非 crash，绝不阻断会话启动。
  *
  * 三条硬约束（继承 bin/zsw.js runHookCommand 语义，设计 D4/D5，
@@ -77,6 +77,8 @@ function resolveHookIO(opts) {
  * 回接 2b：workflow 名单改 core 发现面（异步 API，经
  * orchestration-host.listWorkflowNames——core discoverWorkflows + .zsw 手工根，
  * name-only 不执行脚本体）。core 侧 require/发现实测 <20ms，5s 预算无虞。
+ * W6a 起 agents 清单同走 core 发现面（lib/agent-discovery，async list——
+ * 含 vendored 内置 10 角色与四根目录 symlink 展开预处理）。
  *
  * @returns {Promise<{protocolLine, diagLine}>}
  *   - protocolLine：stdout 协议通道的严格单行 JSON（hookSpecificOutput）
@@ -89,7 +91,7 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   const { V2_CONFIG_PATH } = require('./config');
   const { defaultModelRef } = require('./model-router');
   const { renderResourcesBlock } = require('./hook-inject');
-  const { AgentMdResolver } = require('./agent-md-resolver');
+  const agentDiscovery = require('./agent-discovery');
   const { listWorkflowNames } = require('./orchestration-host');
 
   // projectDir 解析链与 bin/zsw.js workflow 子命令同源：ZCODE_PROJECT_DIR > cwd
@@ -101,7 +103,9 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // 内部回退链兜底（cli.main 可解析 → v2 顶层 model.main → 内置回退）
   const v2 = JSON.parse(fs.readFileSync(V2_CONFIG_PATH, 'utf8'));
 
-  const agents = new AgentMdResolver().list(projectDir);
+  // core 发现面（async）：vendored 内置 + 四根（含目录 symlink 展开），与
+  // zsub start / zsw agents 同一数据源（lib/agent-discovery）
+  const agents = await agentDiscovery.list(projectDir);
   // name-only 发现：不执行脚本体——listWorkflowNames 只 readdir/解析
   // @pi-meta（core 发现面），用户代码顶层副作用不在此路径触发
   const scripts = await listWorkflowNames(projectDir);

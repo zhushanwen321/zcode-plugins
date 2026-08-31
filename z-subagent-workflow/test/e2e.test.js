@@ -40,13 +40,17 @@ process.env.ZCODE_MESSAGE_ENABLED = '1';
 
 // env 隔离完成后才 require lib（config.js 模块加载期冻结 V2_CONFIG_PATH）
 const { assembleManager } = require('../lib/assemble');
-const { AgentMdResolver } = require('../lib/agent-md-resolver');
+const agentDiscovery = require('../lib/agent-discovery');
 const CoreRunner = require('../lib/runner-core');
 
 const MODEL = process.env.ZSW_E2E_MODEL || 'GLM-5.3'; // 真机模型可配置；换环境用 env 覆盖而非改代码
 // bootstrapIsolatedHome 需要 provider 全名；MODEL 允许短名或全名，统一在此推导
 const MODEL_REF = MODEL.includes('/') ? MODEL : `builtin:bigmodel-coding-plan/${MODEL}`;
-const USER_HOME = path.join(TMP, 'user-home'); // 隔离 user 级 agent 根（不读真实 HOME）
+// user 级 agent 根注入临时 HOME（W6a 起发现走 core：homeDir 覆盖 zsw 宿主
+// 推导的 user-pi/user-agents 根；core 硬编码 user-agents 本体槽读真实 HOME
+// ——e2e 为保真实凭据刻意不改 HOME，该槽的环境渗漏是 core 发现的固有属性，
+// 只读无副作用，仅真实 HOME 存在同 stem .md 时才可能干扰按名解析）
+const USER_HOME = path.join(TMP, 'user-home');
 // 限流实测（2026-08-23）：账户分钟级 RPM 窗口，连续调用必撞 429；CLI 内部长退避
 // 重试 ~2 分钟内可挤过。CALL_MS 给足内部重试窗口；GAP_MS 场景间错峰。
 const GAP_MS = Number(process.env.ZSW_E2E_GAP_MS || 20000);
@@ -116,7 +120,7 @@ function extractTextInline(readResult) {
 
 /** 组装 manager：user 级 agent 根注入临时 HOME（四根发现的 3/4 根指向空目录）。 */
 async function buildManager(opts = {}) {
-  return assembleManager({ resolver: new AgentMdResolver({ homeDir: USER_HOME }), ...opts }); // async：调用方需 await
+  return assembleManager({ resolver: agentDiscovery.createAgentDiscovery({ homeDir: USER_HOME }), ...opts }); // async：调用方需 await
 }
 
 /** 轮询等待：fn 返回真值即返回该值。 */
@@ -206,10 +210,10 @@ function writeE6ServerScript() {
   const script = path.join(TMP, 'e6-server.cjs');
   fs.writeFileSync(script, `'use strict';
 const { assembleManager } = require(${JSON.stringify(path.join(REPO, 'lib', 'assemble'))});
-const { AgentMdResolver } = require(${JSON.stringify(path.join(REPO, 'lib', 'agent-md-resolver'))});
+const agentDiscovery = require(${JSON.stringify(path.join(REPO, 'lib', 'agent-discovery'))});
 (async () => {
   const { manager } = await assembleManager({
-    resolver: new AgentMdResolver({ homeDir: ${JSON.stringify(USER_HOME)} }),
+    resolver: agentDiscovery.createAgentDiscovery({ homeDir: ${JSON.stringify(USER_HOME)} }),
   });
   const h = await manager.start(
     { task: '从 1 逐个数到 1000000，不要停', slug: 'e6-crash', model: '${MODEL}', timeoutMs: 60000 },

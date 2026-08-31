@@ -239,7 +239,7 @@ test('handler 直调：message 缺 text → isError', async () => {
 
 // --------------------------------------------- agents action（按需查询索引）
 
-test('tools/call agents：真实四根 resolver，返回精简视图且 source 按根推断', async (t) => {
+test('tools/call agents：core 发现面（lib/agent-discovery），vendored 内置 + 四根，source 由槽位标签映射', async (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-srv-ag-'));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const ws = path.join(tmp, 'ws');
@@ -254,8 +254,13 @@ test('tools/call agents：真实四根 resolver，返回精简视图且 source �
   mkAgent(path.join(home, '.agents', 'agents'), 'user-pi', '用户 .agents 根');
   mkAgent(path.join(home, '.zcode', 'agents'), 'user-zc', '用户 .zcode 根');
 
-  const { AgentMdResolver } = require('../lib/agent-md-resolver');
-  const manager = { ...makeFakeManager(), resolver: new AgentMdResolver({ homeDir: home }) };
+  // core 硬编码 user-agents 槽在调用期读进程 HOME——测试窗口内指到 fixture home
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  t.after(() => { process.env.HOME = prevHome; });
+
+  const agentDiscovery = require('../lib/agent-discovery');
+  const manager = { ...makeFakeManager(), resolver: agentDiscovery.createAgentDiscovery({ homeDir: home }) };
   const handlers = server.buildToolHandlers({ manager, nested: false });
   const result = await handlers.zsub(
     { name: 'zsub', arguments: { action: 'agents' } },
@@ -263,28 +268,34 @@ test('tools/call agents：真实四根 resolver，返回精简视图且 source �
   );
   assert.equal(result.isError, undefined);
   const rows = JSON.parse(result.content[0].text);
-  // resolver.list 按 name 排序；source 与四根优先级标签一一对应
-  assert.deepEqual(rows.map((r) => [r.name, r.source]), [
-    ['proj-pi', 'project-agents'],
-    ['proj-zc', 'project-zcode'],
-    ['user-pi', 'user-agents'],
-    ['user-zc', 'user-zcode'],
-  ]);
+  // 四根标签一一对应（source 不再按路径推断——core 发现面自带槽位标签）
+  const byName = new Map(rows.map((r) => [r.name, r]));
+  assert.deepEqual(
+    ['proj-pi', 'proj-zc', 'user-pi', 'user-zc'].map((n) => [n, byName.get(n).source]),
+    [
+      ['proj-pi', 'project-agents'],
+      ['proj-zc', 'project-zcode'],
+      ['user-pi', 'user-agents'],
+      ['user-zc', 'user-zcode'],
+    ],
+  );
+  // vendored 内置 10 全部在场（npm 槽 → core-vendored 标签）
+  const vendored = rows.filter((r) => r.source === 'core-vendored');
+  assert.equal(vendored.length, 10, 'vendored 内置 10 角色');
+  assert.ok(vendored.every((r) => r.file.includes(path.join('vendor', 'subagent-core', 'agents'))));
   // 精简视图：只有索引五字段（body/model 等 profile 字段不透出）
   for (const r of rows) {
     assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'name', 'source', 'when']);
     assert.ok(r.file.endsWith('.md'));
   }
   // when（何时用我）透传：有则原样、无则空串
-  assert.equal(rows[0].when, '代码审查与修复验证');
-  assert.equal(rows[1].when, '');
+  assert.equal(byName.get('proj-pi').when, '代码审查与修复验证');
+  assert.equal(byName.get('proj-zc').when, '');
 });
 
 test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；resolver 缺失可操作错误', async () => {
   const seenCwd = [];
-  const fakeHome = path.join(TMP, 'ag-fake-home'); // TMP 在真实 HOME 外，防 source 推断被真实 HOME 干扰
   const fakeResolver = {
-    homeDir: fakeHome,
     list(cwd) {
       seenCwd.push(cwd);
       return [
@@ -292,9 +303,10 @@ test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；
           name: 'long',
           description: '长'.repeat(350),
           when: '何'.repeat(250),
-          filePath: path.join(fakeHome, '.zcode', 'agents', 'long.md'),
+          source: 'user-pi',
+          filePath: '/fake/home/.zcode/agents/long.md',
         },
-        { name: 'nodesc', filePath: path.join(cwd, '.agents', 'agents', 'nodesc.md') },
+        { name: 'nodesc', source: 'project-agents', filePath: '/proj/ag/.agents/agents/nodesc.md' },
       ];
     },
   };
@@ -309,10 +321,10 @@ test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；
   const rows = JSON.parse(result.content[0].text);
   assert.equal(rows[0].description, '长'.repeat(200)); // 超 200 截断
   assert.equal(rows[0].when, '何'.repeat(200)); // when 同样截 200
-  assert.equal(rows[0].source, 'user-zcode');
+  assert.equal(rows[0].source, 'user-zcode', 'core 槽位标签 user-pi → 面上标签 user-zcode');
   assert.equal(rows[1].description, ''); // description 缺省容忍为空串
   assert.equal(rows[1].when, ''); // when 缺省容忍为空串
-  assert.equal(rows[1].source, 'project-agents'); // cwd 前缀优先于 HOME 前缀判定
+  assert.equal(rows[1].source, 'project-agents');
 
   // resolver 缺失（异常组装防御）：可操作错误而非 TypeError 被 catch 吞
   const broken = server.buildToolHandlers({ manager: makeFakeManager(), nested: false });
