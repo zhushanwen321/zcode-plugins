@@ -89,8 +89,8 @@ graph TD
 |------|------|------|----------|
 | V0a | blocked（G-user：并行清理批次未落库） | - | - |
 | V0b | blocked（G-user） | - | - |
-| V0c | in-progress | 1 | 408ea95 基线后主 agent 撰写 `docs/design/zsw-manager-convergence.md` |
-| V0d | in-progress | 1 | u-dev 后台执行中（test/fixtures/ 两件新增，零交集领地） |
+| V0c | committed | 1 | 4aabf8c（`docs/design/zsw-manager-convergence.md` 立案锚点） |
+| V0d | committed | 1 | e45f998（t-sink.md + make-legacy-state-files.js；主 agent 复跑验收：25 文件 = 10 无 v + 15 wf-run-v2，现状 reader loadAll 25/25 = done 19 + running 6；产物头登记快照真实结构与两处事实纠偏） |
 | V8g | blocked（G-core） | - | - |
 | V1a | blocked（G-core） | - | - |
 | V2p | blocked（V1a） | - | - |
@@ -113,3 +113,4 @@ graph TD
 **变更历史**
 - 2026-08-31：起草。分工裁决（用户原话）：「xyz的我单独处理了，已经在开发中。你直接开发本项目的即可。」——xyz 侧 U1-U12 用户领走，本计划只覆盖 zsw 侧消费改造；计划评审随起草同轮提交用户。
 - 2026-08-31：用户评审确认（切分/worktree/验收三项均确认）+ G-user 门裁决「先做无交集项 V0c/V0d」（并行清理批次持续增长中：检查期间 17→23→37 个 M 文件）。基线 commit 408ea95。
+- 2026-08-31：V0c（4aabf8c）、V0d（e45f998）committed。V0d 执行事实纠偏两项登记：① core 状态机无独立 error 态，错误终态真实形态 = done + reason:'failed' + state.error 非空；② HEAD reader 不检查 v 字段，带 v 行同目录混排可读，无需独立子目录降级。Wave 0 剩余 V0a/V0b 仍 blocked（G-user：并行清理批次未落库）。
