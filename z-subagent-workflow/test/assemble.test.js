@@ -5,9 +5,12 @@
  * 检测面已随 appserver 通道退役整体删除（原 ~580 行测试同步退役，漂移检测
  * 改由 core 引擎探针承担）。本文件覆盖新装配契约：
  * - 组装产物：SubagentManager + orchestration host 共享同一 runner
- * - runner 恒为 CoreRunner（core zcode engine 的 spawn 单轮）
+ * - runner 恒为 CoreRunner（core zcode engine 适配——engine 内部缺省 appserver
+ *   常驻 + spawn 降级，宿主开关只剩 ZSW_RUNNER 校验）
  * - ZSW_RUNNER 语义：'appserver' 显式废弃报错 / 'spawn' 兼容 no-op（告警一次）/
  *   未知值报错 / opts.runner 注入接管
+ * - W6a2 退出链组合：真实 wfHost.shutdown 串接 runner.shutdown（daemon 退出面
+ *   的进程收割）；注入 fake wfHost 不包装
  *
  * 隔离原则：ZSW_ROOT / HOME 指临时目录，env 必须先于 require 设置。
  */
@@ -59,14 +62,15 @@ test('CoreRunner 构造幂等登记 core registry（registerZcodeEngine 覆盖�
   assert.doesNotThrow(() => CoreRunner.ensureZcodeEngineRegistered());
 });
 
-test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与 P3 回归路线）', async () => {
+test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与引擎模式定向指引）', async () => {
   process.env.ZSW_RUNNER = 'appserver';
   try {
     await assert.rejects(
       () => assembleManager(),
       (err) => {
         assert.match(err.message, /D6-⑥ 退役/);
-        assert.match(err.message, /core zcode engine spawn 单轮/);
+        assert.match(err.message, /core zcode engine/);
+        assert.match(err.message, /XYZ_ZCODE_MODE=spawn/);
         assert.match(err.message, /P3/);
         return true;
       },
@@ -118,4 +122,32 @@ test('显式 opts.runner 注入 → 注入即接管（测试组装面不触达 C
   };
   const { manager } = await assembleManager({ runner: fake });
   assert.equal(manager.runner, fake, '注入 runner 直接接管');
+});
+
+// ------------------------------- W6a2：退出链组合（daemon shutdown 收割面）
+
+test('退出链组合：真实 wfHost.shutdown 串接 runner.shutdown（appserver 常驻 dispose 进 daemon 退出面）', async () => {
+  const calls = [];
+  const runnerSpy = {
+    capabilities: () => ({ kind: 'fake', steering: 'none', coldStartMs: 0 }),
+    start() { throw new Error('not started in this test'); },
+    async shutdown() { calls.push('runner'); },
+  };
+  const a = await assembleManager({ runner: runnerSpy }); // 真实 wfHost（不注入）
+  await a.wfHost.shutdown();
+  assert.deepEqual(calls, ['runner'], 'wfHost.shutdown 触发后必须串接 runner.shutdown（进程收割）');
+});
+
+test('退出链组合：注入 fake wfHost 不包装——shutdown 语义保持组装面跳过', async () => {
+  const calls = [];
+  const fakeWf = { run() {}, shutdown: async () => { calls.push('wf'); } };
+  const runnerSpy = {
+    capabilities: () => ({ kind: 'fake', steering: 'none', coldStartMs: 0 }),
+    start() { throw new Error('not started in this test'); },
+    async shutdown() { calls.push('runner'); },
+  };
+  const a = await assembleManager({ wfHost: fakeWf, runner: runnerSpy });
+  assert.equal(a.wfHost, fakeWf, '注入 wfHost 原样透传（不包装）');
+  await a.wfHost.shutdown();
+  assert.deepEqual(calls, ['wf'], '注入面不串接 runner.shutdown（组合仅作用于真实组装）');
 });

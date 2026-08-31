@@ -458,9 +458,14 @@ class SubagentManager {
       const alive = rec.exec ? await this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
+        // appserver 形态的 alive 是保守判定（core 未暴露任务级探活面，见
+        // runner-core.alive 注释）——文案如实区分「进程在跑」与「进度未知」
+        const appserverExec = rec.exec && rec.exec.kind === 'appserver';
         this.records.update(rec.subagentId, {
           orphan: true,
-          lostReason: '孤儿进程：server 重启丢失句柄，进程仍在运行，结果无法回流。建议 cancel 后重发任务',
+          lostReason: appserverExec
+            ? '孤儿会话：server 重启丢失句柄（appserver 常驻模式，任务进度未知——保守按存活处置），结果无法回流。建议 cancel 后重发任务'
+            : '孤儿进程：server 重启丢失句柄，进程仍在运行，结果无法回流。建议 cancel 后重发任务',
         });
       } else {
         dead.push(rec.subagentId);

@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * runner-core 测试（回接计划 2c）：zsw RunnerPort 在 core engine 上的实现面。
+ * runner-core 测试（回接计划 2c + W6a2 appserver 适配）：zsw RunnerPort 在
+ * core engine 上的实现面。
  *
  * 覆盖（V3-①②③ 的 fake engine 注入形态 + 端口契约）：
  * - start 成功 / 终态映射（closed / error / cancelled / timeout）
@@ -12,9 +13,15 @@
  * - denylist 并集去重（frontmatter disallowedTools + CLI toolDenylist）
  * - 引擎数据落点（验收 ⑤ 伪验证）：真 ZcodeEngine + fake launch（不真跑 CLI），
  *   断言 <ZSW_ROOT>/engines/zcode/home-<provider>-<model>/.zcode/cli/config.json 落点
+ * - W6a2 appserver 适配面：onHandleReady 消费（exec.kind 翻转 + sessionRef
+ *   回填）、alive 按 exec 形态分支、shutdown 对持有引擎实例 dispose；
+ *   XYZ_ZCODE_MODE 定向对照（spawn=onChildSpawned 通路不变 / appserver
+ *   pre-abort 短路不建连接）
  *
  * 隔离原则：禁止真跑 zcode.cjs、禁止碰真实 ~/.zcode。ZSW_ROOT 指临时目录
- * （config.js 模块加载期冻结路径，env 必须先于 require 设置）。
+ * （config.js 模块加载期冻结路径，env 必须先于 require 设置）；真 ZcodeEngine
+ * 用例一律 XYZ_ZCODE_MODE 定向或 fake launch，不让缺省 probe 门控真 spawn
+ * appserver 进程。
  */
 
 const fs = require('node:fs');
@@ -48,6 +55,9 @@ after(() => {
  * @param {object} [opts.outcomeOverride] run 终态 outcome 覆盖段
  * @param {function(object, object): void} [opts.onRun] run 入参观察钩子（task/ctx 断言用）
  * @param {boolean} [opts.hang]           run 挂起直到 ctx.signal abort（取消/超时用例）
+ * @param {boolean} [opts.appserver]      模拟 core engine 的 appserver 常驻路径：
+ *        onPoolResolved + onHandleReady（create 应答时点）且回调，不回调
+ *        onChildSpawned（常驻进程不进宿主记账——core D6 边界）
  */
 function fakeEngine(opts = {}) {
   const id = opts.id || 'zcode';
@@ -66,8 +76,19 @@ function fakeEngine(opts = {}) {
     },
     run(task, ctx) {
       if (typeof opts.onRun === 'function') opts.onRun(task, ctx);
-      ctx.onPoolResolved(`home-fake-${id}`);
-      ctx.onChildSpawned({ pid: 4242 });
+      ctx.onPoolResolved(opts.appserver ? 'home-appserver' : `home-fake-${id}`);
+      // appserver 形态的 session id 在 create 应答时点即确定（onHandleReady 与
+      // 终态 outcome 同源——core 真引擎同款，防 fake 自相矛盾）
+      const sid = opts.appserver ? `sess-${id}-app` : `sess-${id}`;
+      if (opts.appserver) {
+        // core §3.4 不变量 3：sessionRef 在 create 应答后回填（早于终态）
+        ctx.onHandleReady({
+          sessionRef: { dbPath: '.zcode/cli/db/db.sqlite', sessionId: sid },
+          poolKey: 'home-appserver',
+        });
+      } else {
+        ctx.onChildSpawned({ pid: 4242 });
+      }
       if (opts.hang) {
         return new Promise((resolve) => {
           ctx.signal.addEventListener('abort', () => {
@@ -86,7 +107,7 @@ function fakeEngine(opts = {}) {
       const outcome = {
         engineId: id,
         content: `resp-from-${id}`,
-        sessionId: `sess-${id}`,
+        sessionId: sid,
         usage: { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 18, turns: 2 },
         ...(opts.outcomeOverride || {}),
       };
@@ -339,7 +360,7 @@ test('release：no-op 不抛（spawn 单轮无驻留对应物）', () => {
   assert.doesNotThrow(() => runner.release({ kind: 'spawn' }));
 });
 
-test('capabilities：spawn 单轮语义（kind=spawn / steering=none）', () => {
+test('capabilities：保守台账基线（kind=spawn / steering=none）', () => {
   const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
   const caps = runner.capabilities();
   assert.equal(caps.kind, 'spawn');
@@ -347,10 +368,68 @@ test('capabilities：spawn 单轮语义（kind=spawn / steering=none）', () => 
   assert.ok(Number.isFinite(caps.coldStartMs));
 });
 
-// ------------------------------------------------------------ 引擎数据落点（验收 ⑤ 伪验证）
+// ------------------------------------------------------------ W6a2：appserver 适配面
 
-test('数据落点推导：真 ZcodeEngine + fake launch → <ZSW_ROOT>/engines/zcode/home-<provider>-<model>/', async () => {
-  // v2 config fixture（凭据源单测化，不碰真实 ~/.zcode/v2）
+test('appserver 分支：onHandleReady 消费——exec.kind 翻转 + sessionRef/sessionId/poolKey 回填 + onExec 快照含翻转', async () => {
+  const seen = [];
+  const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine({ appserver: true })]]) });
+  const handle = runner.start(taskCtx(), { onExec: (snap) => seen.push(snap) });
+  const result = await handle.done;
+  assert.equal(result.status, 'closed');
+  assert.equal(handle.exec.kind, 'appserver', 'create 应答后 exec 形态翻转');
+  assert.equal(handle.exec.pid, undefined, 'appserver 常驻进程不经 onChildSpawned（core D6 边界，pid 恒空）');
+  assert.equal(handle.exec.sessionId, 'sess-zcode-app');
+  assert.deepEqual(handle.exec.sessionRef, { dbPath: '.zcode/cli/db/db.sqlite', sessionId: 'sess-zcode-app' });
+  assert.equal(handle.exec.poolKey, 'home-appserver');
+  // 翻转快照必须进 onExec 流（manager 据此追加 update 事件——重启后 recover
+  // 读磁盘 exec.kind 的依据，A5 同款通道）
+  const flipped = seen.find((s) => s.kind === 'appserver');
+  assert.ok(flipped, 'onExec 快照流包含翻转后形态');
+  assert.deepEqual(flipped.sessionRef, { dbPath: '.zcode/cli/db/db.sqlite', sessionId: 'sess-zcode-app' });
+  assert.ok(seen.every((s) => s !== handle.exec), '快照必须是拷贝而非 exec 引用');
+});
+
+test('alive：exec 形态分支——appserver 保守存活（无 pid 语义），spawn pid 探活回归不变', () => {
+  const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
+  assert.equal(
+    runner.alive({ kind: 'appserver', sessionRef: { dbPath: '.zcode/cli/db/db.sqlite', sessionId: 's' }, poolKey: 'home-appserver' }),
+    true,
+    'appserver 形态保守存活（core 未暴露任务级探活面，recover 语境=orphan 处置）',
+  );
+  assert.equal(runner.alive({ kind: 'appserver' }), true, '无 sessionRef 也不影响形态判定');
+  // spawn 回归锚点（与既有 alive 用例互补：分支重构后旧语义逐项不变）
+  assert.equal(runner.alive({ kind: 'spawn', pid: process.pid }), true);
+  assert.equal(runner.alive({ kind: 'spawn', pid: 99998 }), false);
+  assert.equal(runner.alive({ kind: 'spawn', pid: undefined }), false);
+  assert.equal(runner.alive({ kind: 'unknown-kind', pid: process.pid }), false, '未知形态不猜（守卫）');
+  assert.equal(runner.alive(null), false);
+});
+
+test('shutdown：对本层持有引擎实例逐个 dispose（appserver 常驻收割）+ 无 dispose 成员引擎跳过不炸', async () => {
+  const disposed = [];
+  const residentEng = fakeEngine({ appserver: true });
+  residentEng.dispose = async () => { disposed.push('zcode'); };
+  const plainEng = fakeEngine({ id: 'plain-eng' }); // 无 dispose 成员（spawn 单轮/无常驻资源形态）
+  const runner = new CoreRunner({ engines: new Map([['zcode', residentEng], ['plain-eng', plainEng]]) });
+  await runner.shutdown();
+  assert.deepEqual(disposed, ['zcode'], '仅持常驻资源的引擎被 dispose');
+  // 二次触发不炸：幂等是 EnginePort.dispose 的契约（重复调用零副作用），
+  // zsw 侧每次 shutdown 都触发——fake 的记录器如实计数两次
+  await runner.shutdown();
+  assert.equal(disposed.length, 2, '二次 shutdown 重复触发但不抛（幂等归引擎契约）');
+});
+
+test('shutdown：dispose 抛错不炸穿（best-effort 继续 killAll 兜底）', async () => {
+  const eng = fakeEngine({ appserver: true });
+  eng.dispose = async () => { throw new Error('dispose 失败（测试模拟）'); };
+  const runner = new CoreRunner({ engines: new Map([['zcode', eng]]) });
+  await assert.doesNotReject(() => runner.shutdown());
+});
+
+// ------------------------------------------------------------ 引擎数据落点与模式定向（真 ZcodeEngine + fake launch）
+
+/** v2 config fixture（凭据源单测化，不碰真实 ~/.zcode/v2）。 */
+function writeV2Fixture() {
   const v2Dir = path.join(TMP, 'v2src');
   fs.mkdirSync(v2Dir, { recursive: true });
   const v2Path = path.join(v2Dir, 'config.json');
@@ -364,17 +443,13 @@ test('数据落点推导：真 ZcodeEngine + fake launch → <ZSW_ROOT>/engines/
       },
     },
   }, null, 2));
+  return v2Path;
+}
 
-  // fake launch：不真跑 CLI——stdout 喂 core parser 可解析的终 JSON（0.16.5 实测形态）
-  const stdoutText = JSON.stringify({
-    sessionId: 'sess-loc1',
-    response: '落点推导 fake 输出',
-    usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
-    projection: { turnCount: 1 },
-  });
-  let seenEnv = null;
-  const fakeLaunch = ({ env }) => {
-    seenEnv = env;
+/** fake launch：不真跑 CLI——stdout 喂 core parser 可解析的终 JSON（0.16.5 实测形态）。 */
+function fakeLaunchWith(stdoutText, envSink) {
+  return ({ env }) => {
+    if (envSink) envSink.env = env;
     return {
       child: { pid: 99991 },
       pid: 99991,
@@ -385,12 +460,26 @@ test('数据落点推导：真 ZcodeEngine + fake launch → <ZSW_ROOT>/engines/
       killedByUs: () => false,
     };
   };
+}
+
+test('数据落点推导：真 ZcodeEngine 定向 spawn + fake launch → <ZSW_ROOT>/engines/zcode/home-<provider>-<model>/', async () => {
+  const v2Path = writeV2Fixture();
+  const stdoutText = JSON.stringify({
+    sessionId: 'sess-loc1',
+    response: '落点推导 fake 输出',
+    usage: { inputTokens: 3, outputTokens: 5, totalTokens: 8 },
+    projection: { turnCount: 1 },
+  });
+  const envSink = {};
 
   const core = coreRef.requireCore();
   const engine = core.createZcodeEngine({
     engineDataDir: () => config.zswRoot(), // 与 runner-core zswEngineDataDir 同源
     sources: { v2ConfigPath: v2Path },
-    launch: fakeLaunch,
+    launch: fakeLaunchWith(stdoutText, envSink),
+    // 定向 spawn：跳过缺省 probe 门控（否则真机会对真 CLI 跑 appserver 冒烟
+    // 探针——单测不依赖环境里的 CLI/凭据状态，走哪条路必须确定）
+    processEnv: { XYZ_ZCODE_MODE: 'spawn' },
   });
   const { outcome } = await engine.run(
     { task: 't', slug: 's', model: 'builtin:bigmodel-coding-plan/GLM-5.3', cwd: TMP },
@@ -411,5 +500,64 @@ test('数据落点推导：真 ZcodeEngine + fake launch → <ZSW_ROOT>/engines/
   const poolCfg = JSON.parse(fs.readFileSync(poolConfig, 'utf8'));
   assert.equal(poolCfg.model.main, 'builtin:bigmodel-coding-plan/GLM-5.3');
   // 隔离 HOME = 池目录（launcher 的 HOME=池目录语义经 fake launch 的 env 观察）
-  assert.equal(seenEnv.HOME, poolDir);
+  assert.equal(envSink.env.HOME, poolDir);
+});
+
+test('XYZ_ZCODE_MODE=spawn 对照回归：真 ZcodeEngine 定向——onChildSpawned 通路逐项不变、onHandleReady 不回调', async () => {
+  const v2Path = writeV2Fixture();
+  const stdoutText = JSON.stringify({
+    sessionId: 'sess-pin-spawn',
+    response: 'pin spawn 输出',
+    usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+    projection: { turnCount: 1 },
+  });
+  const calls = { child: 0, handleReady: 0, pool: 0 };
+  const envSink = {};
+  const core = coreRef.requireCore();
+  const engine = core.createZcodeEngine({
+    engineDataDir: () => config.zswRoot(),
+    sources: { v2ConfigPath: v2Path },
+    launch: fakeLaunchWith(stdoutText, envSink),
+    processEnv: { XYZ_ZCODE_MODE: 'spawn' },
+  });
+  const { outcome } = await engine.run(
+    { task: 't', slug: 's', model: 'builtin:bigmodel-coding-plan/GLM-5.3', cwd: TMP },
+    {
+      taskId: 'sa-pin-spawn', poolKey: 'shared',
+      onChildSpawned: () => { calls.child += 1; },
+      onHandleReady: () => { calls.handleReady += 1; },
+      onPoolResolved: () => { calls.pool += 1; },
+    },
+  );
+  assert.equal(outcome.sessionId, 'sess-pin-spawn');
+  assert.equal(outcome.content, 'pin spawn 输出');
+  assert.equal(calls.child, 1, 'spawn 定向：onChildSpawned 恰一次（zsw pid 通路的前提不变）');
+  assert.equal(calls.handleReady, 0, 'spawn 定向不回调 onHandleReady（exec.kind 不翻转）');
+  assert.equal(calls.pool, 1, 'onPoolResolved 仍为 prepare 期一次');
+  assert.ok(envSink.env && typeof envSink.env.HOME === 'string', 'launcher env 通路不变');
+});
+
+test('XYZ_ZCODE_MODE=appserver 定向分发：pre-abort 短路——不建连接、不 spawn、无句柄回填（真 ZcodeEngine）', async () => {
+  const core = coreRef.requireCore();
+  const engine = core.createZcodeEngine({
+    engineDataDir: () => config.zswRoot(),
+    processEnv: { XYZ_ZCODE_MODE: 'appserver' },
+  });
+  const ac = new AbortController();
+  ac.abort();
+  const calls = { child: 0, handleReady: 0, pool: 0 };
+  const { outcome } = await engine.run(
+    { task: 't', slug: 's', cwd: TMP },
+    {
+      taskId: 'sa-pin-ap-abort', poolKey: 'shared', signal: ac.signal,
+      onChildSpawned: () => { calls.child += 1; },
+      onHandleReady: () => { calls.handleReady += 1; },
+      onPoolResolved: () => { calls.pool += 1; },
+    },
+  );
+  // 定向 appserver 的 pre-abort 短路：合成中止终态，不触发 HOME 获取/连接/
+  // 进程——单测环境零真实进程即可验证定向分发命中 appserver 路径
+  assert.equal(outcome.exitCode, null);
+  assert.match(outcome.error, /中止/);
+  assert.deepEqual(calls, { child: 0, handleReady: 0, pool: 0 });
 });

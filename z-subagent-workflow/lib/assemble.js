@@ -11,10 +11,11 @@
  * FileRunStore（<zswRoot>/workflow-state/）。
  *
  * 回接 2c（D6-⑥）后的执行通道：runner 恒为 lib/runner-core.js（core zcode
- * engine 的 spawn 单轮）。appserver 常驻通道已退役——旧组装期探针门控 /
+ * engine 适配——engine 内部缺省 appserver 常驻 + spawn 降级链，宿主零私连，
+ * 常驻形态的宿主适配点见 runner-core 头注）。旧组装期探针门控 /
  * 探针结论落盘缓存 / 首败失效重探 / 通道级降级链 / 升级检测标记
- * （upgrade-notice.json 及其 CLI/MCP 投递面）随之整体删除：格式漂移检测改由
- * core 引擎探针承担（probe 的 golden 样本干跑回归 + 引擎版本留痕），CLI 更新
+ * （upgrade-notice.json 及其 CLI/MCP 投递面）已随 1.x 私连通道退役删除：
+ * 格式漂移检测归 core 引擎探针（golden 样本干跑 + 协议冒烟门控），CLI 更新
  * 后首个任务启动即经 routeEngine 真探。
  *
  * core 初始化的单一协调点：configureCore（dataRoot/log/discoveryRoots）在
@@ -50,14 +51,16 @@ function assertRunnerEnv() {
   if (envRunner === 'spawn') {
     if (!warnedSpawnNoop) {
       warnedSpawnNoop = true;
-      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine 的 spawn 单轮），值被忽略');
+      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine；引擎模式定向用 XYZ_ZCODE_MODE=appserver|spawn），值被忽略');
     }
     return;
   }
   if (envRunner === 'appserver') {
     throw new Error(
-      'ZSW_RUNNER=appserver：appserver 通道已按设计 D6-⑥ 退役，统一走 core zcode engine spawn 单轮；常驻回归路线 P3。'
-      + '恢复指引：去掉 ZSW_RUNNER（缺省即 spawn 单轮），或临时回退安装旧版插件。'
+      'ZSW_RUNNER=appserver：zsw 1.x 宿主私连通道已按设计 D6-⑥ 退役（执行统一走 core zcode engine，'
+      + '其内部已缺省 appserver 常驻——P3 回归完成，宿主层不再有独立通道开关）。'
+      + '恢复指引：去掉 ZSW_RUNNER（缺省即 core 引擎，appserver 常驻自动生效）；'
+      + '需定向 spawn 单轮改用 XYZ_ZCODE_MODE=spawn。'
     );
   }
   throw new Error(
@@ -76,8 +79,8 @@ async function assembleManager(opts = {}) {
   const { createWorktreeAdapter } = require('./worktree-adapter');
   const resolver = require('./agent-discovery');
 
-  // runnerKind 参数面保留（opts.runnerKind 显式注入仍接受——测试组装便捷），
-  // 值维度已消失：唯一通道 = core zcode engine（capabilities().kind 恒 'spawn'）
+  // runnerKind 值维度已消失（2c）：唯一通道 = core zcode engine（engine 内部
+  // 按缺省门控选 appserver 常驻 / spawn 降级，宿主开关只剩 ZSW_RUNNER 校验）
   assertRunnerEnv();
   const rt = createRuntime({ notifyMode: opts.notifyMode });
   const notifier = opts.notifier || rt.createNotifier();
@@ -100,11 +103,27 @@ async function assembleManager(opts = {}) {
   // workflow 线（回接 2b）：编排整体走 vendored subagent-core orchestration
   // （orchestration-host 组装 core 三 port + 内置资产注册）。与 zsub 线共用
   // 同一 runner 实例；测试经 opts.wfHost 注入 fake 跳过组装
-  const wfHost = opts.wfHost || createOrchestrationHost({
+  const wfHostBase = opts.wfHost || createOrchestrationHost({
     runner,
     modelRouter,
     resolver: opts.resolver || resolver,
   });
+  // 退出链组合（W6a2）：daemon 退出的唯一生产 shutdown 钩子是 wfHost.shutdown
+  // （MCP server stdin 关闭面，dist/mcp/server.js 不在本层领地）——runner 的
+  // 进程收割面（appserver 常驻引擎 dispose + spawn 子进程 killAll 兜底）没有
+  // 独立生产调用点，组合进同一钩子：先 terminate workflow runs（record 卫生），
+  // 再收 runner（常驻进程回收，dispose 的 close 帧先于 SIGTERM）。注入 fake
+  // wfHost 的测试组装不包装（跳过组装的组合语义与 createOrchestrationHost 同款）。
+  const wfHost = opts.wfHost || {
+    ...wfHostBase,
+    shutdown: async () => {
+      try {
+        await wfHostBase.shutdown();
+      } finally {
+        if (runner && typeof runner.shutdown === 'function') await runner.shutdown();
+      }
+    },
+  };
   return { manager, wfHost, notifier, runnerKind: 'spawn' };
 }
 

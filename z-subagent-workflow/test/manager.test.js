@@ -411,6 +411,33 @@ test('recover：死 pid → lost 落因，活 pid → 保留 + 孤儿标记', as
   assert.match(orphan.lostReason, /孤儿/);
 });
 
+test('recover（W6a2）：appserver 形态 exec 保守存活 → orphan 分流 + 如实文案（不判死）', async () => {
+  const runner = new FakeRunner();
+  // appserver 形态的 exec 无 pid（常驻进程不经 onChildSpawned）；alive 按 kind
+  // 分支返回 true（保守），不走 livePids 的 pid 判定
+  runner.alive = (exec) => Boolean(exec && exec.kind === 'appserver');
+  const { manager, records } = buildManager({ runner });
+  records.create({
+    subagentId: 'sa-app-1', slug: 'app-resident',
+    exec: {
+      kind: 'appserver', sessionId: 'sess-app-1',
+      sessionRef: { dbPath: '.zcode/cli/db/db.sqlite', sessionId: 'sess-app-1' },
+      poolKey: 'home-appserver',
+    },
+  });
+  records.transition('sa-app-1', 'created', 'running');
+
+  const summary = await manager.recover();
+  assert.deepEqual(summary.dead, [], 'appserver 形态不判死（core 未暴露任务级探活面，保守处置）');
+  assert.deepEqual(summary.orphan, ['sa-app-1']);
+  const rec = records.get('sa-app-1');
+  assert.equal(rec.status, 'lost');
+  assert.equal(rec.orphan, true);
+  assert.match(rec.lostReason, /孤儿会话/);
+  assert.match(rec.lostReason, /进度未知/);
+  assert.match(rec.lostReason, /cancel 后重发/);
+});
+
 // ------------------------------- R1/R2 回归（上轮 must-fix 的反退化锚点）
 
 test('R1 回归：alive 返回 Promise 时 recover 仍正确分流死/活进程（await 退化即翻车）', async () => {

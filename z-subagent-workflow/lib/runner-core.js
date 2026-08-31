@@ -7,8 +7,11 @@
  *   （zcode 引擎：preparer 隔离 HOME 池 → launcher spawn 单轮 → parser 终 JSON）。
  * stdout 解析归 core parser（D6-①），zsw 侧不再有解析段；per-provider+model
  * HOME 池 / 凭据预检 / 兜底模型全在引擎 preparer 内（TS 重写自 zsub 同源机制），
- * 本层只做端口形状映射。appserver 常驻通道已按 D6-⑥ 退役——常驻实现的
- * 回归路线见 P3（core zcode engine 内部换常驻实现，EnginePort 接口常驻友好）。
+ * 本层只做端口形状映射。core zcode engine 已缺省 appserver 常驻模式（R4-R6，
+ * 决策记录 C7：XYZ_ZCODE_MODE=spawn 可定向回旧单轮；缺省路径带 probe 冒烟门控
+ * + 漂移首败降级）——zsw 宿主层零私连（D6-⑥ 不变），本层对常驻形态的适配点
+ * 三处：alive() 按 exec.kind 分支、shutdown() 补引擎实例 dispose、runCtx
+ * onHandleReady 的 sessionRef 消费（见各方法注释）。
  *
  * 与 vendored 面的接线模式（对齐 core SAR 生产用法，subprocess-agent-runner）：
  * vendored 导出面无 getEngine/registerEngine 等注册表 getter，routeEngine 的
@@ -21,22 +24,30 @@
  * <zswRoot>/engines/，见回接计划验收 ⑤）。
  *
  * exec 句柄（record.exec 持久化，manager 不解读）：
- *   {kind:'spawn', pid, sessionId?, engineId?, poolKey?, cwd}
- *   - kind:'spawn'：spawn 单轮语义（record.runnerKind 台账格式与旧 spawn 回退
- *     一致，D7 旧数据可读不受影响）
- *   - pid：onChildSpawned 回调回填（可变引用，崩溃恢复探活依据）
- *   - sessionId/poolKey：done 后回填（P3 冷续聊回归时的定位锚）
- *   - 字段异步就绪（route → spawn → done 各阶段），start(taskCtx, hooks) 的
- *     hooks.onExec(snapshot) 在每次回填后回调浅拷贝快照——manager 据此追加
- *     update 事件持久化 pid（running 转换事件序列化于 spawn 之前，无 pid；
- *     不补落盘的话 standby 从磁盘 rebuild 后 alive 探活无依据，A5）
+ *   {kind, pid?, sessionId?, sessionRef?, engineId?, poolKey?, cwd}
+ *   - kind：'spawn' 初始形态（start 时刻 route/门控未发生，唯一已知事实）；
+ *     appserver 常驻路径在 session/create 应答后经 onHandleReady 翻转为
+ *     'appserver'（spawn/降级路径不回调 onHandleReady，保持 'spawn'——
+ *     pid 探活语义不变，D7 旧 record 兼容读取）
+ *   - pid：spawn 形态经 onChildSpawned 回填（崩溃恢复探活依据）；appserver
+ *     形态恒 undefined（常驻进程不经 onChildSpawned——core D6 边界声明，
+ *     生命周期归 engine dispose）
+ *   - sessionId/poolKey：spawn 形态 done 后回填 sessionId；appserver 形态
+ *     在 create 应答后即回填（P3 冷续聊回归时的定位锚）
+ *   - sessionRef：appserver 形态专属（{dbPath 相对池目录, sessionId}，
+ *     create 应答后回填——运行中落盘，供诊断与 read 面定位）
+ *   - 字段异步就绪（route → spawn/create → done 各阶段），start(taskCtx,
+ *     hooks) 的 hooks.onExec(snapshot) 在每次回填后回调浅拷贝快照——manager
+ *     据此追加 update 事件持久化 pid/sessionRef（running 转换事件序列化于
+ *     spawn 之前，无 pid；不补落盘的话 standby 从磁盘 rebuild 后 alive 探活
+ *     无依据，A5）
  *
  * 行为边界（README「回接 2c break 变更」节对应）：
  *   - resume（conversation 续聊）：core EnginePort 面无 resume 入口
- *     （launcher 支持 --resume 但 run 未透出），显式报可操作错误——旧 spawn
- *     回退的 --resume 冷续聊让渡，随 P3 常驻实现回归
- *   - message/close：spawn 单轮降级语义（message 经 manager 走 resume 即报上述
- *     错误；close 是壳层 record 终态化，runner 无驻留对应物）
+ *     （capabilities.conversation=unsupported——appserver 常驻亦无同进程 idle
+ *     复用），显式报可操作错误
+ *   - message/close：message 经 manager 走 resume 即报上述错误；close 是壳层
+ *     record 终态化，runner 无驻留对应物
  *   - schema：zsw 契约面保持壳层（prompt-builder 拼段 + jsonout 提取），不透传
  *     task.schema——避免 engine 仿真段与壳层段在 prompt 内双重出现
  */
@@ -208,9 +219,12 @@ class CoreRunner {
 
   capabilities() {
     return {
+      // 台账标注的保守基线：spawn 兜底恒可达（probe 失败/漂移降级），appserver
+      // 是否命中是 per-task 事实（probe 门控在 engine.run 内），落 exec.kind +
+      // engineFallback 降级留痕——不在此预判（W6b 契约单元可再评估）
       kind: 'spawn',
-      steering: 'none',   // argv-only spawn 单轮，无运行中插话通道（core capabilities.steer=unsupported）
-      coldStartMs: 1500,  // 每轮一次完整 node 进程 + CLI 启动（engine spawn 同构）
+      steering: 'none',   // send-while-running 恒 -32010 硬错误（core capabilities.steer=unsupported）
+      coldStartMs: 1500,  // spawn 单轮的每轮完整进程启动；appserver 命中时首轮含进程引导、后续摊薄
     };
   }
 
@@ -317,6 +331,21 @@ class CoreRunner {
               notifyExec(); // pid 是崩溃恢复探活依据，必须第一时间通知落盘（A5）
             }
           },
+          // appserver 常驻路径的运行中句柄回填（core §3.4 不变量 3：create 应答后
+          // 立即回调，早于 send/终态/run resolve；spawn/降级路径不回调）——本层
+          // 消费为 exec 形态翻转 + sessionRef 落位，经 onExec 钩子持久化进 record
+          onHandleReady: (partial) => {
+            exec.kind = 'appserver';
+            if (partial && partial.sessionRef && typeof partial.sessionRef === 'object') {
+              // 浅拷贝防 engine 侧后续变异串扰已落盘快照（与 onExec 快照同款纪律）
+              exec.sessionRef = { ...partial.sessionRef };
+              if (typeof partial.sessionRef.sessionId === 'string') {
+                exec.sessionId = partial.sessionRef.sessionId;
+              }
+            }
+            if (partial && typeof partial.poolKey === 'string') exec.poolKey = partial.poolKey;
+            notifyExec();
+          },
           onPoolResolved: (poolKey) => { exec.poolKey = poolKey; notifyExec(); },
           engineFallback: route.engineFallback,
         };
@@ -344,30 +373,41 @@ class CoreRunner {
   }
 
   /**
-   * 续聊一轮：core EnginePort 面无 resume 入口（zcode launcher 支持 --resume
-   * 但 EnginePort.run 未透出——core 面缺口，报告已登记），显式报可操作错误。
-   * 旧 spawn 回退的 --resume 冷续聊随本次切换让渡，回归路线 P3。
+   * 续聊一轮：core EnginePort 面无 resume 入口（capabilities.conversation=
+   * unsupported——appserver 常驻亦无同进程 idle 复用，D4 每任务自包含），显式
+   * 报可操作错误。冷续聊回归路线 P3（core read/resume 面扩容后接入）。
    */
   resume(exec) {
     throw new Error(
-      'CoreRunner.resume: core zcode engine 的 EnginePort 面无 resume 入口（spawn 单轮模式），'
-      + 'conversation 续聊暂不可用（appserver 通道已按设计 D6-⑥ 退役）。'
-      + `恢复指引：重新 start 派发新任务（上下文写进 task 文本）。常驻实现与冷续聊回归路线见 P3。`
+      'CoreRunner.resume: core zcode engine 的 EnginePort 面无 resume 入口'
+      + '（capabilities.conversation=unsupported，无同进程 idle 复用），'
+      + 'conversation 续聊暂不可用。'
+      + `恢复指引：重新 start 派发新任务（上下文写进 task 文本）。冷续聊回归路线见 P3。`
       + (exec && exec.sessionId ? `（原会话 sessionId=${exec.sessionId}，历史可读性待 P3 read 面接入）` : '')
     );
   }
 
   /**
-   * 一次性会话终态释放：no-op——engine spawn 单轮，done 即进程退出，无驻留
-   * 会话/聚合缓冲等释放面（与旧 spawn 回退同语义，上层可统一调用）。
+   * 一次性会话终态释放：no-op——spawn 单轮 done 即进程退出；appserver 常驻会话
+   * 跨任务共享（engine 内部 attempt 收尾时已退订 activeSessions），本层无 per-
+   * record 释放面（与旧语义一致，上层可统一调用）。
    */
   release() {}
 
   /**
-   * 探活：pid 信号 0 探测（ESRCH → 不存在；EPERM → 存在但属主不同，按存在算）。
+   * 探活：按 exec 形态分支（崩溃恢复依据，唯一消费面 manager.recover——
+   * 只对非终态 record 调用）。
+   * - spawn：pid 信号 0 探测（ESRCH → 不存在；EPERM → 存在但属主不同，按存在算）；
+   * - appserver：保守视为存活。core 未暴露任务级探活面——常驻进程 pidfile/
+   *   activeSessions/连接状态全是引擎内部实现（barrel 未导出探活原语，深路径
+   *   require 禁止），且「常驻进程活着」也不等于「本任务 turn 仍在推进」；
+   *   recover 语境下句柄已丢、结果无论是否推进都无法回流，orphan（建议
+   *   cancel 后重发）才是正确处置，不发明「进程已死」的失真断言。
    */
   alive(exec) {
-    if (!exec || exec.kind !== 'spawn' || !Number.isInteger(exec.pid)) return false;
+    if (!exec) return false;
+    if (exec.kind === 'appserver') return true;
+    if (exec.kind !== 'spawn' || !Number.isInteger(exec.pid)) return false;
     try {
       process.kill(exec.pid, 0);
       return true;
@@ -377,10 +417,30 @@ class CoreRunner {
   }
 
   /**
-   * 进程级收尾（daemon 退出面）：杀掉 core 引擎 spawn 的全部子进程（兜底
-   * 收割——正常路径各 handle 的 cancel/timeout 已走杀链）。best-effort 不抛。
+   * 进程级收尾（daemon 退出面）：
+   * ① 对本层持有的引擎实例逐个 dispose（appserver 常驻进程的收割入口——
+   *    EnginePort.dispose 契约：fire close 帧 → 同步 SIGTERM → grace → SIGKILL，
+   *    幂等）。注意 core 的 killAllSpawnedChildren 内部 disposeEngines() 只
+   *    覆盖 registry 已实例化单例，而 zsw 真正跑任务的实例在本层惰性表
+   *    （routeEngine 的 getEngineFn 注入，不进 registry）——不补这步常驻进程
+   *    必泄漏。dispose 先于 killAll（D6①：close 帧必须先于 SIGTERM）。
+   * ② killAllSpawnedChildren：spawn 形态 per-record 子进程兜底收割（正常路径
+   *    各 handle 的 cancel/timeout 已走杀链）。best-effort 不抛。
+   * spawn 模式回归不变：无 dispose 成员的引擎（旧 fake/无常驻资源实现）跳过，
+   * killAll 行为与 2c 前一致。
    */
   async shutdown() {
+    const engines = this._customEngines !== null
+      ? [...this._customEngines.values()]
+      : [...this._lazyEngines.values()];
+    for (const eng of engines) {
+      if (!eng || typeof eng.dispose !== 'function') continue;
+      try {
+        await eng.dispose();
+      } catch (e) {
+        this._log(`engine dispose 失败（best-effort）: ${e && e.message || e}`);
+      }
+    }
     try {
       coreRef.requireCore().killAllSpawnedChildren();
     } catch (e) {
