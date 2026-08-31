@@ -105,7 +105,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 | 方案 | 长期架构 | 短期成本 | 风险 | 裁决 |
 |---|---|---|---|---|
 | 与 pi 共同收紧（core normalizeRef 内建 `..` 拒绝，两宿主同步生效——现状两宿主均放行，非对齐既有差异） | 安全面单源，两平台契约一致 | 低（改调即得） | 存量用户若真有含 `..` 的合法用法会 break——评估：合法工作流无理由用 `..`（绝对路径/`~`/注入段路径均覆盖），实际 break 面趋零 | ✅ |
-| 维持放行 + 仅文档声明 | 零 break | 零 | 安全面分叉长存，防御-in-depth 单侧缺失 | ❌ |
+| 维持放行 + 仅文档声明 | 零 break | 零 | 安全面**双缺失**长存（现状两宿主均无防御），防御-in-depth 持续缺位 | ❌ |
 
 **E2：vendored 刷新时序**
 
@@ -139,7 +139,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 | 方案 | 长期架构 | 短期成本 | 风险 | 裁决 |
 |---|---|---|---|---|
-| `worktree.js` 收缩为「sidecar 持久锚点实现 + zsw 布局/孤儿策略」，patch 收集/清理/保真读改调 core git-ops；**降级语义显式化**：锚点缺失/损坏 → 显著 warn + 降级裸 diff（仅未提交改动）+ outcome 留痕 `patchIncomplete: true`（对齐 core 契约；prepare 写锚点失败不阻断任务启动，维持现可用性语义）；`add -A -N` 失败维持非致命继续 diff（现状），warn 留痕 | git 语义单源；跨 daemon 重启的基线持久化（sidecar 真实需求）保留；两处静默降级补可见信号（现状 `worktree.js:164-169` 写失败不阻断、`:188-201` 读失败裸 diff 均静默——静默本身是缺陷） | 中（对照验证三铁律场景 + 锚点丢失分支） | patch 产物从 intent-to-add 机制切到 core add -A+cached 机制——产物语义等价（同解 MF#2）需对照验证（姊妹文档 ⛔3）；降级行为从「静默」变「warn+留痕」为信号增强非 break | ✅ |
+| `worktree.js` 收缩为「sidecar 持久锚点实现 + zsw 布局/孤儿策略」，patch 收集/清理/保真读改调 core git-ops；**降级语义显式化**：锚点缺失/损坏 → 显著 warn + 降级裸 diff（仅未提交改动）+ outcome 留痕 `patchIncomplete: true`（对齐 core 契约；prepare 写锚点失败不阻断任务启动，维持现可用性语义）；**add 失败 → 裸 diff（core 契约；较 zsw 现状 `diff <base>` 多丢已提交改动，由 `patchIncomplete` 留痕可判断）**，非致命语义对齐现状、降级形态按 core 机制重定义 | git 语义单源；跨 daemon 重启的基线持久化（sidecar 真实需求）保留；两处静默降级补可见信号（现状 `worktree.js:164-169` 写失败不阻断、`:188-201` 读失败裸 diff 均静默——静默本身是缺陷） | 中（对照验证三铁律场景 + 锚点丢失/add 失败分支） | patch 产物从 intent-to-add 机制切到 core add -A+cached 机制——产物语义等价（同解 MF#2）需对照验证（姊妹文档 ⛔3）；降级行为从「静默」变「warn+留痕」为信号增强非 break | ✅ |
 | core 内核参数化支持两种 patch 机制 | 兼容零风险 | 高（把分叉固化进 core 抽象） | 两种机制长存即分叉长存 | ❌ |
 | 锚点丢失改 fail-fast（姊妹文档初版方案） | 强一致 | 低 | prepare 写 sidecar 前崩溃的真实命中场景从「部分 patch」变「任务作废」，损害大于收益（姊妹文档已被其审查 MF-4 击穿改裁决，本文档同步） | ❌ |
 
@@ -147,7 +147,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 **D-E1：`..` 校验随 2.0.0 收紧（选定）**
 - **采用**：消费 core normalizeRef（内建拒绝），zsw 侧零额外开关；错误消息带恢复指引（§3.1）。
-- **被否**：文档声明维持放行——安全面分叉长存（例 2）。
+- **被否**：文档声明维持放行——安全面**双缺失**长存（例 2）。
 - **证据**：两宿主现状对 agent ref `..` 均放行（pi `subagent-tool.ts:316-317` 仅守卫 skillPath/cwd；zsw `agent-discovery.js:202-212` 无校验）；RT2-F4/RT3-F4 双报告独立坐实。
 - **效果**：G2 安全项；§4 S2 场景成立。
 
@@ -230,7 +230,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 | # | 检查点 | 断言 | 状态 |
 |---|---|---|---|
-| ⛔A | patch 机制切换对照 | sidecar 场景（新文件+已提交改动+daemon 重启）patch 产物与改造前等价（git apply 目标一致）+ **锚点缺失/损坏分支：warn 发出 + 降级裸 diff + outcome `patchIncomplete` 留痕** | 实施期 |
+| ⛔A | patch 机制切换对照 | sidecar 场景（新文件+已提交改动+daemon 重启）patch 产物与改造前等价（git apply 目标一致）+ **锚点缺失/损坏与 add 失败分支：warn 发出 + 降级裸 diff + outcome `patchIncomplete` 留痕（与姊妹 ⛔3 同口径）** | 实施期 |
 | ⛔B | strict-fifo 排队语义 | slots 现有排队测试在 core 池 strict-fifo 下全绿 | 实施期 |
 | ⛔C | meta 驱动白名单等值 | 现有全部合法调用参数集在 meta 驱动下零 warning（对照清单） | 实施期 |
 | ⛔D | saved 名遮蔽语义 | 内置优先 + 遮蔽 warning（含双路径）在 daemon/MCP/CLI 三入口一致 + **三入口 knownNames 构建的 cwd 口径一致**（同一目录集三入口产出同一 knownNames 集） | 实施期 |
