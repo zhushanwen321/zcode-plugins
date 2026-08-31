@@ -21,8 +21,13 @@
  *   task-notification 携带的内容，链路正确性在此验证
  * - A2 机制版：异步 start ×2 立即回句柄 + 聚合 wait 保序回两条终态
  * - A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 created（排队可见）
- * - A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管 → status 带
- *   lost/orphan + 重发指引
+ * - A5 机制版 ×2 形态（W6a2 后 core engine 缺省 appserver 常驻，per-task 形态
+ *   靠 XYZ_ZCODE_MODE 定向钉死，各自确定性验证）：
+ *   - A5（spawn 定向）：SIGKILL daemon → standby 看门狗接管 → status 带
+ *     lost/orphan 与重发指引；victim 断言走 exec.pid 整数通路（旧语义回归锚点）
+ *   - A5-b（appserver 定向）：同款接管编舞；victim 断言走 W6a2 消费链产物
+ *     （exec.kind='appserver' + sessionRef 回填、pid 恒空、保守探活 orphan 分流），
+ *     孤儿常驻进程按 core D6③ pidfile 手工收割
  *
  * env 隔离纪律（与现有 e2e 同款，差异点如实声明）：
  * - ZSW_ROOT/ZSW_MAILBOX_ROOT/ZSW_SOCK 全落场景级 mkdtemp 临时目录；
@@ -111,27 +116,33 @@ let gatePromise = null;
 function modelGate() {
   if (gatePromise) return gatePromise;
   gatePromise = (async () => {
-    // core 引擎的池引导在 run 内做（preparer）；缺凭据在首探即报可操作错误 → skip
+    // core 引擎的池引导在 run 内做（preparer）；缺凭据在首探即报可操作错误 → skip。
+    // gate 结论即弃 runner：appserver 命中时常驻连接会挂住测试进程的事件循环
+    // （子进程退出不波及常驻进程——与 CLI 进程内执行同款风险），shutdown 收割
     const runner = new CoreRunner();
-    for (let i = 1; i <= 3; i++) {
-      CALLS.probes += 1;
-      const t0 = Date.now();
-      let r;
-      try {
-        r = await runner.start({
-          subagentId: `sa-gate-${i}`, slug: 'quota-gate',
-          prompt: '回复：ok。不要做任何其他事。',
-          cwd: TMP, modelRef: MODEL_REF, timeoutMs: 120_000, conversation: false,
-        }).done;
-      } catch (e) {
-        return { ok: false, reason: `真实模型凭据不可用: ${e && e.message}` };
+    try {
+      for (let i = 1; i <= 3; i++) {
+        CALLS.probes += 1;
+        const t0 = Date.now();
+        let r;
+        try {
+          r = await runner.start({
+            subagentId: `sa-gate-${i}`, slug: 'quota-gate',
+            prompt: '回复：ok。不要做任何其他事。',
+            cwd: TMP, modelRef: MODEL_REF, timeoutMs: 120_000, conversation: false,
+          }).done;
+        } catch (e) {
+          return { ok: false, reason: `真实模型凭据不可用: ${e && e.message}` };
+        }
+        console.error(`[e2e-daemon] 配额窗口探测 #${i}: status=${r.status} elapsed=${Date.now() - t0}ms`);
+        if (r.status === 'closed') return { ok: true };
+        CALLS.probeRetries += 1;
+        if (i < 3) await sleep(45_000);
       }
-      console.error(`[e2e-daemon] 配额窗口探测 #${i}: status=${r.status} elapsed=${Date.now() - t0}ms`);
-      if (r.status === 'closed') return { ok: true };
-      CALLS.probeRetries += 1;
-      if (i < 3) await sleep(45_000);
+      return { ok: false, reason: `模型配额窗口不可用（${CALLS.probes} 次探测均非 closed，同账户桌面端持续占用或限流）` };
+    } finally {
+      try { await runner.shutdown(); } catch { /* best-effort 收割 */ }
     }
-    return { ok: false, reason: `模型配额窗口不可用（${CALLS.probes} 次探测均非 closed，同账户桌面端持续占用或限流）` };
   })();
   return gatePromise;
 }
@@ -266,6 +277,24 @@ function waitClose(child, timeoutMs = 15_000) {
     const timer = setTimeout(() => reject(new Error(`等待进程 ${child.pid} 退出超时`)), timeoutMs);
     child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
   });
+}
+
+/**
+ * appserver 常驻进程 pid（孤儿收割用）：读 core D6③ pidfile——落点
+ * <ZSW_ROOT>/engines/zcode/<poolKey>/appserver.pid（core resolvePoolDir 布局；
+ * 固定池 key 'home-appserver'，场景级全新 ZSW_ROOT 无锁竞争不派生后缀）。
+ * 内容为 JSON {pid, startedAt, lstart?}。SIGKILL daemon 不波及常驻子进程
+ * （spawn 形态按 exec.pid 手工收、appserver 形态按本 pidfile 手工收——同款
+ * 「孤儿仍烧 token，手工收」语义）。
+ */
+function readAppServerPid(sc, poolKey = 'home-appserver') {
+  const pidFile = path.join(sc.env.ZSW_ROOT, 'engines', 'zcode', poolKey, 'appserver.pid');
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+    return Number.isInteger(parsed && parsed.pid) && parsed.pid > 0 ? parsed.pid : null;
+  } catch {
+    return null;
+  }
 }
 
 after(() => {
@@ -469,14 +498,15 @@ test('A4 机制版：3 槽占满后 start 句柄立即返回且 record 停在 cr
   await sleep(GAP_MS);
 });
 
-// ------------------------------------------------------------------ A5 机制版（daemon 死亡 + 接管）
+// ------------------------------------------------------------------ A5 机制版（daemon 死亡 + 接管，spawn 定向）
 
-test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管 → status 带 lost/orphan 与重发指引', async (t) => {
+test('A5 机制版（spawn 定向）：SIGKILL daemon → standby 看门狗接管 → status 带 lost/orphan 与重发指引', async (t) => {
   if (!(await requireModel(t))) return;
   const sc = newScenario(t, 'a5');
-  // A5 的 victim 断言依赖 exec.pid（2c 后唯一通道恒 spawn 单轮：独立子进程 +
-  // pid 探活/orphan 语义；appserver 已随 D6-⑥ 退役）。
-  // （ZSW_RUNNER 钉面已删——缺省即 core zcode engine spawn 单轮）
+  // W6a2 后 core engine 缺省 appserver 常驻——本场景钉 spawn 定向（不探不降）：
+  // victim 断言走 exec.pid 整数通路（独立子进程 + pid 探活/orphan 语义，
+  // 旧语义的回归锚点）；appserver 形态的接管编舞由 A5-b 覆盖
+  sc.env.XYZ_ZCODE_MODE = 'spawn';
   const a = spawnMcpServer(sc, 'a5-daemon');
   assert.equal(await a.role, 'daemon');
   assert.equal(fs.readFileSync(sc.lockPath, 'utf8'), String(a.child.pid), 'lock 内必须是 daemon A 的 pid');
@@ -526,6 +556,78 @@ test('A5 机制版：SIGKILL daemon（异常死亡）→ standby 看门狗接管
   // 清场：SIGKILL daemon 不波及 runner 子进程（孤儿仍烧 token），手工收；
   // 接管者 B 正常退出（exit 0 + 无残留 = 退出卫生闭环）
   try { process.kill(agentPid, 'SIGKILL'); } catch { /* 可能已自行退出 */ }
+  b.child.kill('SIGTERM');
+  const bc = await waitClose(b.child);
+  assert.equal(bc.code, 0, `signal=${bc.signal}`);
+  assert.ok(!fs.existsSync(sc.sockPath) && !fs.existsSync(sc.lockPath), '接管者退出卫生后无残留');
+});
+
+// -------------------------------------------------- A5-b 机制版（appserver 常驻定向，W6a2 消费链）
+
+test('A5-b 机制版（appserver 定向）：exec.kind/sessionRef 落盘 + SIGKILL daemon → 接管 lost/orphan（保守探活）', async (t) => {
+  if (!(await requireModel(t))) return;
+  const sc = newScenario(t, 'a5b');
+  // 钉 appserver 定向（不探不降）：形态确定性优先——appserver 协议若坏，本场景
+  // 应大声失败（这正是 Gate A 要验的面，静默降级反而掩盖回归）
+  sc.env.XYZ_ZCODE_MODE = 'appserver';
+  const a = spawnMcpServer(sc, 'a5b-daemon');
+  assert.equal(await a.role, 'daemon');
+  assert.equal(fs.readFileSync(sc.lockPath, 'utf8'), String(a.child.pid), 'lock 内必须是 daemon A 的 pid');
+
+  // daemon A 持一个长任务（victim）——appserver 形态：无 per-task 子进程，
+  // turn 跑在常驻共享进程上（core D6 边界：常驻进程不进 onChildSpawned）
+  CALLS.starts += 1;
+  const r = await runCli(sc, [
+    'start', '--task', '从 1 逐个数到 1000000，不要停',
+    '--slug', 'a5b-victim', '--model', MODEL, '--timeout-ms', '120000',
+  ]);
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+  const victimId = jsonOf(r, 'start').subagentId;
+  CALLS.killedEarly += 1;
+
+  // 等 victim running 且 W6a2 onHandleReady 消费链落盘：exec.kind 翻转 +
+  // sessionRef 回填（create 应答即达，早于 turn 终态——无需等模型轮完成）
+  const victim = await waitFor(async () => {
+    const s = await runCli(sc, ['status', '--id', victimId]);
+    if (s.code !== 0) return null;
+    const rec = jsonOf(s, 'status');
+    if (rec.status === 'running' && rec.exec && rec.exec.kind === 'appserver'
+      && rec.exec.sessionRef && typeof rec.exec.sessionRef.sessionId === 'string') return rec;
+    // 定向不降：失败即终态——带原因快速失败，不空等 30s 超时
+    if (rec.status !== 'running' && rec.status !== 'created') {
+      throw new Error(`appserver 定向下 victim 未达 running（status=${rec.status}）: ${rec.error || JSON.stringify(rec).slice(0, 300)}`);
+    }
+    return null;
+  }, 30_000, 500);
+  assert.equal(victim.exec.pid, undefined, 'appserver 形态 exec.pid 恒 undefined（core D6 边界钉住）');
+  assert.equal(typeof victim.exec.sessionRef.dbPath, 'string', 'sessionRef.dbPath 落盘（read 面定位锚）');
+  const residentPid = readAppServerPid(sc, victim.exec.poolKey);
+  assert.ok(residentPid, `常驻进程 pidfile 必须可读（${path.join(sc.env.ZSW_ROOT, 'engines', 'zcode', victim.exec.poolKey, 'appserver.pid')}）`);
+
+  // 同款接管编舞：standby 竞选 → A 异常死亡 → 看门狗接管
+  const b = spawnMcpServer(sc, 'a5b-standby');
+  assert.equal(await b.role, 'standby');
+  a.child.kill('SIGKILL');
+  await waitClose(a.child);
+  await waitFor(() => canConnect(sc.sockPath), 10_000, 100);
+  await waitFor(() => fs.existsSync(sc.lockPath)
+    && fs.readFileSync(sc.lockPath, 'utf8') === String(b.child.pid), 5_000, 100);
+
+  // 接管断言：W6a2 保守探活——appserver 形态 orphan 分流（不判死）+ 如实文案
+  // + 重发指引；sessionRef 接管后仍可读（磁盘 exec 持久化的诊断锚）
+  const s2 = await runCli(sc, ['status', '--id', victimId]);
+  assert.equal(s2.code, 0, `接管后 status 失败: ${s2.stderr}`);
+  const rec2 = jsonOf(s2, 'status after takeover');
+  assert.equal(rec2.status, 'lost', `接管后应为 lost，实际 ${rec2.status}`);
+  assert.equal(rec2.orphan, true, 'orphan 标记必须可见（appserver 保守存活分支）');
+  assert.match(rec2.lostReason || '', /重发/, 'lostReason 必须含重发指引文案');
+  assert.match(rec2.lostReason || '', /孤儿会话|进度未知/, 'appserver 形态文案如实区分（孤儿会话/进度未知）');
+  assert.ok(rec2.exec && rec2.exec.sessionRef && typeof rec2.exec.sessionRef.sessionId === 'string',
+    '接管后 exec.sessionRef 仍可读（onHandleReady 落盘产物）');
+
+  // 清场：SIGKILL daemon 不波及常驻进程（孤儿 turn 仍烧 token），按 pidfile 手工收；
+  // 接管者 B 正常退出（B 自身未跑任务——无引擎实例可 dispose，退出链组合零副作用）
+  try { process.kill(residentPid, 'SIGKILL'); } catch { /* 可能已自行退出 */ }
   b.child.kill('SIGTERM');
   const bc = await waitClose(b.child);
   assert.equal(bc.code, 0, `signal=${bc.signal}`);
