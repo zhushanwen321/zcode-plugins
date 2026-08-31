@@ -17,8 +17,8 @@ const VENDOR_DIR = path.join(__dirname, 'vendor', 'subagent-core');
 /**
  * 报错附带的刷新指引。按 VENDOR-MANIFEST.json 的 source 分流：
  * - `local:<core 仓路径>@<版本>`：vendored 副本来自本地 core 构建时，npm 上
- *   尚无等价产物（agents 等收口面全落 0.4.0，0.3.0 无 agents 资产——按 --npm
- *   刷会回退到扩面前的旧 npm tarball 丢面），指引必须指向 --local 通道
+ *   尚无等价产物（agents 等收口面全落 0.4.0——按 --npm 刷会回退到扩面前的
+ *   旧 npm tarball 丢面），指引必须指向 --local 通道
  *   （core 仓路径即 source 记录的路径）；
  * - 其余（npm@<版本> / manifest 缺失或损坏）：给 --npm <版本> 形态（能读到
  *   vendored package.json 就给具体版本，否则占位符）。

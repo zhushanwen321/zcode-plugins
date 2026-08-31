@@ -73,7 +73,7 @@ const WORKFLOWS_GUIDE =
  * @param {string} cliModelMain 默认模型引用（defaultModelRef 回退链产物；空则不加默认句）
  */
 function modelsGuide(nowIso, cliModelMain) {
-  let g = 'The following models are available. Use these ids when passing --model to zsub/zflow:'
+  let g = 'The following models are available. Use these ids when passing --model to zsw start / zsw workflow:'
     + ' cross-provider refs must use the full <provider>/<model> id exactly as shown'
     + ` (short names only work for the default provider ${PROVIDER_ID}).`
     + ' Match the model to the task — strong reasoners for design/architecture/deep research,'
