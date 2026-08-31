@@ -43,7 +43,7 @@ z-sw（`z-subagent-workflow/`）是 zcode 平台的子代理编排插件：CLI�
 
 **例 2（安全）**：模型产出 agent 引用 `/tmp/x/../../home/u/.md`。`agent-discovery.js:202-212` 只查绝对路径与 `.md` 后缀——`..` 穿越放行；pi 侧同参数被 `assertSafeStartPath` 拒绝。
 
-**例 3（无声累积）**：每次 workflow run 在 `<zswRoot>/workflow-state/` 落一个状态文件。core FileRunStore 无 prune、插件 reaper 边界声明不覆盖（`reaper.js:48-49`），长期使用目录无限增长。pi 侧同域有 `pruneStateFilesBeyondCap`。
+**例 3（无声累积）**：每次 workflow run 在 `<zswRoot>/workflow-state/` 落一个状态文件。core FileRunStore 无 prune（grep 零命中已核实）、插件 reaper 职责边界不覆盖（`reaper.js:5-11` 头注声明只管 outputs/），长期使用目录无限增长。pi 侧同域有 `pruneStateFilesBeyondCap`。
 
 **例 4（复刻面）**：`worktree.js` 289 行为纯 git 封装（SAFE_ID_RE、GIT_TIMEOUT_MS=30_000、intent-to-add、保真读与 core 逐字同源）；`orchestration-host.js:114-143` 注释自认「core 未导出 WorkflowScript 类」而手工拼鸭子实体——导出面缺口逼出的实现，core 演进即失配。
 
@@ -57,7 +57,7 @@ z-sw（`z-subagent-workflow/`）是 zcode 平台的子代理编排插件：CLI�
 | C4 | watchdog | `maxTurnsToWatchdogMs` | `MS_PER_TURN` 退役，决策链改调（**行为变更**：floor 恢复） |
 | C5 | ConcurrencyPool | `ConcurrencyPool(queuePolicy)` | `slots.js` 收敛为薄配置（strict-fifo 注入）或退役 |
 | C6 | worktree git 内核 | `worktree-git-ops`（锚点抽象） | `worktree.js` 收缩为锚点实现（sidecar 持久锚点）+ 布局/孤儿策略层 |
-| C7 | agents 装配 | `discoverAgents`（若 core 提供）或 parseAgentProfile 组装 | `listAgents` 装配循环改调/收缩 |
+| C7 | agents 装配 | `discoverAgents`（core U2 已裁决交付） | `listAgents` 装配循环退役改调 |
 | C8 | parseAgentProfile | 宽容解析 + AgentMeta 执行字段 | `parseAgentMd/parseFrontmatter/scalar/toProfile` 退役；`parseFile` 改 `getCachedParsed` 获缓存 |
 | C9 | 模型切分原语 | `splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey` | `splitModelRef` 改薄包装；`hasProviderCredentials` 与 core `hasApiKey` 统一为非空 string 裁决 |
 | C10 | isProcessAlive | barrel 导出 | `runner-core.alive()` spawn 分支与 `daemon-socket.probeLockHolder` 改调 |
@@ -85,18 +85,18 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 ## 3 解决方案
 
-### 3.0 依赖契约（core 新导出面，转载自姊妹文档 §3.3/§5.2）
+### 3.0 依赖契约（core 新导出面，转载自姊妹文档 §3.3/§5.2，已按其 R1 修订版对齐）
 
-消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`new ConcurrencyPool({ limit, queuePolicy })`、worktree-git-ops 函数族（`collectWorktreePatch(anchor)` 等，anchor 为基线锚点抽象）、`recoverCrashedRuns(store, runs, reason)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`atomicWriteFileSync(file, text)`、`normalizeArgsByMeta(params, meta): {args, warnings}`、`findFlattenedArgKeys(params, meta)`、`normalizeWorkflowRef(ref, {knownNames})`、`loadWorkflowScriptByPath(path)`、模型切分原语四件、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
+消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝——**对两宿主均为行为变更**，现状两宿主均放行）、`normalizeWorkflowRef(ref, {knownNames})`（名/路径二分 + 保留字裁决 + 内置名优先策略）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`discoverAgents(workspaceRoot, hostRoots): Promise<AgentEntry[]>`（发现→解析→去重→码点序装配）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`createConcurrencyPool({ maxConcurrent, queuePolicy })`（工厂形态，queuePolicy: 'priority' | 'strict-fifo'）、worktree-git-ops 函数族（`collectWorktreePatch(anchor)` 等，anchor 为基线锚点抽象；锚点缺失/损坏 → warn + 降级裸 diff + `patchIncomplete` 留痕）、`recoverCrashedRuns(store, runs, reason, hooks?)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`atomicWriteFileSync(file, text)`、`normalizeArgsByMeta(params, meta): {args, warnings}`、`findFlattenedArgKeys(params, meta)`、`loadWorkflowScriptByPath(path)` + WorkflowScript 类、模型切分原语四件（splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey）、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
 
 ### 3.1 终态（使用者视角）
 
-**成功路径**：用户 agent 写 `maxTurns: 2` → 实际 30 分钟 floor；`zsw agents` 清单渲染内置角色完整 description（block-scalar 正确解析）；`zsw workflow run --workflow <saved 名>` 与 pi 一致可用（D-E3 裁决后）；长期使用 workflow-state 目录稳定在上限内。
+**成功路径**：用户 agent 写 `maxTurns: 2` → 实际 30 分钟 floor；用户自建含 block-scalar description 的 agent .md 放入四根任一目录 → `zsw agents` 清单 description 完整（解析能力修复——现状 vendored 内置 10 角色均为单行 description，block-scalar 风险作用于用户自建与资产演进，非内置资产正在受害）；`zsw workflow run --workflow <saved 名>` 与 pi 一致可用（D-E3 裁决后）；长期使用 workflow-state 目录稳定在上限内。
 
 **失败路径带恢复指引**：
 - 引用含 `..`：`无效 agent 引用 /x/../y.md：路径段 ".." 不允许 —— 请传入绝对路径（可经 SessionStart 注入段查询）`。
 - slug 超长：`task-slug 超过 35 字符上限（SLUG_MAX_LENGTH）—— 请缩短后重试`。
-- vendored 半刷新：`vendored core 缺少导出符号 parseAgentProfile —— 重跑 node scripts/vendor-subagent-core.js --npm 0.4.0 刷新`。
+- vendored 半刷新（**开发者/CI 形态受众**）：`vendored core 缺少导出符号 parseAgentProfile —— 重跑 node scripts/vendor-subagent-core.js --npm 0.4.0 刷新`；npm 包 / marketplace 形态用户的对应恢复指引 = **升级插件包版本**（该形态无 vendor 脚本与 workspace 根，守卫报错措辞按形态分流）。
 
 ### 3.2 方案对比（关键裁决）
 
@@ -118,7 +118,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 | 方案 | 长期架构 | 短期成本 | 风险 | 裁决 |
 |---|---|---|---|---|
-| 对齐 pi：knownNames = 内置 5 名 + 发现面 saved 名，`normalizeWorkflowRef` 统一裁决 | 两平台同一 ref 语义（G3），`script:` 废弃裁决不变 | 低（core 原语 + 白名单策略注入） | 名字冲突（saved 与内置同名）——normalizeWorkflowRef 内置名优先 + 冲突时发现面报错并列出双路径 | ✅ |
+| 对齐 pi：knownNames = 内置 5 名 + 发现面 saved 名，`normalizeWorkflowRef` 统一裁决 | 两平台同一 ref 语义（G3），`script:` 废弃裁决不变 | 低（core 原语 + knownNames 策略注入；knownNames 为 async 发现面，三入口校验点异步化或预取，cwd 口径统一 = run 命令的工作目录） | saved 与内置同名——**维持现状「内置优先」+ 新增 warning 提示 saved 同名脚本被遮蔽并列出双路径**（现状 `resolveScriptPath` 即内置优先 `orchestration-host.js:150-152`，不新造报错行为） | ✅ |
 | 维持入口仅内置名+绝对路径 | zsw CLI flag 语义严格 | 零 | 用户可见契约继续分叉（pi 可按名 run saved、zsw 必须绝对路径），违背 G3 | ❌ |
 
 **E4：record-store 归属**
@@ -135,12 +135,13 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 | `slots.js` 收敛为 ConcurrencyPool 的 strict-fifo 配置薄层（createSlots 内部改 core 池，导出签名不变） | 分层公式/下限单源，FIFO 策略差异保留为参数 | 低 | core 池 priority 缺省——显式传 strict-fifo，测试锚定排队语义 | ✅ |
 | 保留 slots 独立实现 | 零改动 | 零 | 公式双份漂移持续 | ❌ |
 
-**E6：patch 基线锚点——sidecar 保留为持久锚点实现**
+**E6：patch 基线锚点——sidecar 保留为持久锚点实现，降级语义显式化**
 
 | 方案 | 长期架构 | 短期成本 | 风险 | 裁决 |
 |---|---|---|---|---|
-| `worktree.js` 收缩为「sidecar 持久锚点实现 + zsw 布局/孤儿策略」，patch 收集/清理/保真读改调 core git-ops | git 语义单源；跨 daemon 重启的基线持久化（sidecar 真实需求）保留 | 中（对照验证三铁律场景） | patch 产物从 intent-to-add 机制切到 core add -A+cached 机制——产物语义等价（同解 MF#2）需对照验证（姊妹文档 ⛔3） | ✅ |
+| `worktree.js` 收缩为「sidecar 持久锚点实现 + zsw 布局/孤儿策略」，patch 收集/清理/保真读改调 core git-ops；**降级语义显式化**：锚点缺失/损坏 → 显著 warn + 降级裸 diff（仅未提交改动）+ outcome 留痕 `patchIncomplete: true`（对齐 core 契约；prepare 写锚点失败不阻断任务启动，维持现可用性语义）；`add -A -N` 失败维持非致命继续 diff（现状），warn 留痕 | git 语义单源；跨 daemon 重启的基线持久化（sidecar 真实需求）保留；两处静默降级补可见信号（现状 `worktree.js:164-169` 写失败不阻断、`:188-201` 读失败裸 diff 均静默——静默本身是缺陷） | 中（对照验证三铁律场景 + 锚点丢失分支） | patch 产物从 intent-to-add 机制切到 core add -A+cached 机制——产物语义等价（同解 MF#2）需对照验证（姊妹文档 ⛔3）；降级行为从「静默」变「warn+留痕」为信号增强非 break | ✅ |
 | core 内核参数化支持两种 patch 机制 | 兼容零风险 | 高（把分叉固化进 core 抽象） | 两种机制长存即分叉长存 | ❌ |
+| 锚点丢失改 fail-fast（姊妹文档初版方案） | 强一致 | 低 | prepare 写 sidecar 前崩溃的真实命中场景从「部分 patch」变「任务作废」，损害大于收益（姊妹文档已被其审查 MF-4 击穿改裁决，本文档同步） | ❌ |
 
 ### 3.3 关键决策与权衡（四件套）
 
@@ -157,21 +158,21 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 - **效果**：G4/G5；§4 S4/S5。
 
 **D-E3：workflow ref 对齐 pi（saved 裸名放行，选定）**
-- **采用**：knownNames = 内置 5 + 发现面 saved 名；同名冲突内置优先且报错列出双路径；`script:` 前缀维持废弃拒收（D-4 既有裁决不变）。
-- **被否**：维持仅内置名——两平台用户可见契约继续分叉（pi `tool-workflow.ts:66` schema 明示 name 可为 saved 名）。
+- **采用**：knownNames = 内置 5 + 发现面 saved 名（async 获取，三入口校验点异步化或预取，cwd 口径统一为 run 命令工作目录）；同名冲突**维持内置优先现状 + 新增 warning 列出双路径**；`script:` 前缀维持废弃拒收（D-4 既有裁决不变）。daemon 缓存无障碍已核实：core 发现无进程缓存且 scriptSaveAction 已 invalidateCache 联动（`bin/zsw.js:365`），save 后立即 run 可见。
+- **被否**：维持仅内置名——两平台用户可见契约继续分叉（pi `tool-workflow.ts:66` schema 明示 name 可为 saved 名）；冲突改报错——现状内置优先直接跑内置，报错是新造行为，warning 已足够可观察。
 - **证据**：RT1-F4 契约分叉坐实；用户裁决「尽量能下沉的都下沉」含契约统一。
 - **效果**：G3；§4 S3。
 
 **D-E4：record-store 暂不下沉、路径参数化（选定）**
-- **采用**：`RecordStore` 构造增 `filePath` 注入；归属问题与 zsw manager 收敛（动作层消费 core 后）同窗另立项。
+- **采用**：`RecordStore` 构造增 `filePath` 注入；归属问题与 zsw manager 收敛（动作层消费 core 后）同窗另立项——**立案锚：本设计交付时在 zsw 仓建占位文档 `docs/design/zsw-manager-convergence.design.md`（TODO 形态）登记依赖与范围，防遗忘**。
 - **被否**：现在下沉——单消费方推测性下沉 + 与状态机统一裁决耦合。
-- **证据**：RT2-F6 contested 判定；全局红线「不加推测性功能」。
-- **效果**：裁决闭环（G3 后半），D1 第二步依赖显式登记。
+- **证据**：RT2-F6 contested 判定；全局红线「不加推测性功能」；record 现状无参构造 + config 路径直取（`record-store.js:33-36`）证实参数化是新增。
+- **效果**：裁决闭环（G3 后半），D1 第二步依赖显式登记且有案可查。
 
 **D-E5：行为变更登记为 2.0.0 breaking notes（选定）**
-- **采用**：release notes 列四项：`..` 拒绝、slug 长度闸、maxTurns floor 恢复（超时可能变长）、saved workflow 按名 run 放宽；patch 机制切换标注为内部等价重构（对照验证背书）。
-- **被否**：拆 patch 版渐进——四项均依赖同一 core 面，拆开发版面碎。
-- **证据**：W9 既有 2.0.0 major 窗口裁决；check-release-needed 已报 UNRELEASED。
+- **采用**：release notes 列六项：① `..` 拒绝；② slug 长度闸；③ maxTurns floor 恢复（超时可能变长）；④ saved workflow 按名 run 放宽（内置优先维持，新增遮蔽 warning）；⑤ **workflow-state 历史文件按上限自动清理**（prune 接线后旧文件会被删除，含 env 上限配置说明——用户数据删除行为必须告知）；⑥ patch 收集降级路径新增 warn + `patchIncomplete` 留痕（信号增强，非行为 break，如实标注类别）。patch 机制切换（intent-to-add → add -A+cached）标注为内部等价重构（产物对照验证背书，⛔A）。
+- **被否**：拆 patch 版渐进——六项均依赖同一 core 面，拆开发版面碎；漏报 ⑤/⑥——数据删除与信号变更不可不告（审查 F6/F7 击穿初版四项）。
+- **证据**：W9 既有 2.0.0 major 窗口裁决；check-release-needed 已报 UNRELEASED；pi 侧 evict 不动磁盘 + 显式 prune 的先例语义（`index.ts:605-607`）。
 - **效果**：G5。
 
 **错误规格（新增/变更失败路径）**
@@ -188,21 +189,21 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 真实依赖真实路径，禁 mock。回溯标注见各场景。
 
-**S1 复刻清零与行为等值（G1）**：改造分支上 ① `grep -c "normalizeAgentRef\|parseFrontmatter\|MS_PER_TURN" lib/` 归零；② 全量单测绿（基线 349+）；③ 真机跑一轮 `zsw start --worktree`（worktree 链路走 core git-ops）+ `zsw workflow --workflow review-fix-loop`（批次解析走 meta 驱动），行为与改造前对照记录一致。回溯 G1。
+**S1 复刻清零与行为等值（G1）**：改造分支上 ① 按 §5.3 退役/收缩清单的**全符号集**驱动 grep 归零（normalizeAgentRef/parseAgentMd/parseFrontmatter/toProfile/scalar/stripQuotes/expandHome/stem/MS_PER_TURN/splitModelRef/hasProviderCredentials/SAFE_ID_RE/GIT_TIMEOUT_MS/loadScriptFromPath 鸭子实体——以清单文件为准防漏）；② 全量单测绿（基线 349+）；③ 真机跑一轮 `zsw start --worktree`（worktree 链路走 core git-ops）+ `zsw workflow --workflow review-fix-loop`（批次解析走 meta 驱动），行为与改造前对照记录一致。回溯 G1。
 
-**S2 漂移修复三连（G2）**：① `maxTurns: 2` 真机派发实测 ≥30min；② `zsw start --agent /x/../evil.md` 被拒且消息含恢复指引；③ `zsw agents` 中 block-scalar 角色 description 完整。回溯 G2。
+**S2 漂移修复三连（G2）**：① `maxTurnsToWatchdogMs(2) ≥ 1_800_000` 函数级断言 + `maxTurns: 2` 真机派发断言 watchdog 挂载时长日志；② `zsw start --agent /x/../evil.md` 被拒且消息含恢复指引；③ 自建 block-scalar 测试资产 `t-sink.md`（含多行 `- item` tools 列表）放入 `~/.zcode/agents/`，`zsw agents` 清单 description 与 tools 投影完整（内置 10 角色均单行 description，块标量样例须自建——对齐姊妹文档 S1 同一资产）。回溯 G2。
 
-**S3 ref 契约（G3）**：① `zsw workflow --action script-save` 保存脚本后按名 run 成功；② saved 名与内置名同名时 run 报冲突并列出双路径；③ `script:` 前缀仍拒收。回溯 G3。
+**S3 ref 契约（G3）**：① `zsw workflow --action script-save` 保存脚本后按名 run 成功；② saved 名与内置名同名时 run 跑内置 + 输出遮蔽 warning 列出双路径；③ `script:` 前缀仍拒收；④ 三入口（CLI/daemon/MCP）knownNames 构建的 cwd 口径一致。回溯 G3。
 
 **S4 三形态一致（G4）**：① inline dev 真机全量单测绿 + core-ref 符号守卫绿；② `node scripts/check-pack.js` 绿（files 白名单含新 vendored）；③ 人为回退 vendored 一个文件触发守卫报错（负面验证半刷新拦截）。回溯 G4。
 
-**S5 发版与累积修复（G5）**：① `node scripts/release.js z-subagent-workflow major` 产出 2.0.0 三处同步 + release notes 四项 breaking；② 造 25 个历史 workflow-state 文件，daemon 启动后目录收敛至上限内。回溯 G5 + 例 3。
+**S5 发版与累积修复（G5）**：① `node scripts/release.js z-subagent-workflow major` 产出 2.0.0 三处同步 + release notes 六项（D-E5）；② 造 25 个历史 workflow-state 文件，daemon 启动后目录收敛至上限内。回溯 G5 + 例 3。
 
 ## 5 下一层拆分
 
 ### 5.1 实施路径
 
-两阶段：阶段一（V1-V8 消费改造，依赖 core 0.4.0 发布或 `--local` 冒烟态）→ 阶段二（V9 回归与发版）。前置：姊妹文档 U1-U10 合入且 core 0.4.0 发布。
+两阶段：阶段一（V1-V8 消费改造）→ 阶段二（V9 回归与发版）。前置：姊妹文档 U1-U10 合入；core 0.4.0 未发布期间以 `--local` 冒烟并行开发（CI 门禁仍守 vendored sha256 自检），发布后切 `--npm 0.4.0` 终态——D-E2 保证发版前必为 --npm 态，无 `--local` 态发版路径。
 
 ### 5.2 拆分清单
 
@@ -210,9 +211,9 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 |---|---|---|
 | V1 | agent-ref 面消费：normalizeAgentRef/expandHome/stem/报错文案退役改调；`..` 收紧；slug 长度闸 | U1 |
 | V2 | agent 解析消费：parseAgentMd 族退役、parseFile 走 getCachedParsed、AgentProfile 消费 | U2 |
-| V3 | workflow 面消费：loadScriptFromPath 鸭子退役改工厂、registry 收缩差异合并层、normalizeWorkflowRef 统一三处口径 + knownNames 策略（E3） | U1（ref 面）+ WorkflowScript 工厂（姊妹文档 U1 同批） |
+| V3 | workflow 面消费：loadScriptFromPath 鸭子退役改工厂、registry 收缩差异合并层、normalizeWorkflowRef 统一三处口径（CLI/daemon/MCP）+ knownNames 异步获取与 cwd 口径统一 + saved 遮蔽 warning（E3） | U1（agent-ref 面）+ U1（normalizeWorkflowRef + WorkflowScript 工厂，均在 U1 契约面批次） |
 | V4 | 编排消费：recoverOrphans 改 core、runSummary/isScriptRunning 改调、normalizeRunParams 白名单退役改 meta 驱动 + 平铺检测接线 | U7/U9 |
-| V5 | 引擎与进程面：MS_PER_TURN 退役改 maxTurnsToWatchdogMs、isProcessAlive 改调、模型切分原语改薄包装 + hasApiKey 统一 | U3/U1/U8 模型原语 |
+| V5 | 引擎与进程面：MS_PER_TURN 退役改 maxTurnsToWatchdogMs、isProcessAlive 改调、模型切分原语改薄包装 + hasApiKey 统一 | U3 + U1（模型切分原语四件在 U1 契约面批次） |
 | V6 | worktree 收缩：sidecar 持久锚点实现 + git-ops 消费 + 布局/孤儿策略层保留（E6） | U5 |
 | V7 | 基础设施：slots 收敛 ConcurrencyPool(strict-fifo)（E5）、atomicWrite 改调、prune 接线（daemon 启动 + env 透传）、record-store 路径参数化（E4） | U4/U6/U7 |
 | V8 | 宿主内清理：modelEntries 参数化消重 toModelEntries、vendored 刷新（--local 冒烟 → --npm 终态）+ core-ref 符号守卫扩展（新导出面符号清单） | U6 批 |
@@ -229,12 +230,12 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 | # | 检查点 | 断言 | 状态 |
 |---|---|---|---|
-| ⛔A | patch 机制切换对照 | sidecar 场景（新文件+已提交改动+daemon 重启）patch 产物与改造前等价（git apply 目标一致） | 实施期 |
+| ⛔A | patch 机制切换对照 | sidecar 场景（新文件+已提交改动+daemon 重启）patch 产物与改造前等价（git apply 目标一致）+ **锚点缺失/损坏分支：warn 发出 + 降级裸 diff + outcome `patchIncomplete` 留痕** | 实施期 |
 | ⛔B | strict-fifo 排队语义 | slots 现有排队测试在 core 池 strict-fifo 下全绿 | 实施期 |
 | ⛔C | meta 驱动白名单等值 | 现有全部合法调用参数集在 meta 驱动下零 warning（对照清单） | 实施期 |
-| ⛔D | saved 名冲突语义 | 内置优先 + 双路径报错在 daemon/MCP/CLI 三入口一致 | 实施期 |
+| ⛔D | saved 名遮蔽语义 | 内置优先 + 遮蔽 warning（含双路径）在 daemon/MCP/CLI 三入口一致 + **三入口 knownNames 构建的 cwd 口径一致**（同一目录集三入口产出同一 knownNames 集） | 实施期 |
 
 ### 5.5 版本与发版
 
-- zsw 2.0.0（major）：承载 `..` 拒绝、slug 闸、floor 恢复、saved 裸名放宽四项 break + 全部内部重构；release notes 双语。
-- 时序：core 0.4.0 发布（xyz 仓）→ V1-V8（--local 冒烟）→ --npm 0.4.0 终态刷新 → V9 回归 → release.js major → push 授权（用户）。
+- zsw 2.0.0（major）：承载 `..` 拒绝、slug 闸、floor 恢复、saved 裸名放宽、workflow-state 自动清理、patch 降级信号六项 release notes（D-E5）+ 全部内部重构；release notes 双语。
+- 时序：V1-V8 在 core 0.4.0 未发布期以 `--local` 冒烟并行开发 → core 0.4.0 发布（xyz 仓）→ 切 `--npm 0.4.0` 终态刷新 → V9 回归 → release.js major → push 授权（用户）。
