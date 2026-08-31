@@ -427,22 +427,23 @@ test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', scenar
     }
     assert.ok(cmd === null || !cmd.includes('zcode.cjs'), `pid ${inFlight.pid} 仍存活 zcode.cjs: ${cmd}`);
   } else {
-    // appserver：无 per-task 进程，「无残留」语义 = 场景收割（dispose 杀常驻
-    // 全链）后常驻进程消失。cancel 本身不连坐常驻（D3 abort 链优先 session/
-    // stop 优雅停）已由 cancel 返回时 done 落定隐含——连坐与否取决于 stop
-    // 落定速度，非确定性断言面；确定性面 = dispose 收割后无残留。
-    // 显式 shutdown 与 buildManager 的 t.after 收割幂等共存（二次调用零副作用）
-    const residentPid = readAppServerPid();
-    assert.ok(residentPid, '常驻 pidfile 应在场（引擎已建常驻连接）');
+    // appserver：无 per-task 进程。cancel 的 D3 终局两可（Gate A 实测走了后者）：
+    // 优雅 stop 落定 → 常驻存活；grace 未落定 → killChain 连坐收割共享进程
+    // （pidfile 留死 pid，清理归 dispose）。「无残留」的确定性断言面因此取：
+    // ① cancel 后快照——至少一个 pidfile 在场（in-flight 已证引擎建过常驻）；
+    // ② 显式收割（dispose：close 帧 + 杀链 + pidfile 清理；连坐后对死连接幂等）
+    //    ——与 buildManager 的 t.after 收割幂等共存；
+    // ③ 收割后轮询直到无活常驻（kill 链 SIGTERM→grace→SIGKILL 给足窗口）。
+    const snap = scanAppServerPidfiles();
+    assert.ok(snap.length > 0, `appserver 分支应在派生目录留有 pidfile（快照: ${JSON.stringify(snap)}）`);
     await manager.runner.shutdown();
     const deadline = Date.now() + 8_000;
-    let cmd = 'unknown';
-    while (Date.now() < deadline) {
-      cmd = await psCommandOf(residentPid);
-      if (cmd === null || !cmd.includes('zcode.cjs')) break;
+    let live = readAppServerPid();
+    while (live !== null && Date.now() < deadline) {
       await sleep(100);
+      live = readAppServerPid();
     }
-    assert.ok(cmd === null || !cmd.includes('zcode.cjs'), `dispose 收割后常驻仍存活 zcode.cjs: ${cmd}`);
+    assert.equal(live, null, 'dispose 收割后不得有活常驻进程（扫描应无 alive pidfile）');
   }
   assert.equal(manager.notifier.capabilities().mode, 'mailbox');
   assert.equal(envelopeCountSafe('sess_e4'), 0, 'cancelled 不投递');
@@ -458,18 +459,61 @@ function psCommandOf(pid) {
 }
 
 /**
- * appserver 常驻进程 pid（孤儿/残留断言用）：读 core D6③ pidfile——落点
- * <ZSW_ROOT>/engines/zcode/home-appserver/appserver.pid（core resolvePoolDir
- * 布局；固定池 key，文件级共享 ZSW_ROOT 无锁竞争不派生后缀），内容 JSON
- * {pid, startedAt, lstart?}。
+ * appserver 常驻 HOME 扫描：遍历 <ZSW_ROOT>/engines/zcode/ 下全部
+ * home-appserver* 派生目录的 pidfile（core D6③，JSON {pid, startedAt}），
+ * process.kill(pid,0) 探活（EPERM=活，与 runner-core.alive 同口径）。
+ *
+ * 为什么必须扫派生目录（Gate A 实测归因）：本文件 ZSW_ROOT 跨场景共享，且
+ * before gate 独立 runner + 每场景新 runner = 每次都是新引擎实例——core 锁判定
+ * 「lockfile.pid 活 ⇒ 一律视为持有（新实例派生后缀目录）」，同测试进程 pid
+ * 持有的锁对新实例同样是活持有 → 逐场景派生 -2/-3/…（上限 8）；dispose 杀
+ * 常驻、删本目录 pidfile，但刻意不删锁（锁随宿主进程存活）。pidfile 只会落在
+ * 当前派生目录，固定读 home-appserver 必然 miss（实测：gate=home-appserver、
+ * E4 引擎=home-appserver-2）。
  */
-function readAppServerPid() {
+function scanAppServerPidfiles() {
+  const enginesDir = path.join(process.env.ZSW_ROOT, 'engines', 'zcode');
+  let dirs;
   try {
-    const parsed = JSON.parse(fs.readFileSync(
-      path.join(process.env.ZSW_ROOT, 'engines', 'zcode', 'home-appserver', 'appserver.pid'), 'utf8'));
-    return Number.isInteger(parsed && parsed.pid) && parsed.pid > 0 ? parsed.pid : null;
+    dirs = fs.readdirSync(enginesDir).filter((d) => /^home-appserver(-\d+)?$/.test(d));
   } catch {
-    return null;
+    return [];
+  }
+  return dirs.map((dir) => {
+    const pidFile = path.join(enginesDir, dir, 'appserver.pid');
+    try {
+      const parsed = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
+      const alive = Number.isInteger(parsed && parsed.pid) && parsed.pid > 0 && pidAlive0(parsed.pid);
+      return { dir, pid: parsed.pid, startedAt: Number(parsed.startedAt) || 0, alive };
+    } catch (e) {
+      return { dir, pid: null, startedAt: 0, alive: false, error: e.code || String(e && e.message || e) };
+    }
+  });
+}
+
+/** 最新一代活常驻 pid（startedAt 最大——当前场景引擎的常驻）；无活返回 null。 */
+function readAppServerPid() {
+  const live = scanAppServerPidfiles()
+    .filter((e) => e.alive)
+    .sort((a, b) => b.startedAt - a.startedAt);
+  if (live.length > 0) return live[0].pid;
+  // 诊断清单只打一次（收割轮询会反复调用，刷屏无增益）
+  if (!readAppServerPid.manifestLogged) {
+    readAppServerPid.manifestLogged = true;
+    const manifest = scanAppServerPidfiles()
+      .map((e) => `  ${e.dir}: ${e.pid === null ? `pidfile 缺失/损坏（${e.error}）` : `pid=${e.pid} startedAt=${e.startedAt} alive=${e.alive}`}`);
+    console.error(`[e2e] readAppServerPid: 无活常驻 pidfile。扫描清单:\n${manifest.join('\n') || '  （无 home-appserver* 目录）'}`);
+  }
+  return null;
+}
+
+/** pid 探活：信号 0（ESRCH=死；EPERM=存在但属主不同，按活算）。 */
+function pidAlive0(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
   }
 }
 
