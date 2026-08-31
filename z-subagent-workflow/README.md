@@ -1,15 +1,15 @@
 # z-subagent-workflow — zcode subagent 编排 + workflow 插件
 
 > 两条能力线，1.0.0 起统一走 CLI（`node bin/zsw.js`，默认连常驻 daemon thin client；MCP 工具面已下线——tools/list 恒空、tools/call 指引走 CLI）：
-> **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、四根 agent .md 发现（复用 pi 生态）、per-start 模型路由、跨窗口 record。
-> **zflow** — 确定性多步编排（`zsw workflow` 子命令，六 action：run/abort/status/list/scripts/lint）。回接 2b 起 workflow 运行时整体替换为 vendored `@zhushanwen/subagent-core` orchestration：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop，资产来自 core `workflows/`）+ core 契约 `script:<名>` 脚本扩展（`@pi-meta` + top-level `agent()`）；run 同步阻塞出 scriptResult（配 Bash run_in_background 即完成原生唤醒）。**本替换是行为 break——旧契约/旧状态面的迁移对照见「回接 2b break 变更」节。**
+> **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、schema 结构化输出、conversation 续聊、agent .md 发现（core 发现面：vendored 内置 10 角色 + 项目/HOME 用户根，与 pi 生态同源）、per-start 模型路由、跨窗口 record。agent 参数只收 .md 绝对路径（与 pi 平台契约统一），缺省加载 `general-purpose` 内置角色。
+> **zflow** — 确定性多步编排（`zsw workflow` 子命令，九 action：run/abort/status/list/scripts/lint + 创作闭环 script-generate/script-save/script-delete）。回接 2b 起 workflow 运行时整体替换为 vendored `@zhushanwen/subagent-core` orchestration：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop，资产来自 core `workflows/`）+ core 契约自定义脚本（`@pi-meta` + top-level `agent()`，按 .js 绝对路径引用；`script-generate → lint → save → run → delete` 创作闭环全链 CLI 可用，W8/D-6）；run 同步阻塞出 scriptResult（配 Bash run_in_background 即完成原生唤醒）。**契约统一是行为 break——迁移对照见「subagent-core 收口 break 变更」节。**
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
 ## 架构（端口/适配器内核）
 
 ```
 入口层   CLI（node bin/zsw.js，默认 daemon thin client）+ skill——MCP 工具面恒下线
-         （tools/list 恒空、tools/call 恒拒并指引走 CLI；zsub 九 action / zflow 六 action
+         （tools/list 恒空、tools/call 恒拒并指引走 CLI；zsub 九 action / zflow 九 action
           保留为语义层名，见 CONTEXT.md）
 编排层   SubagentManager（subagent 生命周期，只依赖 lib/ports.js 契约）
          orchestration-host（workflow 编排宿主 = vendored subagent-core orchestration：
@@ -47,23 +47,31 @@ node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   #
 node bin/zsw.js cancel --id sa-xxxx
 ```
 
-workflow 管理面（zflow 面六 action 的 CLI 入口；状态面 = `<zsw 数据根>/workflow-state/`。abort/status/list/scripts 默认经 daemon——跨进程状态一致、abort 经 daemon 侧 core `abortRun` 真停 run；run/lint 恒本地）：
+workflow 管理面（zflow 面九 action 的 CLI 入口；状态面 = `<zsw 数据根>/workflow-state/`。abort/status/list/scripts/script-save/script-delete 默认经 daemon——跨进程状态一致、abort 经 daemon 侧 core `abortRun` 真停 run、script-delete 的「运行中拒绝」由 daemon 侧 runs 真实状态裁决；run/lint/script-generate 恒本地）：
 
 ```bash
 # run（--action 缺省；恒本地同步执行，执行体 = CLI 进程，跑到终态退出并打报告。
 # agent() 每次调用 spawn 一个独立无头 zcode 进程（core zcode engine 单轮，~1-2s 冷启动/次）。
 # 需要「派发后做别的、完成唤醒」时用 Bash run_in_background 包裹整条命令，CLI 退出即引擎原生通知）
+# workflow 引用 = 内置名 或 .js 绝对路径（~/ 前缀可展开；script:<名>/裸名已废弃拒收，D-4）
 node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
-node bin/zsw.js workflow --workflow script:my-wf --task "..." --workdir <绝对路径>   # core 契约脚本
+node bin/zsw.js workflow --workflow ~/.zsw/workflows/my-wf.js --task "..." --workdir <绝对路径>   # 自定义脚本按路径引用
 
-# abort / status / list / scripts / lint
+# abort / status / list / scripts / 创作闭环
 node bin/zsw.js workflow --action list
 node bin/zsw.js workflow --action status --id wf-xxxxxxxx
 node bin/zsw.js workflow --action abort --id wf-xxxxxxxx
-node bin/zsw.js workflow --action scripts          # vendored 内置 5 + 用户脚本清单
+node bin/zsw.js workflow --action scripts          # vendored 内置 5 + 用户脚本清单（含 path 列）
 node bin/zsw.js workflow --action lint --file <脚本路径>
+
+# 创作闭环（W8 / D-6：core 五道闸校验管线，落盘目录 = zsw 布局 ~/.zsw/workflows）
+node bin/zsw.js workflow --action script-generate --name my-wf --script "<完整 JS 源码：@pi-meta 块 + top-level agent()>"
+                                    # 校验（ESM 拒/meta 必需/agent() 必需/语法/@pi-meta round-trip 含行列）
+                                    # → 合法落 ~/.zsw/workflows/.tmp/my-wf.js；非法 exit 1 + core 同源报错
+node bin/zsw.js workflow --action script-save --name my-wf     # tmp → ~/.zsw/workflows/ 固化（重名拒绝；默认经 daemon）
+node bin/zsw.js workflow --action script-delete --name my-wf   # 删 tmp/已固化脚本（运行中拒绝；默认经 daemon）
 ```
 
 **review-fix-loop（批次外环 + 质量内核，资产来自 core）**：唯一会写文件的内置 workflow（fix 阶段）。批次外环：`--batch1..--batchN` 串行（**值 = agent .md 绝对路径**，逗号分隔多 agent），前一批 clean 后一批才启动。每轮并行 review → LLM 聚合裁决（臆测/无证据条目降级，不进修复队列）→ 结构化契约 fix → R2 起逐条 ID 对账（fixed/not-fixed/regressed）→ 收敛/needs-redesign 状态机；run 目录由 core 资产自管（`~/.review-fix-loop/<repo-slug>/<runId>/`，含 state.json 与各轮报告）。
@@ -76,9 +84,9 @@ node bin/zsw.js workflow --workflow review-fix-loop \
   --stuck-threshold 3 --aggregator-model <模型短名>
 ```
 
-参数面全集见 `node bin/zsw.js workflow --help`（`--target`（必填）、`--target-type`（缺省 text）、`--batch1..N`（agent .md 路径）/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--review-target <text>` 等价 `--target-type text --target <text>`；`--task` 在 review-fix-loop 场景作为 target 回退。**`--reviewers`（自由文本维度）已废弃**——core 契约批次值 = agent .md 路径，传入显式报错；无 agent .md 的自由文本维度场景改用 `script:` 自定义脚本。
+参数面全集见 `node bin/zsw.js workflow --help`（`--target`（必填）、`--target-type`（缺省 text）、`--batch1..N`（agent .md 路径）/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--review-target <text>` 等价 `--target-type text --target <text>`；`--task` 在 review-fix-loop 场景作为 target 回退。**`--reviewers`（自由文本维度）已废弃**——core 契约批次值 = agent .md 路径，传入显式报错；无 agent .md 的自由文本维度场景改用自定义脚本（`script-generate` 创作后按 .js 绝对路径引用）。
 
-**自定义 workflow 脚本（core 契约）**：内置 5 种之外的编排用 `script:<名>` 扩展。发现面 = core 发现面（`<ws>/.pi/workflows` + `<ws>/.agents/workflows` + `~/.agents/workflows` + `~/.zsw/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）；写完先 `lint` 校验再运行。
+**自定义 workflow 脚本（core 契约，绝对路径引用）**：内置 5 种之外的编排用 core 契约脚本扩展，run 按 .js 绝对路径引用（`~/` 前缀可展开；`script:<名>` 与裸名已废弃拒收——D-4 契约与 pi 平台统一）。发现面 = core 发现面（`~/.zsw/workflows` + `~/.agents/workflows` + `<ws>/.pi/workflows` + `<ws>/.agents/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。创作走闭环：`script-generate`（core 五道闸校验 + tmp 落盘）→ `lint` → `script-save`（固化 `~/.zsw/workflows/`）→ run 按路径引用 → `script-delete` 清理；完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）。
 
 `--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动 + 聚合等待（`wait` / `start --wait`）走默认 daemon 模式（见下节）。
 
@@ -176,6 +184,23 @@ zsub 执行链（runner/spawn 驱动/模型执行解析）已整体替换为 ven
 - thinking / allow-tools 请求值在 spawn 单轮下恒不生效，record 维持 `'null (spawn 降级)'` / `toolsNote` 如实标注。
 - 嵌套防护升级：core 公共 nesting-guard（`XYZ_AGENT_SUBAGENT=1` + 剥离 `ZSW_NESTED` 旧标记，防孙代误判嵌套层）。
 
+## subagent-core 收口 break 变更（agent 发现 core 化 / 引用契约统一 / 注入三段 XML / 创作闭环）
+
+zsw 的共享面——agent 模板资产与发现、SessionStart 注入渲染、workflow 脚本创作管线——已收口到 vendored `@zhushanwen/subagent-core`（与 pi 平台同源；设计见源仓库 `docs/design/subagent-core-convergence-design.md`）。zcode 侧开箱即得 vendored 内置 10 角色（reviewer/coder/planner 等，随 core 分发），注入块与 pi 同构（三段 XML，见下方「SessionStart 资源注入」节），workflow 脚本创作闭环（generate/lint/save/delete）全链 CLI 可用。**以下是引用契约统一的 breaking 迁移表（D-4：与 pi 平台对齐，zsw 侧收紧）**：
+
+| 旧用法（zsw ≤2.0） | 新用法 | 说明 |
+|---|---|---|
+| `start --agent "reviewer"`（按名引用） | `start --agent "<location 绝对路径>"` | 按名引用被拒：报错 `Invalid agent ref: ...`（与 pi 侧 core 同源）并自带恢复指引。路径取 `zsw agents` 清单的 `location`/`file` 列，或注入段 `<available_subagents>` 条目的 `<location>` |
+| `start` 不传 `--agent`（无角色裸跑） | 行为变化：缺省加载 `general-purpose` 内置角色 | 子进程 prompt 注入角色 body；record 的 agent 展示名从 `null` 变 `general-purpose`（仅展示面，任务书不受影响）；不想要角色时显式传自定义 .md 路径（project 级同名 .md 可遮蔽内置） |
+| `workflow --workflow "script:tri-review"` | `workflow --workflow "/abs/path/tri-review.js"` | `script:` 前缀已废弃拒收（报错含恢复指引）；路径取 `zflow scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 的 `<location>`，支持 `~/` 前缀展开 |
+| `workflow --workflow "tri-review"`（裸名） | 同上（.js 绝对路径） | 裸名仅保留给内置 5 名——多源同名遮蔽下按名引用有歧义（所指取决于扫描序，模型不可见），路径引用所指即所载 |
+| `workflow --workflow "chain"`（内置名） | 不变 | 内置名是稳定 API 面（chain/parallel/map-reduce/scatter-gather/review-fix-loop），保留人机友好形态 |
+
+**agent 发现的两类收窄（W6a 登记，core 单层扫描语义）**——zsw 旧自写 resolver 递归扫描（深度 16、排除 node_modules），收口后 core 扫描**单层不递归**（pi 侧既有契约）：
+
+1. **子目录布局需平铺或建 symlink**：agent .md 放在发现根的子目录里（如 `~/.zcode/agents/refs/reviewer.md`）不再被扫到——平铺到根一层，或对单个 .md 建文件级 symlink（core 扫描 follow 文件级链接）。
+2. **目录 symlink 整库：库内容需平铺在库根一层**：发现根下指向个人技能库目录的一级目录 symlink（如 `agents/my-lib -> ~/Code/personal-agents/`）会被宿主层动态展开（同标签额外扫描根，realpath 防环）——但展开深度仅一层，库内子目录与库内嵌套链接不可见；库内容需平铺在库根一层。库更新可持续（每次发现时重新展开）。
+
 ## CLI 默认形态：daemon thin client（1.0.0 起）
 
 1.0.0 起 CLI 默认即常驻 daemon thin client（不加任何 flag；unix socket；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --wait` 为 start+wait sugar；`wait` 子命令：`zsw wait --id a [--id b ...] [--timeout-ms n]`（无 `--local` 形态——本地一次性进程没有可挂起的等待方），等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
@@ -250,31 +275,40 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 
 无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）；支持单场景入口 `node test/e2e.test.js --name E1`。appserver 专有场景（E9 apc-smoke 冒烟 / E10 多会话并发）已随 D6-⑥ 退役删除——升级漂移核对改由 core 引擎探针（golden 干跑回归）承担；E3/E7 已改 spawn 通道形态（续聊报退役错误）。
 
-## SessionStart 资源注入验收手册（`<zsw-resources>` 块）
+## SessionStart 资源注入验收手册（三段 XML 资源清单）
 
-zsw 注册 SessionStart hook，在会话启动时向主 agent 上下文注入一份资源快照 `<zsw-resources>` 块（可运行模型 / agent .md / workflow 三段清单 + 兜底指引），模型路由决策零工具调用可得；快照可能过期，`zsw models` 等查询命令保留为权威兜底。设计全文见源仓库（github.com/zhushanwen321/zcode-plugins）根 `docs/design/zsw-session-start-injection-design.md`。
+zsw 注册 SessionStart hook，在会话启动时向主 agent 上下文注入三段 XML 资源清单（`<available_subagents>` / `<available_workflows>` / `<available_provider_models>`，W7 起由 core 渲染函数产出——tag/字段集与 pi 平台同构；旧单块 `<zsw-resources>` 形态已退役），模型路由与委派决策零工具调用可得；快照可能过期，`zsw models` 等查询命令保留为权威兜底。设计全文见源仓库（github.com/zhushanwen321/zcode-plugins）根 `docs/design/zsw-session-start-injection-design.md` 与 `docs/design/subagent-core-convergence-design.md`。
 
 ### 块形态与生效条件
 
-会话启动时上下文头部出现（示意样例，内容以本机环境实测为准）：
+会话启动时上下文头部出现（示意样例，内容以本机环境实测为准；三段各自带引导文案，空清单段自然缺席）：
 
 ```
-<zsw-resources snapshot="2026-08-29T12:00:00.000Z">
-zsw 可用资源快照（会话启动时生成，GUI 中途改动后可能过期）
-models：
-  当前默认：builtin:bigmodel-coding-plan/GLM-5.3-Flash
-  默认 provider builtin:bigmodel-coding-plan（短名直接可传）：GLM-5.3, GLM-5.3-Flash（默认）
-  其他可运行 provider（跨 provider 必须用全名 <provider>/<model>）：
-    builtin:bigmodel-start-plan/GLM-5.3-Flash
-    5c5bb493…/MiniMax-M3 · 5c5bb493… 即 5c5bb493-035c-4214-8a75-0563fba60394
-    e512d53e…/mimo-v2.5-pro · e512d53e…/mimo-v2.5 · e69643b0…/k3-256k
-agents（四根发现，同名高优先级根胜出）：context-builder（需求分析与元提示生成）· oracle（高上下文决策一致性守护）· …（6 个）
-workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-loop；script:<名> 自定义（当前 0 个）
-兜底：传错模型名时报错自带可用清单（零依赖权威兜底）；主动现查 zsw models / zsw models --all（跨 provider）/ zsw agents（需 daemon 在跑——任一启用插件的会话）。模型名以本块与报错内清单为准（AGENTS.md 等静态路由表中的具体模型名可能过期）
-</zsw-resources>
+<available_subagents>
+The following subagents are available. PRIORITY: … delegate to a matching subagent FIRST …
+pass the <location> path (absolute .md path) as the --agent param — bare names are rejected. …
+  <agent><name>analyst</name><description>深度项目分析 agent（只读，产出给人读的报告…）</description><when>深度分析某项目/repo 架构…</when><location>/…/lib/vendor/subagent-core/agents/analyst.md</location></agent>
+  <agent><name>reviewer</name><description>代码审查与需求验收 agent（只读含 git diff…）</description><when>用户要求 review/审查代码或 diff…</when><location>/…/lib/vendor/subagent-core/agents/reviewer.md</location></agent>
+  …（vendored 内置 10 角色 + 用户四根里的自定义，码点序）
+</available_subagents>
+
+<available_workflows>
+The following workflows are available. Run them via the zsw CLI workflow subcommand: built-in names are
+passed to --workflow <name> directly; custom scripts must be passed by their <location> absolute .js path …
+  <workflow><name>chain</name><description>通用编排：analyze → transform → synthesize 顺序三步链</description><location>/…/lib/vendor/subagent-core/workflows/chain.js</location></workflow>
+  …（内置 5 + 用户脚本，带 location）
+</available_workflows>
+
+<available_provider_models>
+The following models are available. Use these ids when passing --model to zsub/zflow: …
+Current default model: builtin:bigmodel-coding-plan/GLM-5.3-Flash. … Snapshot generated 2026-…Z at session start …
+  <model><id>5c5bb493-…/MiniMax-M3</id><name>MiniMax-M3</name><contextWindow>1000000</contextWindow></model>
+  <model><id>builtin:bigmodel-coding-plan/GLM-5.3</id><name>GLM-5.3</name><caps>reasoning</caps><contextWindow>1000000</contextWindow></model>
+  …（全名 <provider>/<model>；caps/contextWindow 标注推理档位与窗口）
+</available_provider_models>
 ```
 
-（渲染实现与样例的两处已知差异：agents 段为「段头 + 每 agent 一行」而非单行 ` · ` 连接——行数需随清单增长才能被预算截断；UUID provider 缩写对照在该 provider 首次出现处附一次。全文硬预算 ≤45 行，超限优先保留 models 段、依次截 agents/workflows 段并标注对应查询命令。）
+（分段条目预算语义：subagents 段条目预算 15、workflows 段 10，条目按 name 码点序排、超预算截尾部条目并追加「完整清单：zsw agents / zflow scripts」兜底指引行；models 段完整永不截。内置条目无截断豁免——码点序统一截尾行为可预测，兜底指引可恢复。旧单块的 45 行总预算与两层渲染已随 W7 退役。）
 
 生效条件：
 
@@ -288,10 +322,10 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 
 | # | 场景 | 步骤 | 通过标准 |
 |---|------|------|----------|
-| S1 | 主 agent 零调用报清单 | 重启 ZCode 开新会话 → 问「现在哪些模型可跑？默认哪个？短名和全名怎么用？」（④ 的验证需换到含项目级 agent .md 的仓库开会话执行，或按 P-cwd 手册条目在 GUI 场景单独执行） | agent 不调任何工具，答出：① 默认 provider 的**模型名单与默认标记**与 `zsw models`（另开终端跑）一致，且块内「当前默认：<全名>」行与之一致（字段粒度不做要求——`zsw models` 返回结构化条目，注入块只渲染名单+标记）；② 其余可运行 provider 以全名形态列出；③ 短名/全名使用规则与 resolve 语义一致（短名=默认 provider，跨 provider=全名）；④ 在含项目级 agent .md 的仓库开会话时，注入块 agents 段含该项目级 agent 名（P-cwd 的 GUI 侧断言落点） |
+| S1 | 主 agent 零调用报清单 | 重启 ZCode 开新会话 → 问「现在哪些模型可跑？默认哪个？短名和全名怎么用？」（④ 的验证需换到含项目级 agent .md 的仓库开会话执行，或按 P-cwd 手册条目在 GUI 场景单独执行） | agent 不调任何工具，答出：① 默认 provider 的**模型名单**与 `zsw models`（另开终端跑）一致，且 models 段引导文案的「Current default model: <全名>」句与之一致（字段粒度不做要求——`zsw models` 返回结构化条目，注入段渲染名单+caps/窗口）；② 其余可运行 provider 以全名形态列出；③ 短名/全名使用规则与 resolve 语义一致（短名=默认 provider，跨 provider=全名）；④ 在含项目级 agent .md 的仓库开会话时，`<available_subagents>` 段含该项目级 agent 名（P-cwd 的 GUI 侧断言落点） |
 | S2 | 路由决策一步到位 | 新会话让 agent 派发两个 zsub（一重一轻，见上文样例） | agent 直接按块内引用构造参数（重 → 显式 `--model GLM-5.3`；轻 → 不传跟随默认 Flash），全程未跑 `zsw models`；两任务受理成功 |
 | S3 | 快照过期自愈（负面场景） | 会话中途 GUI 停用一个 provider → 让 agent 用该 provider 模型派发 | 收到既有可操作报错（含可用清单）→ agent 换模型重传成功；无卡死、无静默失败 |
-| S4 | 嵌套会话不污染 | S2 的重任务 task 书里加「报告你上下文是否有 zsw-resources 块」 | 子代理回答没有；主会话块仍存在 |
+| S4 | 嵌套会话不污染 | S2 的重任务 task 书里加「报告你上下文是否有 `<available_subagents>` 等资源注入段」 | 子代理回答没有；主会话三段注入仍在 |
 | S5 | hook 故障降级 | 关闭其他 zcode 会话 → `chmod 000 ~/.zcode/v2/config.json` → 立即手跑 `node bin/zsw.js hook session-start` 验证输出 `{}` exit 0 → `chmod 644 ~/.zcode/v2/config.json` 恢复 → 重启 ZCode 开新会话 | 手跑降级正确；恢复后会话正常启动无报错弹窗、上下文有块；全程窗口 < 1 分钟（chmod 000 为最小窗口，验证后必须立即执行恢复命令） |
 | S6 | resume/compact 行为 | ① resume 一个已注入会话 ② 触发 compact | ① 块出现次数 ≤1（对应 P-resume-dup）② compact 后上下文出现**新快照**（时间戳更新） |
 | S7 | 发版完整性 | `node scripts/check-pack.js` + `node scripts/check-sync.js`（cwd = workspace 根）+ 装正式版验证 | hooks/ 在 npm 包内；三处版本一致；marketplace 安装版 hook 同样生效 |
@@ -313,9 +347,9 @@ workflows：内置 chain / parallel / map-reduce / scatter-gather / review-fix-l
 
 ### 已知边界（如实声明）
 
-- **快照语义**：块在会话启动时生成，会话中途 GUI 改动（停用 provider、增删 agent/script 等）不反映进已注入的块。兜底两条：传错模型名时报错自带可用清单（零依赖权威兜底）；或主动现查 `zsw models`（默认 provider 明细）/ `zsw models --all`（全部带凭据 provider 全名视图，与块内「其他可运行 provider」段同口径）/ `zsw agents`（需 daemon 在跑——任一启用插件的会话）。与 skill `zsub-zflow-orchestration` 模型路由纪律（快照优先 + 两条兜底）同口径。
+- **快照语义**：三段注入在会话启动时生成，会话中途 GUI 改动（停用 provider、增删 agent/script 等）不反映进已注入的段。兜底两条：传错模型名时报错自带可用清单（零依赖权威兜底）；或主动现查 `zsw models`（默认 provider 明细）/ `zsw models --all`（全部带凭据 provider 全名视图，与 `<available_provider_models>` 段同口径）/ `zsw agents`（需 daemon 在跑——任一启用插件的会话）。与 skill `zsub-zflow-orchestration` 模型路由纪律（快照优先 + 两条兜底）同口径。
 - **模型名权威序**：具体模型名以注入块与报错内清单为准（实时快照）；AGENTS.md / SKILL.md 等静态文本中的具体模型名是档位策略参考，可能随环境漂移——按静态名字直传失败时以报错内清单重传。
-- **token 代价**：SessionStart 的 matcher 值域只有启动源，会话启动时无法预判该会话是否使用 zsw——装了插件但全程没用 zsw 的会话也注入这份快照（硬预算 ≤45 行；本机规模实测约 20 行）。这是已声明的方案代价，非缺陷。
+- **token 代价**：SessionStart 的 matcher 值域只有启动源，会话启动时无法预判该会话是否使用 zsw——装了插件但全程没用 zsw 的会话也注入这份快照（分段条目预算：subagents 15 / workflows 10 / models 完整；开箱场景三段合计约 30-40 行）。这是已声明的方案代价，非缺陷。
 - **hook 超时是静默丢块**：引擎在 timeoutMs（本插件 5000ms）到点杀进程，不走 hook 内部降级——表现是上下文没有块、无报错。排查：看 ZCode 日志中 hook 执行记录（outcome=timed-out 与耗时），并手跑 `time node bin/zsw-hook.js` 复现慢源。同类监控点：引擎升级后首会话确认块在场（stdout 截断/事件契约变化都会以「块消失」形态出现）；hook 命令依赖 PATH 上的 node（与 z-tool-finder 同担，GUI 经 Finder 启动时 PATH 形态不同则 exit 127 → 会话启动 raise error）。
 - **嵌套子会话不注入**：双保险——① hook 入口 `ZSW_NESTED=1` 守卫直接输出 `{}` + exit 0；② 被 spawn 的 zsub 运行在隔离 HOME（`~/.zcode/zsw/home-*`），该环境本就不加载用户插件。
 - **resume 场景块数 ≤1 依赖引擎行为**：hook 未设 matcher（startup/resume/clear/compact 四种启动源都注入；compact 后重注入是特性——压缩丢细节，新快照补位）。resume 是否重放历史注入块属引擎运行时行为，由 P-resume-dup 探针把关（S6①）；若复现两份块属已知现象、非正确性问题（token 翻倍但内容一致），失败时降级路径为 matcher 收窄 `startup|compact`。

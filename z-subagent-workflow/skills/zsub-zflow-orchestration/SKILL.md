@@ -1,7 +1,7 @@
 ---
 name: zsub-zflow-orchestration
-description: Use when delegating tasks to background subagents via the zsw CLI (`node bin/zsw.js`, the default daemon thin client since 1.0.0 — the zsub/zflow MCP tool face is offline, tools/call rejects and points to the CLI), deciding between zsub and engine-native background agents, or running multi-step workflows via the zsw workflow subcommand (run/abort/status/list/scripts/lint; vendored subagent-core orchestration since the 2b rewire — core-contract scripts with @pi-meta + top-level agent()). Covers task decomposition, model routing, worktree isolation, completion notification semantics, the no-polling rule, and workflow selection (chain / parallel / map-reduce / scatter-gather / review-fix-loop / custom script:<name>). 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发、workflow 编排、zflow、多阶段流水线、多视角审查、审查修复循环、map-reduce、scatter-gather、自定义 workflow 脚本、workflow 脚本。
-whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、需要跨窗口管理 subagent 记录、或需要确定性多阶段编排（无需中途干预）时。
+description: Use when delegating tasks to background subagents via the zsw CLI (`node bin/zsw.js`, the default daemon thin client since 1.0.0 — the zsub/zflow MCP tool face is offline, tools/call rejects and points to the CLI), deciding between zsub and engine-native background agents, or running multi-step workflows via the zsw workflow subcommand (run/abort/status/list/scripts/lint plus the script-generate/save/delete creative loop; vendored subagent-core orchestration since the 2b rewire — core-contract scripts with @pi-meta + top-level agent(), referenced by absolute .js path). Covers task decomposition, model routing, worktree isolation, completion notification semantics, the no-polling rule, workflow selection (chain / parallel / map-reduce / scatter-gather / review-fix-loop / custom scripts by path), and the script creative loop (generate → lint → save → run → delete). 触发词：subagent 编排、后台委派、zsub、并行子任务、worktree 隔离、agent 派发、workflow 编排、zflow、多阶段流水线、多视角审查、审查修复循环、map-reduce、scatter-gather、自定义 workflow 脚本、workflow 脚本、脚本创作、script-generate。
+whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构化输出的委派、需要续聊追问子任务、需要跨窗口管理 subagent 记录、需要确定性多阶段编排（无需中途干预）、或需要创作/固化自定义 workflow 脚本时。
 ---
 
 # zsub/zflow 编排指南
@@ -86,16 +86,18 @@ node bin/zsw.js list
 - 完成唤醒走 `zsw wait` / `zsw start --wait` + `run_in_background`（CLI 阻塞进程退出即引擎原生 task-notification）；全文在 `~/.zcode/zsw/outputs/<subagentId>.md`。
 - 终态 record 的 error/timeout 字段含失败原因与恢复指引（如调大 timeoutMs、拆小任务）。
 
-## workflow 编排（zsw workflow 子命令，六 action；回接 2b 起 = vendored subagent-core orchestration）
+## workflow 编排（zsw workflow 子命令，九 action；回接 2b 起 = vendored subagent-core orchestration）
 
 确定性多步编排：每次 `agent()` 调用一个独立 agent 会话（经 zsw runner 通道），脚本在 core worker 线程内编排，主会话只收最终 scriptResult（markdown + JSON 双段渲染打 stdout）。**run 是同步阻塞命令且恒本地执行**（执行体 = CLI 进程，跑到终态才退出）——需要「派发后做别的、完成唤醒」时，用 Bash `run_in_background=true` 包裹整条命令，CLI 退出即引擎原生通知（与 zsub wait 同一纪律，不要轮询）。
 
+**workflow 引用契约（与 pi 平台统一，D-4）**：`--workflow` 只收内置名或 .js 绝对路径（`~/` 前缀可展开）；`script:<名>` 前缀与裸名（非内置）已废弃拒收——报错自带恢复指引，路径取 `--action scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 条目的 `<location>`。
+
 run 状态面（与旧版差异）：内存索引 + `<zsw 数据根>/workflow-state/<runId>.jsonl` append-only 快照（`status` 返回 `stateFile` 路径）；不再写 zsw record 事件流，也不再投 mailbox 完成通知——异步 run 的结果查询用 `--action status`（done run 内存保留有上限，淘汰后按 stateFile 提示读快照文件）。daemon 重启/接管时遗留的 running run 自动标 `done,failed`（worker 线程随旧进程死亡，无进程可探活）。
 
-管理面边界（abort 语义）：abort/status/list/scripts 默认走 daemon——daemon 侧 core `abortRun` 真停其持有的 run（worker 线程 terminate + 终态落盘）。run/lint 恒本地：本地 run 的执行体随 CLI 进程，取消本地 run（bg bash 形态）用引擎 TaskStop 终止该 bash 任务即可（进程死即 worker 死）。
+管理面边界（abort 语义）：abort/status/list/scripts/script-save/script-delete 默认走 daemon——daemon 侧 core `abortRun` 真停其持有的 run（worker 线程 terminate + 终态落盘）；script-delete 的「运行中拒绝」由 daemon 侧 runs 真实状态裁决。run/lint/script-generate 恒本地：本地 run 的执行体随 CLI 进程，取消本地 run（bg bash 形态）用引擎 TaskStop 终止该 bash 任务即可（进程死即 worker 死）。
 
 ```
-node bin/zsw.js workflow --workflow <名> --task "<自包含任务书>" --workdir <绝对路径>
+node bin/zsw.js workflow --workflow <内置名|脚本绝对路径> --task "<自包含任务书>" --workdir <绝对路径>
      [--model <短名>] [--timeout-ms <ms>] [--json]
      [per-workflow 参数]                                  → 同步跑完出报告 + run 摘要（exit 0 = reason completed）
 node bin/zsw.js workflow --action abort  --id <runId>     → 中止运行中 run（daemon 侧真停；done run no-op）
@@ -103,6 +105,9 @@ node bin/zsw.js workflow --action status  --id <runId>    → run 详情（reaso
 node bin/zsw.js workflow --action list                    → 全部 workflow run（精简视图）
 node bin/zsw.js workflow --action scripts                 → vendored 内置 5 + 用户脚本（name/path/available/source）
 node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本（core lintScript：agent() 入口等契约）
+node bin/zsw.js workflow --action script-generate --name <名> --script "<JS 源码>"   → 五道闸校验 + tmp 落盘（恒本地）
+node bin/zsw.js workflow --action script-save --name <名>     → tmp 固化 ~/.zsw/workflows/（重名拒绝；默认经 daemon）
+node bin/zsw.js workflow --action script-delete --name <名>   → 删 tmp/已固化脚本（运行中拒绝；默认经 daemon）
 ```
 
 内置 5 种速查与选择（资产来自 vendored subagent-core workflows/，参数经 $ARGS 传入）：
@@ -117,9 +122,9 @@ node bin/zsw.js workflow --action lint --file <脚本路径>  → 校验脚本�
 
 通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，agent() 调用在其下工作）；`--model`（模型引用优先取上下文 `<available_provider_models>` 段；快照缺失或疑过期再现查 `node bin/zsw.js models`）/ `--timeout-ms`（整体墙钟预算 RunSpec.budgetTimeMs，不设则无限制）。`--max-concurrent` / `--timeout-per-phase` / `--subtask-count` 已废弃（core 编排无对应面）——传入会 stderr 显式 warning，不静默。运行可达数分钟——run_in_background 包裹时完成通知自动到达。
 
-### 自定义 workflow 脚本（script:<name>）
+### 自定义 workflow 脚本（绝对路径引用 + 创作闭环）
 
-内置 5 种之外的编排用 core 契约脚本扩展，调用形态 `--workflow script:<脚本名>`（或直接给脚本绝对路径）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序）：
+内置 5 种之外的编排用 core 契约脚本扩展，run 按 **.js 绝对路径**引用（`~/` 前缀可展开；`script:<名>` 与裸名已废弃拒收——多源同名遮蔽下按名引用有歧义）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序）：
 
 ```
 vendored 内置 5（名不可被遮蔽——registry 内置优先于一切发现面）
@@ -150,12 +155,22 @@ const r = await agent({
 return { summary: '结果' };                     // scriptResult（任意可结构化克隆值）
 ```
 
+**创作闭环（推荐路径——不用手写文件再找目录）**：`script-generate`（把源码交给 core 五道闸校验：ESM 拒绝 / meta 必需 / agent() 必需 / 语法 / @pi-meta round-trip，非法报错含行列可自纠正；合法自动落 tmp）→ `lint` 复核（可选）→ `script-save` 固化到 `~/.zsw/workflows/`（save 后 `scripts` 清单可见）→ run 按绝对路径引用 → `script-delete` 清理：
+
+```bash
+node bin/zsw.js workflow --action script-generate --name my-wf --script "<完整 JS 源码>"
+node bin/zsw.js workflow --action lint --file ~/.zsw/workflows/.tmp/my-wf.js
+node bin/zsw.js workflow --action script-save --name my-wf
+node bin/zsw.js workflow --workflow ~/.zsw/workflows/my-wf.js --task "..." --workdir <绝对路径>
+node bin/zsw.js workflow --action script-delete --name my-wf
+```
+
 要点：
 
 - `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道 = core zcode engine spawn 单轮，同 zsub 线）；模型解析链 per-call model > run 级 `--model` > 默认。
 - 脚本抛错 / worker 崩溃 = run 落 `done,failed`（core error-recovery 含崩溃重试）；abort 后 pending 的 agent() 调用立即拒绝。
 - 脚本同目录依赖用 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱内相对路径以 cwd 为基准，不能写相对 require）。
-- 开发流程：写脚本 → `lint` 校验（core lintScript）→ `scripts` 确认被发现 → `node bin/zsw.js workflow --workflow script:<名> --task ... --workdir ...`。
+- 手工放置形态：写好 .js 直接放进发现根（上表目录）→ `scripts` 确认被发现 → run 按路径引用；或走上方创作闭环。
 - 脚本在 worker 线程内执行：不要维护跨 run 的可变全局态；信任前提与「用户主动放进发现根的代码」一致。
 
 ### 何时用 workflow vs subagent（zsub start）

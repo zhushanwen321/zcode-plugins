@@ -485,17 +485,23 @@ test('buildTools：返回数组形态，含 zsub 与 zflow，与单 tool 定义�
   assert.deepEqual(tools[1], server.buildRunWorkflowToolDefinition());
 });
 
-test('buildRunWorkflowToolDefinition：action 枚举 6 值、description ≤1000、workflow 自由 string、无源插件品牌残留', () => {
+test('buildRunWorkflowToolDefinition：action 枚举 9 值（含 W8 创作闭环三 action）、description ≤1000、workflow 自由 string、无源插件品牌残留', () => {
   const tool = server.buildRunWorkflowToolDefinition();
   assert.deepEqual(
     tool.inputSchema.properties.action.enum,
-    ['run', 'abort', 'status', 'list', 'scripts', 'lint'],
+    ['run', 'abort', 'status', 'list', 'scripts', 'lint', 'script-generate', 'script-save', 'script-delete'],
   );
   assert.deepEqual(tool.inputSchema.required, ['action']);
   assert.ok(tool.description.length <= 1000, `description ${tool.description.length} 字符超限`);
-  // workflow 是自由 string：script:<name> 动态发现，静态枚举无法收录
+  // workflow 是自由 string：自定义脚本路径动态发现，静态枚举无法收录
   assert.equal(tool.inputSchema.properties.workflow.enum, undefined);
+  // D-4 契约：绝对路径引用 + script: 废弃声明 + 创作闭环三 action 登记
+  assert.ok(tool.inputSchema.properties.workflow.description.includes('绝对路径'));
   assert.ok(tool.inputSchema.properties.workflow.description.includes('script:'));
+  for (const key of ['name', 'script']) {
+    assert.ok(tool.inputSchema.properties[key] !== undefined, `inputSchema.properties 缺 ${key}`);
+  }
+  assert.ok(tool.description.includes('script-generate'));
   // 内置 5 名速查保留（回接 2b：vendored subagent-core orchestration）
   for (const wf of ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop']) {
     assert.ok(tool.description.includes(`"${wf}"`), `description 缺 ${wf}`);
@@ -700,6 +706,58 @@ test('zflow lint：file 必填 + host.lint 透传', async () => {
   assert.deepEqual(wfm.calls.at(-1), { action: 'lint', file: '/tmp/good.js' });
 });
 
+// ------------------ zflow 创作闭环三 action（W8 / D-6：bin/zsw.js 共享实现接线）
+
+test('zflow script-generate/save/delete：handler 分发 + core 管线真跑 + delete 运行中拒绝（HOME 已隔离至 TMP）', async () => {
+  const wfm = makeFakeWfHost();
+  const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
+  const call = (args) => callHandler(srv, 'zflow', args);
+
+  // name 必填（共享实现的入口守卫，经 handler catch 转 isError 可操作文案）
+  const noName = await call({ action: 'script-save' });
+  assert.equal(noName.isError, true);
+  assert.match(noName.content[0].text, /需要 name/);
+  // 非法名（路径形态）：core 拼 `${name}.js` 会写到落盘目录之外，入口拦下
+  const evil = await call({ action: 'script-generate', name: '../evil', script: 'x' });
+  assert.equal(evil.isError, true);
+  assert.match(evil.content[0].text, /非法脚本名/);
+
+  // ESM 拒（五道闸第一闸，文案与 pi 侧 core 管线逐字同源）
+  const esm = await call({
+    action: 'script-generate', name: 'w8-srv',
+    script: 'import x from "y";\nconst r = await agent({ prompt: "p" });\nreturn r;\n',
+  });
+  assert.equal(esm.isError, true);
+  assert.match(esm.content[0].text, /ESM 'import' syntax/);
+
+  // 合法源 → tmp 落盘（zsw 布局 <HOME>/.zsw/workflows/.tmp）
+  const valid = '/* @pi-meta\nname: w8-srv\ndescription: d\nphases: [run]\n*/\nconst r = await agent({ prompt: "p" });\nreturn r;\n';
+  const gen = JSON.parse((await call({ action: 'script-generate', name: 'w8-srv', script: valid })).content[0].text);
+  const tmpPath = path.join(process.env.HOME, '.zsw', 'workflows', '.tmp', 'w8-srv.js');
+  assert.equal(gen.path, tmpPath);
+  assert.ok(fs.existsSync(tmpPath));
+
+  // save → 固化 + tmp 消失（rename 语义）
+  const saved = JSON.parse((await call({ action: 'script-save', name: 'w8-srv' })).content[0].text);
+  const savedPath = path.join(process.env.HOME, '.zsw', 'workflows', 'w8-srv.js');
+  assert.equal(saved.savedPath, savedPath);
+  assert.ok(fs.existsSync(savedPath));
+  assert.equal(fs.existsSync(tmpPath), false);
+
+  // delete 运行中拒绝：fake host 的 list 报 running w8-srv（runningScriptPredicate 消费 wfHost.list）
+  const fakeRunning = { list: () => [{ runId: 'wf-r1', workflow: 'w8-srv', status: 'running' }] };
+  const srvRunning = server.createServer({ manager: makeFakeManager(), wfHost: fakeRunning, nested: false });
+  const refused = await callHandler(srvRunning, 'zflow', { action: 'script-delete', name: 'w8-srv' });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /currently running/);
+  assert.ok(fs.existsSync(savedPath), '拒绝删除时文件必须原位');
+
+  // delete（非运行）→ 删除成功
+  const del = JSON.parse((await call({ action: 'script-delete', name: 'w8-srv' })).content[0].text);
+  assert.match(del.message, /Deleted workflow 'w8-srv'/);
+  assert.equal(fs.existsSync(savedPath), false);
+});
+
 test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost 缺失 -32603', async () => {
   const { wfm, srv } = makeWfServer();
   const call = (args) => callHandler(srv, 'zflow', args);
@@ -707,17 +765,17 @@ test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost �
   const bad = await call({ action: 'explode' });
   assert.equal(bad.isError, true);
   assert.match(bad.content[0].text, /不支持的 action/);
-  assert.match(bad.content[0].text, /run \| abort \| status \| list \| scripts \| lint/);
+  assert.match(bad.content[0].text, /run \| abort \| status \| list \| scripts \| lint \| script-generate \| script-save \| script-delete/);
 
-  // host 抛的都是含恢复指引的可操作错误，原样透传
+  // host 抛的都是含恢复指引的可操作错误，原样透传（D-4 后用路径 ref 触达 host 层）
   const wfm2 = makeFakeWfHost();
   wfm2.run = async () => {
-    throw new Error('workflow "fancy" 未找到（内置 chain / parallel / ...）。恢复指引：先经 scripts action 查可用清单。');
+    throw new Error('workflow 脚本不可用（meta 解析失败或文件不可读）: /tmp/fancy.js。恢复指引：core 契约脚本需带 /* @pi-meta name/description */ 块。');
   };
   const srv2 = server.createServer({ manager: makeFakeManager(), wfHost: wfm2, nested: false });
-  const err = await callHandler(srv2, 'zflow', { action: 'run', workflow: 'fancy', task: 't', workdir: TMP });
+  const err = await callHandler(srv2, 'zflow', { action: 'run', workflow: '/tmp/fancy.js', task: 't', workdir: TMP });
   assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /未找到/);
+  assert.match(err.content[0].text, /不可用/);
   assert.match(err.content[0].text, /恢复指引/);
 
   // NESTED 档：拒绝且零触达（防递归第二重在 handler 内，对两个 tool 一视同仁）
@@ -756,7 +814,7 @@ async function waitForAsync(fn, timeoutMs = 5000, stepMs = 20) {
   }
 }
 
-test('zflow run：校验权威在 orchestration-host（缺 task / 未知 workflow / reviewers 废弃 → isError 可操作）', async () => {
+test('zflow run：校验权威在 orchestration-host + 入口契约（D-4：script:/裸名拒收；缺 task / reviewers 废弃 → isError 可操作）', async () => {
   const wfm = buildRealWfHost({ async run() { return { content: '', parsedOutput: { ok: 1 } }; } });
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
   const call = (args) => callHandler(srv, 'zflow', { action: 'run', ...args });
@@ -765,9 +823,14 @@ test('zflow run：校验权威在 orchestration-host（缺 task / 未知 workflo
   assert.equal(noTask.isError, true);
   assert.match(noTask.content[0].text, /task/);
 
-  const badWf = await call({ workflow: 'fancy', task: 't', workdir: TMP });
-  assert.equal(badWf.isError, true);
-  assert.match(badWf.content[0].text, /未找到/);
+  // D-4 契约在入口面（socket 面与 CLI 共用 bin/zsw.js 的 validateWorkflowRef）
+  const bare = await call({ workflow: 'fancy', task: 't', workdir: TMP });
+  assert.equal(bare.isError, true);
+  assert.match(bare.content[0].text, /Invalid workflow ref/);
+  assert.match(bare.content[0].text, /绝对路径/);
+  const prefixed = await call({ workflow: 'script:fancy', task: 't', workdir: TMP });
+  assert.equal(prefixed.isError, true);
+  assert.match(prefixed.content[0].text, /script: 前缀/);
 
   // reviewers 废弃（core 契约批次值 = agent .md 路径）：显式报错不静默
   const rev = await call({ workflow: 'review-fix-loop', task: 't', workdir: TMP, reviewers: ['correctness'] });

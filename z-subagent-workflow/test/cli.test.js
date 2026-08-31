@@ -320,8 +320,11 @@ function probeParams(stdout) {
   return JSON.parse(fenced[1]).params;
 }
 
+/** 用户脚本的路径引用形态（D-4：script:/裸名已废弃拒收，统一 .js 绝对路径）。 */
+const PROBE_JS = path.join(WF_DIR, 'params-probe.js');
+
 test('冒烟：batchN csv 转数组抵达 $ARGS（防透传覆写回归）', async () => {
-  const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
+  const r = await run(['workflow', '--workflow', PROBE_JS, '--task', '探针',
     '--workdir', TMP, '--batch1', 'correctness,robustness', '--batch2', 'security']);
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   const params = probeParams(r.stdout);
@@ -331,12 +334,134 @@ test('冒烟：batchN csv 转数组抵达 $ARGS（防透传覆写回归）', asy
   assert.deepEqual(params.batch2, ['security']);
 });
 
-test('冒烟：未映射 flag 原样透传抵达 $ARGS（script: 形态无白名单）', async () => {
-  const r = await run(['workflow', '--workflow', 'script:params-probe', '--task', '探针',
+test('冒烟：未映射 flag 原样透传抵达 $ARGS（用户脚本形态无白名单）', async () => {
+  const r = await run(['workflow', '--workflow', PROBE_JS, '--task', '探针',
     '--workdir', TMP, '--totally-unknown-flag', 'x']);
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   const params = probeParams(r.stdout);
   assert.equal(params.totallyUnknownFlag, 'x'); // parseArgs camelCase 化后透传
+});
+
+test('workflow 引用契约（D-4）：script: 前缀与裸名拒收，报错含恢复指引（路径引用回归见上方两冒烟）', async () => {
+  // script: 前缀（旧形态）：拒绝且指路（内置名/绝对路径/scripts 清单）
+  const prefixed = await run(['workflow', '--workflow', 'script:params-probe', '--task', 't', '--workdir', TMP]);
+  assert.equal(prefixed.code, 1);
+  assert.match(prefixed.stderr, /Invalid workflow ref/);
+  assert.match(prefixed.stderr, /script: 前缀/);
+  assert.match(prefixed.stderr, /绝对路径/);
+  assert.match(prefixed.stderr, /恢复指引/);
+  // 裸名（非内置）：同拒（多源同名遮蔽下按名引用有歧义）
+  const bare = await run(['workflow', '--workflow', 'params-probe', '--task', 't', '--workdir', TMP]);
+  assert.equal(bare.code, 1);
+  assert.match(bare.stderr, /Invalid workflow ref/);
+  assert.match(bare.stderr, /不是内置名/);
+});
+
+// ------------------------------------- W8 创作闭环（script-generate/save/delete）
+
+// 创作闭环用例的合法源码样本（与 params-probe 同款零引擎形态：agent() 调用挂
+// 在 $ARGS.callAgent 条件下，满足 generate 的 agent() 必需闸但运行时不触发）
+const CREATIVE_SRC = `/* @pi-meta
+name: w8-loop
+description: 创作闭环探针
+phases: [run]
+*/
+if ($ARGS.callAgent === true) {
+  await agent({ prompt: 'probe' });
+}
+return { status: 'ok' };
+`;
+
+test('创作闭环：ESM 版拒（core 同源文案）→ YAML round-trip 拒（含行列）→ 合法 generate 落 tmp → lint → save 固化 → scripts 列出 → delete 清理', async () => {
+  // ① ESM 错误版被拒（五道闸第一闸；文案与 pi 侧 core 管线逐字同源）
+  const esm = await run(['workflow', '--action', 'script-generate', '--name', 'w8-loop',
+    '--script', `import { x } from "y";\nconst r = await agent({ prompt: "p" });\nreturn r;\n`]);
+  assert.equal(esm.code, 1);
+  assert.match(esm.stderr, /ESM 'import' syntax/);
+  assert.match(esm.stderr, /use require\(\) instead/);
+
+  // ② @pi-meta YAML 破损版被拒：round-trip 闸报行列（自纠正锚点）
+  const badYaml = await run(['workflow', '--action', 'script-generate', '--name', 'w8-loop',
+    '--script', `/* @pi-meta\nname: w8-loop\n  description: [broken\nphases: [run]\n*/\nconst r = await agent({ prompt: "p" });\nreturn r;\n`]);
+  assert.equal(badYaml.code, 1);
+  assert.match(badYaml.stderr, /cannot be parsed \(line \d+, col \d+\)/);
+
+  // ③ 修正版 generate：五道闸通过，落 tmp（zsw 布局 ~/.zsw/workflows/.tmp）
+  const gen = await run(['workflow', '--action', 'script-generate', '--name', 'w8-loop', '--script', CREATIVE_SRC]);
+  assert.equal(gen.code, 0, `stderr: ${gen.stderr}`);
+  const genOut = JSON.parse(gen.stdout);
+  const tmpPath = path.join(TMP, 'home', '.zsw', 'workflows', '.tmp', 'w8-loop.js');
+  assert.equal(genOut.path, tmpPath);
+  assert.ok(fs.existsSync(tmpPath), 'tmp 脚本应已落盘');
+
+  // ④ lint 过（tmp 路径直接校验）
+  const lint = await run(['workflow', '--action', 'lint', '--file', tmpPath]);
+  assert.equal(lint.code, 0, `stderr: ${lint.stderr}`);
+  assert.equal(JSON.parse(lint.stdout).valid, true);
+
+  // ⑤ save：tmp → ~/.zsw/workflows/ 固化，tmp 消失（--local：本地一次性执行）
+  const saved = await run(['workflow', '--action', 'script-save', '--name', 'w8-loop', '--local']);
+  assert.equal(saved.code, 0, `stderr: ${saved.stderr}`);
+  const savedPath = path.join(TMP, 'home', '.zsw', 'workflows', 'w8-loop.js');
+  assert.equal(JSON.parse(saved.stdout).savedPath, savedPath);
+  assert.ok(fs.existsSync(savedPath));
+  assert.equal(fs.existsSync(tmpPath), false, 'save 后 tmp 应消失（rename 语义）');
+
+  // ⑥ scripts 清单互通：save 后用户脚本列表可见（--local）
+  const scripts = await run(['workflow', '--action', 'scripts', '--local']);
+  assert.equal(scripts.code, 0);
+  const users = JSON.parse(scripts.stdout).scripts;
+  assert.ok(users.some((s) => s.name === 'w8-loop' && s.path === savedPath), 'save 后 scripts 应列出固化脚本');
+
+  // ⑦ delete 清理：saved 文件删除，scripts 不再列出
+  const del = await run(['workflow', '--action', 'script-delete', '--name', 'w8-loop', '--local']);
+  assert.equal(del.code, 0, `stderr: ${del.stderr}`);
+  assert.match(del.stdout, /Deleted workflow 'w8-loop'/);
+  assert.equal(fs.existsSync(savedPath), false);
+  const scriptsAfter = JSON.parse((await run(['workflow', '--action', 'scripts', '--local'])).stdout).scripts;
+  assert.ok(!scriptsAfter.some((s) => s.name === 'w8-loop'));
+});
+
+test('script-save：重名拒绝（tmp 已固化同名时不覆盖）+ tmp 缺失可操作报错', async () => {
+  // 生成并固化一次
+  await run(['workflow', '--action', 'script-generate', '--name', 'w8-dup', '--script', CREATIVE_SRC]);
+  await run(['workflow', '--action', 'script-save', '--name', 'w8-dup', '--local']);
+  const savedPath = path.join(TMP, 'home', '.zsw', 'workflows', 'w8-dup.js');
+  const before = fs.readFileSync(savedPath, 'utf8');
+  // 再次生成同名 tmp 后 save：重名拒绝（core 契约：不静默覆盖）
+  await run(['workflow', '--action', 'script-generate', '--name', 'w8-dup', '--script', CREATIVE_SRC]);
+  const dup = await run(['workflow', '--action', 'script-save', '--name', 'w8-dup', '--local']);
+  assert.equal(dup.code, 1);
+  assert.match(dup.stderr, /already exists/);
+  assert.equal(fs.readFileSync(savedPath, 'utf8'), before, '重名拒绝不得改动已固化文件');
+  // tmp 缺失：可操作报错（指引先生成）
+  const noTmp = await run(['workflow', '--action', 'script-save', '--name', 'w8-never', '--local']);
+  assert.equal(noTmp.code, 1);
+  assert.match(noTmp.stderr, /not found/);
+  assert.match(noTmp.stderr, /script-generate/);
+  // 收尾清理：delete 按 tmp→saved 顺序逐个删（tmp 与 saved 并存时需两次）
+  await run(['workflow', '--action', 'script-delete', '--name', 'w8-dup', '--local']); // 先清 tmp
+  await run(['workflow', '--action', 'script-delete', '--name', 'w8-dup', '--local']); // 再清 saved
+  assert.equal(fs.existsSync(savedPath), false);
+});
+
+test('script-save/script-delete 默认经 daemon：帧形态 params={action,name}；缺 name 在组帧前拒绝', async () => {
+  const d = await startFakeDaemon(() => ({ ok: true, result: { name: 'w8-frame', message: 'fake' } }));
+  // 先 generate 落 tmp（恒本地，不经 daemon），save/delete 走 daemon 帧
+  await run(['workflow', '--action', 'script-generate', '--name', 'w8-frame', '--script', CREATIVE_SRC]);
+  const saved = await run(['workflow', '--action', 'script-save', '--name', 'w8-frame'], { ZSW_SOCK: d.sockPath });
+  assert.equal(saved.code, 0, `stderr: ${saved.stderr}`);
+  assert.equal(d.seen[0].tool, 'zflow');
+  assert.deepEqual(d.seen[0].params, { action: 'script-save', name: 'w8-frame' });
+  const deleted = await run(['workflow', '--action', 'script-delete', '--name', 'w8-frame'], { ZSW_SOCK: d.sockPath });
+  assert.equal(deleted.code, 0);
+  assert.equal(d.seen[1].tool, 'zflow');
+  assert.deepEqual(d.seen[1].params, { action: 'script-delete', name: 'w8-frame' });
+  // 缺 --name：CLI 侧组帧前拒绝（daemon/--local 两形态同文案）
+  const noName = await run(['workflow', '--action', 'script-save'], { ZSW_SOCK: d.sockPath });
+  assert.equal(noName.code, 1);
+  assert.match(noName.stderr, /需要 name/);
+  d.server.close();
 });
 
 test('冒烟：内置 workflow 的未知键被 host 前置拦截（stderr warning + 不进 $ARGS）', async () => {

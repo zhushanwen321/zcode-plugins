@@ -120,7 +120,7 @@ graph TD
 | W6a2-zsw-runner-appserver-compat | committed | 1 | 27/27 runner-core + 9/9 assemble + 34/34 manager + 非 e2e 全集 327/327 绿；alive 形态分支/dispose 自建表逐实例+killAll 兜底/onHandleReady 消费/spawn 定向对照；真 server stdin 关闭冒烟 exit=0 |
 | W6b-zsw-contract | committed | 1 | 96/96 四文件绿 + 非 e2e 全集 332/332；CLI 真跑：传名拒（文案与 core 同源，exit=1）、agents 14 条含 location；缺省 general-purpose + adapter 同步收紧；CLI appserver 挂起修复真跑 13.1s 干净退出 |
 | W7-zsw-inject | committed | 1 | 33/33 hook 三文件绿 + 非 e2e 全集 330/330；cli-hook 子进程真跑实证：10 内置 agents 带 vendored location、内置 5 workflow 带 description/location、models 全名 id+caps/contextWindow；预算 15/10 码点序截尾 + 内置无豁免专测 |
-| W8-zsw-script-face | pending | 0 | — |
+| W8-zsw-script-face | committed | 1 | 67/67 cli+server 绿 + 非 e2e 全集 335/335 + check 双绿；创作闭环真跑全链过（ESM 拒/round-trip 拒含行列/generate/lint/save/scripts/run 路径引用/delete）；README 迁移表+注入样例三段化；description 更新；listWorkflowNames 死导出删 |
 | W9-vendor-release | pending | 0 | — |
 
 ## 7 残留风险与变更历史

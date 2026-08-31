@@ -597,11 +597,4 @@ module.exports = {
   resetCoreConfig,
   BUILTIN_WORKFLOW_NAMES,
   RESERVED_PARAM_KEYS,
-  /** hook/注入面的 name-only 发现（SessionStart 快照用；见 lib/hook-source.js）。 */
-  async listWorkflowNames(cwd) {
-    ensureConfigured();
-    const core = coreRef.requireCore();
-    const users = await createRegistry(core).listUserScripts(cwd);
-    return users.map((s) => s.name);
-  },
 };

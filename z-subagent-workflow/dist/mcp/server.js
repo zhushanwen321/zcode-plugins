@@ -31,23 +31,28 @@
  * 数组，buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
  * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
  * 进对应 handler）。两个 tool：zsub（九 action 编排，M0 起 +wait）与 zflow
- * （六 action：run / abort / status / list / scripts / lint）。
+ * （九 action：run / abort / status / list / scripts / lint + 创作闭环三 action
+ * script-generate / script-save / script-delete，W8 / D-6）。
  *
  * daemon socket 面（M0 接线）：buildDaemonHandlers() 把 handler 表适配成
  * daemon-socket 要的 (req:{tool,params}, meta:{signal}) 形态，并解包 MCP
  * content 包装——CLI 对侧（bin/zsw.js）直接消费业务字段（如 wait 的
  * partial 决定 exit code），content 包装形态对 CLI 是泄漏。
  *
- * zflow 管理面（回接 2b：vendored subagent-core orchestration）：
- * - 六 action（run/abort/status/list/scripts/lint）走 orchestration host
- *   （lib/orchestration-host.js）：core runWorkflow/abortRun/FileRunStore +
- *   vendored 内置资产注册。run 立即返回 {runId, stateFile}；wait=true 走
- *   runAndWait 同步等终态 + scriptResult（MCP 30s 超时，主要给测试）。
+ * zflow 管理面（回接 2b：vendored subagent-core orchestration；W8 增创作闭环）：
+ * - 九 action（run/abort/status/list/scripts/lint/script-generate/script-save/
+ *   script-delete）走 orchestration host（lib/orchestration-host.js）与 bin/zsw.js
+ *   的共享创作实现：core runWorkflow/abortRun/FileRunStore + vendored 内置资产
+ *   注册 + core generate/save/delete 管线（zsw 目录布局 ~/.zsw/workflows）。run
+ *   立即返回 {runId, stateFile}；wait=true 走 runAndWait 同步等终态 +
+ *   scriptResult（MCP 30s 超时，主要给测试）。script-delete 的「运行中拒绝」
+ *   由 daemon 侧 runs 真实状态裁决（runningScriptPredicate(wfHost)）。
  * - 校验/组参权威在 host 的 normalizeRunParams + registry（task/workdir/
  *   workflow 名/脚本发现/$ARGS 映射均它管），server 不重复解析——两处各
- *   解析一份会漂移。旧 reviewers sugar 在该层显式报错（core 契约批次值 =
- *   agent .md 路径）；maxConcurrent/timeoutMsPerPhase 无 core 对应面，以
- *   warnings 显式说明不静默。
+ *   解析一份会漂移。workflow 引用契约（D-4：script:/裸名拒收）在入口面校验
+ *   （bin/zsw.js 的 validateWorkflowRef，CLI 与 socket 面单一来源）。旧
+ *   reviewers sugar 在 host 层显式报错（core 契约批次值 = agent .md 路径）；
+ *   maxConcurrent/timeoutMsPerPhase 无 core 对应面，以 warnings 显式说明不静默。
  * - run 状态面 = 内存 runs Map（done 保留 MAX_RETAINED_DONE_RUNS 条）+
  *   <zswRoot>/workflow-state/<runId>.jsonl append-only 快照；zsw record
  *   事件流与 mailbox 完成通知线随旧 WorkflowManager 退役。
@@ -144,39 +149,39 @@ function buildToolDefinition() {
  * wfHost.scripts().builtin 返回）——server 不再持第二份内置清单，防漂移。 */
 
 /**
- * zflow tool 定义（回接 2b：六 action 走 orchestration-host = vendored
- * subagent-core orchestration）。
+ * zflow tool 定义（回接 2b：九 action 走 orchestration-host = vendored
+ * subagent-core orchestration + W8 创作闭环三 action）。
  *
  * description 是常驻注入成本，上限压到 ≤1000 字符。workflow 值是自由 string
- * 而非静态 enum：script:<name> 的脚本名是动态发现的，静态枚举无法收录，
- * 合法值说明进 description（内置 5 / script: 前缀），运行期由 host 的
- * registry 解析校验（拼错名给可操作错误）。旧 reviewers sugar 已废弃
- * （core 契约批次值 = agent .md 路径）。
+ * 而非静态 enum：自定义脚本路径是动态发现的，静态枚举无法收录，合法值说明进
+ * description（内置 5 名 / .js 绝对路径——script:<name> 与裸名已按 D-4 契约
+ * 废弃拒收），运行期由入口校验（validateWorkflowRef）+ host 的 registry 解析。
  */
 function buildRunWorkflowToolDefinition() {
   return {
     name: 'zflow',
     description:
-      'Deterministic multi-step workflows (vendored subagent-core orchestration); each agent() call = an isolated agent session via the zsw runner port. ' +
-      'action=run returns runId at once (query via action=status; no completion push — the CLI run is synchronous). ' +
-      'Workflows: "chain" analyze->transform->synthesize; "parallel" multi-perspective review then aggregate; ' +
-      '"map-reduce" map over a KNOWN items array then reduce; "scatter-gather" split into subtasks, parallel, merge; ' +
-      '"review-fix-loop" batches (batch1..batchN = agent .md absolute paths, comma-separated) review->must-fix->fix->re-review until clean (WRITES files); ' +
-      '"script:<name>" custom core-contract script (@pi-meta + top-level agent(); action=scripts lists). ' +
-      'action=abort(runId): stop a run. action=status(runId): run detail + state file path. ' +
-      'action=list: all runs. action=scripts: builtin 5 + custom scripts. action=lint(file): validate a script. ' +
-      'Runs can take minutes; WARNING: transform/fix phases may modify files under workdir.',
+      'Deterministic multi-step workflows (vendored subagent-core orchestration); each agent() call = an isolated agent session. ' +
+      'action=run returns runId at once (query via status; CLI run is synchronous). ' +
+      'Workflows: "chain" analyze->transform->synthesize; "parallel" multi-perspective review + aggregate; ' +
+      '"map-reduce" map over a KNOWN items array; "scatter-gather" split, parallel, merge; ' +
+      '"review-fix-loop" batches (batch1..batchN = agent .md absolute paths) review->fix->re-review to clean (WRITES files); ' +
+      'custom scripts (@pi-meta + top-level agent()) by ABSOLUTE .js path; script:<name> deprecated/rejected. ' +
+      'Management: abort/status(runId), list, scripts (builtin 5 + custom paths); lint(file) validates. ' +
+      'Creative loop: script-generate(name, script) 5-gate validation (ESM/meta/agent()/syntax/round-trip w/ line-col) -> tmp; ' +
+      'script-save(name) tmp -> ~/.zsw/workflows (dup refused); script-delete(name) (refused if running). ' +
+      'Runs can take minutes; WARNING: transform/fix may modify files under workdir.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['run', 'abort', 'status', 'list', 'scripts', 'lint'],
+          enum: ['run', 'abort', 'status', 'list', 'scripts', 'lint', 'script-generate', 'script-save', 'script-delete'],
           description: '要执行的操作',
         },
         workflow: {
           type: 'string',
-          description: 'run 必填。内置 5 名（chain / parallel / map-reduce / scatter-gather / review-fix-loop，形态见 tool description）或 "script:<脚本名>"（core 契约脚本，可用清单先查 action=scripts）',
+          description: 'run 必填。内置 5 名（chain / parallel / map-reduce / scatter-gather / review-fix-loop，形态见 tool description）或 core 契约脚本 .js 绝对路径（~/ 前缀可展开；script:<名> 与裸名已废弃拒收——路径先查 action=scripts 的 path 字段）',
         },
         task: {
           type: 'string',
@@ -189,6 +194,14 @@ function buildRunWorkflowToolDefinition() {
         },
         runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
         file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 path 字段，或自填绝对路径）' },
+        name: {
+          type: 'string',
+          description: 'script-generate/script-save/script-delete 必填。脚本名（单段文件名，不含路径分隔符——落盘目录由 zsw 布局 ~/.zsw/workflows 决定）',
+        },
+        script: {
+          type: 'string',
+          description: 'script-generate 必填。完整 JS 源码：/* @pi-meta */ YAML 块注释（name/description/phases）+ top-level agent()；core 五道闸校验（ESM 拒/meta 必需/agent() 必需/语法/@pi-meta round-trip 含行列），通过后落 tmp',
+        },
         wait: {
           type: 'boolean',
           description: 'run 可选。true 时同步等完成并返回 scriptResult（MCP 30s 超时约束，主要给测试用）',
@@ -495,7 +508,11 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
         case 'run': {
           // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
           // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
-          // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）
+          // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）。
+          // D-4 引用契约入口收紧（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
+          // 防两入口漂移）：script:/裸名在此拒收
+          const { validateWorkflowRef } = require('../../bin/zsw.js');
+          validateWorkflowRef(runArgs.workflow);
           if (args.wait === true) {
             return okContent(await wfHost.runAndWait(runArgs, ctx, { signal: env.signal }));
           }
@@ -534,9 +551,27 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
           }
           return okContent(await wfHost.lint(args.file));
         }
+        // 创作闭环三 action（W8 / D-6）：实现与 CLI 共用 bin/zsw.js 导出的单一
+        // 来源（core generate/save/delete 管线 + zsw 目录布局）。CLI 面
+        // script-generate 恒本地、save/delete 默认经 daemon——本 handler 是
+        // socket 面（daemon 进程内）权威路径：delete 的「运行中拒绝」在此用
+        // daemon 持有的 runs 真实状态裁决，save 后的发现面 invalidate 也落在本
+        // 进程。script-generate 分支为 dispatch 表完备性保留（CLI 不经此路）。
+        case 'script-generate': {
+          const { scriptGenerateAction } = require('../../bin/zsw.js');
+          return okContent(scriptGenerateAction(args.name, args.script));
+        }
+        case 'script-save': {
+          const { scriptSaveAction } = require('../../bin/zsw.js');
+          return okContent(await scriptSaveAction(args.name));
+        }
+        case 'script-delete': {
+          const { scriptDeleteAction, runningScriptPredicate } = require('../../bin/zsw.js');
+          return okContent(scriptDeleteAction(args.name, runningScriptPredicate(wfHost)));
+        }
         default:
           return errContent(
-            `不支持的 action "${String(action)}"。支持：run | abort | status | list | scripts | lint。`
+            `不支持的 action "${String(action)}"。支持：run | abort | status | list | scripts | lint | script-generate | script-save | script-delete。`
             + '恢复指引：action 必须取 inputSchema 中的枚举值。'
           );
       }
