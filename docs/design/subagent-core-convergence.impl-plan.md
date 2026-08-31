@@ -118,7 +118,7 @@ graph TD
 | W5-pi-rebind | delegated（用户单独处理） | — | 同上 |
 | W6a-zsw-agent-discovery | committed | 1 | 225/225 相关文件绿 + 对照探针 3 差异全可解释（/tmp/zsw-w6a-probe/）；manifest agentsAssets + 10 资产落地；grep resolver 零引用（代码面，README 留 W8） |
 | W6a2-zsw-runner-appserver-compat | committed | 1 | 27/27 runner-core + 9/9 assemble + 34/34 manager + 非 e2e 全集 327/327 绿；alive 形态分支/dispose 自建表逐实例+killAll 兜底/onHandleReady 消费/spawn 定向对照；真 server stdin 关闭冒烟 exit=0 |
-| W6b-zsw-contract | pending | 0 | — |
+| W6b-zsw-contract | committed | 1 | 96/96 四文件绿 + 非 e2e 全集 332/332；CLI 真跑：传名拒（文案与 core 同源，exit=1）、agents 14 条含 location；缺省 general-purpose + adapter 同步收紧；CLI appserver 挂起修复真跑 13.1s 干净退出 |
 | W7-zsw-inject | pending | 0 | — |
 | W8-zsw-script-face | pending | 0 | — |
 | W9-vendor-release | pending | 0 | — |

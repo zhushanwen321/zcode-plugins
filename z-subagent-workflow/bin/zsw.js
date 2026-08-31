@@ -19,7 +19,11 @@
  * CLI 阻塞进程成为引擎进程内 background task，完成即原生通知。
  *
  * 用法（1.0.0 起：默认 = daemon thin client；--local 显式本地执行）：
- *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
+ *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <.md绝对路径>]
+ *        （agent 仅收 .md 绝对路径，支持 ~/ 展开——传名字会被拒并给路径指引
+ *         （报错与 core agent-registry 同源）；缺省不传 = 加载 vendored
+ *         general-purpose 内置角色（project 级同名可遮蔽），不想要角色请显式
+ *         传自定义 .md 路径。路径清单先查 zsw agents 的 location/file 列）
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
  *        [--conversation] [--timeout-ms <n>] [--wait]
  *        [--thinking <low|high|max>]
@@ -83,7 +87,7 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
     + '  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）\n'
     + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
-    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 前查名）\n'
+    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）\n'
     + '  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）\n'
     + '  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
@@ -383,6 +387,30 @@ function renderScriptResultMarkdown(scriptResult) {
   }
   return lines.join('\n');
 }
+/**
+ * CLI 一次性进程的常驻引擎收口（W6a2 移交修复，W6b 落地）：core engine 已
+ * 缺省 appserver 常驻模式——任务跑完后常驻子进程的 pipe stdio 仍挂住父进程
+ * 事件循环，CLI 无法自然退出。本地执行体完成后统一调 wfHost.shutdown
+ * （assemble 已组合 runner.shutdown：宿主惰性引擎实例逐个 dispose（close 帧
+ * 先于 SIGTERM）+ killAllSpawnedChildren 兜底）。兜底 exit timer 用 unref：
+ * 事件循环已空（dispose 后 stdio 管道关闭）则进程自然退出，stdout flush 走
+ * node 退出路径；仍有残留 handle 则 250ms 后强制 exit（延迟给大报告的
+ * stdout flush 留时间——与 renderWorkflowRunOutput 不用 process.exit 的理由
+ * 一致）。daemon thin-client 路径不经本函数：执行体由 daemon 持有，引擎
+ * dispose 是 daemon 自己的退出面（stdin 关闭钩子），CLI 侧 socket 断开即可。
+ */
+function exitAfterEngineShutdown(wfHost) {
+  return Promise.resolve()
+    .then(() => (wfHost && typeof wfHost.shutdown === 'function' ? wfHost.shutdown() : undefined))
+    .catch((e) => {
+      process.stderr.write(`[zsw] engine 收口失败（继续退出）: ${e && e.message || e}\n`);
+    })
+    .then(() => {
+      const code = process.exitCode || 0;
+      setTimeout(() => process.exit(code), 250).unref();
+    });
+}
+
 /** run action：组参 → host.runAndWait 同步等终态 → 报告 + 摘要（exit 按终态）。 */
 async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
@@ -391,6 +419,8 @@ async function runWorkflowRun(wfHost, args, cwd) {
   // start 的 CLI 语义对齐；异步启动走 socket 面（zflow run 不带 wait）
   const fin = await wfHost.runAndWait(params, { cwd });
   renderWorkflowRunOutput(fin, args);
+  // appserver 常驻引擎的 pipe stdio 挂事件循环（见 exitAfterEngineShutdown 头注）
+  await exitAfterEngineShutdown(wfHost);
 }
 
 /**
@@ -590,7 +620,8 @@ async function runDaemonCommand(cmd, args, rest) {
       break;
     case 'agents':
       // agent .md 发现（W6a 起 core 发现面：vendored 内置 10 角色 + 四根，daemon
-      // 侧 handler 数据源 = lib/agent-discovery；start 前不确定 agent 名时先查）
+      // 侧 handler 数据源 = lib/agent-discovery；D-4a 后 start 只收路径——不确定
+      // 路径时先查，输出带 location/file 列）
       params = { action: 'agents' };
       break;
     case 'models':
@@ -742,7 +773,7 @@ async function main() {
   // 防文案漂移）；wait --local 保留其上方的精确报错，不被嵌套文案遮蔽。
   ensureNotNested();
 
-  const { manager } = await assembleManager();
+  const { manager, wfHost } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
   // list/status 看到历史。刻意不走 manager.recover() 的探活段——探活会对
   // 常驻 server 正在管理的 running 任务误标 orphan 落盘（健康任务被标
@@ -824,6 +855,9 @@ async function main() {
       usage();
   }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  // --local 一次性进程的引擎收口（与 zflow run 同根因：start/message 跑完
+  // 任务后 appserver 常驻子进程的 stdio 挂住事件循环，防 CLI 无法退出）
+  await exitAfterEngineShutdown(wfHost);
 }
 
 // require.main 守卫：test/cli.test.js 经 require 复用 parseArgs/csv 做解析

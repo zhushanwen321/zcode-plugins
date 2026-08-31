@@ -13,8 +13,9 @@
  *   prompt        → prompt（经 buildPrompt 拼 agent .md 角色段 + MANDATORY
  *                   schema 契约段——zsw 无进程内 system prompt 通道，与
  *                   manager.start 同一拼装器，两入口不各拼一份）
- *   agent         → resolver.resolve 四根发现（内置资产传入的是 .md 绝对
- *                   路径；名字形态同样兼容）
+ *   agent         → resolver.resolve 路径解析（D-4a：仅 .md 绝对路径，~/ 可
+ *                   展开；名字拒——文案与 core agent-registry 同源。缺省走
+ *                   resolveDefault = general-purpose 内置角色）
  *   model         → modelRef 原始透传（run 级 $MODEL 已在 worker 层 fallback
  *                   进 per-call opts.model；校验与兜底归 core 引擎 preparer）
  *   engine        → taskCtx.engine（core 路由三层最优先层，U4 接线——之前
@@ -38,6 +39,9 @@
 const crypto = require('node:crypto');
 const { buildPrompt } = require('./prompt-builder');
 const { extractJsonObject } = require('./jsonout');
+const {
+  normalizeAgentRef, invalidAgentRefMessage, agentFileNotFoundMessage,
+} = require('./agent-discovery');
 
 /** zsw usage（snake_case，zcode 引擎原生形态）→ core AgentUsage（camelCase）。 */
 function toCoreUsage(usage) {
@@ -114,21 +118,29 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
       // dispatchCall 预检分支按预期跳过记错）
       if (signal && signal.aborted) throw abortError();
 
-      // agent .md 解析（可选）：内置资产传入绝对路径，用户脚本可传名字。
-      // resolve 是 async（W6a 起发现走 core discoverResources）；sync 注入的
+      // agent .md 解析（D-4a 收紧 + D-4 缺省统一，W6b）：引用唯一形态 = .md
+      // 绝对路径（~/ 展开同 core normalizeRef 口径）——名字/相对路径/非 .md 抛
+      // invalidAgentRefMessage，路径合法但不可读抛 agentFileNotFoundMessage
+      // （两文案与 core agent-registry 同源，manager.start 同款——报错同源
+      // 基准，两消费方共用 agent-discovery 单点定义防漂移）。缺省（opts.agent
+      // 未传）走 resolveDefault = general-purpose 内置角色（与 pi 侧
+      // session-runner 的 DEFAULT_AGENT_NAME 语义对齐；遮蔽序胜者可覆写）。
+      // resolver.resolve 是 async（W6a 起 core discoverResources）；sync 注入的
       // resolver 经 await 透明兼容。找不到直接抛——比带着空角色跑完再发现
       // 用错 agent 便宜（manager.start 同款决策）
       let profile = null;
+      const res = resolver || require('./agent-discovery');
       if (opts.agent != null && opts.agent !== '') {
-        const resolve = resolver
-          || require('./agent-discovery');
-        profile = await resolve.resolve(opts.agent, cwdBase);
-        if (!profile) {
-          throw new Error(
-            `workflow agent() 引用的 agent "${opts.agent}" 未找到（发现面：vendored 内置 + 项目 .agents/agents > .zcode/agents > HOME 同构两根）。`
-            + '恢复指引：检查 agent .md 路径，或先经 zsw agents 查名。'
-          );
+        const norm = normalizeAgentRef(opts.agent);
+        if (norm === null) {
+          throw new Error(invalidAgentRefMessage(opts.agent));
         }
+        profile = await res.resolve(norm, cwdBase);
+        if (!profile) {
+          throw new Error(agentFileNotFoundMessage(norm));
+        }
+      } else {
+        profile = await res.resolveDefault(cwdBase) || null;
       }
 
       // 三行范式承接（2c 起执行链 = core zcode engine）：模型原始透传（校验归

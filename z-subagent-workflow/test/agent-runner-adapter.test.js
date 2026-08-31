@@ -11,7 +11,9 @@
  * - 运行中 abort → handle.cancel 被调；
  * - AgentResult 映射：closed → content/parsedOutput（schema 经 jsonout 提取）
  *   /usage（snake_case → camelCase）；非 closed → error 携带；
- * - agent .md 解析链：opts.agent → resolver.resolve（找不到抛可操作错误）。
+ * - agent .md 解析链：opts.agent → resolver.resolve（D-4a：仅绝对路径，名字
+ *   拒且文案与 core agent-registry 同源；缺省 → resolveDefault =
+ *   general-purpose 内置角色——W6b）。
  *
  * 隔离：fake zsw RunnerPort + fake ModelRouter，零引擎零真实 HOME。
  */
@@ -138,9 +140,13 @@ test('运行中 abort → handle.cancel 被调 + listener 摘除；启动前 abo
   const adapter = makeAdapter(runner);
   const ctl = new AbortController();
   const p = adapter.run({ prompt: 'p' }, ctl.signal);
-  // 等 start 已发生（prepareRunEnv 是 await 点，直接同步 abort 会命中启动前
-  // 预检的双检查窗口——那是 pre-abort 语义，不是本用例对象）
-  await new Promise((r) => setImmediate(r));
+  // 等 start 已发生（缺省 resolver 的 resolveDefault 走 core 异步发现链——
+  // 多个 await 点；直接同步 abort 会命中启动前预检的双检查窗口，那是
+  // pre-abort 语义，不是本用例对象）
+  const deadline = Date.now() + 5000;
+  while (runner.state.starts.length < 1 && Date.now() < deadline) {
+    await new Promise((r) => setImmediate(r));
+  }
   assert.equal(runner.state.starts.length, 1, 'run 已进入执行段');
   ctl.abort();
   const r = await p;
@@ -157,7 +163,7 @@ test('运行中 abort → handle.cancel 被调 + listener 摘除；启动前 abo
   assert.equal(runner.state.starts.length, 1, 'pre-abort 不触发第二次 start');
 });
 
-test('opts.agent → resolver.resolve（prompt 拼角色段）；找不到抛可操作错误', async () => {
+test('opts.agent → resolver.resolve（prompt 拼角色段）；非法引用/不可读抛 core 同源错误', async () => {
   const profile = {
     name: 'reviewer',
     body: '你是审查员',
@@ -166,22 +172,42 @@ test('opts.agent → resolver.resolve（prompt 拼角色段）；找不到抛可
     disallowedTools: ['Bash'],
   };
   const resolver = {
-    resolve: (ref, cwd) => (ref === 'reviewer' ? { ...profile, filePath: '/a/reviewer.md' } : null),
+    resolve: (ref, cwd) => (ref === '/a/reviewer.md' ? { ...profile, filePath: '/a/reviewer.md' } : null),
+    resolveDefault: () => null,
   };
   const runner = makeFakeZswRunner();
   const router = makeFakeRouter();
   const adapter = makeAdapter(runner, router, resolver);
 
-  const r = await adapter.run({ prompt: 'p', agent: 'reviewer' }, undefined);
+  const r = await adapter.run({ prompt: 'p', agent: '/a/reviewer.md' }, undefined);
   assert.ok(runner.state.starts[0].prompt.includes('你是审查员'), 'agent .md 正文拼进 prompt');
   assert.equal(runner.state.starts[0].modelRef, 'prov/agent-model', '模型解析链 requested > agent frontmatter');
   assert.deepEqual(runner.state.starts[0].disallowedTools, ['Bash'], 'frontmatter 工具黑名单透传');
   assert.equal(r.content, 'ok');
 
+  // D-4a（W6b）：名字拒——文案与 core agent-registry 同源（主句逐字一致），
+  // 与 manager.start 同款断言（两消费方共用 agent-discovery 单点文案）
   await assert.rejects(
     adapter.run({ prompt: 'p', agent: 'nope' }, undefined),
-    /未找到/,
+    (e) => e.message.startsWith('Invalid agent ref: nope. Agent refs must be absolute paths to .md files')
+      && e.message.includes('zsw agents'),
   );
+  // 路径合法但不可读：Agent file not found 同款
+  await assert.rejects(
+    adapter.run({ prompt: 'p', agent: '/a/missing.md' }, undefined),
+    (e) => e.message.startsWith('Agent file not found or unreadable: /a/missing.md.'),
+  );
+});
+
+test('opts.agent 缺省 → resolveDefault 加载 general-purpose 角色（与 pi DEFAULT_AGENT_NAME 对齐）', async () => {
+  const resolver = {
+    resolve: () => null,
+    resolveDefault: () => ({ name: 'general-purpose', body: '你是通用兜底 agent', filePath: '/a/general-purpose.md' }),
+  };
+  const runner = makeFakeZswRunner();
+  const adapter = makeAdapter(runner, makeFakeRouter(), resolver);
+  await adapter.run({ prompt: 'p' }, undefined);
+  assert.ok(runner.state.starts[0].prompt.includes('通用兜底 agent'), '缺省角色正文拼进 prompt');
 });
 
 test('model 缺省链：opts.model 与 agent frontmatter 均无 → modelRef=undefined（兜底归引擎 preparer）', async () => {

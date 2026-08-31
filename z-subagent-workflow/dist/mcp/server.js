@@ -95,13 +95,13 @@ function buildToolDefinition() {
     name: TOOL_NAME,
     description:
       '编排后台 subagent 生命周期（zcode 外挂编排器，与原生 background agent 互补）。action 速查：\n'
-      + '- start：后台启动任务，立即返回 subagentId；完成后结果通知本会话（mailbox 启用时自动到达，未启用按 start 返回指引做一次性 status 查询）。参数：task（必填，自包含任务书）、slug（必填，短名）、agent?（agent .md 名或路径）、model?、schema?（输出契约）、worktree?（改动隔离，完成回传 patch 与 git apply 指引）、conversation?（可续聊）、wait?（同步等结果）、timeoutMs?。\n'
+      + '- start：后台启动任务，立即返回 subagentId；完成后结果通知本会话（mailbox 自动到达，否则按返回指引查询）。参数：task（必填，自包含任务书）、slug（必填，短名）、agent?（.md 绝对路径，支持 ~/；缺省 = general-purpose 内置角色）、model?、schema?（输出契约）、worktree?（改动隔离，完成回传 patch 与 git apply 指引）、conversation?（可续聊）、wait?（同步等结果）、timeoutMs?。\n'
       + '- list：任务精简列表（id/slug/status/error/patchFile）。\n'
       + '- status：单任务全量 + 结果文件路径（subagentId；closed 后 Read 该文件取全文）。\n'
       + '- message：向 idle 的 conversation 任务投递续聊消息（subagentId + text）。\n'
       + '- cancel：取消运行中任务（subagentId）。\n'
       + '- close：终态化任务并清理 worktree（subagentId）。\n'
-      + '- agents：列出可用 agent .md（core 发现面：vendored 内置 10 角色 + 项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/路径/来源根）——start 前不确定 agent 名时先查这个。\n'
+      + '- agents：列出可用 agent .md（core 发现面：vendored 内置 10 角色 + 项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/location（.md 绝对路径）/来源根）——start 的 agent 参数只收路径，不确定路径时先查这个。\n'
       + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。all=true 出全 provider 视图（跨 provider 引用须全名 <provider>/<model>）。\n'
       + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
       + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
@@ -120,7 +120,7 @@ function buildToolDefinition() {
           description: 'start 必填。自包含任务书：目标、背景、验收标准、关键文件路径——子进程看不到当前会话上下文',
         },
         slug: { type: 'string', description: 'start 必填。任务短名（通知文案与 worktree 分支名）' },
-        agent: { type: 'string', description: 'start 可选。agent .md 的名字或路径（四根发现）' },
+        agent: { type: 'string', description: 'start 可选。agent .md 绝对路径（支持 ~/ 前缀；取 agents action 的 location 列）。缺省不传 = 加载 general-purpose 内置角色；不想要角色请显式传自定义 .md 路径。名字引用已废弃（传名会被拒并给路径指引）' },
         model: { type: 'string', description: 'start 可选。provider/model 全名（精确匹配任意已配置 provider）或短名（按默认 provider 解析）' },
         schema: { description: 'start 可选。输出契约（字符串或 JSON Schema 对象），以 MANDATORY 段拼入 prompt' },
         worktree: { type: 'boolean', description: 'start 可选。true 时改动落独立 worktree，完成后回传 patch 与 git apply 指引' },
@@ -742,11 +742,12 @@ function agentSourceLabel(coreSource) {
 }
 
 /**
- * agents action 的精简视图：只透出索引五字段——name / description（截
+ * agents action 的精简视图：只透出索引字段——name / description（截
  * 200，索引不是正文）/ when（「何时用我」提示，截 200）/ source（来源根
- * 标签）/ file（绝对路径，可直接作 start 的 agent 参数）。body/model/
- * tools 等 profile 字段不透出：索引的价值在省 token，正文按 file 路径
- * 按需读。list 是 async（core 发现链），handler 侧 await。
+ * 标签）/ location（.md 绝对路径，D-4a 契约下 start 的 agent 参数唯一合法
+ * 形态；file 为同值兼容字段，旧消费方与 lint 指引沿用）。body/model/
+ * tools 等 profile 字段不透出：索引的价值在省 token，正文按 location
+ * 路径按需读。list 是 async（core 发现链），handler 侧 await。
  */
 async function agentListView(resolver, cwd) {
   const agents = await resolver.list(cwd);
@@ -755,7 +756,8 @@ async function agentListView(resolver, cwd) {
     description: typeof p.description === 'string' ? p.description.slice(0, 200) : '',
     when: typeof p.when === 'string' ? p.when.slice(0, 200) : '',
     source: agentSourceLabel(p.source || ''),
-    file: p.filePath,
+    location: p.filePath,
+    file: p.filePath, // 兼容旧字段名（D-4a 前 start 按名/路径双形态时的指引用）
   }));
 }
 

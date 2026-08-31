@@ -38,12 +38,21 @@
  * - core isTargetFile 额外排除 `_` 前缀草稿与 `.chain.md`（pi 生态约定）；
  * - 合并键从 frontmatter name 改为文件名 stem（core 语义；名字与 stem 不一致
  *   的跨根遮蔽不再发生，两文件按各自 stem 独立成条）。
+ *
+ * 引用契约（W6b：D-4a 收紧，与 pi 侧对齐）：agent 引用唯一形态 = .md 绝对
+ * 路径（支持 ~/ 展开——core normalizeRef 口径，见 normalizeAgentRef）；名字
+ * 形态的「四根查找」已删除，传名由消费方经 invalidAgentRefMessage 拒绝（文案
+ * 与 core agent-registry 同源）。agent 参数缺省 = general-purpose 内置角色
+ * （D-4 缺省段，resolveDefaultAgent——遮蔽序胜者，project 级可覆写）。
  */
 
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const coreRef = require('./core-ref');
+
+/** agent 参数缺省角色名（D-4 缺省语义统一：两侧同走 general-purpose 内置角色）。 */
+const DEFAULT_AGENT_NAME = 'general-purpose';
 
 /** 手写 frontmatter mini 解析的消费字段白名单（其余字段忽略，避免污染 profile）。 */
 const CONSUMED_KEYS = new Set([
@@ -142,13 +151,6 @@ function agentScanRoots({ cwd, homeDir, workspaceRoot } = {}) {
   return { hostRoots, workspaceRoot: wsRoot, home: homeDir || os.homedir() };
 }
 
-/** 文件名 stem（无目录无扩展名）——core 合并键同构。 */
-function stem(filePath) {
-  const base = filePath.split('/').pop() || filePath;
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(0, dot) : base;
-}
-
 /** 读单个文件并解析；不可读/不是文件返回 null。 */
 function parseFile(absPath) {
   let text;
@@ -187,26 +189,72 @@ async function listAgents(cwd, opts = {}) {
 }
 
 /**
- * 按名字或路径解析单个 agent。
- * 路径形态（绝对路径 / ./ ../ 前缀）直接读文件；名字形态走 core 发现清单：
- * 先按 frontmatter name 精确匹配（旧 resolver 语义），再按文件名 stem 兜底
- * （与 core 合并键同构），最后按相对路径再试一次（旧兜底行为：agents/x.md）。
+ * agent 引用归一化（D-4a：仅绝对路径）——core normalizeRef 口径复刻
+ * （vendored barrel 未导出 agent-ref 面，文案与语义在此单点对齐 core
+ * `src/shared/agent-ref.ts`）：trim → `~/` 前缀展开（homeDir）→ 绝对路径
+ * 校验 → `.md` 后缀校验。相对路径 / 名字 / 非 .md 一律 null。
+ * @param {string} ref 原始引用（注入段 location / 工具参数值）
+ * @param {object} [opts] { homeDir? }（`~/` 展开基准，缺省 os.homedir()——
+ *        与 core homedir() 同为进程 HOME 读取；测试经注入隔离）
  */
-async function resolveAgent(nameOrPath, cwd, opts = {}) {
-  if (!nameOrPath || typeof nameOrPath !== 'string') return null;
-  const isPath = path.isAbsolute(nameOrPath)
-    || nameOrPath.startsWith('./') || nameOrPath.startsWith('../');
-  if (isPath) {
-    return parseFile(path.resolve(cwd, nameOrPath));
-  }
-  const want = nameOrPath.replace(/\.md$/, '');
-  const list = await listAgents(cwd, opts);
-  const byName = list.find((p) => p.name === want);
-  if (byName) return byName;
-  const byStem = list.find((p) => stem(p.filePath) === want);
-  if (byStem) return byStem;
-  // 兜底：带子目录的相对名（如 agents/reviewer.md）按路径再试一次，不存在则 null
-  return parseFile(path.resolve(cwd, nameOrPath));
+function normalizeAgentRef(ref, opts = {}) {
+  if (typeof ref !== 'string') return null;
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const expanded = trimmed.startsWith('~/')
+    ? path.join(opts.homeDir || os.homedir(), trimmed.slice('~/'.length))
+    : trimmed;
+  if (!path.isAbsolute(expanded)) return null; // 相对路径无基准（注入段给绝对路径）
+  if (!expanded.endsWith('.md')) return null;
+  return expanded;
+}
+
+/**
+ * 按路径解析单个 agent（D-4a 收紧后唯一解析形态）。
+ * 非法引用（名字/相对路径/非 .md）与文件不可读统一返回 null——两类失败的
+ * 报错文案由消费方（manager.start / agent-runner-adapter）经
+ * invalidAgentRefMessage / agentFileNotFoundMessage 区分给出（core 同源）。
+ */
+async function resolveAgent(ref, cwd, opts = {}) {
+  void cwd; // 路径唯一形态下无相对解析基准（与 core normalizeRef 同口径）
+  const norm = normalizeAgentRef(ref, opts);
+  if (norm === null) return null;
+  return parseFile(norm);
+}
+
+/**
+ * 缺省角色解析（D-4 缺省段：agent 参数缺省 → general-purpose 内置角色）。
+ * 经发现清单取遮蔽序胜者（project 级同名 .md 遮蔽 vendored 内置——逃生门
+ * 与 pi 同向）；清单异常 miss 时直读 vendored 资产兜底（插件残缺读不到则
+ * null，调用方退化为无角色裸跑并如实留 record.agent=null）。
+ */
+async function resolveDefaultAgent(cwd, opts = {}) {
+  try {
+    const list = await listAgents(cwd, opts);
+    const hit = list.find((p) => p.name === DEFAULT_AGENT_NAME);
+    if (hit) return hit;
+  } catch { /* 发现面异常（根不可读等）：走 vendored 直读兜底 */ }
+  return parseFile(path.join(coreRef.vendorDir(), 'agents', `${DEFAULT_AGENT_NAME}.md`));
+}
+
+/**
+ * 非法 agent 引用报错（与 core agent-registry `loadByPath(ref, true)` 的
+ * Invalid agent ref 文案同源——主句逐字一致，括号内恢复指引按 zsw 双出口
+ * 适配：注入段 location（W7 起为 <available_subagents>，当前 <zsw-resources>
+ * agents 段同字段）或 zsw agents 查路径清单）。
+ */
+function invalidAgentRefMessage(ref) {
+  return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`
+    + ' (use <location> from <available_subagents>, or run "zsw agents" to list paths).';
+}
+
+/**
+ * 路径合法但文件不可读的报错（同 core agent-registry 的 Agent file not found
+ * 文案，恢复指引同上双出口）。
+ */
+function agentFileNotFoundMessage(filePath) {
+  return `Agent file not found or unreadable: ${filePath}.`
+    + ' Use an absolute path from <available_subagents> <location>, or run "zsw agents" to list paths.';
 }
 
 /**
@@ -325,16 +373,17 @@ function pickInt(v) {
 }
 
 /**
- * 可注入实例（AgentResolverPort 形态：{ homeDir, list, resolve }）——assemble
- * 组装用模块级缺省，测试/隔离 HOME 用工厂注入。注意 list/resolve 是 **async**
- * （core 发现链是异步 API）：消费方必须 await（manager.start /
- * agent-runner-adapter / server agents action / hook-source 均已 await）。
+ * 可注入实例（AgentResolverPort 形态：{ homeDir, list, resolve, resolveDefault }）
+ * ——assemble 组装用模块级缺省，测试/隔离 HOME 用工厂注入。注意 list/resolve/
+ * resolveDefault 是 **async**（core 发现链是异步 API）：消费方必须 await
+ * （manager.start / agent-runner-adapter / server agents action / hook-source
+ * 均已 await）。
  *
  * homeDir 基准口径：未显式注入时**每次调用现取** os.homedir()（POSIX 读 $HOME）
  * ——与 core 硬编码槽（user-agents/project-agents 本体根由 core 内部 homedir()
  * 现取）保持同一时点语义，测试用 env HOME 隔离时两侧不会劈叉；显式注入
- * homeDir 只影响本模块的根推导（user-pi 等 hostRoots 注入面），core 硬编码
- * 槽仍读进程 HOME——测试须保证两者指向同一目录。
+ * homeDir 只影响本模块的根推导（user-pi 等 hostRoots 注入面与 normalizeRef
+ * 的 ~/ 展开），core 硬编码槽仍读进程 HOME——测试须保证两者指向同一目录。
  */
 function createAgentDiscovery(opts = {}) {
   const inject = opts.homeDir !== undefined
@@ -343,7 +392,8 @@ function createAgentDiscovery(opts = {}) {
   return {
     get homeDir() { return inject.homeDir !== undefined ? inject.homeDir : os.homedir(); },
     list: (cwd) => listAgents(cwd, inject),
-    resolve: (nameOrPath, cwd) => resolveAgent(nameOrPath, cwd, inject),
+    resolve: (ref, cwd) => resolveAgent(ref, cwd, inject),
+    resolveDefault: (cwd) => resolveDefaultAgent(cwd, inject),
   };
 }
 
@@ -354,11 +404,17 @@ module.exports = {
   createAgentDiscovery,
   listAgents,
   resolveAgent,
+  resolveDefaultAgent,
   agentScanRoots,
   expandRootExtras,
   fourRoots,
   parseAgentMd, // 导出供单测直接验证解析逻辑
+  normalizeAgentRef,
+  invalidAgentRefMessage,
+  agentFileNotFoundMessage,
+  DEFAULT_AGENT_NAME,
   CONSUMED_KEYS,
   list: (cwd) => defaultDiscovery.list(cwd),
-  resolve: (nameOrPath, cwd) => defaultDiscovery.resolve(nameOrPath, cwd),
+  resolve: (ref, cwd) => defaultDiscovery.resolve(ref, cwd),
+  resolveDefault: (cwd) => defaultDiscovery.resolveDefault(cwd),
 };

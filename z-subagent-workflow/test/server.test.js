@@ -283,9 +283,12 @@ test('tools/call agents：core 发现面（lib/agent-discovery），vendored 内
   const vendored = rows.filter((r) => r.source === 'core-vendored');
   assert.equal(vendored.length, 10, 'vendored 内置 10 角色');
   assert.ok(vendored.every((r) => r.file.includes(path.join('vendor', 'subagent-core', 'agents'))));
-  // 精简视图：只有索引五字段（body/model 等 profile 字段不透出）
+  // 精简视图：只有索引六字段（body/model 等 profile 字段不透出）；W6b 起
+  // 带 location（D-4a：start 的 agent 参数只收路径，location 是其来源列；
+  // file 为同值兼容字段）
   for (const r of rows) {
-    assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'name', 'source', 'when']);
+    assert.deepEqual(Object.keys(r).sort(), ['description', 'file', 'location', 'name', 'source', 'when']);
+    assert.equal(r.location, r.file, 'location 与 file 同值（.md 绝对路径）');
     assert.ok(r.file.endsWith('.md'));
   }
   // when（何时用我）透传：有则原样、无则空串

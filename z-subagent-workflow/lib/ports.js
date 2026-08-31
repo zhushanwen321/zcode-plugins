@@ -98,10 +98,41 @@ const DEFAULTS = require('./config').DEFAULTS;
  *                                    不补落盘则重启 rebuild 后探活无依据）
  *   resume(exec, message, opts)      续聊：core EnginePort 面无 resume 入口，
  *                                    显式报可操作错误（P3 常驻实现回归路线）
- *   alive(exec) -> boolean           探活（崩溃恢复用；pid 信号 0 探测）
- *   release(exec)                    一次性会话终态释放：no-op（spawn 单轮无
- *                                    驻留对应物）；实现完整契约面，上层可
- *                                    统一调用
+ *   alive(exec) -> boolean           探活（崩溃恢复用；唯一消费面
+ *                                    manager.recover）。W6a2 起按 exec.kind
+ *                                    分支：spawn = pid 信号 0 探测（ESRCH →
+ *                                    死，EPERM → 活）；appserver = 保守视为
+ *                                    存活——core 未暴露任务级探活面（常驻
+ *                                    进程 pidfile/activeSessions/连接状态全
+ *                                    是引擎内部实现，barrel 未导出探活原语），
+ *                                    且「常驻进程活着」≠「本任务 turn 在推进」；
+ *                                    recover 语境下句柄已丢、结果无论是否推进
+ *                                    都无法回流，orphan（建议 cancel 后重发）
+ *                                    才是正确处置，不发明「进程已死」的失真
+ *                                    断言
+ *   release(exec)                    一次性会话终态释放：no-op（spawn 单轮 done
+ *                                    即进程退出；appserver 常驻会话跨任务共享，
+ *                                    引擎内部 attempt 收尾时已退订——本层无
+ *                                    per-record 释放面）；实现完整契约面，上
+ *                                    层可统一调用
+ *   shutdown()                       进程级收尾（W6a2 新增；dispose 责任链）：
+ *                                    ① 宿主持有的引擎实例逐个 dispose
+ *                                    （appserver 常驻进程收割入口——EnginePort
+ *                                    .dispose 契约 fire close 帧 → SIGTERM →
+ *                                    grace → SIGKILL，幂等；注意 core
+ *                                    killAllSpawnedChildren 的内部 dispose 只
+ *                                    覆盖 registry 单例，zsw 真正跑任务的实例
+ *                                    在 runner 惰性表——不补这步常驻进程必泄
+ *                                    漏；dispose 先于 killAll，close 帧必须先
+ *                                    于 SIGTERM）② killAllSpawnedChildren 兜底
+ *                                    （spawn 形态 per-record 子进程）。
+ *                                    调用点（dispose 责任链的宿主侧）：
+ *                                    daemon 退出面（assemble 组合进
+ *                                    wfHost.shutdown，MCP server stdin 关闭时
+ *                                    触发）+ CLI 一次性进程任务完成面
+ *                                    （bin/zsw.js 的 zflow run 与 --local，防
+ *                                    appserver pipe stdio 挂住父进程事件循环
+ *                                    致 CLI 无法自然退出）
  *   capabilities()                   能力声明
  *
  * @typedef {Object} RunHandle
@@ -118,8 +149,10 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @typedef {Object} RunnerCapabilities
  * @property {'none'|'stdin'|'session-send'} steering   running 中追加消息的能力
  * @property {number} coldStartMs                                每轮启动开销估计
- * @property {'spawn'|'appserver'} kind                          恒 'spawn'（单轮
- *                                    通道的台账标注；appserver 值仅存于旧 record）
+ * @property {'spawn'|'appserver'} kind                          台账保守基线恒
+ *                                    'spawn'（probe 失败/漂移降级恒可达；是否
+ *                                    命中 appserver 常驻是 per-task 事实，落
+ *                                    exec.kind 翻转留痕，不在此预判——W6a2）
  */
 
 /**
@@ -149,9 +182,25 @@ const DEFAULTS = require('./config').DEFAULTS;
  */
 
 /**
- * AgentResolverPort —— agent .md 四根发现（固定实现，接口化为可测）。
- *   list(cwd) -> AgentProfile[]      四根优先级：ws/.agents > ws/.zcode > ~/.agents > ~/.zcode
- *   resolve(nameOrPath, cwd) -> AgentProfile | null
+ * AgentResolverPort —— agent .md 发现与解析（固定实现，接口化为可测）。
+ *   list(cwd) -> AgentProfile[]      四根 + vendored 内置（遮蔽序：project 两根
+ *                                     > vendored 内置 > user 两根；W6a 起 core
+ *                                     discoverResources 单实现）
+ *   resolve(ref, cwd) -> AgentProfile | null
+ *                                     D-4a 收紧（W6b）：ref 仅 .md 绝对路径
+ *                                     （~/ 展开同 core normalizeRef 口径）；
+ *                                     名字/相对路径/非 .md 一律 null——调用方
+ *                                     （manager.start / agent-runner-adapter）
+ *                                     经 normalizeAgentRef 先归一，非法抛
+ *                                     invalidAgentRefMessage（与 core
+ *                                     agent-registry 文案同源），合法但 null 抛
+ *                                     agentFileNotFoundMessage
+ *   resolveDefault(cwd) -> AgentProfile | null
+ *                                     D-4 缺省统一（W6b）：agent 参数缺省 =
+ *                                     general-purpose 内置角色（遮蔽序胜者，
+ *                                     project 级同名 .md 可覆写）；发现面异常
+ *                                     时 vendored 直读兜底，再 miss 返回 null
+ *                                     （调用方诚实裸跑，record.agent 如实 null）
  */
 
 /**

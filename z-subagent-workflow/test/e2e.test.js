@@ -263,14 +263,15 @@ test('E1 sync start + agent 注入：tester 正文进 prompt，回复含口令�
   const res = await startWithRetry(manager, {
     task: '报告就绪',
     slug: 'e1-agent-inject',
-    agent: 'tester',
+    // D-4a（W6b）：agent 仅收 .md 绝对路径——按名传 tester 的旧形态已废弃
+    agent: path.join(TMP, 'e1-proj', '.agents', 'agents', 'tester.md'),
     model: MODEL,
   }, { cwd: path.join(TMP, 'e1-proj'), targetSessionId: 'sess_e1' });
 
   assert.equal(res.status, 'closed', `失败详情: ${res.error}`);
   assert.ok(res.result.includes('菠萝啤'), `角色正文未注入 prompt，response=${JSON.stringify(res.result)}`);
   const rec = manager.status(res.subagentId);
-  assert.equal(rec.agent, 'tester'); // resolver 命中项目级 .agents/agents（user 根为空）
+  assert.equal(rec.agent, 'tester'); // 路径解析命中项目级 .agents/agents（user 根为空）
   await sleep(GAP_MS);
 });
 

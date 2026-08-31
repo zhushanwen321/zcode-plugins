@@ -24,7 +24,7 @@ whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构�
 
 ```
 node bin/zsw.js start --task "<自包含任务描述>" --slug "<短名>"
-     [--agent "<agent 名或 .md 路径>"] [--model "<模型短名>"]
+     [--agent "<agent .md 绝对路径>"] [--model "<模型短名>"]
      [--worktree] [--conversation] [--timeout-ms <n>] [--wait]  → subagentId（无 --wait 立即返回）
 node bin/zsw.js list                          → 全部 record（含 running/idle/终态）
 node bin/zsw.js status --id <id>              → 单条详情 + 结果路径
@@ -32,13 +32,15 @@ node bin/zsw.js message --id <id> --text "<追问>"  → 续聊一轮（仅 conv
 node bin/zsw.js cancel --id <id>              → 取消（SIGTERM→SIGKILL）
 node bin/zsw.js close --id <id>               → 关闭会话并清理 worktree
 node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]  → 聚合等待到完成（终态，或 conversation 的 idle 本轮完成；partial → exit 2）
-node bin/zsw.js agents                        → 可用 agent .md 清单（name/description/when/file/source，四根发现）
+node bin/zsw.js agents                        → 可用 agent .md 清单（name/description/when/location/file/source，四根+vendored 内置）
 node bin/zsw.js models [--all]                   → 可用模型清单（默认 provider 明细：短名/上下文窗口/推理档位/默认标记；--all = 全部带凭据 provider 全名视图）
 ```
 
+**agent 参数契约（与 pi 平台统一）**：`--agent` 只收 **.md 绝对路径**（支持 `~/` 前缀展开）。传名字（如 `reviewer`）会被拒，报错 `Invalid agent ref: ...`（与 pi 侧同源）并给路径指引——路径取 agents 清单的 `location`/`file` 列。缺省不传 = 加载 `general-purpose` 内置角色（通用兜底；project 级同名 .md 可遮蔽覆写）；不想要角色时显式传自定义 .md 路径。
+
 （`--local` 后门走一次性本地执行，仅调试用——无续聊/限流，CLI 退出即丢执行体。）
 
-start 前不确定有哪些 agent 可用时，优先看会话上下文 `<zsw-resources>` 快照的 agents 段（SessionStart 注入，四根发现结果，快照在场即免查询）；快照缺席或疑过期时再 `node bin/zsw.js agents` 查清单（四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/文件路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
+start 前不确定有哪些 agent 可用时，优先看会话上下文 `<zsw-resources>` 快照的 agents 段（SessionStart 注入，四根发现结果，快照在场即免查询）；快照缺席或疑过期时再 `node bin/zsw.js agents` 查清单（vendored 内置 10 角色 + 四根发现，pi 生态 `.agents/agents/` 也在内；返回 name/description/when/来源根/路径）——这是平台按需查询等价物，代替 pi 的每 turn 常驻 agent 索引。
 
 ## CLI 模式（默认，1.0.0 起）——首选等待姿势
 
@@ -142,7 +144,7 @@ log('进度留痕（core log 通道，stderr + 落盘）');
 const r = await agent({
   prompt: '<自包含 prompt：该次 agent 调用的目标/背景/验收标准>',  // 必填
   model: '<可选，缺省继承 run 级 --model>', timeoutMs: 600000,
-  agent: '<可选 agent .md 绝对路径>', schema: { /* 可选 JSON Schema，返回结构化对象 */ },
+  agent: '<可选 agent .md 绝对路径；缺省 = general-purpose 内置角色>', schema: { /* 可选 JSON Schema，返回结构化对象 */ },
 });
 // r = agent() 返回值 = 该次调用的 parsedOutput ?? content（schema 传入时是结构化对象）
 return { summary: '结果' };                     // scriptResult（任意可结构化克隆值）

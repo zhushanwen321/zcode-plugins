@@ -11,7 +11,10 @@
  *   同 stem 撞名 → 本体胜（注入序语义：本体根注入在展开目标之后）
  * - symlink 环正常终止（防环集合含四根本身 realpath）；跨根链接不重复注入
  * - 文件级 symlink 可发现（core async 扫描 follow）；broken link 跳过
- * - resolve 名字/路径/缺省各形态
+ * - 引用契约（W6b，D-4a 收紧 + D-4 缺省统一）：resolve 仅路径形态
+ *   （~/ 展开）；名字/相对路径/非 .md 拒（normalizeAgentRef = core
+ *   normalizeRef 口径复刻）；resolveDefault = general-purpose（vendored
+ *   兜底 + project 级遮蔽胜）
  * - parseAgentMd 解析语义（自旧 resolver 原样迁移的回归锁定）
  *
  * 隔离：HOME env 指临时目录（core 硬编码 user-agents 槽与本文档模块的
@@ -112,16 +115,22 @@ test('四根级联：ws/.agents > ws/.zcode > ~/.agents > ~/.zcode（非内置�
   roots.forEach((r, i) => {
     mkAgent(r, 'cascade-probe', `description: from root ${i}\n`);
   });
-  // 逐级删除高优先级文件，验证胜出顺序逐级下移
+  // 逐级删除高优先级文件，验证胜出顺序逐级下移（D-4a 后引用仅路径形态，
+  // 遮蔽序断言走 listAgents——resolveAgent 不再做名字四根查找）
   for (let i = 0; i < roots.length; i++) {
-    const p = await discovery.resolveAgent('cascade-probe', ws, { homeDir: home });
+    const list = await discovery.listAgents(ws, { homeDir: home });
+    const p = list.find((x) => x.name === 'cascade-probe');
     assert.ok(p, `第 ${i} 级应有 cascade-probe`);
     assert.equal(p.description, `from root ${i}`);
     assert.equal(p.filePath, path.join(roots[i], 'cascade-probe.md'));
+    // 命中路径再经 resolveAgent 路径形态解析（消费方实际链路）
+    const hit = await discovery.resolveAgent(p.filePath, ws, { homeDir: home });
+    assert.equal(hit.filePath, p.filePath);
     fs.rmSync(path.join(roots[i], 'cascade-probe.md'));
   }
-  const miss = await discovery.resolveAgent('cascade-probe', ws, { homeDir: home });
-  assert.equal(miss, null, '四根删空返回 null（非内置名无 vendored 回落）');
+  const list = await discovery.listAgents(ws, { homeDir: home });
+  assert.equal(list.find((x) => x.name === 'cascade-probe'), undefined,
+    '四根删空后清单无此条（非内置名无 vendored 回落）');
   void tmp;
 });
 
@@ -147,8 +156,8 @@ test('目录 symlink 整库：库内 .md 与本体散 .md 同时可发现；同 
     '库内条目路径落在根命名空间（链接路径前缀）');
   assert.equal(helper.source, 'project-host', '展开目标与本体同标签（同序位扫描）');
 
-  // 按名字解析：库内独有条目可命中
-  const hit = await discovery.resolveAgent('lib-helper', ws, { homeDir: home });
+  // 按路径解析：库内独有条目可命中（D-4a 后唯一引用形态）
+  const hit = await discovery.resolveAgent(path.join(root, 'my-lib', 'lib-helper.md'), ws, { homeDir: home });
   assert.equal(hit.filePath, path.join(root, 'my-lib', 'lib-helper.md'));
 });
 
@@ -208,17 +217,53 @@ test('文件级 symlink 指向根外文件可被发现；子目录内 .md 单层
     '链接与真实文件不同根（根外文件本体不在任何根内），清单只此一条');
 });
 
-test('resolve：绝对/相对路径、名字带 .md、stem 兜底、vendored 内置名、未命中 null', async (t) => {
+test('resolve（D-4a 收紧）：绝对路径成；名字/相对路径/非 .md 拒；~/ 展开；未命中 null', async (t) => {
   const { home, ws } = setupFixture(t);
   const file = mkAgent(path.join(ws, '.agents', 'agents'), 'custom-agent');
   assert.equal((await discovery.resolveAgent(file, ws, { homeDir: home })).filePath, file);
-  assert.equal((await discovery.resolveAgent('./.agents/agents/custom-agent.md', ws, { homeDir: home })).name, 'custom-agent');
-  assert.equal((await discovery.resolveAgent('custom-agent.md', ws, { homeDir: home })).name, 'custom-agent');
-  // vendored 内置名回落（旧 resolver 无此行为——内置资产接入后的设计语义）
-  const gp = await discovery.resolveAgent('general-purpose', ws, { homeDir: home });
-  assert.ok(gp.filePath.includes(path.join('vendor', 'subagent-core', 'agents', 'general-purpose.md')));
-  assert.equal(await discovery.resolveAgent('not-exist', ws, { homeDir: home }), null);
+  // ~/ 展开形态（core normalizeRef 口径——homeDir 注入隔离）
+  const homeFile = mkAgent(path.join(home, '.zcode', 'agents'), 'tilde-agent');
+  assert.equal((await discovery.resolveAgent('~/.zcode/agents/tilde-agent.md', ws, { homeDir: home })).filePath, homeFile);
+  // 名字形态（含带 .md）一律 null——四根查找已退役，消费方经 invalidAgentRefMessage 拒
+  assert.equal(await discovery.resolveAgent('custom-agent', ws, { homeDir: home }), null);
+  assert.equal(await discovery.resolveAgent('custom-agent.md', ws, { homeDir: home }), null);
+  assert.equal(await discovery.resolveAgent('general-purpose', ws, { homeDir: home }), null,
+    '内置名同样不可按名引用（缺省解析走 resolveDefault，显式引用走路径）');
+  // 相对路径/非 .md 拒（core normalizeRef 口径）
+  assert.equal(await discovery.resolveAgent('./.agents/agents/custom-agent.md', ws, { homeDir: home }), null);
+  assert.equal(await discovery.resolveAgent('/abs/custom-agent.txt', ws, { homeDir: home }), null);
   assert.equal(await discovery.resolveAgent(path.join(ws, 'nope.md'), ws, { homeDir: home }), null);
+});
+
+test('normalizeAgentRef：core normalizeRef 口径复刻（trim/~/展开/绝对路径/.md 后缀）', () => {
+  const N = discovery.normalizeAgentRef;
+  assert.equal(N('/a/b/c.md'), '/a/b/c.md');
+  assert.equal(N('  /a/b/c.md  '), '/a/b/c.md', '首尾空白 trim');
+  assert.equal(N('~/.zcode/agents/x.md', { homeDir: '/H' }), path.join('/H', '.zcode/agents/x.md'));
+  assert.equal(N('~/x.md', { homeDir: '/H' }), path.join('/H', 'x.md'));
+  // 非法形态全 null
+  assert.equal(N('reviewer'), null, '名字');
+  assert.equal(N('reviewer.md'), null, '名字带扩展');
+  assert.equal(N('./x.md'), null, '相对路径 ./');
+  assert.equal(N('../x.md'), null, '相对路径 ../');
+  assert.equal(N('/abs/x.txt'), null, '非 .md 后缀');
+  assert.equal(N(''), null, '空串');
+  assert.equal(N(null), null, '非字符串');
+  assert.equal(N(undefined), null, 'undefined');
+});
+
+test('resolveDefault：缺省 = general-purpose（vendored 兜底 + project 级遮蔽胜）', async (t) => {
+  const { home, ws } = setupFixture(t);
+  // 无用户资产：vendored 内置胜出
+  const gp = await discovery.resolveDefaultAgent(ws, { homeDir: home });
+  assert.equal(gp.name, 'general-purpose');
+  assert.ok(gp.filePath.includes(path.join('vendor', 'subagent-core', 'agents', 'general-purpose.md')));
+  assert.ok(gp.body.includes('通用兜底'), '正文可解析（prompt-builder 消费面）');
+  // project 级同名遮蔽（逃生门：缺省角色也可被用户覆写）
+  const projFile = mkAgent(path.join(ws, '.agents', 'agents'), 'general-purpose', 'description: my-gp\n');
+  const gp2 = await discovery.resolveDefaultAgent(ws, { homeDir: home });
+  assert.equal(gp2.filePath, projFile, 'project 级同名胜出');
+  assert.equal(gp2.source, 'project-agents');
 });
 
 test('agentScanRoots：注入序 = 展开目标在前、本体在后（core last-writer-wins 本体胜）', (t) => {
@@ -310,15 +355,20 @@ test('frontmatter: when 字段可选透出', () => {
 
 // ------------------------------------------------------------- 工厂注入形态
 
-test('createAgentDiscovery：端口形态 { homeDir, list, resolve }（async 契约）', async (t) => {
+test('createAgentDiscovery：端口形态 { homeDir, list, resolve, resolveDefault }（async 契约）', async (t) => {
   const { home, ws } = setupFixture(t);
   const instance = discovery.createAgentDiscovery({ homeDir: home });
   assert.equal(typeof instance.list, 'function');
   assert.equal(typeof instance.resolve, 'function');
+  assert.equal(typeof instance.resolveDefault, 'function');
   assert.equal(instance.homeDir, home);
   const rows = await instance.list(ws);
   assert.ok(Array.isArray(rows));
   assert.ok(rows.some((p) => p.name === 'reviewer'), 'vendored reviewer 在场');
-  const hit = await instance.resolve('reviewer', ws);
+  // 路径形态 resolve（D-4a 唯一合法引用；从清单拿 location 再解析）
+  const reviewer = rows.find((p) => p.name === 'reviewer');
+  const hit = await instance.resolve(reviewer.filePath, ws);
   assert.ok(hit.filePath.includes('vendor'));
+  const gp = await instance.resolveDefault(ws);
+  assert.equal(gp.name, 'general-purpose');
 });

@@ -106,10 +106,19 @@ class FakeRunner {
   }
 }
 
+/** 缺省角色 fake（D-4 缺省统一：resolveDefault 的 general-purpose 形态）。 */
+const fakeGeneralPurpose = () => ({
+  name: 'general-purpose',
+  description: '通用兜底',
+  filePath: '/fake/general-purpose.md',
+  body: '你是通用兜底 agent——直接用提供的工具执行 task',
+});
+
 function fakeResolver() {
   return {
-    resolve(nameOrPath) {
-      if (nameOrPath !== 'reviewer') return null;
+    // D-4a 收紧后 resolver 只吃归一化绝对路径（manager 先 normalizeAgentRef）
+    resolve(ref) {
+      if (ref !== '/fake/reviewer.md') return null;
       return {
         name: 'reviewer',
         description: '代码审查',
@@ -118,6 +127,9 @@ function fakeResolver() {
         skills: ['/fake/skills/review-guide'],
         body: '你是资深代码审查员',
       };
+    },
+    resolveDefault() {
+      return fakeGeneralPurpose();
     },
   };
 }
@@ -202,7 +214,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + mailbox 通�
   const c = ctx();
   const { manager, runner, records, slots } = buildManager();
   const h = await manager.start(
-    { task: '分析 lib 目录并给出重构清单', slug: 'bg-demo', agent: 'reviewer', model: 'fake/override-model' },
+    { task: '分析 lib 目录并给出重构清单', slug: 'bg-demo', agent: '/fake/reviewer.md', model: 'fake/override-model' },
     c,
   );
   assert.match(h.subagentId, /^sa-/);
@@ -492,7 +504,22 @@ test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', as
   assert.equal(records.list().length, 0); // 校验先于 create，失败不留悬挂 record
 });
 
-test('start 参数校验：task/slug/cwd 缺失与 agent 未命中均为可操作错误', async () => {
+// ---------------------------------------------------------------------------
+// agent 参数契约（W6b：D-4a 收紧 + D-4 缺省统一）
+// ---------------------------------------------------------------------------
+
+/**
+ * core agent-registry `loadByPath(ref, true)` 的 Invalid agent ref 模板
+ * （报错同源基准，xyz-agent 仓 packages/subagent-core/src/execution/agent-registry.ts）：
+ *   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>).`
+ * zsw 侧主句与其逐字同源（尾部括号内恢复指引按 zsw 双出口适配：注入段
+ * location 或 zsw agents 查路径）。硬编码断言 = 同源锁定：core 侧文案若变，
+ * 本断言失败提示两侧对齐。
+ */
+const CORE_INVALID_AGENT_REF_PREFIX = (ref) =>
+  `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`;
+
+test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中均为可操作错误', async () => {
   const { manager } = buildManager();
   const c = ctx();
   await assert.rejects(() => manager.start({ slug: 'x' }, c), /task/);
@@ -501,10 +528,57 @@ test('start 参数校验：task/slug/cwd 缺失与 agent 未命中均为可操�
     () => manager.start({ task: '任务书', slug: 'x' }, { targetSessionId: 'sess_x' }),
     /cwd/,
   );
+  // D-4a：名字形态拒——文案与 core agent-registry 同源（主句逐字一致）
   await assert.rejects(
-    () => manager.start({ task: '任务书', slug: 'x', agent: 'nope' }, c),
-    (e) => /未找到 agent/.test(e.message) && e.message.includes('恢复指引'),
+    () => manager.start({ task: '任务书', slug: 'x', agent: 'reviewer' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('reviewer'))
+      && e.message.includes('zsw agents'),
   );
+  // 相对路径与非 .md 引用同拒（core normalizeRef 口径）
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: './reviewer.md' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('./reviewer.md')),
+  );
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/abs/reviewer.txt' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('/abs/reviewer.txt')),
+  );
+  // 路径合法但文件不可读：core agent-registry 的 Agent file not found 同款文案
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/fake/missing.md' }, c),
+    (e) => e.message.startsWith('Agent file not found or unreadable: /fake/missing.md.')
+      && e.message.includes('zsw agents'),
+  );
+});
+
+test('start agent 缺省：resolveDefault 加载 general-purpose 角色（record.agent 同名 + prompt 含角色正文）', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  const h = await manager.start({ task: '整理任务书', slug: 'gp-default' }, c);
+  await waitFor(() => runner.startCalls.length === 1);
+  // record.agent 从 null 变 general-purpose（D-4 缺省段：与 pi 对齐）
+  assert.equal(records.get(h.subagentId).agent, 'general-purpose');
+  // prompt-builder 消费 agentProfile：角色段注入 general-purpose 正文
+  assert.ok(runner.startCalls[0].prompt.includes('## 角色设定'));
+  assert.ok(runner.startCalls[0].prompt.includes('通用兜底 agent'));
+  // 模型链：缺省角色 frontmatter 无 model → 默认链产物
+  assert.equal(runner.startCalls[0].modelRef, 'fake/default-model');
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-gp-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'closed');
+  // 对照：显式传自定义 .md 路径不走缺省角色（不想要角色的用户出口）
+  const h2 = await manager.start({ task: '任务书', slug: 'explicit', agent: '/fake/reviewer.md' }, ctx());
+  assert.equal(records.get(h2.subagentId).agent, 'reviewer');
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-gp-2' });
+});
+
+test('start agent 路径正例：绝对路径经 resolver 命中（D-4a 唯一合法形态）', async () => {
+  const c = ctx();
+  const { manager, records } = buildManager();
+  const h = await manager.start(
+    { task: '任务书', slug: 'path-hit', agent: '/fake/reviewer.md', model: 'fake/m' },
+    c,
+  );
+  assert.equal(records.get(h.subagentId).agent, 'reviewer');
 });
 
 test('status/list：精简视图与全量查询；polling 档附轮询指引', async () => {
@@ -623,14 +697,14 @@ test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > �
     name: 'capped', description: '限轮任务', filePath: '/fake/capped.md', body: '正文',
     maxTurns: 4, disallowedTools: ['web-search', 'mcp__demo__x'],
   };
-  const cappedResolver = { resolve: (n) => (n === 'capped' ? capped : null) };
+  const cappedResolver = { resolve: (n) => (n === '/fake/capped.md' ? capped : null), resolveDefault: () => null };
   const settle = (records, id) =>
     waitFor(() => ['closed', 'idle'].includes(records.get(id).status));
 
   // ① 显式 timeoutMs 优先于 maxTurns 换算（调用方声明即覆盖 agent 约定）
   {
     const { manager, runner, records } = buildManager({ resolver: cappedResolver });
-    const h = await manager.start({ task: '任务书', slug: 'explicit', agent: 'capped', timeoutMs: 12345 }, ctx());
+    const h = await manager.start({ task: '任务书', slug: 'explicit', agent: '/fake/capped.md', timeoutMs: 12345 }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
     assert.equal(runner.startCalls[0].timeoutMs, 12345);
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-1' });
@@ -639,7 +713,7 @@ test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > �
   // ② 无显式 → maxTurns × 300_000（对齐 pi watchdog：每 turn 预算 5 分钟）
   {
     const { manager, runner, records } = buildManager({ resolver: cappedResolver });
-    const h = await manager.start({ task: '任务书', slug: 'turns', agent: 'capped' }, ctx());
+    const h = await manager.start({ task: '任务书', slug: 'turns', agent: '/fake/capped.md' }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
     assert.equal(runner.startCalls[0].timeoutMs, 4 * 300_000);
     assert.equal(records.get(h.subagentId).timeoutMs, 4 * 300_000); // record 持久化同值
@@ -663,16 +737,16 @@ test('profile.disallowedTools 透传 taskCtx（MUST_FIX-3 硬约束上游）；t
     tools: ['read', 'bash'], disallowedTools: ['web-search'],
   };
   const { manager, runner, records } = buildManager({
-    resolver: { resolve: (n) => (n === 'restricted' ? restricted : null) },
+    resolver: { resolve: (n) => (n === '/fake/restricted.md' ? restricted : null), resolveDefault: () => null },
   });
-  const h = await manager.start({ task: '任务书', slug: 'denylist', agent: 'restricted' }, ctx());
+  const h = await manager.start({ task: '任务书', slug: 'denylist', agent: '/fake/restricted.md' }, ctx());
   await waitFor(() => runner.startCalls.length === 1);
   // denylist → taskCtx（runner 层落 --disallowed-tools flag，硬约束）
   assert.deepEqual(runner.startCalls[0].disallowedTools, ['web-search']);
   // 白名单无 flag 通道 → prompt 工具约束段（软约束，prompt-builder 两态见 domain.test.js）
   assert.ok(runner.startCalls[0].prompt.includes('## 工具约束'));
   assert.ok(runner.startCalls[0].prompt.includes('只允许使用以下工具'));
-  // 无 agent（profile=null）不透传
+  // 无 disallowedTools 的 agent（缺省角色走 resolveDefault）不透传
   const { manager: m2, runner: r2 } = buildManager();
   await m2.start({ task: '任务书', slug: 'no-agent' }, ctx());
   await waitFor(() => r2.startCalls.length === 1);
@@ -1091,10 +1165,10 @@ test('F4 CLI 工具限制透传 taskCtx（appserver runner 侧做 frontmatter �
     disallowedTools: ['WebSearch'],
   };
   const { manager: m2, runner: r2 } = buildManager({
-    resolver: { resolve: (n) => (n === 'restricted2' ? restricted : null) },
+    resolver: { resolve: (n) => (n === '/fake/r2.md' ? restricted : null), resolveDefault: () => null },
   });
   await m2.start(
-    { task: '任务书', slug: 'fm-tools', agent: 'restricted2', denyTools: ['Bash'] },
+    { task: '任务书', slug: 'fm-tools', agent: '/fake/r2.md', denyTools: ['Bash'] },
     ctx(),
   );
   await waitFor(() => r2.startCalls.length === 1);

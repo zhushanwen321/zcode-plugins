@@ -12,7 +12,9 @@
  *   MCP tools/call zsub(start)   ← ctx {targetSessionId(取自 _meta, Z3), cwd}
  *    ①  notifyMode 探测：notifier.capabilities().mode
  *        （mailbox|polling；env 探测在 createRuntime，本层只消费）
- *    ②  resolver.resolve(agent, cwd)            四根 agent .md 发现（D6）
+ *    ②  resolver.resolve(agent, cwd)            agent .md 路径解析（D-4a 收紧：
+ *                                               仅绝对路径，名字拒；缺省走
+ *                                               resolveDefault = general-purpose）
  *    ③  模型引用原始透传（校验归 core 引擎 preparer，回接 2c）
  *        + promptBuilder.buildPrompt            拼装角色/工具约束/任务/schema/技能（D7）
  *        + worktree.prepare（可选）             任务 cwd 切到隔离目录（D12）
@@ -40,6 +42,9 @@ const config = require('./config');
 const { buildPrompt, toolList } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
 const { extractJsonObject } = require('./jsonout');
+const {
+  normalizeAgentRef, invalidAgentRefMessage, agentFileNotFoundMessage,
+} = require('./agent-discovery');
 
 /** 通知文案里 response 的截断长度：mailbox 消息进上下文，500 字符够判断去向。 */
 const SUMMARY_HEAD_CHARS = 500;
@@ -132,19 +137,29 @@ class SubagentManager {
       );
     }
 
-    // ② agent 解析（可选）：找不到立刻报错比带着空角色跑完再发现用错 agent 便宜。
-    // resolve 是 async（W6a 起发现走 core discoverResources）；sync 注入的测试
-    // fake resolver 经 await 透明兼容
+    // ② agent 解析（D-4a 收紧 + D-4 缺省统一，W6b）：
+    //    - 引用唯一形态 = .md 绝对路径（~/ 展开同 core normalizeRef 口径）。
+    //      名字/相对路径/非 .md → invalidAgentRefMessage（与 core agent-registry
+    //      的 Invalid agent ref 文案同源——报错同源基准）；路径合法但不可读 →
+    //      agentFileNotFoundMessage（core 同款）。找不到立刻报错比带着空角色
+    //      跑完再发现用错 agent 便宜。
+    //    - 缺省不再无角色裸跑：resolveDefault 解析 general-purpose 内置角色
+    //      （遮蔽序胜者，project 级可覆写）；解析面异常退化 null = 诚实裸跑
+    //      （record.agent 如实 null）。不想要角色的用户显式传自定义 .md 路径。
+    //    resolver.resolve/resolveDefault 是 async（W6a 起 core discoverResources）；
+    //    sync 注入的测试 fake resolver 经 await 透明兼容。
     let profile = null;
     if (params.agent != null && params.agent !== '') {
-      profile = await this.resolver.resolve(params.agent, ctx.cwd);
-      if (!profile) {
-        throw new Error(
-          `未找到 agent "${params.agent}"（发现面：vendored 内置 + 项目 .agents/agents > .zcode/agents，`
-          + '再到 HOME 下同名两根；支持名字或 ./ 相对路径 / 绝对路径）。'
-          + '恢复指引：检查名字拼写，或改用 agent .md 的绝对路径。'
-        );
+      const norm = normalizeAgentRef(params.agent);
+      if (norm === null) {
+        throw new Error(invalidAgentRefMessage(params.agent));
       }
+      profile = await this.resolver.resolve(norm, ctx.cwd);
+      if (!profile) {
+        throw new Error(agentFileNotFoundMessage(norm));
+      }
+    } else {
+      profile = await this.resolver.resolveDefault(ctx.cwd) || null;
     }
 
     // ③ 模型解析链 requested > agent frontmatter > 默认链（2c 起：原始请求透传，
