@@ -2,6 +2,10 @@
   "name": "z-tool-finder",
   "version": "0.0.1",
   "description": "Progressive (lazy) loading for MCP tools in zcode: per-server proxy wrappers expose only get_tool_details/call_tool meta tools, a SessionStart hook auto-takes-over user/plugin stdio servers and injects an <available-custom-tools> manifest, and a global search_tools server indexes the catalog. Fully reversible via tf restore.",
+  "description_i18n": {
+    "en": "Progressive (lazy) loading for MCP tools in zcode: per-server proxy wrappers expose only get_tool_details/call_tool meta tools, a SessionStart hook auto-takes-over user/plugin stdio servers and injects an <available-custom-tools> manifest, and a global search_tools server indexes the catalog. Fully reversible via tf restore.",
+    "zh-CN": "zcode 的 MCP 工具渐进式加载：per-server 代理 wrapper 只暴露 get_tool_details/call_tool 两个 meta 工具，SessionStart hook 自动接管用户级/插件级 stdio server 并注入 <available-custom-tools> 工具清单，全局 search_tools 检索 catalog。tf restore 一键还原。"
+  },
   "author": { "name": "zhushanwen", "url": "https://github.com/zhushanwen321" },
   "keywords": ["zcode", "mcp", "tool-search", "proxy", "progressive-disclosure"]
 }
