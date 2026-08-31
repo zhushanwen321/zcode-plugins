@@ -1,183 +1,221 @@
 'use strict';
 /**
- * SessionStart hook 注入块渲染纯函数（设计：docs/design/zsw-session-start-injection-design.md §3.1 样例 + D3）。
+ * SessionStart hook 注入块渲染（W7：改调 vendored subagent-core 三段 XML 渲染，
+ * 设计 subagent-core-convergence §3.2 D-3a——旧单块 <zsw-resources> 45 行预算
+ * 形态随本切换退役）。
  *
- * 零 fs/网络：输入均为调用方解析后的普通对象（v2 config 对象 / cli 主模型名 /
- * agent 清单 / 脚本名 / 内置 workflow 名 / 快照时间戳），文件读取在
- * bin/zsw.js hook session-start 侧完成。本模块不触碰任何 IO。
+ * 三段（同一 core format 函数产物，tag/字段集与 pi 侧逐字节同构——A4 注入
+ * 对齐的机制保证）：
+ *   <available_subagents>       formatAgentList    name/description[/<when>]/<location>
+ *   <available_workflows>       formatWorkflowList name/description/<location>
+ *   <available_provider_models> formatModelList    <id>（全名 provider/model）/<name>
+ *                                                  [/<caps>][/<contextWindow>]
+ * （models 段 tag 是 core 实现名 available_provider_models，非设计 §3.1 样例的
+ * 简写 <available_models>——与 pi 侧同构优先于样例字面。）
  *
- * 渲染口径与 lib/model-router.js 单源：模型清单（availableModels）、默认标记
- * 判定（defaultModelFor，内部含 splitModelRef 引用切分；provider 感知——main
- * 指向非默认 provider 时不得在默认清单上错标）、合格 provider 判定
- * （qualifiedProviders：带凭据且模型清单非空——凭据语义源出 driver.js 权威
- * 谓词，判定下沉在 model-router 单一实现）全部直接 require model-router 的
- * 导出消费，本模块零复刻（防多实现语义漂移）。
- * cliModelMain 由调用方传 defaultModelRef(v2) 回退链产物，因此本模块保持零 fs。
+ * 分段条目预算（D-3a R2 决策）：subagents 段 15（开箱 10 内置 + 5 用户余量）、
+ * workflows 段 10；条目按 name 码点序排（core sortByCodepoint，非 locale 序）、
+ * 超预算截尾部条目 + 截断兜底指引行；models 段完整永不截（formatModelList 无
+ * 预算参数，设计钉死）。内置条目无截断豁免（显式红线，不做「内置优先保留」
+ * 两段式）：码点序统一截尾行为可预测，兜底指引可恢复。
  *
- * 两层 models（D3）：默认 provider 段只渲染模型名单 + 默认标记，且不筛
- * apiKey（锚定 zsw models 口径，凭据缺失属快照过期由报错兜底覆盖）；其余
- * provider 须 apiKey 非空且模型清单非空，只以全名 <provider>/<model> 列出。
- * UUID 形态 provider（36 位带连字符）缩写为前 8 位 + …，首次出现附全名对照。
+ * guide 文案（宿主注入——core 不内嵌平台文案，D-3 guide 参数化）：subagents/
+ * workflows 段为静态常量；models 段 guide 由 modelsGuide 动态拼（快照时戳 +
+ * 当前默认模型——旧块的「当前默认：」行与快照过期警示并入 guide，default
+ * 标记机制随旧两层渲染退役）。
  *
- * 硬预算 ≤45 行（D3）：超限优先保留 models 段（永不截断），依次截 agents 段
- * （裁条目 + 「完整清单：zsw agents」标注）、workflows 段（丢自定义名单 +
- * 「完整清单：zsw workflow --action scripts」标注）。models 自身超常时以
- * models 优先击穿预算——provider 数是 GUI 配置量级（个位数），不设防。
- *
- * agents 段为「段头行 + 每 agent 一行」形态而非 §3.1 样例的单行省略示意：
- * D3 证据「两层渲染约 15-20 行」（6 agents 实测规模）与「构造大量 agents 使
- * 45 行爆掉」的截断序验收均要求 agents 行数随数量增长，且超长单行违背
- * G4 的 token 预算意图。
+ * 本模块仍零 fs/网络（数据组装在 lib/hook-source.js）：v2 config 对象经
+ * model-router 纯谓词消费（availableModels/qualifiedProviders，provider 范围
+ * 与旧块两层口径等价——默认 provider 不筛凭据、其余筛「带凭据且清单非空」）；
+ * 渲染函数经 lib/core-ref requireCore 消费（禁深路径，vendor 布局调整单点吸收）。
+ * cliModelMain 由调用方传 defaultModelRef(v2) 回退链产物，本模块不触 fs。
  */
 
-const {
-  PROVIDER_ID,
-  availableModels,
-  defaultModelFor,
-  qualifiedProviders,
-} = require('./model-router');
+const { PROVIDER_ID, availableModels, qualifiedProviders } = require('./model-router');
+const coreRef = require('./core-ref');
 
-const HARD_BUDGET_LINES = 45;
-const SNAPSHOT_HEADER = 'zsw 可用资源快照（会话启动时生成，GUI 中途改动后可能过期）';
-// 与 README.md 注入块样例的兜底行同文案（样例描述的是本常量的产物，改文案两处同改防漂移）
-const FALLBACK_LINE =
-  '兜底：传错模型名时报错自带可用清单（零依赖权威兜底）；主动现查 zsw models / zsw models --all（跨 provider）'
-  + '/ zsw agents（需 daemon 在跑——任一启用插件的会话）。模型名以本块与报错内清单为准'
-  + '（AGENTS.md 等静态路由表中的具体模型名可能过期）';
-const AGENTS_HEADER = 'agents（四根发现，同名高优先级根胜出）：';
-const OTHER_PROVIDERS_HEADER = '  其他可运行 provider（跨 provider 必须用全名 <provider>/<model>）：';
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** subagents 段条目预算（D-3a：开箱 10 内置 + 5 用户余量）。 */
+const AGENTS_MAX_ENTRIES = 15;
+/** workflows 段条目预算（D-3a：内置 5 + 自定义余量）。 */
+const WORKFLOWS_MAX_ENTRIES = 10;
+
+/** 截断兜底指引（段末追加行；文案与 zsw CLI 查询面对齐）。 */
+const AGENTS_TRUNCATION_NOTICE = '  …（截断，完整清单：zsw agents）';
+const WORKFLOWS_TRUNCATION_NOTICE = '  …（截断，完整清单：zflow scripts）';
 
 /**
- * 其余可运行 provider 行（每 provider 一行）：资格判定消费 model-router 的
- * qualifiedProviders 单一实现（带凭据且模型清单非空，与 zsw models --all 同
- * 口径），此处只做展示层裁剪——默认 provider 单列故排除；模型以全名
- * <provider>/<model> 列出；UUID 形态 provider 缩写为前 8 位并附「<缩写> 即
- * <全名>」对照（紧跟首个模型条目，§3.1 样例形态）。
+ * zsw 版 subagents 段引导（agent 参数契约 = W6b 收紧后语义：仅 .md 绝对路径，
+ * 缺省 general-purpose——与 pi 版 SUBAGENT_LIST_GUIDE 同构、按 zsw CLI 语境改写）。
  */
-function otherProviderLines(v2) {
-  const lines = [];
-  for (const id of qualifiedProviders(v2)) {
-    if (id === PROVIDER_ID) continue; // 默认段已单列，此段只渲染「其余」
-    const models = availableModels(v2, id);
-    const isUuid = UUID_RE.test(id);
-    const abbr = isUuid ? id.slice(0, 8) + '…' : id;
-    const items = models.map((m) => `${abbr}/${m}`);
-    if (isUuid) items.splice(1, 0, `${abbr} 即 ${id}`);
-    lines.push('    ' + items.join(' · '));
+const SUBAGENTS_GUIDE =
+  'The following subagents are available. PRIORITY: when a task involves reading 3+ files,'
+  + ' writing 100+ lines, parallel research, or specialized review, delegate to a matching subagent'
+  + ' FIRST instead of doing it yourself — this keeps your context focused on orchestration.'
+  + ' When starting one via the zsw CLI, pass the <location> path (absolute .md path) as the'
+  + ' --agent param — bare names are rejected. If no agent matches your task, omit --agent'
+  + ' (a general-purpose agent is used) and put all role-specific instructions in the task text.';
+
+/**
+ * zsw 版 workflows 段引导（workflow 引用契约：内置名或 .js 绝对路径——
+ * script:<名> 形态已拒，与 pi 版 WORKFLOW_LIST_GUIDE 同构、按 zsw CLI 语境改写）。
+ */
+const WORKFLOWS_GUIDE =
+  'The following workflows are available. Run them via the zsw CLI workflow subcommand:'
+  + ' built-in names are passed to --workflow <name> directly; custom scripts must be passed'
+  + ' by their <location> absolute .js path (script:<name> refs are rejected).'
+  + ' For parameter details, read the <location> script file (header @pi-meta has parameters + usage).';
+
+/**
+ * zsw 版 models 段引导（动态：快照时戳 + 当前默认模型）。旧块的「当前默认：」
+ * 恒显行、快照过期警示与模型兜底指引（报错自带权威清单 / zsw models 现查）
+ * 并入本 guide——三段形态下默认标记机制退役，guide 是唯一承载面。
+ * @param {string} nowIso   快照时间戳（空串则不加时戳句）
+ * @param {string} cliModelMain 默认模型引用（defaultModelRef 回退链产物；空则不加默认句）
+ */
+function modelsGuide(nowIso, cliModelMain) {
+  let g = 'The following models are available. Use these ids when passing --model to zsub/zflow:'
+    + ' cross-provider refs must use the full <provider>/<model> id exactly as shown'
+    + ` (short names only work for the default provider ${PROVIDER_ID}).`
+    + ' Match the model to the task — strong reasoners for design/architecture/deep research,'
+    + ' light models for exploration/formatting/counting.';
+  const def = typeof cliModelMain === 'string' ? cliModelMain.trim() : '';
+  if (def) {
+    g += ` Current default model: ${def}. Do NOT assume "no --model = heavyweight" —`
+      + ' when the default is a light model, heavy tasks MUST pass an explicit stronger model.';
   }
-  return lines;
+  if (nowIso) g += ` Snapshot generated ${nowIso} at session start; GUI config changes mid-session may make it stale.`;
+  g += ' On a wrong model name the error output includes the authoritative available list;'
+    + ' or run "zsw models" (default provider) / "zsw models --all" (all qualified providers) to refresh.';
+  return g;
 }
 
-/** agents 条目：name（description 截 20 码点）；无描述只列 name；无名条目丢弃。 */
-function agentEntries(agents) {
+/**
+ * agent-discovery AgentProfile[] → core AgentEntry[]（投影层：filePath→path、
+ * when 透传、无名条目丢弃——旧 agentEntries 同语义）。description 不截断
+ * （对齐 pi 侧 AgentEntry 原样渲染；旧块 20 码点截断随单块形态退役）。
+ */
+function toAgentEntries(agents) {
   const out = [];
-  for (const a of Array.isArray(agents) ? agents : []) {
-    const name = a && String(a.name || '').trim();
-    if (!name) continue;
-    // 码点安全截断：slice 按 UTF-16 单元切会把 surrogate 对（emoji 等）切成
-    // 孤立代理产生乱码尾字符，Array.from 按码点枚举后截断
-    const desc = Array.from(String((a && a.description) || '').trim()).slice(0, 20).join('');
-    out.push(desc ? `${name}（${desc}）` : name);
+  for (const p of Array.isArray(agents) ? agents : []) {
+    if (!p) continue;
+    const name = typeof p.name === 'string' ? p.name.trim() : '';
+    if (!name) continue; // 无名条目丢弃（旧语义）
+    const entry = {
+      name,
+      description: typeof p.description === 'string' ? p.description : '',
+      path: String(p.filePath || p.path || ''),
+    };
+    if (typeof p.when === 'string' && p.when.trim()) entry.when = p.when.trim();
+    out.push(entry);
   }
   return out;
 }
 
 /**
- * agents 段渲染（预算驱动）。budget = 本段可用行数。
- * 返回 { lines, truncated }；lines.length 恒 ≤ max(budget, 1)。
+ * hook-source 组装的 workflow 条目（name/description/path）→ core WorkflowEntry：
+ * description 经 core summarizeDescription 截 160 码点（与 pi 侧同口径——内置
+ * review-fix-loop 等资产描述较长，全量注入膨胀 prompt）。name/path 不动。
  */
-function renderAgents(agents, budget) {
-  const entries = agentEntries(agents);
-  const n = entries.length;
-  if (!n) return { lines: [AGENTS_HEADER + '（无）'], truncated: false };
-  if (budget >= n + 1) {
-    return { lines: [AGENTS_HEADER, ...entries.map((s) => '  ' + s)], truncated: false };
+function toWorkflowEntries(workflows) {
+  const core = coreRef.requireCore();
+  const out = [];
+  for (const w of Array.isArray(workflows) ? workflows : []) {
+    if (!w) continue;
+    const name = typeof w.name === 'string' ? w.name.trim() : '';
+    if (!name) continue;
+    out.push({
+      name,
+      description: core.summarizeDescription(typeof w.description === 'string' ? w.description : ''),
+      path: String(w.path || ''),
+    });
   }
-  const visible = Math.max(0, budget - 2); // 预留给段头行 + 标注行
-  if (visible >= 1) {
-    return {
-      lines: [
-        AGENTS_HEADER,
-        ...entries.slice(0, visible).map((s) => '  ' + s),
-        '  …（截断，完整清单：zsw agents）',
-      ],
-      truncated: true,
-    };
-  }
-  return { lines: [AGENTS_HEADER + '（截断，完整清单：zsw agents）'], truncated: true };
-}
-
-/** workflows 行：内置名单 + script 计数（>0 时列名）；截断态丢名单换标注。 */
-function workflowLine(builtinWorkflows, scripts, truncated) {
-  const builtins = (Array.isArray(builtinWorkflows) ? builtinWorkflows : []).map(String);
-  const names = (Array.isArray(scripts) ? scripts : []).map(String);
-  const builtinPart = builtins.length ? `内置 ${builtins.join(' / ')}` : '内置（无）';
-  let scriptPart;
-  if (!names.length) {
-    scriptPart = 'script:<名> 自定义（当前 0 个）';
-  } else if (truncated) {
-    scriptPart = `script:<名> 自定义（当前 ${names.length} 个，完整清单：zsw workflow --action scripts）`;
-  } else {
-    scriptPart = `script:<名> 自定义（当前 ${names.length} 个：${names.join(' · ')}）`;
-  }
-  return `workflows：${builtinPart}；${scriptPart}`;
+  return out;
 }
 
 /**
- * 渲染 <zsw-resources> 注入块。
+ * v2 config → core ModelEntry[]（D-3 ModelEntry 并集口径的 zsw 投影：填
+ * reasoning.variants 档位对象与 label，input 永不填——core formatCaps 对
+ * input 缺席经 optional chaining 守卫不炸，W3 红线 5）。provider 字段恒给
+ * → <id> 渲染为全名 <provider>/<model>（跨 provider 引用唯一可复制形态）。
+ *
+ * provider 范围 = 旧块两层口径等价：默认 provider 全列（不筛凭据——凭据缺失
+ * 属快照过期，报错兜底覆盖）+ 其余 qualifiedProviders（带凭据且清单非空，
+ * model-router 单一实现）。字段提取（label/limit.context/reasoning.variants）
+ * 与 model-router.modelEntries 同构——该函数内嵌 defaultModelRef 的 fs 回退
+ * 链（本模块零 fs 契约不可消费），故在此投影、谓词仍单源。
+ */
+function toModelEntries(v2) {
+  if (!v2 || !v2.provider) return [];
+  const ids = [PROVIDER_ID, ...qualifiedProviders(v2).filter((id) => id !== PROVIDER_ID)];
+  const out = [];
+  for (const id of ids) {
+    const models = v2.provider[id] && v2.provider[id].models;
+    if (!models) continue;
+    for (const name of availableModels(v2, id)) {
+      const def = models[name] || {};
+      const entry = { provider: id, id: name, name };
+      const label = typeof def.label === 'string' && def.label.trim() ? def.label.trim() : null;
+      if (label) entry.label = label; // 进 ModelEntry 并集（core 渲染面暂不消费，透传不丢）
+      const ctx = def.limit && def.limit.context;
+      if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
+      const r = def.reasoning;
+      if (r && Array.isArray(r.variants) && r.variants.length > 0) {
+        entry.reasoning = { variants: r.variants }; // truthy 对象 → caps "reasoning"
+        if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
+          entry.reasoning.defaultVariant = r.defaultVariant;
+        }
+      }
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
+ * 渲染三段 XML 注入文本（各段由 core renderXmlSection 以空行分隔开头，空清单
+ * 段返回空串不注入——与 pi 侧「空列表不注入」同语义）。
  * @param {object} input
- *   - v2 {object|null}      解析后的 ~/.zcode/v2/config.json 对象（可缺省/畸形，降级渲染）
- *   - cliModelMain {string} 默认模型引用（调用方传 model-router.defaultModelRef(v2) 回退链产物：cli.main 可解析 → v2 顶层 model.main → 内置回退；与 zsw models 默认标记同口径，可缺省）。两处消费：models 段头部「当前默认：」恒显全名行（指向任意 provider 都显示；空/缺省不加）+ 默认标记（defaultModelFor provider 感知判定）
- *   - agents {Array}        [{name, description}]
- *   - scripts {Array}       自定义 workflow 脚本名
- *   - builtinWorkflows {Array} 内置 workflow 名（内置五名由调用方传）
- *   - nowIso {string}       快照时间戳（写入 snapshot 属性）
- * @returns {string} 多行文本（\n 连接），行数 ≤ 45（models 超常时以 models 优先击穿）
+ *   - v2 {object|null}          解析后的 ~/.zcode/v2/config.json 对象（可缺省/畸形，降级渲染）
+ *   - cliModelMain {string}     默认模型引用（defaultModelRef(v2) 回退链产物，进 models guide）
+ *   - agents {Array}            agent-discovery AgentProfile[]（含 vendored 内置 + 用户四根）
+ *   - workflows {Array}         hook-source 组装的 [{name, description, path}]（内置 vendored
+ *                               资产 + 用户脚本，location = 绝对路径）
+ *   - nowIso {string}           快照时间戳（进 models guide 的时戳句）
+ * @returns {string} 三段拼接（subagents → workflows → models；空段自然缺席）
  */
 function renderResourcesBlock(input) {
+  const core = coreRef.requireCore();
   const v2 = (input && input.v2) || null;
   const cliModelMain = input ? input.cliModelMain : null;
   const agents = input ? input.agents : [];
-  const scripts = input ? input.scripts : [];
-  const builtinWorkflows = input ? input.builtinWorkflows : [];
+  const workflows = input ? input.workflows : [];
   const nowIso = (input && input.nowIso) || '';
 
-  const lines = [];
-  lines.push(`<zsw-resources snapshot="${nowIso}">`);
-  lines.push(SNAPSHOT_HEADER);
-  lines.push('models：');
-
-  // 当前默认恒显全名行（计入 45 行预算）：默认标记只语义化「默认 provider 清单
-  // 内的短名」，main 指向其他 provider 时标记缺席，此行保证「当前默认是什么」
-  // 恒不丢；无任何可解析默认（cliModelMain 空或缺省）时不加
-  const defRef = typeof cliModelMain === 'string' ? cliModelMain.trim() : '';
-  if (defRef) lines.push(`  当前默认：${defRef}`);
-
-  // 默认 provider 段：名单 + 默认标记，不筛 apiKey
-  const defModels = availableModels(v2, PROVIDER_ID);
-  const defShort = defaultModelFor(v2, PROVIDER_ID, cliModelMain);
-  const defList = defModels.length
-    ? defModels.map((m) => (m === defShort ? `${m}（默认）` : m)).join(', ')
-    : '（无可用模型清单）';
-  lines.push(`  默认 provider ${PROVIDER_ID}（短名直接可传）：${defList}`);
-
-  // 其余可运行 provider 段：apiKey 非空且模型非空，全名形态
-  const others = otherProviderLines(v2);
-  if (others.length) {
-    lines.push(OTHER_PROVIDERS_HEADER);
-    lines.push(...others);
-  }
-
-  // 预算分配：models 已定型（永不截），剩余给 agents + workflows（workflows 保底 1 行）
-  const remaining = HARD_BUDGET_LINES - (lines.length + 2); // +2 = 兜底行 + 闭合标签
-  const agentsRes = renderAgents(agents, Math.max(1, remaining - 1));
-  lines.push(...agentsRes.lines);
-  lines.push(workflowLine(builtinWorkflows, scripts, remaining - agentsRes.lines.length < 1));
-
-  lines.push(FALLBACK_LINE);
-  lines.push('</zsw-resources>');
-  return lines.join('\n');
+  const sections = [
+    core.formatAgentList(toAgentEntries(agents), {
+      guide: SUBAGENTS_GUIDE,
+      maxEntries: AGENTS_MAX_ENTRIES,
+      truncationNotice: AGENTS_TRUNCATION_NOTICE,
+    }),
+    core.formatWorkflowList(toWorkflowEntries(workflows), {
+      guide: WORKFLOWS_GUIDE,
+      maxEntries: WORKFLOWS_MAX_ENTRIES,
+      truncationNotice: WORKFLOWS_TRUNCATION_NOTICE,
+    }),
+    core.formatModelList(toModelEntries(v2), {
+      guide: modelsGuide(nowIso, cliModelMain),
+    }),
+  ];
+  return sections.join('');
 }
 
-module.exports = { renderResourcesBlock };
+module.exports = {
+  renderResourcesBlock,
+  AGENTS_MAX_ENTRIES,
+  WORKFLOWS_MAX_ENTRIES,
+  AGENTS_TRUNCATION_NOTICE,
+  WORKFLOWS_TRUNCATION_NOTICE,
+  SUBAGENTS_GUIDE,
+  WORKFLOWS_GUIDE,
+  modelsGuide,
+};

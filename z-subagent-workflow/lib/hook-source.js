@@ -24,21 +24,6 @@
  */
 
 /**
- * vendored 内置 workflow 五名（= core workflows/ 资产 stem）。名字集合权威源
- * 是 lib/orchestration-host.js 的 BUILTIN_WORKFLOW_NAMES（回接 2b 起 workflow
- * 线整体走 vendored subagent-core）；此处刻意不从 orchestration-host require：
- * name-only 静态名单零依赖（require 它会拉起 core-ref → vendored bundle 的
- * requireCore 链，尽管实测仅 ~15ms，静态名单连这个都不付）。
- */
-const BUILTIN_WORKFLOW_NAMES = [
-  'chain',
-  'parallel',
-  'map-reduce',
-  'scatter-gather',
-  'review-fix-loop',
-];
-
-/**
  * v2 config 中带非空模型清单的 provider 数（诊断行口径，与 model-router 的
  * providersUsable 同义；该函数未导出，此处仅为可观测性计数、不参与任何
  * 语义判定，两处漂移无行为后果）。
@@ -74,15 +59,19 @@ function resolveHookIO(opts) {
  * 定位/装载注入源并渲染两行输出文本：require 链、fs 读取、资源列举、渲染
  * 全部在此——任一异常向上抛，由 runSessionStartHook 的 catch 统一降级 {}。
  *
- * 回接 2b：workflow 名单改 core 发现面（异步 API，经
- * orchestration-host.listWorkflowNames——core discoverWorkflows + .zsw 手工根，
- * name-only 不执行脚本体）。core 侧 require/发现实测 <20ms，5s 预算无虞。
- * W6a 起 agents 清单同走 core 发现面（lib/agent-discovery，async list——
- * 含 vendored 内置 10 角色与四根目录 symlink 展开预处理）。
+ * W7（注入对齐）：渲染改 lib/hook-inject 的 core 三段形态，本函数负责喂
+ * 完整条目数据——agents 为 agent-discovery AgentProfile[]（含 vendored 内置
+ * 10 角色与四根，async）；workflows 为 [{name, description, path}]（内置 5 =
+ * vendored 资产 meta 解析 + location，用户脚本 = 发现面条目 + meta 解析；
+ * 经 orchestration-host 的 registry/loadScriptFromPath，只读文件解析 @pi-meta
+ * 不执行脚本体——marker 探针回归见 test/hook-source.test.js）；models 投影
+ * 在 hook-inject 内消费 v2。内置 workflow 名单自 W7 起直接取 orchestration-host
+ * 权威源（旧 name-only 时代的本地静态第三副本随发现面消费一并退役——
+ * core-ref 链反正已进 hook 链路，静态名单的省依赖理由消失）。
  *
  * @returns {Promise<{protocolLine, diagLine}>}
  *   - protocolLine：stdout 协议通道的严格单行 JSON（hookSpecificOutput）
- *   - diagLine：stderr 人读诊断行（providers/agents/scripts 计数 + 耗时）
+ *   - diagLine：stderr 人读诊断行（providers/agents/workflows 计数 + 耗时）
  */
 async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // 依赖全部函数体内 require（顶层零 require 纪律见文件头注）：任一模块
@@ -92,7 +81,8 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   const { defaultModelRef } = require('./model-router');
   const { renderResourcesBlock } = require('./hook-inject');
   const agentDiscovery = require('./agent-discovery');
-  const { listWorkflowNames } = require('./orchestration-host');
+  const orchestrationHost = require('./orchestration-host');
+  const coreRef = require('./core-ref');
 
   // projectDir 解析链与 bin/zsw.js workflow 子命令同源：ZCODE_PROJECT_DIR > cwd
   const source = env.ZCODE_PROJECT_DIR ? 'env' : 'cwd';
@@ -106,16 +96,43 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // core 发现面（async）：vendored 内置 + 四根（含目录 symlink 展开），与
   // zsub start / zsw agents 同一数据源（lib/agent-discovery）
   const agents = await agentDiscovery.list(projectDir);
-  // name-only 发现：不执行脚本体——listWorkflowNames 只 readdir/解析
-  // @pi-meta（core 发现面），用户代码顶层副作用不在此路径触发
-  const scripts = await listWorkflowNames(projectDir);
+
+  // workflows 完整条目（W7：<available_workflows> 段带 description/location）：
+  // 内置 5 = vendored 资产（workflowAssetPath 锚定 location）；用户脚本 =
+  // registry.listUserScripts 发现面（core 面 + .zsw 手工根）。description 经
+  // loadScriptFromPath 的 @pi-meta 解析（只 readFileSync + parse，不执行脚本
+  // 体——旧 name-only 的零执行纪律不变）；unavailable 条目（meta 校验失败
+  // 占位）不进注入段（对齐 pi 侧 discoverAllWorkflows 过滤）。
+  const core = coreRef.requireCore();
+  const registry = orchestrationHost.createRegistry(core);
+  const workflows = [];
+  for (const name of orchestrationHost.BUILTIN_WORKFLOW_NAMES) {
+    const script = await orchestrationHost.loadScriptFromPath(
+      coreRef.workflowAssetPath(`${name}.js`),
+      core,
+    );
+    workflows.push({
+      name: script.name || name,
+      description: (script.meta && script.meta.description) || '',
+      path: script.path,
+    });
+  }
+  for (const userScript of await registry.listUserScripts(projectDir)) {
+    if (userScript.available === false) continue;
+    const script = await orchestrationHost.loadScriptFromPath(userScript.path, core);
+    if (!script.available) continue;
+    workflows.push({
+      name: userScript.name,
+      description: (script.meta && script.meta.description) || '',
+      path: userScript.path,
+    });
+  }
 
   const text = renderResourcesBlock({
     v2,
     cliModelMain: defaultModelRef(v2),
     agents,
-    scripts,
-    builtinWorkflows: BUILTIN_WORKFLOW_NAMES,
+    workflows,
     nowIso: now().toISOString(),
   });
   const protocolLine = `${JSON.stringify({
@@ -126,7 +143,7 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   const diagLine =
     `[zsw:hook] projectDir=${projectDir} source=${source}`
     + ` providers=${countUsableProviders(v2)} agents=${agents.length}`
-    + ` scripts=${scripts.length} elapsed=${Date.now() - startMs}ms\n`;
+    + ` workflows=${workflows.length} elapsed=${Date.now() - startMs}ms\n`;
   return { protocolLine, diagLine };
 }
 
@@ -156,4 +173,4 @@ async function runSessionStartHook(opts) {
   }
 }
 
-module.exports = { runSessionStartHook, BUILTIN_WORKFLOW_NAMES };
+module.exports = { runSessionStartHook };

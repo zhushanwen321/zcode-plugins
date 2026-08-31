@@ -240,8 +240,8 @@ async function resolveDefaultAgent(cwd, opts = {}) {
 /**
  * 非法 agent 引用报错（与 core agent-registry `loadByPath(ref, true)` 的
  * Invalid agent ref 文案同源——主句逐字一致，括号内恢复指引按 zsw 双出口
- * 适配：注入段 location（W7 起为 <available_subagents>，当前 <zsw-resources>
- * agents 段同字段）或 zsw agents 查路径清单）。
+ * 适配：注入段 location（W7 起注入块为 <available_subagents> 三段 XML 形态，
+ * 条目带 <location>）或 zsw agents 查路径清单）。
  */
 function invalidAgentRefMessage(ref) {
   return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`

@@ -412,10 +412,16 @@ test('hook session-start（delegator）输出与 bin/zsw-hook.js 新入口一致
   // 剥 ISO 值本身而非引号形态：stdout 是 JSON 文本，引号在字节流里是 \" 转义
   const strip = (s) => s.replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, 'TIMESTAMP');
   assert.equal(strip(viaCli.stdout), strip(viaEntry.stdout));
-  // delegator 正常路径协议形态健全性（fixture 同 cli-hook.test.js 口径）
+  // delegator 正常路径协议形态健全性（fixture 同 cli-hook.test.js 口径；
+  // W7 三段 XML 形态）
   const out = JSON.parse(viaCli.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
   const ctx = out.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /^<zsw-resources snapshot="/);
-  assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'cli config model.main → 默认标记链路经 delegator 生效');
+  for (const tag of ['available_subagents', 'available_workflows', 'available_provider_models']) {
+    assert.ok(ctx.includes(`<${tag}>`), `<${tag}> 段在场`);
+  }
+  assert.ok(
+    ctx.includes(`Current default model: ${PROVIDER_ID}/GLM-5.3-Flash.`),
+    'cli config model.main → models guide 默认句经 delegator 生效',
+  );
 });
