@@ -38,7 +38,7 @@ core 资产消费形态：对 npm 包 `@zhushanwen/subagent-core` 的消费（�
 
 ## 使用
 
-agent 与人类都走 CLI `node bin/zsw.js`（zsub 面九 action：start/list/status/cancel/message/close/wait/agents/models；下例为常用子集）：
+agent 与人类都走 CLI `node bin/zsw.js`（zsub 面九 action：start/list/status/cancel/message/close/wait/agents/models；下例为常用子集）。本节 `node bin/zsw.js` 为示意路径（cwd = 插件目录）；zcode 会话内实际执行以 SessionStart 注入段给出的 `node "<绝对路径>/bin/zsw.js"` 形态为准：
 
 ```bash
 node bin/zsw.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 传未知模型名会在报错中列出可用清单

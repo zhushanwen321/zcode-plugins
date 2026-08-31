@@ -13,7 +13,8 @@
  * 诊断日志一律 stderr。
  *
  * 防递归（D10 双门禁）：第一重 = 隔离 HOME 无 plugins 配置（子进程物理上
- * 不加载 zsub）；本文件是第二重 = ZSW_NESTED=1 时不注册工具且拒绝 tools/call。
+ * 不加载 zsub）；本文件是第二重 = 双标记（ZSW_NESTED=1 或
+ * XYZ_AGENT_SUBAGENT=1，见 config.isNestedEnv）时不注册工具且拒绝 tools/call。
  *
  * 启动序列：NESTED → 只挂协议层；否则 notifier.sweepStaleTmp（mailbox 档）
  * → manager.recover()（record 重建 + 探活）→ startDaemon（unix socket 控制面，
@@ -813,9 +814,11 @@ async function main() {
   if (config.NESTED) {
     log('嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）：防递归第二重门禁生效，不注册工具、不初始化编排（第一重：隔离 HOME 无插件）');
   } else {
-    // 执行通道（回接 2c）：runner 恒为 core zcode engine 的 spawn 单轮
-    // （lib/assemble.js 组装；appserver 通道已按 D6-⑥ 退役，ZSW_RUNNER=appserver
-    // 在 assemble 显式报错——MCP 与 CLI 共用同一决策，两入口行为不漂移）
+    // 执行通道（回接 2c）：runner 恒为 lib/runner-core.js 的 core zcode engine
+    // 适配（lib/assemble.js 组装；引擎缺省 appserver 常驻复用 +
+    // XYZ_ZCODE_MODE=spawn 定向回退，常驻是预期形态，见 README「排障」节；
+    // 退役的是 1.x 宿主私连通道——ZSW_RUNNER=appserver 在 assemble 显式报错。
+    // MCP 与 CLI 共用同一决策，两入口行为不漂移）
     const assembled = await createManager();
     manager = assembled.manager;
     wfHost = assembled.wfHost;

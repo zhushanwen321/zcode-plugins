@@ -347,11 +347,14 @@ class SubagentManager {
       );
     }
     if (rec.status === 'running' || rec.status === 'created') {
-      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令真实可执行
+      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令完整可执行——
+      // config.zswCliPath 绝对路径形态（marketplace/inline 下裸 `zsw` 不在
+      // PATH，主 agent cwd 是项目目录，照抄短命令即 ENOENT）
       return {
         busy: true,
         message: `该 subagent 正在运行，仅 idle 状态可投递。`
-          + `等待当前轮完成（zsw wait --id ${id}）或 zsw cancel --id ${id} 取消后再投递`,
+          + `等待当前轮完成（node "${config.zswCliPath()}" wait --id ${id}）`
+          + `或 node "${config.zswCliPath()}" cancel --id ${id} 取消后再投递`,
       };
     }
     if (rec.status !== 'idle') {

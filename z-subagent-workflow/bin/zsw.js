@@ -941,7 +941,7 @@ async function main() {
     process.stderr.write(
       '[zsw] wait 无本地模式：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
       + '本地一次性进程没有可挂起的等待方。'
-      + '恢复指引：zsw wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
+      + `恢复指引：node "${zswCliPath()}" wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；`
       + '本地模式 start 本身阻塞到本轮完成，无需 wait。\n'
     );
     process.exit(1);
@@ -984,7 +984,8 @@ async function main() {
           '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running），'
           + '没有常驻组件会接管 CLI 启动的后台任务。'
           + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
-          + '需要异步启动与完成通知请去掉 --local 用默认 daemon 模式（zsw start 不带 --local 即异步启动，zsw wait 收结果）。\n'
+          + `需要异步启动与完成通知请去掉 --local 用默认 daemon 模式（node "${zswCliPath()}" start 不带 --local 即异步启动，`
+          + `node "${zswCliPath()}" wait 收结果）。\n`
         );
         process.exit(1);
       }

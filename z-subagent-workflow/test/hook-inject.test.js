@@ -18,7 +18,6 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
 
 const {
   renderResourcesBlock,
@@ -27,13 +26,16 @@ const {
   modelsGuide,
 } = require('../lib/hook-inject');
 const { PROVIDER_ID } = require('../lib/model-router');
+const { zswCliPath } = require('../lib/config');
 
 assert.equal(AGENTS_MAX_ENTRIES, 15, 'D-3a：subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）');
 assert.equal(WORKFLOWS_MAX_ENTRIES, 10, 'D-3a：workflows 段条目预算 10');
 
-// F12：指引文案的 CLI 完整可执行形态（与 hook-inject 内 config.zswCliPath 同
-// 解析链；测试进程未设 ZCODE_PLUGIN_ROOT 时 = 仓库内插件根的 bin/zsw.js）
-const ZSW_CLI = process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js');
+// F12：指引文案的 CLI 完整可执行形态（直接消费 lib/config 的 zswCliPath 实现
+// 导出——hook-inject 内部同源，实现变更时断言期望值随之同步，测试内不复刻
+// 推导。zswCliPath 每次调用读 process.env.ZCODE_PLUGIN_ROOT（非 require 时
+// 冻结），测试进程未设时回退仓库内插件根的 bin/zsw.js）
+const ZSW_CLI = zswCliPath();
 
 const NOW = '2026-08-29T12:00:00.000Z';
 const DEFAULT_REF = `${PROVIDER_ID}/GLM-5.3-Flash`;

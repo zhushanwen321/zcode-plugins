@@ -30,7 +30,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 // env 隔离完成后才允许 require lib（见文件头注释）
 const { RecordStore } = require('../lib/record-store');
 const outputs = require('../lib/output-store');
-const { recordsPath, DEFAULTS } = require('../lib/config');
+const { recordsPath, DEFAULTS, zswCliPath } = require('../lib/config');
 const { MailboxNotifier, PollingNotifier } = require('../lib/notifier-mailbox');
 const { SubagentManager } = require('../lib/manager');
 
@@ -331,7 +331,8 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   const busy = await manager.message(h.subagentId, '现在怎么样了');
   assert.deepEqual(busy, {
     busy: true,
-    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（zsw wait --id ${h.subagentId}）或 zsw cancel --id ${h.subagentId} 取消后再投递`,
+    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（node "${zswCliPath()}" wait --id ${h.subagentId}）`
+      + `或 node "${zswCliPath()}" cancel --id ${h.subagentId} 取消后再投递`,
   });
 
   // 非 conversation：完成后 message 直接报可操作错误

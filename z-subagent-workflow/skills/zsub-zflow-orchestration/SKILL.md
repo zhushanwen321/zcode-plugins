@@ -22,6 +22,8 @@ whenToUse: 主 agent 需要委派后台子任务、需要文件隔离或结构�
 
 ## zsub CLI 速查（1.0.0 起：MCP 工具面已下线，`node bin/zsw.js` 是唯一入口；默认连常驻 daemon）
 
+本文 `node bin/zsw.js` 为示意路径；实际执行以 SessionStart 注入段给出的 `node "<绝对路径>/bin/zsw.js"` 形态为准。
+
 ```
 node bin/zsw.js start --task "<自包含任务描述>" --slug "<短名>"
      [--agent "<agent .md 绝对路径>"] [--model "<模型短名>"]
