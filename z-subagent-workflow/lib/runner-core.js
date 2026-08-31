@@ -201,7 +201,7 @@ class CoreRunner {
 
   /**
    * 启动探针（RunnerPort 契约面）：透传缺省引擎的 core ProbeReport。
-   * 组装期探针门控与探针落盘缓存已随 appserver 通道退役（assemble 不再消费本方法做
+   * 组装期探针门控与探针落盘缓存已随 1.x 宿主私连通道退役（assemble 不再消费本方法做
    * 降级决策）；保留真探针实现供诊断面与契约完备。
    */
   async probe() {

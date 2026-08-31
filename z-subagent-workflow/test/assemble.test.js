@@ -2,7 +2,7 @@
 
 /**
  * assemble 组装测试（回接 2c 后）：组装期探针门控 / 探针落盘缓存 / 降级链 / 升级
- * 检测面已随 appserver 通道退役整体删除（原 ~580 行测试同步退役，漂移检测
+ * 检测面已随 1.x 宿主私连通道退役整体删除（原 ~580 行测试同步退役，漂移检测
  * 改由 core 引擎探针承担）。本文件覆盖新装配契约：
  * - 组装产物：SubagentManager + orchestration host 共享同一 runner
  * - runner 恒为 CoreRunner（core zcode engine 适配——engine 内部缺省 appserver
