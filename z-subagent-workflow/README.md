@@ -174,7 +174,7 @@ zsub 执行链（runner/spawn 驱动/模型执行解析）已整体替换为 ven
 
 **模型链归属变化**：执行解析（模型校验 / 隔离 HOME 池 bootstrap / 兜底模型）归 core 引擎 preparer——zsw 的 `model-router` 瘦身为清单器（`zsw models` / SessionStart hook 注入面不变），manager 侧模型引用原始透传（短名/全名均可，未知模型在任务启动时报引擎的可操作错误，文案含可用清单）。**`zsw models` 面不变**。
 
-**agent .md `engine:` 字段（core 路由三层）**：frontmatter `engine:` 现已生效（`lib/agent-md-resolver.js` 解析透传）——调用参数显式 engine（workflow `agent({engine})`）> frontmatter engine > 缺省 `zcode`（zsw 唯一生产引擎）。probe 失败按 core 守卫：调用参数显式指定不兜底（报 `engine_probe_failed`）；frontmatter/缺省来源 fallback 回缺省引擎并在 record 留痕 `engineFallback`；显式 model + 换引擎被守卫拒绝。record 新增 optional 字段 `engine` / `engineFallback`（实际执行引擎与 fallback 事实，旧 record 读取不受影响）。
+**agent .md `engine:` 字段（core 路由三层）**：frontmatter `engine:` 现已生效（`lib/agent-discovery.js` 解析透传）——调用参数显式 engine（workflow `agent({engine})`）> frontmatter engine > 缺省 `zcode`（zsw 唯一生产引擎）。probe 失败按 core 守卫：调用参数显式指定不兜底（报 `engine_probe_failed`）；frontmatter/缺省来源 fallback 回缺省引擎并在 record 留痕 `engineFallback`；显式 model + 换引擎被守卫拒绝。record 新增 optional 字段 `engine` / `engineFallback`（实际执行引擎与 fallback 事实，旧 record 读取不受影响）。
 
 **zsub 台账（records.jsonl）格式不变**：D7 调研结论——存量 record 全量可读（新增字段均为 optional，record-store 的 fold 是 Object.assign 不会破坏旧事件重放）；旧 spawn/exec 形态（`kind:'spawn'`, pid）与新引擎句柄同构。详查计划文档 `docs/design/zsw-subagent-core-rebind.impl-plan.md` §7 检查点 3 调研记录。
 

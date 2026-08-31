@@ -367,12 +367,12 @@ zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delet
 - pi-sw 随 core 0.4.0 同步发版（资产迁移 + tools 行为变化在其 CHANGELOG 标注）；
 - zsw 在 core 0.4.0 发布后 `vendor-subagent-core.js --npm 0.4.0` 刷新，随 zsw 2.0.0 一并出（D-4 收紧是 major break，正好同窗）。
 
-### 5.3 待验证检查点（设计阶段无法确定，诚实标注）
+### 5.3 待验证检查点（实施完成，2026-08-31 Gate B 回填）
 
-1. core hostRoots 加 project 槽的 API 形态（新增槽位 key vs 复用现有槽语义扩展）——W2 实施时定，倾向新增显式槽位（`project-host`）避免借位语义污染；
-2. zsw `.zcode/agents` 项目根在 core 扫描布局中的 tmp 排除规则是否需要（core 对 `.tmp` 有专项处理，`.zcode` 无先例）——W6 实施时验证；
-3. 分段条目预算（subagents 15 / workflows 10）的量级估算已按开箱场景给出（D-3a），具体值 W7 用真实注入量实测微调；
-4. pi-sw `agents/` 迁走后 npm-dev 源对 core 包 `agents/` 的扫描确认（core 包无 pi manifest，走约定目录——机制已证实，dev 工作区拓扑下的实际布局待 A2 实测）。
+1. ~~core hostRoots 加 project 槽的 API 形态~~——**已落定**：新增显式槽位 `project-host`（优先级 project-pi → project-host → project-agents；`resource-discovery.ts:70,103,599`），设计倾向的「新增显式槽位」被采纳；
+2. ~~zsw `.zcode/agents` 项目根的 tmp 排除~~——**不需要**：core 单层扫描语义下子目录（含 .tmp）天然不可见（运行时探针实测：`proj/.zcode/agents/.tmp/x.md` 不进注入段）；core 既有 tmp 专项仅 `.pi` 布局且仅 workflow kind；
+3. ~~分段条目预算的具体值~~——**维持 15/10**：开箱 7536 chars（≈100 行级）零截断；22 用户 agents 探针恰截 15 + 兜底指引 + 内置无豁免实测（A4）；
+4. ~~pi-sw dev 工作区拓扑下 core 包扫描确认~~——**已确认**（xyz 侧 probe-c5）：dev 拓扑约定扫描不命中（core-pkg-hits=0），hostRoots 注入是唯一通路且必要；发布态平铺布局注入幂等。
 
 ---
 
