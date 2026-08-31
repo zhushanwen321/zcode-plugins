@@ -9,7 +9,7 @@
 //
 // 用法：
 //   workflow run scatter-gather --args task="重构认证模块，涉及 session/jwt/oauth 三块"（pi 宿主语法）
-//   zsw workflow --workflow scatter-gather --task "<大任务描述>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+//   zsw workflow --workflow scatter-gather --task "<大任务描述>" --workdir <绝对路径>（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际执行以 SessionStart 注入段的 node "<绝对路径>/bin/zsw.js" 形态为准；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 //
 // ⚠️ lintScript 约束（本脚本已遵守）：含 parallel() 入口（兼 agent 嵌套），禁止 bare IIFE
 
@@ -28,7 +28,7 @@ usage: |
   - scatter 拆解大任务 → process 并行处理 → gather 聚合结果
   - agents：逗号分隔的 agent .md 绝对路径，按顺序对应 scatter/process/gather 三段
   - 示例（pi 宿主语法）：workflow run scatter-gather --args task="<大任务描述>" agents="/path/splitter.md,/path/processor.md"
-  - 示例（zsw 宿主直参语法）：zsw workflow --workflow scatter-gather --task "<大任务描述>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+  - 示例（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际以注入段 node "<绝对路径>/bin/zsw.js" 形态为准）：zsw workflow --workflow scatter-gather --task "<大任务描述>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 */
 
 // ── 入参（$ARGS）──────────────────────────────────────────────────

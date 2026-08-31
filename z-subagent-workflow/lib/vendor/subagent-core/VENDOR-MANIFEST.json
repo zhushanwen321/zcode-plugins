@@ -1,6 +1,6 @@
 {
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
-  "fetchedAt": "2026-08-31T10:46:11.931Z",
+  "fetchedAt": "2026-08-31T11:51:27.189Z",
   "capabilities": {
     "workflowsAssets": true,
     "agentsAssets": true,
@@ -61,27 +61,27 @@
     },
     {
       "path": "workflows/chain.js",
-      "sha256": "92715ad9c2425eaa7031715b3002516482a8a1fae91ac47ef7249e4b8c55286f"
+      "sha256": "ecd9eac410c7cf27f867ca9810658b367ddcaaae1240904e5db97acbe1648ba4"
     },
     {
       "path": "workflows/map-reduce.js",
-      "sha256": "0c85822819ebdc9192302a531bfcf8be7079ca7afdba33c6ab9332bf3feac9fc"
+      "sha256": "04714751dc4fccf83db8955b3a05fce087d5104d4439ed97fedb25d2fe3570e1"
     },
     {
       "path": "workflows/parallel.js",
-      "sha256": "5cd987c38c56fab38a8245a0f9b333e92092dea3ed4925c081ebf41e68f42157"
+      "sha256": "3bc6ebe97b151e89f924913ec2cbca13793405838b79ad4c47d7e38aaea446bd"
     },
     {
       "path": "workflows/review-fix-loop-utils.cjs",
-      "sha256": "d82121e6c056adc57d1500234141a7d85de154ea322e07f4a0c4801265df5c49"
+      "sha256": "b9177b048e6a68c88101d56e33751487f22d9452ce4fece060b943051533d03e"
     },
     {
       "path": "workflows/review-fix-loop.js",
-      "sha256": "9fcd796018439f108f28b0623e5c6915d00b5644c03e7a29bf44dea47278f28e"
+      "sha256": "8b6fb39ef03f7e19a7ae549366199f4ba49f71385cd5b14eadab990fd7cbd651"
     },
     {
       "path": "workflows/scatter-gather.js",
-      "sha256": "50defefb74d66833acca45c3b2fe33103fad0817e565543f368be11e41eb4f3c"
+      "sha256": "5e0eaaf15374e0d21d423f87ace172f545dbdc2e1e519ab822eed12dd961de2f"
     }
   ]
 }

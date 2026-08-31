@@ -1425,7 +1425,10 @@ const FALLOW_DEF = { name: "fallow-scan", title: "FALLOW STATIC ANALYSIS", repor
  *
  * - def 只含标识（path/name/report/title），**不读文件**——agent 内容的加载与 systemPrompt
  *   注入由主线程 resolveAgentOpts（agent-call 按 path 加载）统一完成
- * - `fallow-scan` 是脚本内部保留字（fallowScan 参数前置插入的首批），非用户参数值域
+ * - `fallow-scan` 是脚本内部保留字（fallowScan 参数前置插入的首批），非用户参数值域：
+ *   本函数对字面值仍静默映射 FALLOW_DEF（fallowScan 前置批与 batchN 兼容形态依赖此
+ *   映射），用户参数侧的拒收在脚本层——fixAgent=fallow-scan 由 review-fix-loop.js
+ *   在调用本函数前 fail-fast（RX2-F2），防 fix 派发静默退化为通用 subagent
  * @param batchNames 批内 agentRef 路径数组
  */
 function resolveAgentDefs(batchNames) {

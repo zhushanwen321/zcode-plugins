@@ -6,7 +6,7 @@
 // 用法：
 //   workflow run parallel --args target="src/auth/login.ts"（pi 宿主语法）
 //   workflow run parallel --args target="..." --args 'perspectives=["security","readability"]'（pi 宿主语法）
-//   zsw workflow --workflow parallel --task "<分析目标>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+//   zsw workflow --workflow parallel --task "<分析目标>" --workdir <绝对路径>（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际执行以 SessionStart 注入段的 node "<绝对路径>/bin/zsw.js" 形态为准；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 //
 // ⚠️ 分层配额规则（来源：ADR-030 决策 3）：
 //   - 全局并发上限 maxConcurrent = 6
@@ -31,7 +31,7 @@ usage: |
   - 多视角并行分析后聚合；perspectives 缺省用 3 个默认视角
   - agents：逗号分隔的 agent .md 绝对路径；1 个应用于所有视角，N 个一一对应视角数
   - 示例（pi 宿主语法）：workflow run parallel --args target="<分析目标>" agents="/path/analyst.md"
-  - 示例（zsw 宿主直参语法）：zsw workflow --workflow parallel --task "<分析目标>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+  - 示例（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际以注入段 node "<绝对路径>/bin/zsw.js" 形态为准）：zsw workflow --workflow parallel --task "<分析目标>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 */
 
 // ── 入参（$ARGS）──────────────────────────────────────────────────

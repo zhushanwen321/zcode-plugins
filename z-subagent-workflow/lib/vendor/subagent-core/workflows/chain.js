@@ -5,7 +5,7 @@
 //
 // 用法：
 //   workflow run chain --args task="把这段需求文档拆成技术任务：..."（pi 宿主语法）
-//   zsw workflow --workflow chain --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+//   zsw workflow --workflow chain --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际执行以 SessionStart 注入段的 node "<绝对路径>/bin/zsw.js" 形态为准；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 //
 // ⚠️ lintScript 约束（本脚本已遵守）：
 //   - 含 agent() 入口
@@ -27,7 +27,7 @@ usage: |
   - 顺序三步链：analyze（提取要点）→ transform（产出方案）→ synthesize（合成结论）
   - agents：逗号分隔的 agent .md 绝对路径，按顺序对应三步（少于 3 个尾部用默认执行者）
   - 示例（pi 宿主语法）：workflow run chain --args task="<任务描述>" agents="/path/analyzer.md,/path/planner.md"
-  - 示例（zsw 宿主直参语法）：zsw workflow --workflow chain --task "<任务描述>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+  - 示例（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际以注入段 node "<绝对路径>/bin/zsw.js" 形态为准）：zsw workflow --workflow chain --task "<任务描述>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 */
 
 // ── 入参（$ARGS）──────────────────────────────────────────────────

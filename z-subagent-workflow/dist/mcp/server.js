@@ -664,7 +664,7 @@ function createServer({ manager, wfHost, nested = false, log = () => {}, emitFra
    * 错误，走 JSON-RPC error 帧）；命中则整包交给对应 handler（第二级，
    * zsub 的 switch(action) / zflow 的 switch(workflow) 见
    * buildToolHandlers）。
-   * （升级提示投递面已随 appserver 通道退役删除，回接 2c：格式漂移检测
+   * （升级提示投递面已随 1.x 宿主私连通道退役删除，回接 2c：格式漂移检测
    * 改由 core 引擎探针的 golden 干跑回归承担。）
    */
 

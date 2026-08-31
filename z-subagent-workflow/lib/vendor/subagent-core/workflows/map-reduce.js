@@ -10,7 +10,7 @@
 // 用法：
 //   workflow run map-reduce --args 'items=["file1.ts","file2.ts","file3.ts"]' --args operation="审查代码风格"（pi 宿主语法）
 //   workflow run map-reduce --args itemsJson=/path/to/items.json --args operation="..."（pi 宿主语法）
-//   zsw workflow --workflow map-reduce --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+//   zsw workflow --workflow map-reduce --task "<任务书>" --workdir <绝对路径>（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际执行以 SessionStart 注入段的 node "<绝对路径>/bin/zsw.js" 形态为准；per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 //
 // ⚠️ lintScript 约束（本脚本已遵守）：含 parallel() 入口（兼 agent 嵌套），禁止 bare IIFE
 
@@ -34,7 +34,7 @@ usage: |
   - items 与 itemsJson 至少一个：items 直接传字符串数组，itemsJson 传文件路径（内容为 JSON 数组）
   - agents：逗号分隔的 agent .md 绝对路径，按顺序对应 map/reduce 两段
   - 示例（pi 宿主语法）：workflow run map-reduce --args operation="<对每个 item 做什么>" itemsJson="/path/items.json" agents="/path/mapper.md,/path/reducer.md"
-  - 示例（zsw 宿主直参语法）：zsw workflow --workflow map-reduce --task "<任务书>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
+  - 示例（zsw 宿主直参语法；`zsw` 为 CLI 简写，实际以注入段 node "<绝对路径>/bin/zsw.js" 形态为准）：zsw workflow --workflow map-reduce --task "<任务书>" --workdir <绝对路径>（per-workflow 参数用 zsw 专属 flag，语义见 @pi-meta parameters）
 */
 
 const fs = require("fs");
