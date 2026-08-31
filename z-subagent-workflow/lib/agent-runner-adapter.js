@@ -180,8 +180,9 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
         result = await handle.done;
       } finally {
         signal && signal.removeEventListener('abort', onAbort);
-        // D2 全终态一次性会话释放（apc session/close；spawn no-op）：best-effort，
-        // 失败不波及结果映射——泄漏一个驻留会话比炸掉已完成调用好
+        // release 为 no-op（与 runner-core/ports 契约一致）：appserver 会话由
+        // 引擎内部退订，本层无 per-record 释放面——仍按契约统一调用，
+        // best-effort，失败不波及结果映射
         try {
           if (typeof runner.release === 'function') await runner.release(handle.exec);
         } catch { /* best-effort */ }

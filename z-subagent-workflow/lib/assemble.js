@@ -94,7 +94,7 @@ async function assembleManager(opts = {}) {
     runner,
     modelRouter,
     notifier,
-    resolver: opts.resolver || resolver, // 模块对象自带 resolve(nameOrPath, cwd)（async，core 发现面），天然满足端口契约
+    resolver: opts.resolver || resolver, // 模块对象自带 resolve(agentRefPath, cwd)（async，core 发现面），天然满足端口契约
     records,
     outputs: outputsPort,
     slots: opts.slots || createSlots({ limit: config.DEFAULTS.maxConcurrent }),

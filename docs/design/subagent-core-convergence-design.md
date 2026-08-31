@@ -181,7 +181,7 @@ zcode 会话（仅 session start）:
   <model><id>builtin:bigmodel-coding-plan/GLM-5.3</id><name>…</name>
     <caps>reasoning</caps><contextWindow>200000</contextWindow></model>
   …
-</available_models>
+</available_provider_models>
 
 主 agent 委派（契约与 pi 完全一致）：
   zsub start task="审查 X" slug="review-x" agent="/path/to/…/agents/reviewer.md"
@@ -190,7 +190,7 @@ zcode 会话（仅 session start）:
 
 创作闭环：
   zflow script-generate name="tri-review" script="<JS 源码>"   ← 校验+落 tmp
-  zflow script-lint file="<tmp 路径>"
+  zflow lint file="<tmp 路径>"
   zflow script-save name="tri-review"                          ← tmp → ~/.zsw/workflows/
   zflow run workflow="~/.zsw/workflows/tri-review.js"
 ```
@@ -203,9 +203,11 @@ zcode 会话（仅 session start）:
   （主句与 pi 侧 agent-registry 逐字同源——zsw 侧复刻 core 模板并以测试锚定，core barrel 未导出文案面，待 core 导出后收敛为运行时共享）
 
 主 agent 给自定义脚本传名字：zflow run workflow="script:tri-review"
-→ 报错：workflow 引用仅接受内置名（chain/parallel/map-reduce/scatter-gather/
-  review-fix-loop）或 .js 绝对路径。自定义脚本路径见 <available_workflows> 的
-  <location>，或 zflow scripts 查清单。
+→ 报错：Invalid workflow ref："script:tri-review" 带已废弃的 script: 前缀。
+  workflow 引用仅接受内置名（chain / parallel / map-reduce / scatter-gather /
+  review-fix-loop）或 .js 绝对路径（支持 ~/ 前缀展开）。恢复指引：自定义脚本
+  路径见 scripts action 清单的 path 字段，或注入段 <available_workflows> 的
+  <location>。
 ```
 
 ### 3.2 决策对比（六项）
@@ -246,11 +248,11 @@ zcode 会话（仅 session start）:
 
 | 候选 | 长期合理性 | 短期成本 | 风险 |
 |---|---|---|---|
-| **a. 三个 format 纯函数 + xml-injection 下沉 core 并出 barrel，zsw hook-inject 改调 core 渲染（推荐）** | 高——渲染纯函数已零 pi 依赖（核实点 5），下沉是搬运非重写；两平台格式天然一致（G3） | 中——zsw 注入块重写 + 截断策略参数化 | zsw 的 token 成本约束不能沿用原 45 行总预算：三段 XML 每条目是多行块（agent 4 行：name/description/when/location；workflow 3 行），开箱 10 内置 agents ≈ 42 行 + workflows 5+ ≈ 18 行 + models 段——45 行必爆（R1 版未做此估算，被审查击穿）。决策：**分段条目预算 + 码点序排 + 截尾**——subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）、workflows 段条目预算 10、models 段完整永不截；条目先按 name 码点序排（与 pi 侧 `sortByCodepoint` 同口径，排序函数随 W3 下沉 core——不排序时条目序 = core 合并 Map 的低优先级源先入序，截尾会系统性裁掉 project 级高优先级条目），超预算截尾部条目 + 「完整清单：zsw agents / zflow scripts」兜底指引。**内置条目无截断豁免（显式声明，R4）**：混合场景（用户条目超余量且码点序靠前）下内置角色可能被裁出注入段——开箱场景（G1 主场景，无用户条目）不触发，且码点序统一截尾行为可预测、兜底指引可恢复；两段式豁免（内置优先保留）引入额外截断序复杂度且 pi 侧无此概念，不做。开箱总量 ≈ 100 行（对比 pi 侧每 turn 注入同量级，zcode 仅 session start 一次，成本可接受）；具体值 W7 实测微调 |
+| **a. 三个 format 纯函数 + xml-injection 下沉 core 并出 barrel，zsw hook-inject 改调 core 渲染（推荐）** | 高——渲染纯函数已零 pi 依赖（核实点 5），下沉是搬运非重写；两平台格式天然一致（G3） | 中——zsw 注入块重写 + 截断策略参数化 | zsw 的 token 成本约束不能沿用原 45 行总预算：三段 XML 每条目是多行块（agent 4 行：name/description/when/location；workflow 3 行），开箱 10 内置 agents ≈ 42 行 + workflows 5+ ≈ 18 行 + models 段——45 行必爆（R1 版未做此估算，被审查击穿）。决策：**分段条目预算 + 码点序排 + 截尾**——subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）、workflows 段条目预算 10、models 段完整永不截；条目先按 name 码点序排（与 pi 侧 `sortByCodepoint` 同口径，排序函数随 W3 下沉 core——不排序时条目序 = core 合并 Map 的低优先级源先入序，截尾会系统性裁掉 project 级高优先级条目），超预算截尾部条目 + 「完整清单：zsw agents / zflow scripts」兜底指引。**内置条目无截断豁免（显式声明，R4）**：混合场景（用户条目超余量且码点序靠前）下内置角色可能被裁出注入段——开箱场景（G1 主场景，无用户条目）不触发，且码点序统一截尾行为可预测、兜底指引可恢复；两段式豁免（内置优先保留）引入额外截断序复杂度且 pi 侧无此概念，不做。开箱总量约 7.5k chars（30-40 物理行；「≈100 行级」为按注入段 XML 展开行的折算口径，实测值见 §5.3 检查点 3）（对比 pi 侧每 turn 注入同量级，zcode 仅 session start 一次，成本可接受）；具体值 W7 实测微调 |
 | b. 格式各写各的，只统一字段口径 | 低——格式双实现，视觉/结构漂移 | 低 | N3 不解决 |
 | c. zsw 单块格式反向推广给 pi | 低——pi 的分段 XML 是多 injector 链式叠加的结构基础，压成单块破坏 pi 侧扩展性 | 高 | pi 侧 injector 生态被锁死 |
 
-**ModelEntry 口径并集（N6 前置）**：`{ id, name, label?, contextWindow?, reasoning?: { variants?, defaultVariant? } | boolean, input?[] }`——pi 投影填 boolean+input[]，zsw 投影填 variants 数组与 label、input 缺席。**渲染守卫是显式工作项而非自然降级**（R1 版误标「已核实降级行为」，被审查击穿）：现 `formatCaps` 对 `entry.input.includes("image")` 直调（`model-list-injector.ts:73`），input undefined 抛 TypeError；`contextWindow` 直渲染同样有 undefined → "undefined" 垃圾输出隐患——W3 必须对全字段 optional 消费点做守卫。两侧数据面零改动，投影函数各自适配。
+**ModelEntry 口径并集（N6 前置）**：`{ id, provider?, name, label?, contextWindow?, reasoning?: { variants?, defaultVariant? } | boolean, input?[] }`——pi 投影填 boolean+input[]，zsw 投影填 variants 数组与 label、input 缺席；`provider` 由 zsw 投影恒填，core 渲染面以 provider 组全名 id（`<provider>/<model>`，跨 provider 引用唯一可复制形态）。**渲染守卫是显式工作项而非自然降级**（R1 版误标「已核实降级行为」，被审查击穿）：现 `formatCaps` 对 `entry.input.includes("image")` 直调（`model-list-injector.ts:73`），input undefined 抛 TypeError；`contextWindow` 直渲染同样有 undefined → "undefined" 垃圾输出隐患——W3 必须对全字段 optional 消费点做守卫。两侧数据面零改动，投影函数各自适配。
 
 #### D-4 引用契约统一方向
 
@@ -269,7 +271,7 @@ zcode 会话（仅 session start）:
 |---|---|---|
 | `agent="reviewer"` | `agent="<location 路径>"` | 报错文案给恢复指引；`zsw agents` 输出补路径列 |
 | `agent` 缺省（不传） | 行为变化：裸跑 → 加载 general-purpose 内置角色 | 子进程 prompt 注入约 30 行角色 body；record.agent 展示名从 null 变 general-purpose（仅展示面）；不想要角色时显式传自定义 .md 路径 |
-| `workflow="script:tri-review"` | `workflow="/abs/…/tri-review.js"` | 注入段/zflow scripts 输出补 location |
+| `workflow="script:tri-review"` | `workflow="/abs/…/tri-review.js"` | 注入段/scripts action 清单输出补 location |
 | `workflow="tri-review"`（裸名） | 同上 | 同上 |
 | `workflow="chain"`（内置名） | 不变 | 保留 |
 
@@ -334,8 +336,8 @@ zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delet
 | A2 | pi 侧回归 | pi dev 链接新 core 后正常会话；`/subagents` 面板；跑一个 `workflow run`（内置名）；再模拟已装 8.7.0 用户经 npm 升级 pi-sw 的路径 | 注入三段格式与改造前**除 location 字段外逐字节等价**（快照对比；location 豁免**仅限 10 个内置角色的路径前缀变化**——用户/项目资源的 location 不豁免，防同 stem 遮蔽翻向只表现为 location 变化而被放过）；内置 workflow 按名可跑；10 个角色仍可发现（来源变 core 包）；升级路径下 10 角色仍在（pi-sw 对 core ≥0.4.0 的依赖下限生效，资产随依赖到达） | G1/G2/G6 |
 | A3 | 契约统一（正反例） | zcode 与 pi 两侧各跑：agent 传名字（应拒+恢复指引）；agent 传路径（应成）；agent 缺省（两侧同走 general-purpose 角色）；workflow 传内置名（应成）；workflow 传自定义脚本路径（应成）；zsw 侧传 `script:名`（应拒+指引）；核对 skill（zsub-zflow-orchestration）与 commands/zsw.md 的契约描述 | 两侧报错文案同源（core 单实现）；成功路径行为一致；缺省两侧同角色；恢复指引里的命令真实可执行；skill/commands 文档与实际报错文案一致（契约变更三面同步） | G2 |
 | A4 | 注入对齐 | 同一机器两平台会话注入块对照 | 三段 tag 名/字段集一致；models 段 zcode 侧出现 contextWindow 与 `<caps>reasoning</caps>` 能力标记（来自 v2 config 真实数据；档位明细 variants 不进注入段——pi 同构口径，明细走 zsw models CLI 面）；agents 段带 location；zsw 侧分段条目预算截断行为保留（构造 20+ agents 验证：subagents 段码点序截尾 + 「完整清单：zsw agents」兜底、被裁条目 = 码点序尾部而非 project 级优先被裁、workflows 段同理、models 段完整） | G3 |
-| A5 | 创作闭环 | zcode 会话：让主模型写一个三路审查脚本 → `script-generate`（故意先写个带 import 的错误版本验证报错）→ 修正 → lint → save → run 真实执行 | ESM 版被拒且报错指出行列；合法版落盘 `~/.zsw/workflows/`；run 按路径引用真实跑通；`script-delete` 清理 | G4 |
-| A6 | 双实现退役 | zsw 仓 grep `agent-md-resolver` 零引用；`lib/hook-inject.js` 的渲染逻辑替换为 core 调用；两仓测试套件绿 | 代码级验证 + `node --test` 全绿（zsw）/ vitest 全绿（pi-sw + core） | G5 |
+| A5 | 创作闭环 | zcode 会话：让主模型写一个三路审查脚本 → `script-generate`（故意先写个带 import 的错误版本验证报错）→ 修正 → lint → save → run 真实执行 | ESM 版被拒（报错不含行列——core 契约为保 pi 侧回归不定格）；行列信息在 @pi-meta round-trip 闸验证（破损 YAML 样本含 line/col）；合法版落盘 `~/.zsw/workflows/`；run 按路径引用真实跑通；`script-delete` 清理 | G4 |
+| A6 | 双实现退役 | z-subagent-workflow 的 lib/bin/test/README 面 grep `agent-md-resolver` 零引用（仓内历史文档存档性命中不算）；`lib/hook-inject.js` 的渲染逻辑替换为 core 调用；两仓测试套件绿 | 代码级验证 + `node --test` 全绿（zsw）/ vitest 全绿（pi-sw + core） | G5 |
 | A7 | symlink 防环 | 构造 symlink 环（a→b→a）与多链同文件目录，两平台各跑一次 agent 发现；另构造**目录 symlink 整库**形态（`agents/my-lib -> 外部库目录`，同根下并存散 .md 本体文件**与本体同名 .md**）与子目录布局 | 两侧都正常终止、清单无重复条目、无未捕获异常（core realpath 守卫生效）；zsw 侧目录 symlink 整库形态下**库内 .md 与同根本体散 .md 同时可发现**（展开预处理不顶掉本体——W2④ 多根语义生效）；**同 stem 撞名时本体胜**（本体 reviewer.md vs 库内 reviewer.md → 前者胜出，注入段 location 指向本体路径）；子目录布局经验收的迁移路径处理后可发现 | G5 |
 | A8 | 同源校验 | `node scripts/vendor-subagent-core.js --npm <ver>` 后，vendored agents/ 与 npm 包内容 sha256 一致；VENDOR-MANIFEST capabilities 含 agentsAssets | 脚本校验自过；两侧跑 A1/A2 | G1/G6 |
 | A9 | pi 侧 D-5 行为验收 | pi 侧真实派发一次 orchestrator 委派（去 tools 化后），观察子进程完成情况与产出 | 子进程正常完成、产出质量无肉眼劣化、无异常工具调用行为（argv 探针只证 `--tools` 未传，行为可接受性需真实场景确认） | G1/G6 |
@@ -371,7 +373,7 @@ zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delet
 
 1. ~~core hostRoots 加 project 槽的 API 形态~~——**已落定**：新增显式槽位 `project-host`（优先级 project-pi → project-host → project-agents；`resource-discovery.ts:70,103,599`），设计倾向的「新增显式槽位」被采纳；
 2. ~~zsw `.zcode/agents` 项目根的 tmp 排除~~——**不需要**：core 单层扫描语义下子目录（含 .tmp）天然不可见（运行时探针实测：`proj/.zcode/agents/.tmp/x.md` 不进注入段）；core 既有 tmp 专项仅 `.pi` 布局且仅 workflow kind；
-3. ~~分段条目预算的具体值~~——**维持 15/10**：开箱 7536 chars（≈100 行级）零截断；22 用户 agents 探针恰截 15 + 兜底指引 + 内置无豁免实测（A4）；
+3. ~~分段条目预算的具体值~~——**维持 15/10**：开箱 7536 chars（约 7.5k chars、30-40 物理行）零截断；22 用户 agents 探针恰截 15 + 兜底指引 + 内置无豁免实测（A4）；
 4. ~~pi-sw dev 工作区拓扑下 core 包扫描确认~~——**已确认**（xyz 侧 probe-c5）：dev 拓扑约定扫描不命中（core-pkg-hits=0），hostRoots 注入是唯一通路且必要；发布态平铺布局注入幂等。
 
 ---

@@ -10,6 +10,7 @@
  * 数据流（对齐设计 §3.3 七步，bg start + mailbox 主通道）：
  *
  *   MCP tools/call zsub(start)   ← ctx {targetSessionId(取自 _meta, Z3), cwd}
+ *                                  （历史形态；现入口 = CLI/daemon socket）
  *    ①  notifyMode 探测：notifier.capabilities().mode
  *        （mailbox|polling；env 探测在 createRuntime，本层只消费）
  *    ②  resolver.resolve(agent, cwd)            agent .md 路径解析（D-4a 收紧：
@@ -227,7 +228,7 @@ class SubagentManager {
       createInit.schema = params.schema;
     }
     // thinking 请求值随创建落盘（F4/D5）：运行中 status 可见请求意图；终态时由
-    // _completeRun 覆盖为实际生效标注（生效档位 / null / 'null (spawn 降级)'）
+    // _completeRun 覆盖为实际生效标注（生效档位 / null / 'null (请求未生效：引擎通道未映射)'）
     if (thinking !== undefined) {
       createInit.thinking = thinking;
     }
@@ -390,7 +391,7 @@ class SubagentManager {
     if (handle) {
       // 有句柄：杀进程 → done 落 cancelled → 执行体完成终态落盘；等它再返回，
       // 保证 cancel 响应里的 status 与 record 一致（端口契约保证 cancel 必然
-      // 唤醒 done：driver 的 SIGTERM→SIGKILL 链）
+      // 唤醒 done：core 引擎杀链 SIGTERM→grace→SIGKILL）
       handle.cancel();
       const pending = this.pending.get(id);
       if (pending) await pending.catch(() => {});
@@ -468,9 +469,9 @@ class SubagentManager {
       // subagent 探活循环——wf record 无 exec 字段会被误判死进程并写入
       // subagent 语义的 lostReason update 事件（事件流 append-only，永久污染）
       if (rec.recordType !== undefined && rec.recordType !== 'subagent') continue;
-      // runner.alive 是 async（runner-core 按 exec 形态分支：spawn = pid 探活、
-      // appserver 形态 = 引擎语义保守判定），必须 await 取真值；直接以返回值
-      // 判断会把 Promise 误当存活，导致死进程全部误入 orphan 分支
+      // alive 契约为同步 boolean（ports.js RunnerPort；runner-core 按 exec 形态
+      // 分支：spawn = pid 探活、appserver 形态 = 引擎语义保守判定）——此处
+      // await 为防御未来异步实现，同步值 await 无害
       const alive = rec.exec ? await this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
@@ -654,8 +655,8 @@ class SubagentManager {
     }
 
     // F4/D5 thinking 标注：runner 回填优先（生效档位 string / 非法跳过 null）；
-    // 请求了但 runner 无回填时按实际通道判定——非 appserver（spawn 回退 /
-    // probe 降级翻转）= 'null (spawn 降级)'；未请求不落字段。**仅在应改写时
+    // 请求了但 runner 无回填时按「请求未生效：引擎通道未映射」如实标注（不绑定
+    // 引擎形态）；未请求不落字段。**仅在应改写时
     // 携带键**：record-store 内存 fold 是 Object.assign（undefined 会覆盖既有
     // 值，与 JSON 落盘面的 undefined-丢弃不同）——resume 轮不携带键才能保住
     // 首轮标注（thinking 是会话级设置，随会话驻留）
@@ -688,17 +689,17 @@ class SubagentManager {
     if (result && result.thinking !== undefined) {
       transitionPatch.thinking = result.thinking;
     } else if (thinkingRequested !== undefined) {
-      // 2c 后唯一通道是 spawn 单轮：请求了但无通道 = 降级标注（appserver 分支
-      // 随通道退役不可达，旧 record 的 null 值仍可读）
-      transitionPatch.thinking = 'null (spawn 降级)';
+      // 请求了但 runner 无回填 = 请求值未被引擎通道映射（不绑定引擎形态——
+      // 旧「spawn 降级」归因在缺省常驻形态下失真；旧 record 的 null 值仍可读）
+      transitionPatch.thinking = 'null (请求未生效：引擎通道未映射)';
     }
     // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
     // 键」纪律）：toolsRequested 已收紧为仅 allowlist 存在——deny-only 在
     // runner-core 并入引擎 --disallowed-tools 硬约束生效，落「未生效」标注
-    // 就是失真（缺标注可容忍，错标注不可容忍）；通道为 spawn 单轮（恒真，
-    // appserver 已退役）= allow 白名单侧无 flag 通道，落 toolsNote 如实标注
+    // 就是失真（缺标注可容忍，错标注不可容忍）；allow 白名单无引擎 flag 通道
+    // = 请求未映射，落 toolsNote 如实标注
     if (toolsRequested && before.runnerKind !== 'appserver') {
-      transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
+      transitionPatch.toolsNote = 'null (工具限制未生效：引擎通道未映射)';
     }
     this._transitionOrSkip(id, 'running', to, transitionPatch);
 
@@ -788,14 +789,14 @@ class SubagentManager {
     if (!rec) {
       throw new Error(`subagent "${id}" 不存在。恢复指引：用 list 查看全部任务 id。`);
     }
-    // recordType 校验（与 WorkflowManager._mustGet 对称）：workflow record 不经
-    // zsub 面读写——cancel/close 的 transition 语义会越界落 wf record 终态。
-    // 旧 record 无该字段视为 subagent。
+    // recordType 校验（与 WorkflowManager._mustGet 对称，WorkflowManager 已退役）：
+    // workflow record 不经 zsub 面读写——cancel/close 的 transition 语义会越界
+    // 落 wf record 终态。旧 record 无该字段视为 subagent。
     if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
       throw new Error(
         `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
-        + '恢复指引：wf- 前缀的 runId 请用 workflow 面的 zflow tool'
-        + '（action=abort/status）或 CLI `zsub workflow --action ...`。'
+        + '恢复指引：wf- 前缀的 runId 请用 CLI `zsw workflow --action abort|status --id <runId>`'
+        + '（管理面默认经 daemon，--local 本地）。'
       );
     }
     return rec;

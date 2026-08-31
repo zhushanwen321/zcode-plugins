@@ -3,7 +3,7 @@
 /**
  * zsw CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
- *   1. 人类调试与脚本化（不需要 LLM，直接驱动九 action + workflow 六面）
+ *   1. 人类调试与脚本化（不需要 LLM，直接驱动九 action + workflow 九面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
  *      CLI 进程被引擎跟踪，完成时触发原生 task-notification（独立 turn
  *      唤醒 + goal gate，Z4/Z6 语义）。这是 TaskNotificationNotifier
@@ -28,11 +28,11 @@
  *        [--conversation] [--timeout-ms <n>] [--wait]
  *        [--thinking <low|high|max>]
  *        [--allow-tools <逗号分隔工具名>] [--deny-tools <逗号分隔工具名>]
- *        （--thinking：spawn 单轮通道不消费该请求值，终态 record 落
- *         thinking="null (spawn 降级)" 如实标注；--allow-tools：无白名单
- *         flag 通道不消费，终态 record 落 toolsNote 如实标注；--deny-tools：
- *         与 agent .md frontmatter disallowedTools 并集去重后落引擎
- *         --disallowed-tools flag 硬生效）
+ *        （--thinking：请求值未被引擎通道映射，终态 record 落
+ *         thinking="null (请求未生效：引擎通道未映射)" 如实标注；
+ *         --allow-tools：引擎无白名单 flag 通道不消费，终态 record 落
+ *         toolsNote 如实标注；--deny-tools：与 agent .md frontmatter
+ *         disallowedTools 并集去重后落引擎 --disallowed-tools flag 硬生效）
  *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
  *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
  *         partial 结果，exit 2）
@@ -785,9 +785,9 @@ async function runDaemonCommand(cmd, args, rest) {
         conversation: args.conversation === true,
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
         // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——thinking/allow
-        // 请求值 spawn 单轮通道不消费，manager 终态如实标注（thinking:
-        // null (spawn 降级)；allow 侧 toolsNote）；deny 侧并集落引擎
-        // --disallowed-tools 硬生效
+        // 请求值未被引擎通道映射（不消费），manager 终态如实标注（thinking:
+        // null (请求未生效：引擎通道未映射)；allow 侧 toolsNote）；deny 侧
+        // 并集落引擎 --disallowed-tools 硬生效
         ...startCapabilityArgs(args),
       };
       break;

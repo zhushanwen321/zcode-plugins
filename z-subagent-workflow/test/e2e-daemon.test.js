@@ -625,7 +625,8 @@ test('A5-b 机制版（appserver 定向）：exec.kind/sessionRef 落盘 + SIGKI
   assert.ok(rec2.exec && rec2.exec.sessionRef && typeof rec2.exec.sessionRef.sessionId === 'string',
     '接管后 exec.sessionRef 仍可读（onHandleReady 落盘产物）');
 
-  // 清场：SIGKILL daemon 不波及常驻进程（孤儿 turn 仍烧 token），按 pidfile 手工收；
+  // 清场：宿主死亡后常驻进程经 stdin EOF 自退（有窗口期），孤儿 turn 窗口内
+  // 仍可能烧 token，按 pidfile 手工收割兜底；
   // 接管者 B 正常退出（B 自身未跑任务——无引擎实例可 dispose，退出链组合零副作用）
   try { process.kill(residentPid, 'SIGKILL'); } catch { /* 可能已自行退出 */ }
   b.child.kill('SIGTERM');

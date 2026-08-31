@@ -1,6 +1,6 @@
 # subagent-core-convergence 实施计划
 
-基线: 待基线 commit | 来源设计: [subagent-core-convergence-design.md](subagent-core-convergence-design.md) | 日期: 2026-08-30
+基线: d0ca6de | 来源设计: [subagent-core-convergence-design.md](subagent-core-convergence-design.md) | 日期: 2026-08-30
 
 **跨两仓说明**：W1-W5 在 xyz-agent 仓（`/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/`，分支 `feat-subagent-core-host-surface`），W6-W9 在 zsw 仓（本 worktree）。git 单点不变：subagent 零 git，主 agent 在两仓各自精确路径 add/commit。
 
@@ -35,14 +35,14 @@
 | W1-core-assets | xyz | 10 个 agent 模板迁入 core + 去 tools 化 + pi-sw manifest/白名单清理 | `packages/subagent-core/agents/*.md`（新，10 个）；`packages/subagent-core/package.json`（files+agents/）；`extensions/universal/subagent-workflow/agents/`（整目录删）；`extensions/universal/subagent-workflow/package.json`（pi.agents + files 清理） | — | plain | ① core `agents/` 10 个 .md，frontmatter 无 `tools` 字段、body 无平台工具名硬编码（grep 验证）② pi-sw `agents/` 目录不存在 ③ 两 package.json 无残留引用 ④ core vitest 绿 |
 | W2-core-discovery | xyz | async 发现链 realpath 去重 + project host 槽 + hostRoots 同标签多根（Map→列表+硬编码槽合并，原根后置）+ 漂移注释修 | `packages/subagent-core/src/shared/resource-discovery.ts`；`src/index.ts`（barrel，agents 面导出补齐）；`src/__tests__/`（新增/改，下同） | — | plain | ① vitest 绿（含多链同文件去重、同标签多根、撞名本体胜、子目录/node_modules 三维度对照）② pi 单条目形态改前后 `discoverResources` 输出逐项一致（对照探针，记录进证据）③ `scanDirectorySync` 漂移注释已修 |
 | W3-core-render | xyz | 三 format 函数 + Entry 接口下沉 core；ModelEntry 并集 + 全字段守卫；分段条目预算参数；sortByCodepoint；guide 参数化；xml-injection 出 barrel | `packages/subagent-core/src/shared/`（新渲染模块，命名执行期定）；`src/index.ts`；`src/__tests__/` | W2（barrel 同文件串行） | plain | ① 渲染单测绿：undefined input/contextWindow 不抛不渲垃圾、码点序+截尾、预算边界（15/10）、guide 由宿主注入 ② barrel 导出探针（node require 逐名检查） |
-| W4-core-script-pipeline | xyz | getTmpDir/getSavedDir 参数化；generate 校验管线（ESM/meta/agent()/语法/round-trip）+ tmp 写盘下沉；save/delete/generate 出 barrel | `packages/subagent-core/src/orchestration/workflow-files.ts`；`src/orchestration/`（新管线模块）；`src/index.ts`；`src/__tests__/` | W3（barrel 同文件串行） | plain | ① 管线单测绿：ESM 样本拒（报错含行列）、无 meta 拒、无 agent() 拒、合法样本落 tmp ② 参数化目录注入生效（非 .pi 硬编码）③ barrel 探针 |
+| W4-core-script-pipeline | xyz | getTmpDir/getSavedDir 参数化；generate 校验管线（ESM/meta/agent()/语法/round-trip）+ tmp 写盘下沉；save/delete/generate 出 barrel | `packages/subagent-core/src/orchestration/workflow-files.ts`；`src/orchestration/`（新管线模块）；`src/index.ts`；`src/__tests__/` | W3（barrel 同文件串行） | plain | ① 管线单测绿：ESM 样本拒（报错不含行列——core 契约，行列只在 @pi-meta round-trip 闸）、无 meta 拒、无 agent() 拒、合法样本落 tmp ② 参数化目录注入生效（非 .pi 硬编码）③ barrel 探针 |
 | W5-pi-rebind | xyz | pi-sw 改消费 core 新面：injector 调 core format（guide 传 pi 版）、workflow-script 调 core 管线、run 放开内置名、依赖下限、CHANGELOG | `extensions/universal/subagent-workflow/src/injectors/`（3 文件）；`src/interface/tool-workflow.ts`；`src/interface/tool-workflow-script.ts`；`package.json`（依赖 ≥0.4.0）；`CHANGELOG.md` | W1（资产）、W3（渲染）、W4（管线） | plain | ① pi-sw vitest 全绿 ② 注入快照：除 10 内置角色 location 前缀外逐字节等价（用户/项目资源 location 不豁免）③ workflow run 传内置名可跑 ④ core 包根接线实测（§5.3.4 检查点：约定扫描不命中则走 hostRoots 注入降级并记录） |
 | W6a-zsw-agent-discovery | zsw | agent 发现换 core：四根 hostRoots 映射 + vendored agents 进 npm 槽（dir=`lib/vendor/`）+ 目录 symlink 展开预处理（本体后置）+ agent-md-resolver 退役；**vendor 脚本扩 agents/ 拷贝与 `capabilities.agentsAssets`（自 W9 前移——W6a 即需 vendored agents）** | `scripts/vendor-subagent-core.js`；`z-subagent-workflow/lib/vendor/subagent-core/`（刷新产物）；`lib/agent-md-resolver.js`（删）；`lib/orchestration-host.js`；`lib/agent-runner-adapter.js`；`lib/manager.js`（resolver 消费点）；`bin/zsw.js`（agents 数据源）；`dist/mcp/server.js`（agents action 面）；`test/`（resolver 测试迁删 + 新增接入测试） | W1、W2（已就绪，vendored bundle 已含新面） | plain | ① 增量 `node --test` 相关文件绿 ② 对照探针：同目录集新旧实现 diff 清单一致（含子目录/node_modules/撞名→本体胜三维度，证据落盘）③ `zsw agents` 列出 vendored 10 个 + 用户四根 ④ grep `agent-md-resolver` 零引用 ⑤ vendor 刷新后 VENDOR-MANIFEST 含 agentsAssets 且 agents/ 10 文件 sha256 校验过 |
 | W6a2-zsw-runner-appserver-compat | zsw | runner-core 适配 core engine 缺省 appserver 常驻模式：alive() 按 exec 形态分支（spawn=pid 探活；appserver=engine 语义）、daemon shutdown 链补 engine dispose、onHandleReady(sessionRef) 消费进 record | `z-subagent-workflow/lib/runner-core.js`；`lib/assemble.js`（shutdown 链）；`lib/manager.js`（exec/record 消费点，若需）；`test/runner-core.test.js` 及相关 | W6a（vendored 新 core 已就位） | plain | ① appserver 模式下 alive() 不再恒 false（recover 判死走真实终态语义）② daemon shutdown 调 engine dispose（常驻进程不泄漏）③ spawn 模式行为回归不变（XYZ_ZCODE_MODE=spawn 对照）④ 相关 `node --test` 绿 |
-| W6b-zsw-contract | zsw | 契约收紧：agent 仅路径 + core 同源报错文案；缺省走 general-purpose 角色；agents 输出补 location | `z-subagent-workflow/lib/manager.js`（start 校验/缺省解析）；`lib/agent-runner-adapter.js`（报错同源）；`bin/zsw.js`；`dist/mcp/server.js`（参数描述/输出）；`skills/zsub-zflow-orchestration/SKILL.md`（契约段）；`commands/` 下 zsw 命令文档（若涉 agent 契约） | W6a | plain | ① 正反例测试：传名拒（文案与 core `agent-registry` 同源断言）+ 传路径成 + 缺省 record.agent=general-purpose ② `zsw agents` 输出含路径列 |
+| W6b-zsw-contract | zsw | 契约收紧：agent 仅路径 + core 同源报错文案；缺省走 general-purpose 角色；agents 输出补 location | `z-subagent-workflow/lib/manager.js`（start 校验/缺省解析）；`lib/agent-runner-adapter.js`（报错同源）；`bin/zsw.js`；`dist/mcp/server.js`（参数描述/输出）；`skills/zsub-zflow-orchestration/SKILL.md`（契约段）；`commands/` 下 zsw 命令文档（若涉 agent 契约） | W6a、W6a2 | plain | ① 正反例测试：传名拒（文案与 core `agent-registry` 同源断言）+ 传路径成 + 缺省 record.agent=general-purpose ② `zsw agents` 输出含路径列 |
 | W7-zsw-inject | zsw | hook 注入改调 core 三段渲染：分段预算、agents 带 location、models 带 contextWindow/reasoning | `z-subagent-workflow/lib/hook-inject.js`（重写渲染层）；`bin/zsw.js`（hook session-start 数据组装：core 发现 + model 投影）；`test/`（hook 测试改） | W6a（agents 发现数据源）、W3（core 渲染） | plain | ① 注入块快照：三段 XML tag/字段集与 pi 同构、10 内置带 location、models 段含窗口/档位（v2 config 真实数据）② 构造 20+ agents：subagents 段码点序截尾 + 兜底指引、models 段完整 ③ `node --test` hook 相关绿 |
-| W8-zsw-script-face | zsw | zflow 扩 script-generate/save/delete（CLI + commands + skill 三面）+ README 迁移表 + description 更新 | `z-subagent-workflow/bin/zsw.js`（zflow script-* 子命令）；`dist/mcp/server.js`（zflow 描述）；`README.md`；`package.json`（description）；`skills/zsub-zflow-orchestration/SKILL.md`；`commands/` zsw 命令文档 | W4（core 管线）、W6b/W7（bin/zsw.js 同文件串行） | plain | ① 创作闭环 CLI 真跑：ESM 版拒（含行列）→ 修正 → lint → save 落 `~/.zsw/workflows/` → run 路径引用跑通 → delete 清理 ② README 迁移表含四行（agent 名/agent 缺省/script:/裸名）③ `node --test` 绿 |
-| W9-vendor-release | 两仓 | vendor 脚本扩 `capabilities.agentsAssets`；`--npm 0.4.0` 刷新（core 发版后）；check 双绿；发版节奏落地 | `scripts/vendor-subagent-core.js`；`z-subagent-workflow/lib/vendor/subagent-core/`（刷新产物）；发版操作（core 0.4.0 changeset/pi-sw/zsw release.js） | W5-W8 全部 | plain | ① A8 同源校验：vendored agents/ 与 npm 包 sha256 一致、manifest 含 agentsAssets ② `check-sync`/`check-pack` 双绿 ③ 发版与 push 等用户另行授权（本单元只备好） |
+| W8-zsw-script-face | zsw | zflow 扩 script-generate/save/delete（CLI + commands + skill 三面）+ README 迁移表 + description 更新 | `z-subagent-workflow/bin/zsw.js`（zflow script-* 子命令）；`dist/mcp/server.js`（zflow 描述）；`README.md`；`package.json`（description）；`skills/zsub-zflow-orchestration/SKILL.md`；`commands/` zsw 命令文档 | W4（core 管线）、W6b/W7（bin/zsw.js 同文件串行） | plain | ① 创作闭环 CLI 真跑：ESM 版拒（报错不含行列——core 契约）、round-trip 闸拒破损 YAML（含 line/col）→ 修正 → lint → save 落 `~/.zsw/workflows/` → run 路径引用跑通 → delete 清理 ② README 迁移表含四行（agent 名/agent 缺省/script:/裸名）③ `node --test` 绿 |
+| W9-vendor-release | 两仓 | `--npm 0.4.0` 刷新（core 发版后）；A8 npm 同源补验 + check 双绿；发版节奏落地（vendor 脚本扩 agents/ 拷贝与 `capabilities.agentsAssets` 已前移并入 W6a 且完成——见变更历史 2026-08-31「W1-W5 前置门核验通过」条目） | `z-subagent-workflow/lib/vendor/subagent-core/`（`--npm` 刷新产物）；发版操作（core 0.4.0 changeset/pi-sw/zsw release.js） | W5-W8 全部 | plain | ① A8 同源校验：vendored agents/ 与 npm 包 sha256 一致、manifest 含 agentsAssets ② `check-sync`/`check-pack` 双绿 ③ 发版与 push 等用户另行授权（本单元只备好） |
 
 ## 3 DAG 图
 
@@ -63,16 +63,19 @@ graph TD
     W6a["W6a-zsw-agent-discovery 发现切换<br/>领地: zsw agent 线 + 测试"]
   end
   subgraph Wave5[Wave 5]
-    W6b["W6b-zsw-contract 契约收紧<br/>领地: manager/adapter/server/skill"]
+    W6a2["W6a2-zsw-runner-appserver-compat 引擎形态适配<br/>领地: runner-core + assemble shutdown 链"]
   end
   subgraph Wave6[Wave 6]
-    W7["W7-zsw-inject 注入对齐<br/>领地: hook-inject + bin hook 侧"]
+    W6b["W6b-zsw-contract 契约收紧<br/>领地: manager/adapter/server/skill"]
   end
   subgraph Wave7[Wave 7]
-    W8["W8-zsw-script-face 创作面+文档<br/>领地: bin zflow 侧 + README + skill"]
+    W7["W7-zsw-inject 注入对齐<br/>领地: hook-inject + bin hook 侧"]
   end
   subgraph Wave8[Wave 8]
-    W9["W9-vendor-release 刷新+发版准备<br/>领地: vendor 脚本 + vendored 产物"]
+    W8["W8-zsw-script-face 创作面+文档<br/>领地: bin zflow 侧 + README + skill"]
+  end
+  subgraph Wave9[Wave 9]
+    W9["W9-vendor-release 刷新+发版准备<br/>领地: vendored 刷新产物 + 发版操作"]
   end
   W1 -->|"资产存在是 pi 发现/回归前提"| W5
   W2 -->|"发现面 API 是 zsw 接入前提"| W6a
@@ -80,6 +83,8 @@ graph TD
   W3 -->|"barrel 同文件共改"| W4
   W3 -->|"core 渲染器被 pi injector 消费"| W5
   W4 -->|"core 管线被 pi workflow-script 消费"| W5
+  W6a -->|"vendored 新 core（含 appserver 常驻引擎）就位"| W6a2
+  W6a2 -->|"exec 形态适配先于契约收紧（同涉 manager）"| W6b
   W6a -->|"契约校验依赖 core 发现面接线"| W6b
   W6a -->|"hook 数据源 = core agents 发现"| W7
   W3 -->|"hook 渲染调 core"| W7
@@ -91,7 +96,7 @@ graph TD
   W8 -->|"文档/面齐了才收口"| W9
 ```
 
-串行链说明：W2→W3→W4 仅为 `src/index.ts`（barrel）同文件共改的保守串行（产物互不依赖）；zsw 侧 W6a→W6b→W7→W8 因 `bin/zsw.js`/`dist/mcp/server.js` 多点共改串行；Wave 4 的 W5 与 W6a 分属两仓文件零交集，真并行。
+串行链说明：W2→W3→W4 仅为 `src/index.ts`（barrel）同文件共改的保守串行（产物互不依赖）；zsw 侧 W6a→W6a2→W6b→W7→W8 串行——W6a2 为后插单元（runner 适配 vendored core 缺省 appserver 常驻，在 W6b 前实施），W6b→W7→W8 因 `bin/zsw.js`/`dist/mcp/server.js` 多点共改串行；Wave 4 的 W5 与 W6a 分属两仓文件零交集，真并行。
 
 ## 4 测试策略
 
@@ -107,7 +112,7 @@ graph TD
 
 | # | 单元 | 偏差 | 理由 | 审查结论 |
 |---|------|------|------|---------|
-| 1 | W6a | 扩领地 `lib/assemble.js`（6 行）+ `lib/hook-source.js`（10 行）：旧 resolver 消费点，物理删除后不改即 crash | 领地表遗漏消费点，最小修改 | R1 审查 R8 确认属实 |
+| 1 | W6a | 扩领地 `lib/assemble.js`（4 行，+2/-2）+ `lib/hook-source.js`（10 行，+7/-3；两处均实测自 `git show 0be4159 --numstat`）：旧 resolver 消费点，物理删除后不改即 crash | 领地表遗漏消费点，最小修改 | R1 审查 R8 确认属实（行数以实测修正，与变更历史一致） |
 | 2 | W6b | 扩领地 `lib/ports.js`（67 行契约注释）、`lib/agent-discovery.js`（124 行：normalizeAgentRef/resolveDefaultAgent/双文案单点）、`test/e2e.test.js`+`test/server.test.js`（伴随） | 契约函数下沉至发现模块单点 + 端口契约文档登记（W6a2 移交项落点） | 审查 U2 登记补齐 |
 | 3 | W7 | 扩领地 `lib/hook-source.js`（+81/-31：workflows 数据面从 name-only 升级完整条目组装） | hook 数据组装的物理宿主是 hook-source.js 非 bin/zsw.js（头注明载），不扩则验收条款无法落地 | 审查登记补齐 |
 | 4 | W6b | 报错文案 core 同源 = 模板逐字复刻 + 测试锚定（非运行时共享） | core barrel 未导出 agent-ref/文案面，运行时共享是 core 侧 future | R1 审查 R3 确认（设计 §3.1 措辞已同步） |
@@ -124,11 +129,11 @@ graph TD
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|---------|
-| W1-core-assets | delegated（用户单独处理） | — | handoff: /tmp/handoff-xyz-subagent-core-convergence-20260830.md |
-| W2-core-discovery | delegated（用户单独处理） | — | 同上 |
-| W3-core-render | delegated（用户单独处理） | — | 同上 |
-| W4-core-script-pipeline | delegated（用户单独处理） | — | 同上 |
-| W5-pi-rebind | delegated（用户单独处理） | — | 同上 |
+| W1-core-assets | committed（xyz 侧） | 1 | xyz 仓 …/feat-subagent-core-host-surface/docs/design/subagent-core-convergence.impl-plan.md 状态表 C1=86b700f67；handoff: /tmp/handoff-xyz-subagent-core-convergence-20260830.md |
+| W2-core-discovery | committed（xyz 侧） | 1 | 同上（C2=5b03be26d） |
+| W3-core-render | committed（xyz 侧） | 1 | 同上（C3=19c059bf6） |
+| W4-core-script-pipeline | committed（xyz 侧） | 1 | 同上（C4=ec1dcdf9a） |
+| W5-pi-rebind | committed（xyz 侧） | 1 | 同上（C5=a26b9a80c、C5b barrel 辅助=1c92d6e74） |
 | W6a-zsw-agent-discovery | committed | 1 | 225/225 相关文件绿 + 对照探针 3 差异全可解释（/tmp/zsw-w6a-probe/）；manifest agentsAssets + 10 资产落地；grep resolver 零引用（代码面，README 留 W8） |
 | W6a2-zsw-runner-appserver-compat | committed | 1 | 27/27 runner-core + 9/9 assemble + 34/34 manager + 非 e2e 全集 327/327 绿；alive 形态分支/dispose 自建表逐实例+killAll 兜底/onHandleReady 消费/spawn 定向对照；真 server stdin 关闭冒烟 exit=0 |
 | W6b-zsw-contract | committed | 1 | 96/96 四文件绿 + 非 e2e 全集 332/332；CLI 真跑：传名拒（文案与 core 同源，exit=1）、agents 14 条含 location；缺省 general-purpose + adapter 同步收紧；CLI appserver 挂起修复真跑 13.1s 干净退出 |
@@ -140,11 +145,11 @@ graph TD
 
 ### 残留风险
 
-1. **xyz-agent 分支认知外提交**：`feat-subagent-core-host-surface` 在我方 commit `88d7eadc6` 之后有 22 个新提交（steer/followUp 气泡、更新网络韧性两条任务线）。已核实 `git diff --name-only 88d7eadc6..HEAD` 与 W1-W5 领地（`packages/subagent-core`、`extensions/universal/subagent-workflow`）**交集为 0**，叠加开发安全；执行期每波派发前主 agent 复核该分支无新增领地内变更。
-2. **vendor 中间刷新**：W6a 前需主 agent 在 xyz 仓跑 core `build:bundle` 后 `node scripts/vendor-subagent-core.js --local <xyz worktree 路径>` 刷新 zsw vendored 副本（开发态消费未发布的 core 0.4.0 面）；W9 才切 `--npm 0.4.0`（core 发布后）。
-3. **core 0.3.0 发版节奏**：0.3.0（host-surface）在用户侧待发；本计划全部落在 0.4.0（minor changeset）。local vendor 模式不被 0.3.0 阻塞；若 0.3.0 未发而 0.4.0 需求先合，changeset 合并为一个 minor（执行期与用户确认）。
+1. ~~**xyz-agent 分支认知外提交**~~：**已消解**——W1-W5 已落该分支（C1-C5b committed，见状态表与 xyz 侧权威指针），建立基线时的「`88d7eadc6` 后 22 个新提交」认知外交集复核已完成（与 W1-W5 领地交集为 0，见 2026-08-31 变更历史「W1-W5 前置门核验通过」条目）。
+2. **vendor 终态刷新**：W9 才切 `--npm 0.4.0`（core 发布后；开发态的 `--local` 中间刷新已随 2026-08-31 W6a 前置门完成）。
+3. **core 0.3.0 发版节奏**：已裁决（用户 2026-08-30 定两线合并，2026-08-31 落盘合并，xyz 侧 impl-plan「版本决策」与残留风险 2 在案）——0.3.0 并入 **core 0.4.0 单一 changeset/minor**（host-surface 与本计划收口内容合并描述）；core 发版本身仍待用户授权。
 4. **发版与 push 授权边界**：W9 的 release.js bump/tag（本地操作）与一切 push/合并 main 动作均需用户另行授权；本计划终态 = 两仓本地 committed + 验收双绿。
-5. **§5.3 四个待验证检查点**（设计文档）：project 槽 API 形态、`.zcode` tmp 排除、预算值实测、dev 拓扑扫描确认——分别在 W2/W6a/W7/W5 执行期内以探针落证并回填设计检查点。
+5. ~~**§5.3 四个待验证检查点**~~（设计文档）：**已消解**（2026-08-31 全部回填落定，见设计 §5.3 与下方变更历史 Gate B 条目——project 槽 API 形态、`.zcode` tmp 排除、预算值实测、dev 拓扑扫描确认四项均已以探针落证）。
 6. **e2e token 纪律**：Gate B 真机场景用最小任务书；除 A1/A5/A9 必须真模型外，其余场景优先结构断言。
 
 ### 变更历史

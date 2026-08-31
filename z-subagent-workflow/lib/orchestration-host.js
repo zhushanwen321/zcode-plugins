@@ -17,9 +17,10 @@
  *    workflows/ 内的绝对路径——worker 以 scriptPath 目录锚定 require
  *    _shared/review-fix-loop-utils，缺失即 core_module_load_failed（设计 D1
  *    硬前提，资产自身 fail-fast 守卫）。
- * 3. 对外面（MCP zflow 六 action / CLI workflow 子命令）：run / runAndWait /
- *    abort / status / list / scripts / lint + daemon 生命周期钩子
- *    （recoverOrphans / shutdown）。
+ * 3. 对外面（zflow 九 action = daemon socket 与 CLI workflow 子命令共用；本
+ *    对象承接 run / runAndWait / abort / status / list / scripts / lint，
+ *    script-* 三 action 创作闭环由 bin/zsw.js 实现经 server handler 消费）
+ *    + daemon 生命周期钩子（recoverOrphans / shutdown）。
  *
  * 与旧 WorkflowManager 的行为差异（README 回接说明登记）：
  * - run 状态不再写 zsw record 事件流（recordType:'workflow' 线退役）；新
@@ -228,8 +229,8 @@ function createRegistry(core) {
  *
  * 内置 5 严格按 vendored 资产实际消费的 $ARGS 键组装（多余键不进 $ARGS 并出
  * warning——review-fix-loop 有运行时白名单，错键会被资产报「未知参数」，
- * 这里前置拦截给出更可操作的提示）；script: 用户脚本白名单外全透传（脚本
- * 自己的 parameters schema 是唯一权威）。无法映射的旧 flag 显式报错
+ * 这里前置拦截给出更可操作的提示）；用户脚本（.js 绝对路径）白名单外全透传
+ * （脚本自己的 parameters schema 是唯一权威）。无法映射的旧 flag 显式报错
  * （reviewers——语义已从自由文本维度变为 agent ref 批次）或降级 warning
  * （maxConcurrent / timeoutMsPerPhase / subtaskCount——core RunSpec 无对应面）。
  */
@@ -237,7 +238,7 @@ function normalizeRunParams(params) {
   const warnings = [];
   const workflow = typeof params.workflow === 'string' ? params.workflow : '';
   if (workflow === '') {
-    throw new Error('run 需要 workflow（内置名 / script:<脚本名> / 脚本绝对路径）。恢复指引：先经 scripts action 查可用清单。');
+    throw new Error('run 需要 workflow（内置名或 .js 绝对路径，后者可经 script-generate 创作）。恢复指引：先经 scripts action 查可用清单。');
   }
   const name = workflow.replace(/^script:/, '');
   const isBuiltin = BUILTIN_WORKFLOW_NAMES.includes(name);
@@ -250,7 +251,7 @@ function normalizeRunParams(params) {
       'review-fix-loop 已不再支持 --reviewers（旧语义 = 自由文本审查维度）。'
       + '新契约：批次 batch1..batchN，值 = agent .md 绝对路径（逗号分隔多 agent）。'
       + '恢复指引：zsw workflow --workflow review-fix-loop --target-type <t> --target <t> '
-      + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时用 script: 自定义脚本传自由文本维度。'
+      + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时改用自定义脚本（.js 绝对路径，可经 script-generate 创作）传自由文本维度。'
     );
   }
   for (const key of ['maxConcurrent', 'timeoutMsPerPhase']) {
@@ -424,7 +425,7 @@ function createOrchestrationHost(opts = {}) {
     const script = await registry.get(norm.scriptRef, cwd || workdir);
     if (!script) {
       throw new Error(
-        `workflow "${norm.scriptRef}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')} 或 script:<名>；可用清单经 scripts action 查询）。`
+        `workflow "${norm.scriptRef}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')} 或自定义脚本 .js 绝对路径，后者可经 script-generate 创作；可用清单经 scripts action 查询）。`
       );
     }
     if (!script.available) {

@@ -1,10 +1,11 @@
 'use strict';
 
 /**
- * MCP server 测试（W2-S4 决策位③入口；N2-b 起 zflow 六 action 面）。
+ * MCP server 测试（W2-S4 决策位③入口；N2-b 起 zflow 九 action 面——
+ * orchestration-host + bin/zsw.js 共享创作实现）。
  *
- * 隔离原则：协议层与纯函数用 fake manager / fake wfHost 全覆盖；真实
- * WorkflowManager 接线用例（校验权威 + 后台冒烟 + abort）注入 fake 内置入口
+ * 隔离原则：协议层与纯函数用 fake manager / fake wfHost 全覆盖；真实编排
+ * 接线用例（校验权威 + 后台冒烟 + abort）注入 fake 内置入口
  * （不跑真 zcode）；进程级测试 spawn 真实 server 进程但 ZSW_ROOT /
  * ZCODE_MAILBOX_ROOT 指到临时目录——不碰真实 ~/.zcode。
  *
@@ -584,7 +585,7 @@ test('注册表隔离：zsub handler 可脱离 dispatch 单独调用（buildTool
   assert.equal(fake.calls.length, 1); // 仅上面的 start，嵌套档零触达
 });
 
-// ---------------------------------------- zflow 六 action 面（回接 2b：orchestration-host）
+// ---------------------------------------- zflow 九 action 面（orchestration-host + bin/zsw.js 共享创作实现）
 
 /** fake orchestration host：记录调用、返回可断言形态（协议层与分发面测试用）。 */
 function makeFakeWfHost() {

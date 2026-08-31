@@ -53,11 +53,12 @@ const DEFAULTS = require('./config').DEFAULTS;
  * @property {string[]} [disallowedTools]  agent .md frontmatter 来源的工具黑名单
  *                                  （裸工具名）：与 toolDenylist 并集去重后落
  *                                  core 引擎 --disallowed-tools flag（硬约束）
- * @property {string} [thinking]    thinking 档位请求值（F4/D5）：spawn 单轮无
- *                                  flag 通道，请求了也不生效（record 如实标注
- *                                  降级）
- * @property {string[]} [toolAllowlist] CLI --allow-tools 来源（F4/D6）：spawn 单轮
- *                                  无 flag 通道，行为不变
+ * @property {string} [thinking]    thinking 档位请求值（F4/D5）：当前引擎通道
+ *                                  未映射该请求值，请求了不生效（record 如实
+ *                                  标注「请求未生效」）
+ * @property {string[]} [toolAllowlist] CLI --allow-tools 来源（F4/D6）：引擎无
+ *                                  白名单 flag 通道，请求不消费（record 如实
+ *                                  标注）
  * @property {string[]} [toolDenylist]  CLI --deny-tools 来源（F4/D6）：与
  *                                  disallowedTools 并集去重入引擎 denylist
  */
@@ -136,12 +137,20 @@ const DEFAULTS = require('./config').DEFAULTS;
  *   capabilities()                   能力声明
  *
  * @typedef {Object} RunHandle
- * @property {object} exec            不透明会话句柄，原样存入 record.exec（manager
- *                                    不解读）：{kind:'spawn', pid, sessionId?,
- *                                    engineId?, poolKey?, cwd}。字段异步回填
- *                                    （可变引用）——消费方需要落盘时机的，经
- *                                    start 的 hooks.onExec 快照通道订阅，不要
- *                                    轮询引用
+ * @property {object} exec            会话句柄，原样存入 record.exec。权威形状见
+ *                                    lib/runner-core.js 头注「exec 句柄」节：
+ *                                    {kind:'spawn'|'appserver', pid?,
+ *                                    sessionId?, sessionRef?, engineId?,
+ *                                    poolKey?, cwd}——kind 初始 'spawn'，命中
+ *                                    appserver 常驻路径经 onHandleReady 翻转
+ *                                    'appserver'（sessionRef={dbPath,sessionId}
+ *                                    为 appserver 形态专属；pid 仅 spawn 形态
+ *                                    回填）。manager 不解读句柄内部语义，但按
+ *                                    exec.kind 分流处置（recover 探活与
+ *                                    lostReason 文案，见 RunnerPort alive()
+ *                                    契约）。字段异步回填（可变引用）——消费方
+ *                                    需要落盘时机的，经 start 的 hooks.onExec
+ *                                    快照通道订阅，不要轮询引用
  * @property {function(): void} cancel   取消（AbortSignal → core 杀链
  *                                    SIGTERM→grace→SIGKILL）
  * @property {Promise<RunResult>} done    完成 promise（含超时/取消终态）

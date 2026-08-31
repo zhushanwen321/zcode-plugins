@@ -19,7 +19,8 @@
  *   agent 根的隔离改走 resolver 注入临时 homeDir。
  * - ZCODE_MESSAGE_ENABLED=1：激活 mailbox 档（E2/E3 投递断言的前提）。
  *
- * 成本纪律：task 文本极简；每场景 1-2 次真实调用封顶；E4/E6/E8 零调用。
+ * 成本纪律：task 文本极简；每场景 1-2 次真实调用封顶；E4/E6/E8 不计入完成
+ * 调用审计（cancel/kill 截断；turn 是否已发出随时序）。
  * 大模型侧账户级限流（429/1302）会让 CLI 长退避重试、表现为 timeout——
  * startWithRetry 对可重试失败统一退避重试，实际重试次数在结尾汇总输出。
  */
@@ -336,7 +337,7 @@ test('E2 mailbox 文件级投递：bg 完成后 unread/ 有合法 envelope', sce
   const fin = manager.status(id);
   assert.equal(fin.status, 'closed', `bg 终态: ${fin.status} ${fin.error || ''}`);
   assert.equal(fin.notified, true);
-  assert.ok(fin.sessionId, 'spawn 模式 done 后回填 sessionId');
+  assert.ok(fin.sessionId, 'exec.sessionId 回填（appserver=create 应答；spawn=done 后）');
 
   const envelopes = readEnvelopes(TARGET);
   assert.equal(envelopes.length, 1);
@@ -578,8 +579,9 @@ test('E6 崩溃恢复：server 进程死亡后 recover 按 exec 形态分流（s
   });
 
   // 模拟 server 崩溃：先杀 server（断掉 record 写盘）。spawn 形态再杀独立
-  // agent 子进程（孤儿仍烧 token）；appserver 形态常驻子进程随 server 死亡
-  // 的 stdin EOF 自退（真机探针证实），无 per-task pid 可杀
+  // agent 子进程（孤儿仍烧 token）；appserver 形态常驻进程在宿主死亡后经
+  // stdin EOF 自退（有窗口期），清场仍按 pidfile 手工收割兜底，无 per-task
+  // pid 可杀
   server.kill('SIGKILL');
   await sleep(100);
   if (line.agentPid !== null) {

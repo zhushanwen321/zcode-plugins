@@ -816,7 +816,7 @@ test('recordType 越界：wf record 不经 zsub 面 status/cancel/close（_mustG
     () => manager.cancel(wf),
     () => manager.close(wf),
   ]) {
-    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message) && /zflow/.test(err.message));
+    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message) && /zsw workflow --action/.test(err.message));
   }
   // record 未被越界改写（终态化/transition 都没发生）
   assert.equal(records.get(wf).status, 'created');
@@ -1042,15 +1042,16 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 单轮降级 / 未请�
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.thinking, 'high', 'runner 回填的实际档位优先于请求值');
   }
-  // ② spawn 单轮请求了 thinking：runner 无回填 → 'null (spawn 降级)'（无
-  //    flag 通道的字面标注；appserver 非法跳过的 null 分支随通道退役不可达）
+  // ② spawn 单轮请求了 thinking：runner 无回填 → 'null (请求未生效：引擎
+  //    通道未映射)'（无 flag 通道的字面标注；appserver 非法跳过的 null 分支
+  //    随通道退役不可达）
   {
     const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
     const h = await manager.start({ task: '任务书', slug: 'think-degraded', thinking: 'low' }, ctx());
     runner.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
-    assert.equal(rec.thinking, 'null (spawn 降级)');
+    assert.equal(rec.thinking, 'null (请求未生效：引擎通道未映射)');
   }
   // ③ 未请求 thinking：不落字段（undefined）
   {
@@ -1119,7 +1120,7 @@ test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 allowl
     );
     r.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
-    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道 allow 白名单失效必须可见');
+    assert.equal(rec.toolsNote, 'null (工具限制未生效：引擎通道未映射)', 'allow 白名单失效必须可见');
   }
   // ② appserver 通道请求了工具限制：正常消费（create 面），不落降级标注
   {

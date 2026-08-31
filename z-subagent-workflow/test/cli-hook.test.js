@@ -13,8 +13,8 @@
  * 降级承诺的静态防线）。
  *
  * 隔离：HOME 指向临时目录——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 在
- * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME，仓内 workflow-script/
- * driver 同款注释），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
+ * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME；路径冻结载体 = lib/config.js
+ * 顶部两条常量定义），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
  * fixture 项目目录（与 lib/hook-source 的 projectDir 解析链对齐：
  * ZCODE_PROJECT_DIR > process.cwd()）。
  */

@@ -10,8 +10,8 @@
  *   <available_workflows>       formatWorkflowList name/description/<location>
  *   <available_provider_models> formatModelList    <id>（全名 provider/model）/<name>
  *                                                  [/<caps>][/<contextWindow>]
- * （models 段 tag 是 core 实现名 available_provider_models，非设计 §3.1 样例的
- * 简写 <available_models>——与 pi 侧同构优先于样例字面。）
+ * （models 段 tag 用 core 实现名 available_provider_models——设计 §3.1 样例
+ * 曾用简写，终态已统一。）
  *
  * 分段条目预算（D-3a R2 决策）：subagents 段 15（开箱 10 内置 + 5 用户余量）、
  * workflows 段 10；条目按 name 码点序排（core sortByCodepoint，非 locale 序）、

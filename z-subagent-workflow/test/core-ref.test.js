@@ -124,7 +124,7 @@ test('恢复指引分流：manifest source 为 local: 前缀时指向 --local �
   try {
     assert.throws(() => mod.workflowAssetPath('no-such-asset.js'), (err) =>
       err.message.includes('vendor-subagent-core.js --local /tmp/fake-core')
-      && err.message.includes('待 core 0.3.0 发布后可用')
+      && err.message.includes('待 core 0.4.0 发布后可用')
       && !err.message.includes('--npm 0.2.0')); // 不得指引刷回 0.2.0 npm 旧产物
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

@@ -8,12 +8,13 @@
  * 因此契约段用 MANDATORY 措辞强压 + jsonout 三级容错提取兜底（不是丢给运气）。
  *
  * 工具约束的诚实分层（MUST_FIX-3，zcode 平台 flag 决定）：
- * - denylist（disallowedTools）= 硬约束：driver 层落 `--disallowed-tools`
- *   flag，平台强制拦截。此处仍在段中重申是双保险——flag 拦行为、prompt
- *   约束意图，模型读到禁用清单可主动绕开（少触发拒绝路径）。
- * - 白名单（tools）= 软约束：zcode 无 allowlist flag（--allowed-tools 拒收，
- *   见 driver 头注），只能靠 prompt 约束——声明「只允许使用这些工具」，
- *   无平台级强制力，越权与否取决于模型遵循度。如实声明而非伪装硬约束。
+ * - denylist（disallowedTools）= 硬约束：经 lib/runner-core.js mergeDenyTools
+ *   并集去重后落引擎 `--disallowed-tools` flag，平台强制拦截。此处仍在段中
+ *   重申是双保险——flag 拦行为、prompt 约束意图，模型读到禁用清单可主动
+ *   绕开（少触发拒绝路径）。
+ * - 白名单（tools）= 软约束：zcode 无 allowlist flag（--allowed-tools 拒收），
+ *   只能靠 prompt 约束——声明「只允许使用这些工具」，无平台级强制力，
+ *   越权与否取决于模型遵循度。如实声明而非伪装硬约束。
  */
 
 /**
@@ -74,7 +75,8 @@ function toolList(v) {
 
 /**
  * 工具约束段（MUST_FIX-3）。profile 无任一工具字段时返回 null（不拼段）。
- * 文案分层见头注：白名单声明 + denylist 重申（denylist 的硬约束在 driver flag）。
+ * 文案分层见头注：白名单声明 + denylist 重申（denylist 的硬约束在引擎
+ * --disallowed-tools flag，经 runner-core mergeDenyTools 落）。
  */
 function buildToolConstraint(agentProfile) {
   const allowed = agentProfile ? toolList(agentProfile.tools) : [];
