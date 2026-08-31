@@ -453,8 +453,9 @@ test('recover（W6a2）：appserver 形态 exec 保守存活 → orphan 分流 +
 // ------------------------------- R1/R2 回归（上轮 must-fix 的反退化锚点）
 
 test('R1 回归：alive 返回 Promise 时 recover 仍正确分流死/活进程（await 退化即翻车）', async () => {
-  // AppServerRunner.alive 是 async——若 manager 漏 await，Promise 恒 truthy，
-  // 死进程全部误入 orphan 分支。此用例用 Promise 返回的 alive 钉住该语义。
+  // runner.alive 可能是 async（runner-core 的 exec 形态分支）——若 manager 漏
+  // await，Promise 恒 truthy，死进程全部误入 orphan 分支。此用例用 Promise
+  // 返回的 alive 钉住该语义。
   const runner = new FakeRunner();
   runner.alive = (exec) => Promise.resolve(Boolean(exec && runner.livePids.has(exec.pid)));
   const { manager, records } = buildManager({ runner });
@@ -513,8 +514,9 @@ test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', as
  * （报错同源基准，xyz-agent 仓 packages/subagent-core/src/execution/agent-registry.ts）：
  *   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>).`
  * zsw 侧主句与其逐字同源（尾部括号内恢复指引按 zsw 双出口适配：注入段
- * location 或 zsw agents 查路径）。硬编码断言 = 同源锁定：core 侧文案若变，
- * 本断言失败提示两侧对齐。
+ * location 或 zsw agents 查路径）。人工对照锚点：本硬编码断言只锁 zsw 侧文案
+ * 形态（zsw 侧漂移在此暴露）；与 core 源的逐字对齐它测不出来（core 侧文案
+ * 变更不会让本断言失败）——靠 review 对照/对照探针维护。
  */
 const CORE_INVALID_AGENT_REF_PREFIX = (ref) =>
   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`;

@@ -355,6 +355,15 @@ test('workflow 引用契约（D-4）：script: 前缀与裸名拒收，报错含
   assert.equal(bare.code, 1);
   assert.match(bare.stderr, /Invalid workflow ref/);
   assert.match(bare.stderr, /不是内置名/);
+  // 非 .js 绝对路径（R2 修复：入口拦截而非放行到 host 层报「脚本不可用」——
+  // 与 agent 线 normalizeAgentRef 的 .md 严格校验对称）
+  const notJs = await run(['workflow', '--workflow', '/tmp/notes.txt', '--task', 't', '--workdir', TMP]);
+  assert.equal(notJs.code, 1);
+  assert.match(notJs.stderr, /Invalid workflow ref/);
+  assert.match(notJs.stderr, /不是 \.js 脚本路径/);
+  const tildeNotJs = await run(['workflow', '--workflow', '~/notes.txt', '--task', 't', '--workdir', TMP]);
+  assert.equal(tildeNotJs.code, 1);
+  assert.match(tildeNotJs.stderr, /不是 \.js 脚本路径/);
 });
 
 // ------------------------------------- W8 创作闭环（script-generate/save/delete）

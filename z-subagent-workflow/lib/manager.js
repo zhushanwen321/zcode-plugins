@@ -468,8 +468,9 @@ class SubagentManager {
       // subagent 探活循环——wf record 无 exec 字段会被误判死进程并写入
       // subagent 语义的 lostReason update 事件（事件流 append-only，永久污染）
       if (rec.recordType !== undefined && rec.recordType !== 'subagent') continue;
-      // AppServerRunner.alive 是 async（session/list 探活），必须 await 取真值；
-      // 直接以返回值判断会把 Promise 误当存活，导致死进程全部误入 orphan 分支
+      // runner.alive 是 async（runner-core 按 exec 形态分支：spawn = pid 探活、
+      // appserver 形态 = 引擎语义保守判定），必须 await 取真值；直接以返回值
+      // 判断会把 Promise 误当存活，导致死进程全部误入 orphan 分支
       const alive = rec.exec ? await this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
@@ -560,7 +561,7 @@ class SubagentManager {
         // resume 句柄接线（S-6①）：两层取法——①onHandle（SpawnRunner 轮启动
         // 后同步回调 {pid, cancel}）；②onHandle 未触发时兜底看返回 promise
         // 自带的 cancel（runner-spawn 的 resume 双取法同款）。挂入 handles
-        // 让 cancel 能杀轮进程（SIGTERM→SIGKILL 链）。AppServerRunner 的
+        // 让 cancel 能杀轮进程（SIGTERM→SIGKILL 链）。appserver 形态的
         // resume 是 async 无句柄（多余参数被忽略、promise 无 cancel 属性）
         // ——两层都取不到时维持无句柄路径（终态化 record + 注明进程可能残留）。
         let handleSet = false;

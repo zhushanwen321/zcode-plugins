@@ -292,18 +292,22 @@ function workflowScriptDirs() {
 /**
  * workflow 引用契约（D-4a，与 pi 平台统一）：合法 = 内置 5 名 或 .js 绝对路径
  * （~/ 前缀可展开）。script:<名> 与裸名在入口面拒绝——文案与设计 §3.1 失败
- * 路径同源、带恢复指引。host 层（resolveScriptPath）保留按名宽松解析供脚本内
- * 嵌套 workflow() 调用，收紧只拦 CLI/daemon 两消费面（run 的 ref 来自用户输入）。
+ * 路径同源、带恢复指引。路径分支严格 .js 后缀（与 agent 线 normalizeAgentRef
+ * 的 .md 严格校验对称——非 .js 绝对路径（/tmp/notes.txt、目录）在此拦下，
+ * 不放行到 host 层报「脚本不可用」）。host 层（resolveScriptPath）保留按名
+ * 宽松解析供脚本内嵌套 workflow() 调用，收紧只拦 CLI/daemon 两消费面
+ * （run 的 ref 来自用户输入）。
  */
 function validateWorkflowRef(workflow) {
   const w = typeof workflow === 'string' ? workflow.trim() : '';
   if (w === '') {
     throw new Error('run 需要 workflow（内置名或 .js 绝对路径，~/ 前缀可展开）。恢复指引：可用清单先经 scripts action 查询。');
   }
-  if (BUILTIN_WORKFLOW_NAMES.includes(w) || w.startsWith('/') || w.startsWith('~/')) return w;
+  if (BUILTIN_WORKFLOW_NAMES.includes(w)) return w;
+  if ((w.startsWith('/') || w.startsWith('~/')) && w.endsWith('.js')) return w;
   const why = w.startsWith('script:')
     ? `"${w}" 带已废弃的 script: 前缀`
-    : `"${w}" 不是内置名`;
+    : /^([~/])/.test(w) ? `"${w}" 不是 .js 脚本路径` : `"${w}" 不是内置名`;
   throw new Error(
     `Invalid workflow ref：${why}。workflow 引用仅接受内置名（${BUILTIN_WORKFLOW_NAMES.join(' / ')}）`
     + '或 .js 绝对路径（支持 ~/ 前缀展开）。恢复指引：自定义脚本路径见 scripts action 清单的 path 字段，'

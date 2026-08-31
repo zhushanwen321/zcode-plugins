@@ -105,7 +105,20 @@ graph TD
 
 ## 5 合理偏差登记表
 
-（初始为空；执行期按 dev-flow 偏差三分类登记）
+| # | 单元 | 偏差 | 理由 | 审查结论 |
+|---|------|------|------|---------|
+| 1 | W6a | 扩领地 `lib/assemble.js`（6 行）+ `lib/hook-source.js`（10 行）：旧 resolver 消费点，物理删除后不改即 crash | 领地表遗漏消费点，最小修改 | R1 审查 R8 确认属实 |
+| 2 | W6b | 扩领地 `lib/ports.js`（67 行契约注释）、`lib/agent-discovery.js`（124 行：normalizeAgentRef/resolveDefaultAgent/双文案单点）、`test/e2e.test.js`+`test/server.test.js`（伴随） | 契约函数下沉至发现模块单点 + 端口契约文档登记（W6a2 移交项落点） | 审查 U2 登记补齐 |
+| 3 | W7 | 扩领地 `lib/hook-source.js`（+81/-31：workflows 数据面从 name-only 升级完整条目组装） | hook 数据组装的物理宿主是 hook-source.js 非 bin/zsw.js（头注明载），不扩则验收条款无法落地 | 审查登记补齐 |
+| 4 | W6b | 报错文案 core 同源 = 模板逐字复刻 + 测试锚定（非运行时共享） | core barrel 未导出 agent-ref/文案面，运行时共享是 core 侧 future | R1 审查 R3 确认（设计 §3.1 措辞已同步） |
+| 5 | W6b | resolveDefaultAgent 三级兜底（发现面胜者→vendored 直读→null 诚实裸跑） | 发现面异常不阻断任务启动，行为诚实留痕 | R1 审查 R4 确认优于设计（设计 D-4 已补降级语义） |
+| 6 | W6a | symlink 展开注入 linkPath 而非 realpath 目标 | 产出 location 落用户根命名空间，与旧 resolver 一致，迁移期路径不跳变 | R1 审查 R6 确认（设计 D-2 已补注） |
+| 7 | W7 | models 段 tag 名 `available_provider_models`（core 实现名）非设计样例 `<available_models>` | A4「与 pi 同构」优先于样例字面 | R2 审查确认（设计样例已修正） |
+| 8 | W7 | 旧单块展示特性退役（默认标记/UUID 8 位缩写），默认模型改由 guide 句承载 | core 渲染函数口径统一，双份展示逻辑无意义 | R2 审查确认 |
+| 9 | W8 | 三 action 共享实现放 bin/zsw.js 导出（server.js require 消费），不入 orchestration-host | CLI 与 daemon socket 面单一实现来源防漂移；orchestration-host 领地仅限清理 | R2 审查确认 |
+| 10 | W8 | script-save/delete 默认经 daemon、generate 恒本地；--local 下 delete 恒放行 | delete 需 daemon runs 真实状态裁决、save 的 invalidate 落 daemon 进程内；一次性进程无 runs 视图 | R2 审查确认 |
+| 11 | W8 | name 参数路径逃逸守卫（拒 `/` `\` 点开头） | core 直接拼 `${name}.js` 落盘，防 `../x` 逃逸 | R2 审查确认（任务字面外的必要加固） |
+| 12 | W8 | ESM 拒报错不含行列（行列在 round-trip 闸） | core 实际契约如此，改 core 文案破坏 pi 侧回归前提 | R2 审查确认（验收以双证据覆盖） |
 
 ## 6 状态表
 
@@ -137,6 +150,7 @@ graph TD
 ### 变更历史
 
 - 2026-08-30：计划创建（dev-flow 阶段 1，用户评审确认切分粒度与验收条款）。
+- 2026-08-31：**阶段 3 一致性审查（两区并行）完成**：R1 区（agent 线）9 reasonable + 2 unreasonable + 6 doc_errors；R2 区（W6a2/W7/W8）11 reasonable + 1 unreasonable + 3 doc_errors。两区独立发现同一 must-fix（validateWorkflowRef 缺 .js 校验）交叉验证。处置：must-fix + 3 代码注释项（agent-discovery 头注被动两面/manager.test 对照锚点注释/manager.js 旧名注释）+ CONSUMED_KEYS 死常量清理，定向修回原 W8 dev；doc_errors 中设计文档 4 处（报错样例逐字化/文案复刻措辞/A4 reasoning 口径/available_provider_models tag）与 D-2/D-4 机制补注（被动两面/降级语义/linkPath 注入）主 agent 亲为；W6b/W7 扩领地与合理偏差 12 条登记进 §5。
 - 2026-08-31：**W1-W5 前置门核验通过**（xyz 侧用户完成：core agents/ 10 资产零 tools 残留、W2 多根/project-host/realpath 实证、barrel 新面齐、`build:bundle` 775KB 探针全过；另含 C5 pi rebind 与 R4-R6 app-server 接线（D-010 revisit）超出本计划范围，engine 接口不变）。主 agent 已 `vendor --local` 刷新（bundle 新面已进，agents/ 目录待 vendor 脚本扩展后随 W6a 落地）。**计划调整**：W9 的 vendor 脚本扩展项（agents/ 拷贝 + capabilities.agentsAssets）前移并入 W6a 领地。W6a 派发。
-- 2026-08-31：**W6a committed（核验通过）**。合理偏差登记：① 扩领地 `lib/assemble.js`（4 行 require 改）与 `lib/hook-source.js`（10 行，list await 化）——原领地表遗漏旧 resolver 的这两个消费点，物理删除后不改即 crash，subagent 经用户弹窗授权做最小修改；② 新建 `lib/agent-discovery.js`（~300 行：根映射 + symlink 展开 + frontmatter 解析载体）；③ 对照探针 3 项差异全可解释（core 排除下划线草稿 / 单层收窄 / 撞名胜者从「字典序条件性」变「确定性本体胜」——设计目标方向）；④ e2e 隔离面收窄（core user-agents 槽读真实 $HOME，注释声明）；⑤ hook-inject「四根发现」文案过期留 W7。**新插单元 W6a2-zsw-runner-appserver-compat**：core engine 已缺省 appserver 常驻（用户侧 R4-R6），zsw `runner-core.js` 三处缺口——exec.pid 恒 undefined 致 alive() 恒 false（recover 判死方向碰巧对但非真探活）、daemon shutdown 的 killAllSpawnedChildren 收不到常驻进程（需补 engine dispose 调用点）、onHandleReady(sessionRef 回填) 未消费。领地 `lib/runner-core.js` + `lib/assemble.js`（shutdown 链）+ 相关测试；在 W6b 前实施。
+- 2026-08-31：**W6a committed（核验通过）**。合理偏差登记：① 扩领地 `lib/assemble.js`（4 行 require 改）与 `lib/hook-source.js`（10 行，list await 化）——原领地表遗漏旧 resolver 的这两个消费点，物理删除后不改即 crash，subagent 经用户弹窗授权做最小修改；② 新建 `lib/agent-discovery.js`（420 行：根映射 + symlink 展开 + frontmatter 解析载体；审查修正登记数字）；③ 对照探针 3 项差异全可解释（core 排除下划线草稿 / 单层收窄 / 撞名胜者从「字典序条件性」变「确定性本体胜」——设计目标方向）；④ e2e 隔离面收窄（core user-agents 槽读真实 $HOME，注释声明）；⑤ hook-inject「四根发现」文案过期留 W7。**新插单元 W6a2-zsw-runner-appserver-compat**：core engine 已缺省 appserver 常驻（用户侧 R4-R6），zsw `runner-core.js` 三处缺口——exec.pid 恒 undefined 致 alive() 恒 false（recover 判死方向碰巧对但非真探活）、daemon shutdown 的 killAllSpawnedChildren 收不到常驻进程（需补 engine dispose 调用点）、onHandleReady(sessionRef 回填) 未消费。领地 `lib/runner-core.js` + `lib/assemble.js`（shutdown 链）+ 相关测试；在 W6b 前实施。
 - 2026-08-30：**分工移交**——用户决定 xyz-agent 侧施工（W1-W5）单独处理，handoff 文档 `/tmp/handoff-xyz-subagent-core-convergence-20260830.md`（含设计红线、完成定义、分支认知外提交零交集证据）。本会话保留 zsw 侧 W6a-W9；**W6a 开工前置** = 用户侧 W1+W2 committed 且 core `build:bundle` 可构建 → 主 agent `vendor --local` 刷新 vendored 副本后启动。W7 额外依赖 W3、W8 额外依赖 W4（同一前置信号覆盖）。基线 commit 本计划。

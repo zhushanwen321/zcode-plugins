@@ -14,6 +14,12 @@
  *   <wsRoot>/.zcode/agents → project-host 槽（core 宿主项目槽，project-agents 之下）
  *   <wsRoot>/.agents/agents → project-agents 槽（core 硬编码槽，项目级最高）
  *
+ * 另有两面 core 硬编码/环境面被动进入扫描（不在 zsw 注入清单，但实际扫描面
+ * 含它们；zsw 用户目录通常缺席，命中时按 core 槽位标签透传，标签映射见
+ * dist/mcp/server.js 的 agentSourceLabel）：
+ *   <wsRoot>/.pi/agents     → project-pi 槽（core 硬编码槽，pi 生态项目级布局）
+ *   XYZ_EXTENSION_PATHS 下 agents/ → user-extension-paths 槽（扩展安装面，env 驱动）
+ *
  * hostRoots 为什么 per-call 传而不经 configureCore 的 discoveryRoots().agents：
  * project 两根随调用方 cwd 变化（workspaceRoot 每次推导），进程级回调闭包不了
  * per-call 状态；且 core 无 agents 发现包装层（discoverWorkflows 只服务 workflows
@@ -53,11 +59,6 @@ const coreRef = require('./core-ref');
 
 /** agent 参数缺省角色名（D-4 缺省语义统一：两侧同走 general-purpose 内置角色）。 */
 const DEFAULT_AGENT_NAME = 'general-purpose';
-
-/** 手写 frontmatter mini 解析的消费字段白名单（其余字段忽略，避免污染 profile）。 */
-const CONSUMED_KEYS = new Set([
-  'name', 'description', 'when', 'model', 'tools', 'disallowedTools', 'skills', 'maxTurns',
-]);
 
 /**
  * zsw 四根定义（label = core 扫描槽位标签）。返回顺序仅供遍历确定性，
@@ -413,7 +414,6 @@ module.exports = {
   invalidAgentRefMessage,
   agentFileNotFoundMessage,
   DEFAULT_AGENT_NAME,
-  CONSUMED_KEYS,
   list: (cwd) => defaultDiscovery.list(cwd),
   resolve: (ref, cwd) => defaultDiscovery.resolve(ref, cwd),
   resolveDefault: (cwd) => defaultDiscovery.resolveDefault(cwd),

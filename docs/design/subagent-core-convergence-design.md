@@ -177,7 +177,7 @@ zcode 会话（仅 session start）:
     <location>/path/to/vendored/subagent-core/workflows/chain.js</location></workflow>
   …（内置 5 + 用户脚本，带 location）
 </available_workflows>
-<available_models>
+<available_provider_models>
   <model><id>builtin:bigmodel-coding-plan/GLM-5.3</id><name>…</name>
     <caps>reasoning</caps><contextWindow>200000</contextWindow></model>
   …
@@ -199,9 +199,8 @@ zcode 会话（仅 session start）:
 
 ```
 主 agent 按旧习惯传名字：zsub start … agent="reviewer"
-→ 报错：Invalid agent ref: "reviewer". Agent refs must be absolute paths to .md files.
-  恢复指引：用 <location> from <available_subagents>，或 zsw agents 查路径清单。
-  （与 pi 侧 agent-registry 的报错文案同源——core 单一实现）
+→ 报错：Invalid agent ref: reviewer. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>, or run "zsw agents" to list paths).
+  （主句与 pi 侧 agent-registry 逐字同源——zsw 侧复刻 core 模板并以测试锚定，core barrel 未导出文案面，待 core 导出后收敛为运行时共享）
 
 主 agent 给自定义脚本传名字：zflow run workflow="script:tri-review"
 → 报错：workflow 引用仅接受内置名（chain/parallel/map-reduce/scatter-gather/
@@ -239,7 +238,9 @@ zcode 会话（仅 session start）:
 - 项目 `.agents/agents` → project-agents 槽（现成，**最高**）；
 - 项目 `.zcode/agents` → 新增 project host 槽（插在 project-agents 之下，维持 zsw 现语义 `.agents` > `.zcode`）。
 
-**目录 symlink 展开（zsw 宿主层预处理，R3 补/R4 修正）**：zsw 现递归 resolver 对目录 symlink 会跟进（整库一链如 `agents/my-lib -> ~/Code/personal-agents/` 现在全库可见），core 单层扫描对该形态既不递归也不展开。预处理方案：zsw 在构造扫描根列表时，对四根下的一级目录 symlink 做**动态展开**——链接目标作为同标签额外扫描根注入，realpath 已访问集合防环（**集合含四根本身的 realpath**——防「根 A 的链接指回根 B」导致 B 重复注入的冗余扫描），展开深度一层（**声明：库内子目录与库内嵌套链接不可见，库内容需平铺在库根一层**——相对 zsw 现递归是行为收窄，迁移说明明写）；库更新可持续（每次发现时重新展开）。**需要 core 配套扩面（非「core 不动」，R4 修正——R3 版的「core 不动」声明被 core 源码击穿）**：core `buildScanTargets` 对 hostRoots 的消费是 `new Map(source→dir)`（每标签恰好一个 dir，同标签多条目靠后者整体覆盖前者），且 user-agents/project-agents 两槽硬编码自建不查 hostRoots——「原根 + N 个展开目标挤同标签」的注入形态现行机制不支持（平凡场景即触发：`~/.zcode/agents` 本体 + 一个库链接 = 两条 user-pi，本体 .md 整体消失）。配套工作项见 W2 缺口④：hostRoots 消费 Map→列表（同标签多 dir 依注入序同序位扫描）+ 硬编码槽与 hostRoots 同标签注入合并——core 内部消费逻辑扩面，端口形态（宿主提供根数组）不变。**注入序语义（R5 补，防实施排错）**：core 合并是 last-writer-wins（靠后者胜），而 zsw 现语义是同根内字典序靠前者胜（本体胜）——要对齐「本体胜」，**本体根必须注入在展开目标之后**（与直觉的「本体在前」相反）；硬编码槽合并同理（硬编码根排注入目标之后）；⛔ 探针与 A7 补「同 stem 撞名（本体 x.md vs 库内同名 x.md）→ 本体胜」维度。文件级 symlink 不需预处理（core async 扫描已 follow）。
+补充（一致性审查 DE2）：core 硬编码 project-pi 槽（`<ws>/.pi/agents`）与 `XYZ_EXTENSION_PATHS` 扩展面随消费**被动进入** zsw 扫描面（zsw 用户目录通常缺席；来源标签透传，见实现 agentSourceLabel）——实际扫描面 = 上述五条 + 这两面。
+
+**目录 symlink 展开（zsw 宿主层预处理，R3 补/R4 修正）**：zsw 现递归 resolver 对目录 symlink 会跟进（整库一链如 `agents/my-lib -> ~/Code/personal-agents/` 现在全库可见），core 单层扫描对该形态既不递归也不展开。预处理方案：zsw 在构造扫描根列表时，对四根下的一级目录 symlink 做**动态展开**——链接目标作为同标签额外扫描根注入，realpath 已访问集合防环（**集合含四根本身的 realpath**——防「根 A 的链接指回根 B」导致 B 重复注入的冗余扫描），展开深度一层（**声明：库内子目录与库内嵌套链接不可见，库内容需平铺在库根一层**——相对 zsw 现递归是行为收窄，迁移说明明写）；库更新可持续（每次发现时重新展开）。**需要 core 配套扩面（非「core 不动」，R4 修正——R3 版的「core 不动」声明被 core 源码击穿）**：core `buildScanTargets` 对 hostRoots 的消费是 `new Map(source→dir)`（每标签恰好一个 dir，同标签多条目靠后者整体覆盖前者），且 user-agents/project-agents 两槽硬编码自建不查 hostRoots——「原根 + N 个展开目标挤同标签」的注入形态现行机制不支持（平凡场景即触发：`~/.zcode/agents` 本体 + 一个库链接 = 两条 user-pi，本体 .md 整体消失）。配套工作项见 W2 缺口④：hostRoots 消费 Map→列表（同标签多 dir 依注入序同序位扫描）+ 硬编码槽与 hostRoots 同标签注入合并——core 内部消费逻辑扩面，端口形态（宿主提供根数组）不变。**注入序语义（R5 补，防实施排错）**：core 合并是 last-writer-wins（靠后者胜），而 zsw 现语义是同根内字典序靠前者胜（本体胜）——要对齐「本体胜」，**本体根必须注入在展开目标之后**（与直觉的「本体在前」相反）；硬编码槽合并同理（硬编码根排注入目标之后）；⛔ 探针与 A7 补「同 stem 撞名（本体 x.md vs 库内同名 x.md）→ 本体胜」维度。实现补注（一致性审查 R6）：注入的是**链接路径**（linkPath）而非 realpath 目标——扫描内容等价，但产出 location 落在用户根命名空间（与旧 resolver 产出一致，迁移期路径不跳变）。文件级 symlink 不需预处理（core async 扫描已 follow）。
 
 #### D-3 注入渲染收口（三段 XML 统一）
 
@@ -300,7 +301,7 @@ workflow 路径口径：**.js 绝对路径，支持 `~/` 前缀展开**（core `
 
 zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delete`（与既有 scripts/lint 同前缀语义；zsw 的 action 面自 1.0.0 走 CLI——MCP 工具面已下线，tools/list 恒空、tools/call 指引走 CLI——实施面 = CLI + commands/zsw.md + skill 文档三处同步）。
 
-**缺省语义统一（R2 补，suggestion 采纳）**：agent 参数缺省时两侧同走 `general-purpose` 内置角色（pi 现状即此，record 显示名缺省 general-purpose）；zsw 现为「无角色裸跑」（缺省继承主 agent 通用行为），接入内置资产后对齐为加载 vendored `general-purpose.md`（project 级遮蔽生效）。此差异列入 §1.2 差异表并随 D-4 一并统一。
+**缺省语义统一（R2 补，suggestion 采纳）**：agent 参数缺省时两侧同走 `general-purpose` 内置角色（pi 现状即此，record 显示名缺省 general-purpose）；zsw 现为「无角色裸跑」（缺省继承主 agent 通用行为），接入内置资产后对齐为加载 vendored `general-purpose.md`（project 级遮蔽生效）。降级语义（一致性审查补）：发现面异常/插件残缺读不到资产时诚实裸跑（record.agent=null 留痕），不阻断任务启动。此差异列入 §1.2 差异表并随 D-4 一并统一。
 
 ### 3.3 关键权衡汇总
 
@@ -332,7 +333,7 @@ zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delet
 | A1 | zcode 开箱角色库 | 在干净 zcode 环境（无用户 agent .md）装 zsw dev 版，新开会话看注入块；让主 agent 派 reviewer 审查一个真实文件 | 注入段 `<available_subagents>` 在条目预算内含全部 10 个内置角色（开箱默认 10 < 预算 15，不触发截断）且每个带 `<location>`；`zsub start agent=<reviewer 路径>` 真实跑完，产出审查意见；`zsw agents` 列出同 10 个 | G1 |
 | A2 | pi 侧回归 | pi dev 链接新 core 后正常会话；`/subagents` 面板；跑一个 `workflow run`（内置名）；再模拟已装 8.7.0 用户经 npm 升级 pi-sw 的路径 | 注入三段格式与改造前**除 location 字段外逐字节等价**（快照对比；location 豁免**仅限 10 个内置角色的路径前缀变化**——用户/项目资源的 location 不豁免，防同 stem 遮蔽翻向只表现为 location 变化而被放过）；内置 workflow 按名可跑；10 个角色仍可发现（来源变 core 包）；升级路径下 10 角色仍在（pi-sw 对 core ≥0.4.0 的依赖下限生效，资产随依赖到达） | G1/G2/G6 |
 | A3 | 契约统一（正反例） | zcode 与 pi 两侧各跑：agent 传名字（应拒+恢复指引）；agent 传路径（应成）；agent 缺省（两侧同走 general-purpose 角色）；workflow 传内置名（应成）；workflow 传自定义脚本路径（应成）；zsw 侧传 `script:名`（应拒+指引）；核对 skill（zsub-zflow-orchestration）与 commands/zsw.md 的契约描述 | 两侧报错文案同源（core 单实现）；成功路径行为一致；缺省两侧同角色；恢复指引里的命令真实可执行；skill/commands 文档与实际报错文案一致（契约变更三面同步） | G2 |
-| A4 | 注入对齐 | 同一机器两平台会话注入块对照 | 三段 tag 名/字段集一致；models 段 zcode 侧出现 contextWindow 与 reasoning 档位（来自 v2 config 真实数据）；agents 段带 location；zsw 侧分段条目预算截断行为保留（构造 20+ agents 验证：subagents 段码点序截尾 + 「完整清单：zsw agents」兜底、被裁条目 = 码点序尾部而非 project 级优先被裁、workflows 段同理、models 段完整） | G3 |
+| A4 | 注入对齐 | 同一机器两平台会话注入块对照 | 三段 tag 名/字段集一致；models 段 zcode 侧出现 contextWindow 与 `<caps>reasoning</caps>` 能力标记（来自 v2 config 真实数据；档位明细 variants 不进注入段——pi 同构口径，明细走 zsw models CLI 面）；agents 段带 location；zsw 侧分段条目预算截断行为保留（构造 20+ agents 验证：subagents 段码点序截尾 + 「完整清单：zsw agents」兜底、被裁条目 = 码点序尾部而非 project 级优先被裁、workflows 段同理、models 段完整） | G3 |
 | A5 | 创作闭环 | zcode 会话：让主模型写一个三路审查脚本 → `script-generate`（故意先写个带 import 的错误版本验证报错）→ 修正 → lint → save → run 真实执行 | ESM 版被拒且报错指出行列；合法版落盘 `~/.zsw/workflows/`；run 按路径引用真实跑通；`script-delete` 清理 | G4 |
 | A6 | 双实现退役 | zsw 仓 grep `agent-md-resolver` 零引用；`lib/hook-inject.js` 的渲染逻辑替换为 core 调用；两仓测试套件绿 | 代码级验证 + `node --test` 全绿（zsw）/ vitest 全绿（pi-sw + core） | G5 |
 | A7 | symlink 防环 | 构造 symlink 环（a→b→a）与多链同文件目录，两平台各跑一次 agent 发现；另构造**目录 symlink 整库**形态（`agents/my-lib -> 外部库目录`，同根下并存散 .md 本体文件**与本体同名 .md**）与子目录布局 | 两侧都正常终止、清单无重复条目、无未捕获异常（core realpath 守卫生效）；zsw 侧目录 symlink 整库形态下**库内 .md 与同根本体散 .md 同时可发现**（展开预处理不顶掉本体——W2④ 多根语义生效）；**同 stem 撞名时本体胜**（本体 reviewer.md vs 库内 reviewer.md → 前者胜出，注入段 location 指向本体路径）；子目录布局经验收的迁移路径处理后可发现 | G5 |
