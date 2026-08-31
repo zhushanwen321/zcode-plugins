@@ -11,7 +11,7 @@
  * - ModelRouter#resolveDefault               manager.start 台账落盘的默认模型
  *                                           回退链（record.model 展示值；执行
  *                                           校验归 engine preparer）
- * - defaultModelRef / availableModels / defaultModelFor / qualifiedProviders /
+ * - defaultModelRef / availableModels / qualifiedProviders / providersUsable /
  *   PROVIDER_ID                              hook-source / hook-inject 单源导出
  *
  * 数据源不变：~/.zcode/v2/config.json（桌面登录态，每次调用重读——apiKey/
@@ -110,22 +110,19 @@ function defaultModelRef(v2) {
 }
 
 /**
- * 指定 provider 下的默认模型短名——默认标记的唯一谓词（zsw models 与
- * SessionStart hook 注入共用，禁止调用方复刻比对逻辑防两套口径漂移）。
+ * 指定 provider 下的默认模型短名——默认标记的唯一谓词（本模块清单视图
+ * modelEntries 消费，文件内私有，禁止复刻比对逻辑防口径漂移）。
  *
  * provider 感知（2026-08 修复）：main 指向非目标 provider 时必须返回 null，
  * 而不是按纯短名在目标 provider 清单上错标。
  *
  * @param {object|null} v2         v2 config 对象
  * @param {string} providerId      目标 provider
- * @param {string} [ref]           默认模型引用；缺省 = defaultModelRef(v2) 回退链
- *   产物。显式传入（可为 null/''）供零 IO 的纯函数调用方使用（hook-inject
- *   由调用方预算好传入，本函数不再触 fs）。
  * @returns {string|null} 命中返回短名；provider 不匹配、短名不在该 provider
  *   清单内、或引用为空 → null
  */
-function defaultModelFor(v2, providerId, ref) {
-  const r = arguments.length >= 3 ? ref : defaultModelRef(v2);
+function defaultModelFor(v2, providerId) {
+  const r = defaultModelRef(v2);
   if (typeof r !== 'string' || !r.trim()) return null;
   const { provider, short } = splitModelRef(r.trim());
   if (provider !== providerId) return null;
@@ -229,11 +226,11 @@ module.exports.PROVIDER_ID = PROVIDER_ID;
 // hook 默认标记复用同一回退链（bin/zsw.js hook 分支），与 zsw models 同口径（D3），
 // 禁止调用方复刻回退逻辑防两套口径漂移
 module.exports.defaultModelRef = defaultModelRef;
-// 纯谓词单一导出（hook-inject / 测试消费，禁复刻）：清单、默认标记判定、
-// provider 凭据判定（原 driver.js 权威实现内联至此）
+// provider 清单数据源单一导出（hook-inject 消费，禁复刻）
 module.exports.availableModels = availableModels;
-module.exports.defaultModelFor = defaultModelFor;
-module.exports.hasProviderCredentials = hasProviderCredentials;
+// 「带非空模型清单的 provider」枚举单一实现：本模块错误提示与 hook-source
+// 诊断行共同消费，禁复刻
+module.exports.providersUsable = providersUsable;
 // 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
 // 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻
 module.exports.qualifiedProviders = qualifiedProviders;

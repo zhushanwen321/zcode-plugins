@@ -2,7 +2,6 @@
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
   "fetchedAt": "2026-08-31T11:51:27.189Z",
   "capabilities": {
-    "workflowsAssets": true,
     "agentsAssets": true,
     "selfContainedIndex": true
   },

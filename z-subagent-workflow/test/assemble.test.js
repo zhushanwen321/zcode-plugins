@@ -34,7 +34,7 @@ after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
 
-test('组装产物含 orchestration host（回接 2b）：action 面在场，runnerKind=spawn', async () => {
+test('组装产物含 orchestration host（回接 2b）：action 面在场', async () => {
   const a = await assembleManager();
   assert.ok(a.wfHost, 'assembleManager 产物应含 wfHost（lib/orchestration-host）');
   for (const method of ['run', 'runAndWait', 'abort', 'status', 'list', 'scripts', 'lint', 'recoverOrphans', 'shutdown']) {
@@ -42,7 +42,6 @@ test('组装产物含 orchestration host（回接 2b）：action 面在场，run
   }
   // zsub 线不因 workflow 线换核而漂移：manager 面照旧
   assert.equal(typeof a.manager.start, 'function');
-  assert.equal(a.runnerKind, 'spawn', '2c 后唯一通道 = core zcode engine spawn 单轮');
 });
 
 test('组装 runner 恒为 CoreRunner（core zcode engine 适配），端口面完备', async () => {

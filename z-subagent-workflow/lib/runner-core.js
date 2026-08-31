@@ -45,9 +45,11 @@
  * 行为边界（README「回接 2c break 变更」节对应）：
  *   - resume（conversation 续聊）：core EnginePort 面无 resume 入口
  *     （capabilities.conversation=unsupported——appserver 常驻亦无同进程 idle
- *     复用），显式报可操作错误
- *   - message/close：message 经 manager 走 resume 即报上述错误；close 是壳层
- *     record 终态化，runner 无驻留对应物
+ *     复用），显式报可操作错误。manager 续聊入口已在 manager 层直接报
+ *     unavailable（续聊执行线随 app-server 常驻化重构移除，P3 回归），本方法
+ *     保留为端口契约防御层
+ *   - message/close：message 的续聊不可用由 manager 入口层直接报告（不经
+ *     runner）；close 是壳层 record 终态化，runner 无驻留对应物
  *   - schema：zsw 契约面保持壳层（prompt-builder 拼段 + jsonout 提取），不透传
  *     task.schema——避免 engine 仿真段与壳层段在 prompt 内双重出现
  */
@@ -63,11 +65,6 @@ const ZCODE_ENGINE_ID = 'zcode';
  * 防 assemble 每次组装都重复登记——无行为差异，纯去抖）。
  */
 let zcodeRegistered = false;
-
-/** 测试隔离：重建登记标记。 */
-function resetZcodeRegistration() {
-  zcodeRegistered = false;
-}
 
 /** zsw 引擎数据根 getter（与 orchestration-host configureCore dataRoot 同源）。 */
 function zswEngineDataDir() {
@@ -145,15 +142,11 @@ class CoreRunner {
    * @param {object} [opts]
    * @param {Map<string, object>} [opts.engines]  id → EnginePort 实例表（测试注入
    *        fake 引擎，不经真实 spawn / 真实 probe）。缺省惰性建 zcode 单例。
-   * @param {boolean} [opts.strict] routeEngine strict（probe 失败一律报错不
-   *        fallback）。缺省 false——zsw 单引擎生产形态下 fallback 目标本就
-   *        不可达（engineFor 抛错），false 保持 core 守卫语义原样透出。
    * @param {(msg: string) => void} [opts.log] 诊断通道（缺省 stderr）
    */
   constructor(opts = {}) {
     this._customEngines = opts.engines instanceof Map ? opts.engines : null;
     this._lazyEngines = new Map();
-    this._strict = opts.strict === true;
     this._log = opts.log || ((msg) => process.stderr.write(`[zsub:runner-core] ${new Date().toISOString()} ${msg}\n`));
     ensureZcodeEngineRegistered();
   }
@@ -202,7 +195,7 @@ class CoreRunner {
   /**
    * 启动探针（RunnerPort 契约面）：透传缺省引擎的 core ProbeReport。
    * 组装期探针门控与探针落盘缓存已随 1.x 宿主私连通道退役（assemble 不再消费本方法做
-   * 降级决策）；保留真探针实现供诊断面与契约完备。
+   * 降级决策）；无 CLI/MCP 诊断入口，当前消费者为单测与 e2e 真机冒烟。
    */
   async probe() {
     try {
@@ -295,7 +288,9 @@ class CoreRunner {
             globalDefaultEngine: ZCODE_ENGINE_ID,
           },
           taskModel: taskCtx.modelRef,
-          strict: this._strict,
+          // strict 定格 false：zsw 单引擎生产形态下 fallback 目标本就不可达
+          // （_engineFor 抛错），false 保持 core 守卫语义原样透出
+          strict: false,
           probe: (id) => this._engineFor(id).probe(),
           getEngineFn: (id) => this._engineFor(id),
           hasEngineFn: (id) => this._hasEngine(id),
@@ -450,10 +445,6 @@ class CoreRunner {
 }
 
 module.exports = CoreRunner;
-module.exports.ZCODE_ENGINE_ID = ZCODE_ENGINE_ID;
-module.exports.outcomeToRunResult = outcomeToRunResult;
-module.exports.toZswUsage = toZswUsage;
-module.exports.mergeDenyTools = mergeDenyTools;
+// 导出面刻意最小：仅类本体 + 测试直接消费的登记入口；引擎 id / 终态映射 /
+// deny 并集 / 数据根 getter 等内部承重件不再外露
 module.exports.ensureZcodeEngineRegistered = ensureZcodeEngineRegistered;
-module.exports.resetZcodeRegistration = resetZcodeRegistration;
-module.exports.zswEngineDataDir = zswEngineDataDir;

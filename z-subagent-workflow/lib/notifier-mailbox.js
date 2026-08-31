@@ -167,11 +167,14 @@ class PollingNotifier {
   }
 
   /**
-   * 兜底档不投递：不写任何文件，只声明「结果需主动查询」。
-   * @returns {Promise<{delivered:false, guidance:'poll via list'}>}
+   * 兜底档不投递：不写任何文件，只以 delivered:false 声明「结果需主动查询」。
+   * 返回值仅 delivered 一个字段——唯一生产消费者（manager 通知分支）只读它
+   * 决定是否记 notifyNote；给主 agent 的轮询指引另有专道（start 时刻的
+   * handle.guidance 与完成时的 record notifyNote），不经本返回值。
+   * @returns {Promise<{delivered:false}>}
    */
   async notifyCompletion() {
-    return { delivered: false, guidance: 'poll via list' };
+    return { delivered: false };
   }
 
   /**

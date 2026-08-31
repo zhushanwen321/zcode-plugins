@@ -198,7 +198,7 @@ test('record-store: update 补字段；update/patch 不得携带 status；重复
   assert.throws(() => store.create({}), /subagentId/);
 });
 
-test('record-store: list 按 startedAt 倒序 + status/slug 过滤；get 返回副本', (t) => {
+test('record-store: list 按 startedAt 倒序；get 返回副本', (t) => {
   setupRoot(t);
   const store = new RecordStore();
   store.create({ subagentId: 'sa-1', slug: 'a', startedAt: 1000 });
@@ -207,9 +207,6 @@ test('record-store: list 按 startedAt 倒序 + status/slug 过滤；get 返回�
   store.transition('sa-1', 'created', 'running');
 
   assert.deepEqual(store.list().map((r) => r.subagentId), ['sa-2', 'sa-3', 'sa-1']);
-  assert.deepEqual(store.list({ slug: 'a' }).map((r) => r.subagentId), ['sa-2', 'sa-1']);
-  assert.deepEqual(store.list({ status: 'running' }).map((r) => r.subagentId), ['sa-1']);
-  assert.deepEqual(store.list({ status: 'created', slug: 'a' }).map((r) => r.subagentId), ['sa-2']);
 
   const got = store.get('sa-1');
   got.status = 'hacked';

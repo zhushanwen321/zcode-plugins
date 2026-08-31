@@ -17,8 +17,6 @@
  * 本文件只含 JSDoc 契约 + registry 工厂，不含实现。
  */
 
-const DEFAULTS = require('./config').DEFAULTS;
-
 /**
  * @typedef {Object} AgentProfile   agent .md 解析结果（AgentResolverPort）
  * @property {string} name          frontmatter name（缺省取文件名）
@@ -89,7 +87,8 @@ const DEFAULTS = require('./config').DEFAULTS;
  * 契约：
  *   probe()                          启动探针（透传 core ProbeReport；不再做
  *                                    组装期门控/降级决策——routeEngine 每任务
- *                                    真探，引擎实例内缓存）
+ *                                    真探，引擎实例内缓存。无 CLI/MCP 诊断
+ *                                    入口，消费者为单测与 e2e 真机冒烟）
  *   start(taskCtx, hooks?) -> RunHandle
  *                                    启动一次任务；立即返回，不等待完成；
  *                                    prepare 期错误（凭据缺失/模型不可用/路由
@@ -216,8 +215,10 @@ const DEFAULTS = require('./config').DEFAULTS;
  */
 
 /**
- * RecordStorePort —— record 持久化（固定实现）。
- *   append(event) / get(id) / list(filter) / rebuildFromLog()
+ * RecordStorePort —— record 持久化（固定实现）。以下签名为文档性契约
+ * （对齐 lib/record-store.js 实现现状；消费面只有 manager）：
+ *   create(init) / transition(id, from, to, patch?) / update(id, patch?) /
+ *   get(id) / list()（无参定格）/ rebuildFromLog()
  *   record 字段对齐 pi SubagentToolDetails 子集：
  *   {subagentId, slug, agent, model, status, closedReason, sessionId, exec,
  *    worktree, patchFile, tokens, startedAt, endedAt, error, runnerKind, notifyMode,
@@ -226,10 +227,14 @@ const DEFAULTS = require('./config').DEFAULTS;
  */
 
 /**
- * WorktreePort —— 文件隔离（固定实现，可 no-op）。
- *   prepare(slug) -> {dir, branch}    干净主树校验 + 创建
- *   collectPatch(dir) -> patchFile    git diff 落 outputs（worktree 目录之外）
- *   cleanup(dir)                       清理 + 孤儿检测
+ * WorktreePort —— 文件隔离（固定实现，可 no-op）。以下签名为文档性契约
+ * （对象参数形态，对齐 lib/worktree-adapter.js 实现现状）：
+ *   prepare({slug, subagentId, cwd}) -> {dir, branch, mainRepo}
+ *                                     干净主树校验 + 创建（目录/分支名含 record id）
+ *   collectPatch({dir, subagentId}) -> patchFile
+ *                                     git diff 由适配层直接落盘 outputs/<id>.patch
+ *                                     并返回路径（产出方唯一；worktree 目录之外）
+ *   cleanup({dir, subagentId, meta})   清理 + 孤儿检测
  */
 
 /**
@@ -258,4 +263,4 @@ function createRuntime(opts = {}) {
   };
 }
 
-module.exports = { createRuntime, DEFAULTS };
+module.exports = { createRuntime };

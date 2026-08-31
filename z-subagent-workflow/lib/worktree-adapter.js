@@ -15,6 +15,8 @@
 
 const { execFile } = require('node:child_process');
 const worktree = require('./worktree');
+// 分支命名空间从 worktree.js 单源引用：错误文案不再字面量镜像 'zsub/'
+const { BRANCH_NS } = worktree;
 
 /** cwd → git 顶层目录。非 git 目录/无 git 时抛可操作错误。 */
 function resolveGitRoot(cwd) {
@@ -57,7 +59,7 @@ function createWorktreeAdapter() {
       if (!meta || !meta.branch || !meta.mainRepo) {
         throw new Error(
           `worktree 清理缺少元数据（${dir}）。`
-          + `恢复指引：手动执行 git worktree remove --force ${dir} && git branch -D zsub/${subagentId}`
+          + `恢复指引：手动执行 git worktree remove --force ${dir} && git branch -D ${BRANCH_NS}${subagentId}`
         );
       }
       return worktree.cleanup({ mainRepo: meta.mainRepo, worktreeDir: dir, branch: meta.branch });

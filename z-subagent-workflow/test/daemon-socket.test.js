@@ -19,7 +19,27 @@ const { once } = require('node:events');
 const { spawn } = require('node:child_process');
 
 const LIB = path.join(__dirname, '..', 'lib', 'daemon-socket.js');
-const { startDaemon, encodeFrame, createFrameDecoder } = require(LIB);
+const { startDaemon } = require(LIB);
+
+// 帧编解码已收归 daemon-socket 模块内部（对外仅暴露 startDaemon）：测试侧
+// 内联同款最小编解码驱动传输层往返，协议契约以 lib/cli-client.js 头注为权威。
+const encodeFrame = (obj) => `${JSON.stringify(obj)}\n`;
+function createFrameDecoder() {
+  let buf = Buffer.alloc(0);
+  return {
+    push(chunk) {
+      buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      const frames = [];
+      let nl;
+      while ((nl = buf.indexOf(0x0a)) >= 0) {
+        const line = buf.subarray(0, nl).toString('utf8').trim();
+        buf = buf.subarray(nl + 1);
+        if (line) frames.push(JSON.parse(line));
+      }
+      return frames;
+    },
+  };
+}
 
 /** 建临时 sock 目录；测试结束整目录删除（残留清理断言失败时也不会泄漏）。 */
 function tmpSock(t) {
@@ -141,53 +161,6 @@ function waitClose(child, timeoutMs = 5000) {
     });
   });
 }
-
-// ------------------------------------------------------ 帧编解码纯函数
-
-test('encodeFrame：单行 JSON + 换行结尾', () => {
-  const line = encodeFrame({ id: 1, tool: 'zsub', params: { a: '中' } });
-  assert.ok(line.endsWith('\n'), '帧以 \\n 结尾（NDJSON 行边界）');
-  assert.strictEqual(line.indexOf('\n'), line.length - 1, 'JSON 内无裸换行');
-  assert.deepStrictEqual(JSON.parse(line), { id: 1, tool: 'zsub', params: { a: '中' } });
-});
-
-test('createFrameDecoder：多帧一 chunk / 半包拼接 / 空行容忍 / 坏行丢弃回调', () => {
-  const bad = [];
-  const dec = createFrameDecoder((l) => bad.push(l));
-
-  // 多帧 + 坏行 + 空行混在一个 chunk：好帧全解出，坏行进回调
-  const out = dec.push(Buffer.from(
-    '{"id":1,"tool":"a"}\n{oops\n\n{"id":2,"tool":"b"}\n',
-  ));
-  assert.strictEqual(out.length, 2);
-  assert.strictEqual(out[0].id, 1);
-  assert.strictEqual(out[1].id, 2);
-  assert.deepStrictEqual(bad, ['{oops'], '坏行丢弃且可观测');
-
-  // 半包：前半不产帧，补齐后产完整帧
-  const line = encodeFrame({ id: 3, tool: 'c', params: { v: '中文' } });
-  const buf = Buffer.from(line);
-  assert.deepStrictEqual(dec.push(buf.subarray(0, 5)), [], '半包缓冲不吐帧');
-  const rest = dec.push(buf.subarray(5));
-  assert.strictEqual(rest.length, 1);
-  assert.deepStrictEqual(rest[0], { id: 3, tool: 'c', params: { v: '中文' } });
-
-  // 无换行尾巴持续缓冲，不误吐
-  assert.deepStrictEqual(dec.push(Buffer.from('{"id":4,')), []);
-});
-
-test('createFrameDecoder：多字节 UTF-8 被字节级切分仍正确解码（按字节找行、行完整后才 decode）', () => {
-  const dec = createFrameDecoder();
-  const line = encodeFrame({ id: 7, params: { s: '中文字' } });
-  const buf = Buffer.from(line);
-  const idx = buf.indexOf(Buffer.from('中', 'utf8'));
-  assert.ok(idx > 0, '前提：帧里确实含多字节字符');
-  const cut = idx + 1; // 切在「中」3 字节的中间
-  assert.deepStrictEqual(dec.push(buf.subarray(0, cut)), []);
-  const frames = dec.push(buf.subarray(cut));
-  assert.strictEqual(frames.length, 1);
-  assert.strictEqual(frames[0].params.s, '中文字', '无替换字符、无丢字节');
-});
 
 // ------------------------------------------------------ 竞选与协议往返
 

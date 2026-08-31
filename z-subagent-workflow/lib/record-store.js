@@ -91,17 +91,10 @@ class RecordStore {
   }
 
   /**
-   * @param {object} [filter] { status?, slug? }
    * @returns {object[]} 按 startedAt 倒序（最新在前）
    */
-  list(filter = {}) {
-    let arr = [...this.records.values()];
-    if (filter.status !== undefined && filter.status !== null) {
-      arr = arr.filter((r) => r.status === filter.status);
-    }
-    if (filter.slug !== undefined && filter.slug !== null) {
-      arr = arr.filter((r) => r.slug === filter.slug);
-    }
+  list() {
+    const arr = [...this.records.values()];
     arr.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
     return arr.map((r) => this.clone(r));
   }
@@ -205,4 +198,5 @@ class RecordStore {
   }
 }
 
-module.exports = { RecordStore, TRANSITIONS, TERMINAL_STATUSES };
+// TRANSITIONS 不导出（无外部消费者）：合法转移校验只在事件 fold 路径内部使用
+module.exports = { RecordStore, TERMINAL_STATUSES };

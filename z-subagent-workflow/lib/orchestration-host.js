@@ -71,7 +71,7 @@ function makeCoreLogBridge(logDir) {
 
 // 进程级 configureCore 幂等标记（设计要求：防重复 configure；重复调用本身
 // 是覆盖式无害，但 flag 保证 discoveryRoots/dataRoot 闭包不被后到的 host
-// 实例漂移）。测试用 resetCoreConfig 重建。
+// 实例漂移）。
 let coreConfigured = false;
 
 /** 幂等初始化 vendored core 宿主端口。 */
@@ -91,16 +91,9 @@ function ensureConfigured() {
   coreConfigured = true;
 }
 
-/** 测试隔离：清幂等标记（下次 ensureConfigured 重新 configureCore 覆盖）。 */
-function resetCoreConfig() {
-  coreConfigured = false;
-}
-
 /** 文件名 stem（无目录无扩展名）——meta 提取失败时的 name 回退。 */
 function stem(filePath) {
-  const base = filePath.split('/').pop() || filePath;
-  const dot = base.lastIndexOf('.');
-  return dot > 0 ? base.slice(0, dot) : base;
+  return path.basename(filePath, path.extname(filePath));
 }
 
 /** 展开 ~/ 前缀（getWorkflowByPath 的 normalizeRef 认这个形态）。 */
@@ -199,25 +192,12 @@ function createRegistry(core) {
   }
 
   return {
-    async loadAll(cwd) {
-      const out = [];
-      for (const name of BUILTIN_WORKFLOW_NAMES) {
-        out.push(await loadScriptFromPath(coreRef.workflowAssetPath(`${name}.js`), core));
-      }
-      for (const s of await listUserScripts(cwd)) {
-        out.push(await loadScriptFromPath(s.path, core));
-      }
-      return out;
-    },
     async get(name, cwd) {
       const p = await resolveScriptPath(name, cwd);
       return p ? loadScriptFromPath(p, core) : undefined;
     },
     async getPath(ref, cwd) {
       return this.get(ref, cwd);
-    },
-    invalidate() {
-      core.invalidateCache();
     },
     listUserScripts,
     resolveScriptPath,
@@ -365,7 +345,6 @@ function runSummary(run, store) {
  * 构造编排宿主实例。
  * @param {object} opts
  * @param {object} opts.runner       zsw RunnerPort（assemble 组装注入；与 zsub 线共享）
- * @param {object} [opts.modelRouter] ModelRouter（缺省模块级 new）
  * @param {object} [opts.resolver]   agent .md 发现（缺省 lib/agent-discovery 模块，
  *                                   async resolve——W6a 起 core discoverResources）
  * @param {object} [opts.agentRunner] core AgentRunner（缺省经 adapter 从 runner 桥接；测试注入 fake）
@@ -377,7 +356,6 @@ function createOrchestrationHost(opts = {}) {
   ensureConfigured();
   const core = coreRef.requireCore();
   const log = opts.log || ((msg) => process.stderr.write(`[zsw-wfhost] ${new Date().toISOString()} ${msg}\n`));
-  const modelRouter = opts.modelRouter || new (require('./model-router'))();
   const resolver = opts.resolver || require('./agent-discovery');
   const registry = opts.registry || createRegistry(core);
   const store = opts.store || new core.FileRunStore();
@@ -390,7 +368,7 @@ function createOrchestrationHost(opts = {}) {
   /** per-run 依赖（E 壳 makeDeps 对应物）：runner 绑定本 run 的 workdir。 */
   function makeDeps(workdir) {
     const agentRunner = opts.agentRunner
-      || createAgentRunnerAdapter({ runner: opts.runner, modelRouter, resolver, fallbackCwd: workdir, log });
+      || createAgentRunnerAdapter({ runner: opts.runner, resolver, fallbackCwd: workdir, log });
     const deps = {
       store,
       workerHost,
@@ -595,7 +573,5 @@ module.exports = {
   normalizeRunParams,
   loadScriptFromPath,
   ensureConfigured,
-  resetCoreConfig,
   BUILTIN_WORKFLOW_NAMES,
-  RESERVED_PARAM_KEYS,
 };

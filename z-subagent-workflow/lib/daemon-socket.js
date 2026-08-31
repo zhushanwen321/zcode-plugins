@@ -27,7 +27,8 @@
  *     仅做类型守卫：非 string 忽略（req.cwd = undefined），存在性校验留给
  *     handler 层（workdir/resolver 已有，协议层不重复）。
  *   响应 {id, ok:true, result} | {id, ok:false, error:{message}}
- *   帧编解码是纯函数导出；CLI thin client（lib/cli-client.js）不复用它——
+ *   帧编解码（encodeFrame/createFrameDecoder）是模块内部函数，不导出——
+ *   对外仅暴露 startDaemon；CLI thin client（lib/cli-client.js）不复用它——
  *   自带一份最小编解码（S8 收敛定论：两份最小实现并存、语义兼容，帧语法
  *   变更须两文件同步改），帧协议契约以 cli-client.js 头注为权威（互指维护）。
  *   每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
@@ -134,7 +135,7 @@ function installExitHooks() {
  */
 function startDaemon(opts) {
   if (!opts || typeof opts.sockPath !== 'string' || !opts.sockPath) {
-    throw new TypeError('startDaemon 缺少 sockPath（unix socket 路径）。👉 从 config.sockPath() 取值，不要手工拼路径');
+    throw new TypeError('startDaemon 缺少 sockPath（unix socket 路径）。👉 从 lib/cli-client.js 的 defaultSockPath() 取值（ZSW_SOCK env 可覆盖），不要手工拼路径');
   }
   const sockPath = opts.sockPath;
   const handlers = opts.handlers || {};
@@ -465,4 +466,4 @@ function startDaemon(opts) {
   return ready;
 }
 
-module.exports = { startDaemon, encodeFrame, createFrameDecoder };
+module.exports = { startDaemon };

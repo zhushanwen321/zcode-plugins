@@ -7,7 +7,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { extractJsonObject, stringArray } = require('../lib/jsonout');
+const { extractJsonObject } = require('../lib/jsonout');
 
 // ------------------------------------------------------------ extractJsonObject
 
@@ -70,22 +70,4 @@ test('花括号深度嵌套的平衡段', () => {
 
 test('只有未闭合 { → null', () => {
   assert.equal(extractJsonObject('开始 {"a":1'), null);
-});
-
-// ---------------------------------------------------------------- stringArray
-
-test('stringArray：正常字符串数组', () => {
-  assert.deepEqual(stringArray({ names: ['a', 'b'] }, 'names'), ['a', 'b']);
-});
-
-test('stringArray：过滤非字符串与空白项', () => {
-  assert.deepEqual(stringArray({ xs: ['a', 1, null, '  ', '', 'b'] }, 'xs'), ['a', 'b']);
-});
-
-test('stringArray：缺失/非数组/全空 → null', () => {
-  assert.equal(stringArray({}, 'xs'), null);
-  assert.equal(stringArray({ xs: 'a,b' }, 'xs'), null);
-  assert.equal(stringArray({ xs: [] }, 'xs'), null);
-  assert.equal(stringArray({ xs: ['   '] }, 'xs'), null);
-  assert.equal(stringArray(null, 'xs'), null);
 });

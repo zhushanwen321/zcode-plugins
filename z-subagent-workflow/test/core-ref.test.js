@@ -62,7 +62,6 @@ test('vendorManifest：当前 vendored 形态断言（selfContainedIndex 必须�
   const caps = coreRef.vendorManifest().capabilities;
   assert.equal(caps.selfContainedIndex, true,
     'vendored 主入口应保持自包含 bundle 形态——vendor 回非 bundle（外部依赖未内联）时此断言变红，需按 manifest 溯源刷新');
-  assert.equal(caps.workflowsAssets, true, 'workflows/ 资产位是 workflowAssetPath 的前提');
 });
 
 test('requireCore：真实 vendored 主入口可加载且暴露 2b/2c 消费面符号', () => {
@@ -123,7 +122,7 @@ test('F04 分流：selfContainedIndex=true → 指向重刷 + sha256 自检（�
   }
 });
 
-test('F04 分流：selfContainedIndex=false → 保留旧文案（非自包含，等自包含 bundle 发布）', () => {
+test('F04 分流：selfContainedIndex=false → 保守回落文案（状态未确认，指向重刷 + sha256 自检）', () => {
   const { mod, tmp } = makeFakeCoreRef({
     'package.json': '{"version":"0.2.0"}',
     'VENDOR-MANIFEST.json': '{"capabilities":{"selfContainedIndex":false}}',
@@ -131,8 +130,10 @@ test('F04 分流：selfContainedIndex=false → 保留旧文案（非自包含�
   });
   try {
     assert.throws(mod.requireCore, (err) =>
-      err.message.includes('非自包含')
-      && err.message.includes('等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布'));
+      err.message.includes('自包含状态未确认为 true')
+      && err.message.includes('vendor-subagent-core.js --local <core-path>')
+      && err.message.includes('sha256')
+      && !err.message.includes('等 @zhushanwen/subagent-core 0.4.0'));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -148,9 +149,9 @@ test('错误路径：VENDOR-MANIFEST.json 缺失 → vendorManifest 报错含刷
   }
 });
 
-test('恢复指引分流：manifest source 为 local: 前缀时指向 --local 通道（防 --npm 刷回扩面前旧产物）', () => {
-  // 当前真实 vendored 即 local 源（core 0.4.0 未发 npm）——错误指引会让人把
-  // vendored 副本刷回 0.2.0 npm 旧 tarball（无自包含 bundle），本测试钉住分流
+test('恢复指引分流：manifest source 为 local: 前缀时指向 --local 通道（--npm 如实记为正规升级通道，不指具体版本）', () => {
+  // 当前真实 vendored 即 local 源——local 分流把刷新钉在 --local 原路（与
+  // source 同一构建产物），--npm 具体版本不在 local 分流出现，本测试钉住分流
   const { mod, tmp } = makeFakeCoreRef({
     'package.json': '{"version":"0.2.0"}',
     'VENDOR-MANIFEST.json': '{"source":"local:/tmp/fake-core@0.2.0"}',
@@ -158,7 +159,7 @@ test('恢复指引分流：manifest source 为 local: 前缀时指向 --local �
   try {
     assert.throws(() => mod.workflowAssetPath('no-such-asset.js'), (err) =>
       err.message.includes('vendor-subagent-core.js --local /tmp/fake-core')
-      && err.message.includes('待 core 0.4.0 发布后可用')
+      && err.message.includes('正规升级通道')
       && !err.message.includes('--npm 0.2.0')); // 不得指引刷回 0.2.0 npm 旧产物
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

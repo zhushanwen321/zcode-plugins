@@ -16,10 +16,10 @@ const VENDOR_DIR = path.join(__dirname, 'vendor', 'subagent-core');
 
 /**
  * 报错附带的刷新指引。按 VENDOR-MANIFEST.json 的 source 分流：
- * - `local:<core 仓路径>@<版本>`：vendored 副本来自本地 core 构建时，npm 上
- *   尚无等价产物（agents 等收口面全落 0.4.0——按 --npm 刷会回退到扩面前的
- *   旧 npm tarball 丢面），指引必须指向 --local 通道
- *   （core 仓路径即 source 记录的路径）；
+ * - `local:<core 仓路径>@<版本>`：vendored 副本来自本地 core 构建，指引指向
+ *   --local 通道按 source 原路刷新（core 仓路径即 source 记录的路径）——
+ *   --npm 是正规升级通道但不在此处指定具体版本（已发版 tarball 可能与本地
+ *   构建产物不一致）；
  * - 其余（npm@<版本> / manifest 缺失或损坏）：给 --npm <版本> 形态（能读到
  *   vendored package.json 就给具体版本，否则占位符）。
  */
@@ -34,7 +34,7 @@ function refreshHint() {
       const raw = source.slice('local:'.length);
       const at = raw.lastIndexOf('@');
       const corePath = at > 0 ? raw.slice(0, at) : raw;
-      return `恢复指引：workspace 根执行 ${cmd} --local ${corePath}（待 core 0.4.0 发布后可用 ${cmd} --npm 0.4.0）`;
+      return `恢复指引：workspace 根执行 ${cmd} --local ${corePath}（当前 vendored 副本即来自该本地 core checkout；${cmd} --npm <版本> 为正规升级通道，core 发版后可切换）`;
     }
   } catch { /* manifest 缺失/损坏：走 npm 版本形态指引 */ }
   let version = '<version>';
@@ -59,11 +59,12 @@ function workflowAssetPath(name) {
 const INDEX_CANDIDATES = ['dist/index.cjs', 'index.cjs'];
 
 /**
- * 主入口 require 失败的恢复指引（F04 按 VENDOR-MANIFEST.json 的
- * capabilities.selfContainedIndex 分流——旧静态文案声称「非自包含、等 0.4.0」，
- * 与当前 vendored 已是自包含 bundle 的事实相反，会误导排障方向）：
+ * 主入口 require 失败的恢复指引（按 VENDOR-MANIFEST.json 的
+ * capabilities.selfContainedIndex 分流）：
  * - true：副本应已自包含，加载失败多为副本不完整/损坏 → 指向重刷与 sha256 自检；
- * - false 或 manifest 缺失/损坏（保守回落）：非自包含旧文案，等自包含 bundle 发布。
+ * - false 或 manifest 缺失/损坏（保守回落）：自包含状态未确认为 true——当前
+ *   vendored 副本已自包含（现行清单记录 selfContainedIndex=true），走到本分支
+ *   多为清单缺失/损坏或历史非自包含产物 → 同向指引重刷 + sha256 自检。
  * vendorManifest() 在此刻意 try 包裹：本函数是报错文案组装，manifest 读不到时
  * 不能反客为主吞掉底层 require 错误主句。
  */
@@ -79,10 +80,11 @@ function requireLoadHint() {
       + '或核对 VENDOR-MANIFEST.json 逐文件 sha256 完整性'
       + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。';
   }
-  return '当前 vendored 主入口非自包含（ajv/yaml/proper-lockfile 外部依赖未 vendor，'
-    + 'VENDOR-MANIFEST.json 的 capabilities.selfContainedIndex 如实记录）。'
-    + '恢复路径：等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布后，'
-    + '在本地 core checkout 构建并执行 node scripts/vendor-subagent-core.js --local <core-path> 刷新'
+  return 'vendored 主入口自包含状态未确认为 true（VENDOR-MANIFEST.json 的 '
+    + 'capabilities.selfContainedIndex 缺失、不可读或为 false——历史非自包含产物形态）。'
+    + '当前 vendored 副本已自包含（现行清单记录 selfContainedIndex=true），走到本分支多为清单缺失或损坏。'
+    + '恢复路径：在 workspace 根重跑 node scripts/vendor-subagent-core.js --local <core-path> 刷新 vendored 副本，'
+    + '或核对 VENDOR-MANIFEST.json 逐文件 sha256 完整性'
     + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。';
 }
 

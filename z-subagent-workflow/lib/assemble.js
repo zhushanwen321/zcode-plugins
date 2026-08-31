@@ -105,7 +105,6 @@ async function assembleManager(opts = {}) {
   // 同一 runner 实例；测试经 opts.wfHost 注入 fake 跳过组装
   const wfHostBase = opts.wfHost || createOrchestrationHost({
     runner,
-    modelRouter,
     resolver: opts.resolver || resolver,
   });
   // 退出链组合（W6a2）：daemon 退出的唯一生产 shutdown 钩子是 wfHost.shutdown
@@ -124,7 +123,7 @@ async function assembleManager(opts = {}) {
       }
     },
   };
-  return { manager, wfHost, notifier, runnerKind: 'spawn' };
+  return { manager, wfHost, notifier };
 }
 
 module.exports = { assembleManager, assertRunnerEnv };

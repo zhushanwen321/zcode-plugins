@@ -20,6 +20,8 @@
  * @param {number} [opts.limit] 并发上限（>=1，缺省 1）
  * @returns {{acquire: (depth?: number) => Promise<function(): void>, running: () => number}}
  *          acquire 的 resolve 值是释放函数（幂等，多次调用只释放一次）。
+ *          running() 是测试观测面：无生产消费者——manager 生产路径只走
+ *          acquire 与释放函数，槽位是否回收由测试经 running() 断言。
  */
 function createSlots({ limit } = {}) {
   const maxLimit = Math.max(1, Math.floor(limit) || 1);

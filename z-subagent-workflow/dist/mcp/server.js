@@ -25,15 +25,15 @@
  *
  * tools 面已下线（DESIGN-v4 §6.1 D1 终态，1.0.0 起内置）：tools/list 恒空
  * （零上下文注入）、tools/call 恒给「走 CLI」指引。zsub/zflow 的全部能力经
- * socket 控制面 + CLI（bin/zsw.js，默认 thin client）提供。buildTools/
- * buildToolHandlers 保留：后者是 socket 分发的数据源，前者供定义级单测。
+ * socket 控制面 + CLI（bin/zsw.js，默认 thin client）提供。buildToolHandlers
+ * 保留：socket 分发的数据源。
  *
- * 多 tool 结构（M3 接线，N2-b 改造）：tool 注册表形态——buildTools() 出定义
- * 数组，buildToolHandlers() 出 handler 表 { [toolName]: handler(params, env) }，
- * tools/call 两级分发（第一级按 params.name 查表，未命中 -32601；第二级
- * 进对应 handler）。两个 tool：zsub（九 action 编排，M0 起 +wait）与 zflow
- * （九 action：run / abort / status / list / scripts / lint + 创作闭环三 action
- * script-generate / script-save / script-delete，W8 / D-6）。
+ * 多 tool 结构（M3 接线，N2-b 改造）：handler 注册表形态——buildToolHandlers()
+ * 出 handler 表 { [toolName]: handler(params, env) }，socket 面经
+ * buildDaemonHandlers 按 tool 名查表分发。两个 tool：zsub（九 action 编排，
+ * M0 起 +wait）与 zflow（九 action：run / abort / status / list / scripts /
+ * lint + 创作闭环三 action script-generate / script-save / script-delete，
+ * W8 / D-6）。
  *
  * daemon socket 面（M0 接线）：buildDaemonHandlers() 把 handler 表适配成
  * daemon-socket 要的 (req:{tool,params}, meta:{signal}) 形态，并解包 MCP
@@ -60,10 +60,8 @@
  * - daemon 生命周期钩子：启动/接管 → host.recoverOrphans()（遗留 running
  *   标 done,failed）；stdin 关闭 → host.shutdown()（terminateRunningRuns）。
  *
- * 可测性：纯函数（extractSessionId / buildToolDefinition /
- * buildRunWorkflowToolDefinition / buildTools / buildToolHandlers /
- * buildDaemonHandlers / createFrameDecoder / createServer / createManager）
- * 导出供 node:test，wfHost / waitHandler 经 buildToolHandlers /
+ * 可测性：纯函数（buildToolHandlers / buildDaemonHandlers / createFrameDecoder /
+ * createServer）导出供 node:test，wfHost / waitHandler 经 buildToolHandlers /
  * createServer 参数可注入 fake（manager 同款模式）；stdio 主循环只在
  * require.main === module 时启动，require 零副作用。
  */
@@ -80,231 +78,8 @@ const RUN_WORKFLOW_TOOL_NAME = 'zflow';
 
 // ---------------------------------------------------------------- 纯函数区
 
-/**
- * 从 tools/call 的 params._meta 提取目标会话 id（Z3 实测通道：
- * `com.zcode/request-context`.session_id，runtime 主路径默认携带）。
- * 取不到返回 undefined——mailbox 投递自然降级（notifier 侧返回
- * delivered:false），不报错：CLI / 异常入口本来就没有会话上下文。
- */
-function extractSessionId(meta) {
-  const rc = meta && meta['com.zcode/request-context'];
-  const sid = rc && rc.session_id;
-  return typeof sid === 'string' && sid !== '' ? sid : undefined;
-}
-
-/**
- * zsub 单 tool 定义（现有测试与外部依赖此单 tool 形态，故独立保留）。
- * description 是常驻注入成本，控制在 ≤1250 字符（见头注）。
- */
-function buildToolDefinition() {
-  return {
-    name: TOOL_NAME,
-    description:
-      '编排后台 subagent 生命周期（zcode 外挂编排器，与原生 background agent 互补）。action 速查：\n'
-      + '- start：后台启动任务，立即返回 subagentId；完成后结果通知本会话（mailbox 自动到达，否则按返回指引查询）。参数：task（必填，自包含任务书）、slug（必填，短名）、agent?（.md 绝对路径，支持 ~/；缺省 = general-purpose 内置角色）、model?、schema?（输出契约）、worktree?（改动隔离，完成回传 patch 与 git apply 指引）、conversation?（可续聊）、wait?（同步等结果）、timeoutMs?。\n'
-      + '- list：任务精简列表（id/slug/status/error/patchFile）。\n'
-      + '- status：单任务全量 + 结果文件路径（subagentId；closed 后 Read 该文件取全文）。\n'
-      + '- message：向 idle 的 conversation 任务投递续聊消息（subagentId + text）。\n'
-      + '- cancel：取消运行中任务（subagentId）。\n'
-      + '- close：终态化任务并清理 worktree（subagentId）。\n'
-      + '- agents：列出可用 agent .md（core 发现面：vendored 内置 10 角色 + 项目 .agents/agents > .zcode/agents > HOME 同构两根；返回 name/description/when/location（.md 绝对路径）/来源根）——start 的 agent 参数只收路径，不确定路径时先查这个。\n'
-      + '- models：列出可用模型（短名/上下文窗口/推理档位）——路由决策前先查。all=true 出全 provider 视图（跨 provider 引用须全名 <provider>/<model>）。\n'
-      + '- wait：等待指定 id 集合到终态（ids 数组 + timeoutMs?；全部终态回 results，超时回 partial+pending）。\n'
-      + '何时委派：读 3+ 文件、写 100+ 行实现、可并行的研究/审查——自己干会淹上下文。start 前先 list——已有 running 任务可复用，防上下文压缩后丢 id。同一回复发多个 start = 并发执行（默认上限 3）。\n'
-      + '纪律：①task 必须自包含——子进程看不到当前会话任何上下文，目标/验收/关键路径全写进 task；②禁止轮询——完成通知自动到达，mailbox 未启用时 start 返回值附轮询指引；③简单后台任务优先原生 background agent，需要 worktree 隔离/续聊/schema/四根 agent 生态时才用 zsub。\n'
-      + '完整用法与分流哲学：加载 skill zsub-zflow-orchestration。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait'],
-          description: '要执行的操作',
-        },
-        task: {
-          type: 'string',
-          description: 'start 必填。自包含任务书：目标、背景、验收标准、关键文件路径——子进程看不到当前会话上下文',
-        },
-        slug: { type: 'string', description: 'start 必填。任务短名（通知文案与 worktree 分支名）' },
-        agent: { type: 'string', description: 'start 可选。agent .md 绝对路径（支持 ~/ 前缀；取 agents action 的 location 列）。缺省不传 = 加载 general-purpose 内置角色；不想要角色请显式传自定义 .md 路径。名字引用已废弃（传名会被拒并给路径指引）' },
-        model: { type: 'string', description: 'start 可选。provider/model 全名（精确匹配任意已配置 provider）或短名（按默认 provider 解析）' },
-        schema: { description: 'start 可选。输出契约（字符串或 JSON Schema 对象），以 MANDATORY 段拼入 prompt' },
-        worktree: { type: 'boolean', description: 'start 可选。true 时改动落独立 worktree，完成后回传 patch 与 git apply 指引' },
-        conversation: { type: 'boolean', description: 'start 可选。true 时首轮完成后进入 idle，可用 message 续聊' },
-        wait: { type: 'boolean', description: 'start 可选。true 时同步等待完成并返回结果全文（注意 MCP 30s 超时）' },
-        timeoutMs: { type: 'number', description: 'start/wait 可选。start：任务执行超时（不填则无超时限制）；wait：等待上限，到点回 partial' },
-        thinking: { type: 'string', description: 'start 可选。thinking 档位（如 low|high|max，合法值按模型动态，GLM 默认 max）。当前引擎通道不消费该请求值——请求后终态 record 落 thinking="null (请求未生效：引擎通道未映射)" 如实标注' },
-        allowTools: { type: 'array', items: { type: 'string' }, description: 'start 可选。允许工具名清单（裸工具名）。MCP 直调面传字符串数组，如 ["Read","Grep"]；CLI 面为逗号分隔字符串（--allow-tools "Read,Grep"）。当前引擎无白名单 flag 通道不消费——终态 record 落 toolsNote 如实标注' },
-        denyTools: { type: 'array', items: { type: 'string' }, description: 'start 可选。禁止工具名清单（裸工具名）。MCP 直调面传字符串数组，如 ["Bash","WebSearch"]；CLI 面为逗号分隔字符串（--deny-tools "Bash,WebSearch"）。与 agent .md frontmatter disallowedTools 并集去重后落引擎 --disallowed-tools flag 硬生效' },
-        subagentId: { type: 'string', description: 'status/cancel/message/close 必填。start 返回的任务 id' },
-        ids: { type: 'array', items: { type: 'string' }, description: 'wait 必填。要等待的 subagentId 数组（来自 start 返回 / list 查询）' },
-        text: { type: 'string', description: 'message 必填。续聊消息文本' },
-        all: { type: 'boolean', description: 'models 可选。true = 全 provider 视图（模型为全名 <provider>/<model>），缺省仅默认 provider' },
-      },
-      required: ['action'],
-    },
-  };
-}
-
 /** 内置 workflow 清单的单一来源是 orchestration-host（scripts action 经
  * wfHost.scripts().builtin 返回）——server 不再持第二份内置清单，防漂移。 */
-
-/**
- * zflow tool 定义（回接 2b：九 action 走 orchestration-host = vendored
- * subagent-core orchestration + W8 创作闭环三 action）。
- *
- * description 是常驻注入成本，上限压到 ≤1000 字符。workflow 值是自由 string
- * 而非静态 enum：自定义脚本路径是动态发现的，静态枚举无法收录，合法值说明进
- * description（内置 5 名 / .js 绝对路径——script:<name> 与裸名已按 D-4 契约
- * 废弃拒收），运行期由入口校验（validateWorkflowRef）+ host 的 registry 解析。
- */
-function buildRunWorkflowToolDefinition() {
-  return {
-    name: 'zflow',
-    description:
-      'Deterministic multi-step workflows (vendored subagent-core orchestration); each agent() call = an isolated agent session. ' +
-      'action=run returns runId at once (query via status; CLI run is synchronous). ' +
-      'Workflows: "chain" analyze->transform->synthesize; "parallel" multi-perspective review + aggregate; ' +
-      '"map-reduce" map over a KNOWN items array; "scatter-gather" split, parallel, merge; ' +
-      '"review-fix-loop" batches (batch1..batchN = agent .md absolute paths) review->fix->re-review to clean (WRITES files); ' +
-      'custom scripts (@pi-meta + top-level agent()) by ABSOLUTE .js path; script:<name> deprecated/rejected. ' +
-      'Management: abort/status(runId), list, scripts (builtin 5 + custom paths); lint(file) validates. ' +
-      'Creative loop: script-generate(name, script) 5-gate validation (ESM/meta/agent()/syntax/round-trip w/ line-col) -> tmp; ' +
-      'script-save(name) tmp -> ~/.zsw/workflows (dup refused); script-delete(name) (refused if running). ' +
-      'Runs can take minutes; WARNING: transform/fix may modify files under workdir.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['run', 'abort', 'status', 'list', 'scripts', 'lint', 'script-generate', 'script-save', 'script-delete'],
-          description: '要执行的操作',
-        },
-        workflow: {
-          type: 'string',
-          description: 'run 必填。内置 5 名（chain / parallel / map-reduce / scatter-gather / review-fix-loop，形态见 tool description）或 core 契约脚本 .js 绝对路径（~/ 前缀可展开；script:<名> 与裸名已废弃拒收——路径先查 action=scripts 的 path 字段）',
-        },
-        task: {
-          type: 'string',
-          description: 'run 必填（chain/scatter-gather/script 形态）。自包含任务书——阶段会话看不到当前会话上下文。parallel 场景作为 target 回退；review-fix-loop 场景作为 target 回退（显式传 target 更清晰）',
-        },
-        workdir: { type: 'string', description: 'run 必填。Absolute path of the working directory the agent() calls operate in.' },
-        model: {
-          type: 'string',
-          description: 'Run-level model override (RunSpec.model), exact match: "<provider>/<model>" full name resolves against any configured provider. Invalid names fail with the list of what is actually configured.',
-        },
-        runId: { type: 'string', description: 'abort/status 必填。run 返回的 wf- 前缀 id（list 可查全部）' },
-        file: { type: 'string', description: 'lint 必填。脚本文件路径（scripts 返回的 path 字段，或自填绝对路径）' },
-        name: {
-          type: 'string',
-          description: 'script-generate/script-save/script-delete 必填。脚本名（单段文件名，不含路径分隔符——落盘目录由 zsw 布局 ~/.zsw/workflows 决定）',
-        },
-        script: {
-          type: 'string',
-          description: 'script-generate 必填。完整 JS 源码：/* @pi-meta */ YAML 块注释（name/description/phases）+ top-level agent()；core 五道闸校验（ESM 拒/meta 必需/agent() 必需/语法/@pi-meta round-trip 含行列），通过后落 tmp',
-        },
-        wait: {
-          type: 'boolean',
-          description: 'run 可选。true 时同步等完成并返回 scriptResult（MCP 30s 超时约束，主要给测试用）',
-        },
-        timeoutMs: {
-          type: 'number',
-          description: 'run 可选。workflow 整体墙钟预算毫秒数（RunSpec.budgetTimeMs；不填则无超时限制）',
-        },
-        perspectives: {
-          type: 'array', items: { type: 'string' },
-          description: 'parallel only. Analysis perspectives. Default [security, performance, maintainability].',
-        },
-        items: {
-          type: 'array', items: { type: 'string' },
-          description: 'map-reduce only (required). The known items to map over.',
-        },
-        operation: {
-          type: 'string',
-          description: 'map-reduce only (required). What to do with each item.',
-        },
-        reviewTarget: {
-          type: 'string',
-          description: 'review-fix-loop only (legacy sugar). Same as targetType="text" + target=<value>.',
-        },
-        targetType: {
-          type: 'string', enum: ['git-diff', 'file', 'dir', 'text'],
-          description: 'review-fix-loop only. Target kind. Default "text".',
-        },
-        target: {
-          type: 'string',
-          description: 'review-fix-loop only. What to review: git-diff base ref (e.g. main), file path, dir path, or text description. Required.',
-        },
-        batch1: {
-          type: 'array', items: { type: 'string' },
-          description: 'review-fix-loop only. Reviewer agent .md absolute paths of batch 1 (comma-joined into the $ARGS.batch1 string); pass batch2, batch3... the same way. Batches run serially. At least one batchN (or agents) is required.',
-        },
-        batchNames: {
-          type: 'array', items: { type: 'string' },
-          description: 'review-fix-loop only. Display names for batches (comma-joined string). Defaults batch-1..N.',
-        },
-        maxRounds: {
-          type: 'integer', minimum: 1,
-          description: 'review-fix-loop only. Max review-fix rounds per batch. Default 10.',
-        },
-        stuckThreshold: {
-          type: 'integer', minimum: 1,
-          description: 'review-fix-loop only. Declare stuck after this many consecutive rounds without must-fix decrease. Default 3.',
-        },
-        skipCleanAgents: {
-          type: 'boolean',
-          description: 'review-fix-loop only. Skip reviewers that reported clean. Default true.',
-        },
-        recheckAfterFix: {
-          type: 'boolean',
-          description: 'review-fix-loop only. Re-dispatch ALL reviewers after each fix; previously-clean ones get a scoped regression-only recheck prompt. Default false.',
-        },
-        convergeNewIssues: {
-          type: 'integer', minimum: 1,
-          description: 'review-fix-loop only. Convergence: max new findings per round. Default 1.',
-        },
-        convergeRounds: {
-          type: 'integer', minimum: 1,
-          description: 'review-fix-loop only. Convergence: consecutive rounds within convergeNewIssues before converging. Default 2.',
-        },
-        maxFixAttempts: {
-          type: 'integer', minimum: 1,
-          description: 'review-fix-loop only. Regressed fix attempts per issue before needs-redesign. Default 2.',
-        },
-        aggregatorModel: {
-          type: 'string',
-          description: 'review-fix-loop only. Model for the aggregation phase. Default: same as the run model.',
-        },
-        reviewPrompt: {
-          type: 'string',
-          description: 'review-fix-loop only. Extra guidance appended to every reviewer prompt.',
-        },
-        fixPrompt: {
-          type: 'string',
-          description: 'review-fix-loop only. Extra guidance appended to the fixer prompt.',
-        },
-        fallowScan: {
-          type: 'boolean',
-          description: 'review-fix-loop only. Run a fallow static scan as a leading batch (requires targetType=git-diff). Default false.',
-        },
-        autoCommit: {
-          type: 'boolean',
-          description: 'review-fix-loop only. Let the fixer stage/commit its changes. Default false.',
-        },
-      },
-      required: ['action'],
-    },
-  };
-}
-
-/**
- * 本 server 暴露的全量 tool 定义（tools/list 的数据源）。为什么是数组：
- * 注册表形态，追加 tool 只改本函数与 buildToolHandlers，tools/list 与
- * 分发层零改动。
- */
-function buildTools() {
-  return [buildToolDefinition(), buildRunWorkflowToolDefinition()];
-}
 
 /**
  * 换行分帧器（协议层独立于传输，便于单测）：吸收 chunk、按 \n 切帧。
@@ -325,22 +100,14 @@ function createFrameDecoder(onLine) {
   };
 }
 
-/** 协议级错误（unknown method / unknown tool）：走 JSON-RPC error 帧。 */
-class RpcError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-}
-
 const okContent = (value) => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }],
 });
 const errContent = (text) => ({ content: [{ type: 'text', text }], isError: true });
 
 /**
- * 组装 manager 运行时（main 与测试共用）。实现收口在 lib/assemble.js
- * （MCP 与 CLI 入口共用同一组装点），本导出保留向后兼容签名。
+ * 组装 manager 运行时（main 消费，不导出）。实现收口在 lib/assemble.js
+ * （MCP 与 CLI 入口共用同一组装点）。
  */
 function createManager(opts = {}) {
   return require('../../lib/assemble').assembleManager(opts);
@@ -357,8 +124,6 @@ function createManager(opts = {}) {
  * - wfHost 参数：orchestration host 注入点（assembleManager 组装真实现 =
  *   vendored subagent-core orchestration 的 zsw 宿主），测试传 fake 即可
  *   全链路冒烟（manager 同款模式）。
- * - env.emitFrame：handler 中途发通知帧的通道，缺省 no-op（直接调用
- *   handler 的测试不需要收集通知帧）。
  * - agents action 的 resolver 经 manager.resolver 取（公开端口字段，构造
  *   直存）而非 server 再传一份：assembleManager 组装进 manager 的必然是
  *   同一实例，两份 resolver 会漂移（opts.resolver 注入时尤其如此）。
@@ -383,14 +148,14 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
       );
     }
     if (!manager) {
-      throw new RpcError(-32603, 'server 未初始化编排运行时');
+      throw new Error('server 未初始化编排运行时');
     }
     const args = params.arguments || {};
     const action = args.action;
     try {
-      // Z3 通道取目标会话；取不到 → undefined → mailbox 自然降级，不报错
+      // socket 面无会话定向语义（D6）：ctx 不带 targetSessionId，mailbox 侧
+      // 自然降级（manager 定向链保留，CLI 的 --target-session 后门走 start params）
       const ctx = {
-        targetSessionId: extractSessionId(params._meta),
         cwd: env.cwd || process.env.ZCODE_PROJECT_DIR || process.cwd(),
       };
       switch (action) {
@@ -494,14 +259,13 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
       );
     }
     if (!wfHost) {
-      throw new RpcError(-32603, 'server 未初始化 workflow 运行时');
+      throw new Error('server 未初始化 workflow 运行时');
     }
     const args = params.arguments || {};
     // run 的透传参数剔除 action（host 的 normalizeRunParams 会把保留键外的
     // 透传键组进 $ARGS，action 泄漏进去会污染脚本参数）
     const { action, ...runArgs } = args;
     const ctx = {
-      targetSessionId: extractSessionId(params._meta),
       cwd: env.cwd || process.env.ZCODE_PROJECT_DIR || process.cwd(),
     };
     try {
@@ -529,8 +293,7 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
           // vendored 内置 5 + core 发现面 + .zsw 根用户脚本；发现根 =
           // workspace cwd（ctx 组装同 zsub）。builtin/scripts 均以 host 返回
           // 为单一来源（host 内置表与 registry 同源——server 不再持第二份
-          // 内置清单，防两处漂移）；scripts 条目补 file 兼容字段（lint action
-          // 的 file 参数指引用旧字段名）
+          // 内置清单，防两处漂移）
           const found = await wfHost.scripts(ctx.cwd);
           return okContent({
             builtin: found.builtin,
@@ -538,7 +301,6 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
               name: s.name,
               description: s.description || '',
               path: s.path,
-              file: s.path, // 兼容旧字段名（lint action 的 file 参数指引）
               available: s.available,
               source: s.source,
             })),
@@ -589,10 +351,10 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
  *
  * 形态转换两端：
  * - 入参：socket 帧 {tool, params, cwd?} 的 params 是业务参数本体（CLI
- *   bin/zsw.js 组的 {action, ...}），而 MCP handler 吃 tools/call 的
- *   {arguments, _meta} 形态——这里包一层 {arguments: params}。_meta 刻意
- *   不带：socket 面无会话定向语义（D6），ctx.targetSessionId 恒 undefined，
- *   mailbox 侧自然降级。
+ *   bin/zsw.js 组的 {action, ...}），而 MCP handler 吃 {arguments} 形态——
+ *   这里包一层 {arguments: params}。socket 面无会话定向语义（D6）：ctx 不带
+ *   targetSessionId，mailbox 侧自然降级（CLI 的 --target-session 后门走
+ *   start params，不经此处）。
  *   req.cwd（MF7 帧协议扩展，daemon-socket 传输层已做 string 类型守卫）
  *   非空 string 时透传为 handler 第二参 env.cwd——handler 内既有
  *   `env.cwd || ZCODE_PROJECT_DIR || process.cwd()` 链自然取到发起方目录
@@ -645,14 +407,11 @@ function unwrapContentResult(wrapped) {
 /**
  * 协议处理器（可测）：输入一个 JSON-RPC 消息对象，返回待写出的帧数组。
  * 通知帧（无 id）不产生输出；tools/call 串行排队由调用方（main 循环）保证。
- * emitFrame：handler 执行中途的通知帧（progress）实时写出通道——这些帧
- * 无法进本函数的返回值数组（返回时机在 handler 完成后），main 传
- * writeFrame 即按真实时序推送。
  * toolsDisabled：已废弃的注入位，1.0.0 起工具面恒空（终态内置，原
  * ZSW_TOOLS_DISABLED 灰度开关删除——自用单用户场景无灰度对象）。参数保留
  * 仅为兼容旧签名，任何值都不改变行为。
  */
-function createServer({ manager, wfHost, nested = false, log = () => {}, emitFrame = () => {} } = {}) {
+function createServer({ manager, wfHost, nested = false, log = () => {} } = {}) {
   const toolHandlers = buildToolHandlers({ manager, wfHost, nested });
 
   /** 工具面下线的可操作拒绝（D1 终态）：指向 CLI 出口（socket 面不受影响）。 */
@@ -669,19 +428,6 @@ function createServer({ manager, wfHost, nested = false, log = () => {}, emitFra
    */
 
   async function dispatchToolCall(params) {
-    // _meta 诊断（Z3 通道验证）：tools/call 原文 _meta 落盘，诊断 mailbox 定向未命中用。
-    // 常开（一行 jsonl，成本可忽略）；ZSW_ROOT 隔离的测试环境天然不污染。
-    try {
-      const fs = require('node:fs');
-      const root = require('../../lib/config').zswRoot();
-      fs.mkdirSync(root, { recursive: true });
-      fs.appendFileSync(require('node:path').join(root, 'meta-debug.jsonl'), JSON.stringify({
-        ts: Date.now(), tool: params && params.name,
-        hasMeta: !!(params && params._meta),
-        meta: params && params._meta,
-        sessionId: extractSessionId(params && params._meta),
-      }) + '\n');
-    } catch { /* 诊断失败不影响服务 */ }
     // 工具面恒拒绝（1.0.0 终态，D1：agent 交互全走 CLI；嵌套环境同文案——
     // 嵌套里本就不该调用。handler 分发已不在此路径——socket 面才消费 toolHandlers）。
     return errContent(toolsDisabledMessage());
@@ -714,15 +460,11 @@ function createServer({ manager, wfHost, nested = false, log = () => {}, emitFra
         try {
           frames.push({ jsonrpc: '2.0', id: msg.id, result: await dispatchToolCall(msg.params) });
         } catch (e) {
-          if (e instanceof RpcError) {
-            frames.push({ jsonrpc: '2.0', id: msg.id, error: { code: e.code, message: e.message } });
-          } else {
-            log(`tools/call crashed: ${(e && e.stack) || e}`);
-            frames.push({
-              jsonrpc: '2.0', id: msg.id,
-              result: errContent(`内部错误: ${e && e.message || e}`),
-            });
-          }
+          log(`tools/call crashed: ${(e && e.stack) || e}`);
+          frames.push({
+            jsonrpc: '2.0', id: msg.id,
+            result: errContent(`内部错误: ${e && e.message || e}`),
+          });
         }
         break;
       case 'ping':
@@ -878,7 +620,7 @@ async function main() {
     }
   }
 
-  const server = createServer({ manager, wfHost, nested: config.NESTED, log, emitFrame: writeFrame });
+  const server = createServer({ manager, wfHost, nested: config.NESTED, log });
 
   // daemon socket 控制面接线（DESIGN-v4 D2/D3，M0）：非 NESTED 才挂——嵌套
   // 进程不参与竞选（防递归边界保持在 MCP 工具面语义内，socket 面是服务面）。
@@ -974,14 +716,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  extractSessionId,
-  buildToolDefinition,
-  buildRunWorkflowToolDefinition,
-  buildTools,
   buildToolHandlers,
   buildDaemonHandlers,
   createFrameDecoder,
   createServer,
-  createManager,
-  RpcError,
 };

@@ -117,7 +117,8 @@ function toAgentEntries(agents) {
     const entry = {
       name,
       description: typeof p.description === 'string' ? p.description : '',
-      path: String(p.filePath || p.path || ''),
+      // AgentProfile 契约字段是 filePath（无生产者产 path），不设回退
+      path: String(p.filePath || ''),
     };
     if (typeof p.when === 'string' && p.when.trim()) entry.when = p.when.trim();
     out.push(entry);
@@ -223,13 +224,10 @@ function renderResourcesBlock(input) {
   return sections.join('');
 }
 
+// guide/截断文案常量不导出（无外部消费者）：仅 renderResourcesBlock 内部消费
 module.exports = {
   renderResourcesBlock,
   AGENTS_MAX_ENTRIES,
   WORKFLOWS_MAX_ENTRIES,
-  AGENTS_TRUNCATION_NOTICE,
-  WORKFLOWS_TRUNCATION_NOTICE,
-  SUBAGENTS_GUIDE,
-  WORKFLOWS_GUIDE,
   modelsGuide,
 };

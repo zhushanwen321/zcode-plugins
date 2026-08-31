@@ -87,21 +87,18 @@ function abortError() {
  * 构造 core AgentRunner 适配器。
  * @param {object} opts
  * @param {object} opts.runner        zsw RunnerPort（assemble 组装，与 zsub 线共享同一实例）
- * @param {object} [opts.modelRouter] 模型清单器（2c 后执行链不再消费；参数保留
- *        兼容 orchestration-host 组装面）
  * @param {object} [opts.resolver]    agent .md 发现（lib/agent-discovery 类或模块，
  *        async resolve 契约——W6a 起 core discoverResources 接线）
  * @param {string} [opts.fallbackCwd] opts.cwd 缺省时的工作目录（= run 的 workdir）
  * @returns {{ run(opts: object, signal: AbortSignal) => Promise<object> }}
  */
-function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd } = {}) {
+function createAgentRunnerAdapter({ runner, resolver, fallbackCwd } = {}) {
   if (!runner || typeof runner.start !== 'function') {
     throw new Error(
       'createAgentRunnerAdapter 需要 runner（zsw RunnerPort，含 start）。'
       + '恢复指引：经 lib/assemble.js 组装注入，勿手工构造。'
     );
   }
-  void modelRouter;
   const cwdBase = typeof fallbackCwd === 'string' && fallbackCwd !== ''
     ? fallbackCwd
     : process.env.ZCODE_PROJECT_DIR || process.cwd();
@@ -192,4 +189,4 @@ function createAgentRunnerAdapter({ runner, modelRouter, resolver, fallbackCwd }
   };
 }
 
-module.exports = { createAgentRunnerAdapter, toAgentResult, toCoreUsage };
+module.exports = { createAgentRunnerAdapter };

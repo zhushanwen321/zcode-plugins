@@ -43,14 +43,6 @@ function extractJsonObject(text) {
   return null;
 }
 
-/** 从 JSON 对象里取一个字符串数组字段（如 subtasks 名称列表），失败返回 null。 */
-function stringArray(obj, key) {
-  const v = obj?.[key];
-  if (!Array.isArray(v)) return null;
-  const out = v.filter((x) => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim());
-  return out.length ? out : null;
-}
-
 function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
 
-module.exports = { extractJsonObject, stringArray };
+module.exports = { extractJsonObject };

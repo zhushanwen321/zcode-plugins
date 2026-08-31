@@ -25,17 +25,6 @@
  */
 
 /**
- * v2 config 中带非空模型清单的 provider 数（诊断行口径，与 model-router 的
- * providersUsable 同义；该函数未导出，此处仅为可观测性计数、不参与任何
- * 语义判定，两处漂移无行为后果）。
- */
-function countUsableProviders(v2) {
-  return Object.entries((v2 && v2.provider) || {})
-    .filter(([, e]) => e && Object.keys(e.models || {}).length > 0)
-    .length;
-}
-
-/**
  * hook 选项与 IO 通道解析（全部副作用注入点，缺省回落 process.*）。
  *
  * @param {object} [opts]
@@ -80,7 +69,7 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
   // 缺失/损坏在 require 阶段即抛 → 上层 catch 统一 {} 降级
   const fs = require('node:fs');
   const { V2_CONFIG_PATH } = require('./config');
-  const { defaultModelRef } = require('./model-router');
+  const { defaultModelRef, providersUsable } = require('./model-router');
   const { renderResourcesBlock } = require('./hook-inject');
   const agentDiscovery = require('./agent-discovery');
   const orchestrationHost = require('./orchestration-host');
@@ -147,10 +136,10 @@ async function assembleSessionStartOutput({ env, cwd, now, startMs }) {
     hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text },
   })}\n`;
   // 成功可观测性诊断走 stderr（stdout 保持纯协议通道）；providers = 带非空
-  // 模型清单的 provider 数（与 zsw models 的可用 provider 口径一致）
+  // 模型清单的 provider 数（model-router providersUsable 同口径）
   const diagLine =
     `[zsw:hook] projectDir=${projectDir} source=${source}`
-    + ` providers=${countUsableProviders(v2)} agents=${agents.length}`
+    + ` providers=${providersUsable(v2).length} agents=${agents.length}`
     + ` workflows=${workflows.length} elapsed=${Date.now() - startMs}ms\n`;
   return { protocolLine, diagLine };
 }

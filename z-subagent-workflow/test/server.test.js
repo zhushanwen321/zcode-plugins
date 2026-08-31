@@ -35,45 +35,6 @@ after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
 
-// ----------------------------------------------------- 纯函数：_meta 提取
-
-test('extractSessionId：Z3 通道提取（有值/无值/类型不对均不报错）', () => {
-  assert.equal(
-    server.extractSessionId({ 'com.zcode/request-context': { session_id: 'sess_abc123' } }),
-    'sess_abc123',
-  );
-  assert.equal(server.extractSessionId({}), undefined);
-  assert.equal(server.extractSessionId(undefined), undefined);
-  assert.equal(server.extractSessionId(null), undefined);
-  assert.equal(
-    server.extractSessionId({ 'com.zcode/request-context': { session_id: 123 } }),
-    undefined,
-  );
-  assert.equal(
-    server.extractSessionId({ 'com.zcode/request-context': { session_id: '' } }),
-    undefined,
-  );
-});
-
-// ------------------------------------------------------ 纯函数：tool 定义
-
-test('buildToolDefinition：单 tool zsub，description ≤1250 字符，action 枚举齐全', () => {
-  const tool = server.buildToolDefinition();
-  assert.equal(tool.name, 'zsub');
-  assert.ok(tool.description.length > 0);
-  assert.ok(tool.description.length <= 1250, `description ${tool.description.length} 字符超限`);
-  // 九 action 一行速查（M0 起 +wait）+ 三条纪律 + skill 指针，三要素都在
-  for (const action of ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait']) {
-    assert.ok(tool.description.includes(action), `description 缺 ${action}`);
-  }
-  assert.ok(tool.description.includes('zsub-zflow-orchestration'));
-  assert.deepEqual(
-    tool.inputSchema.properties.action.enum,
-    ['start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait'],
-  );
-  assert.deepEqual(tool.inputSchema.required, ['action']);
-});
-
 // --------------------------------------------------------- 帧编解码
 
 test('createFrameDecoder：跨 chunk 分帧、多行单 chunk、空行忽略', () => {
@@ -113,12 +74,12 @@ function callTool(srv, args, extraParams = {}) {
  * handler 直调入口（1.0.0 起业务分发用例的测试入口）：MCP 面 tools/call 恒
  * 拒绝（D1 终态），handler 表是 socket 分发的数据源（buildDaemonHandlers
  * 包装后由 daemon-socket 分发）——直调 handler = socket 面真实路径。
- * 签名对齐 handler(params, env)：params = {arguments, _meta?}（_meta 走
- * Z3 会话通道提取），env = {cwd?, signal?}（socket 面透传形态）。
- * 返回 MCP content 包装（okContent/errContent），与旧 dispatchToolCall 层一致。
+ * 签名对齐 handler(params, env)：params = {arguments}，env = {cwd?, signal?}
+ * （socket 面透传形态）。返回 MCP content 包装（okContent/errContent），
+ * 与旧 dispatchToolCall 层一致。
  */
-function callHandler(srv, name, args, { _meta, env } = {}) {
-  return srv.toolHandlers[name]({ name, arguments: args, _meta }, env);
+function callHandler(srv, name, args, env) {
+  return srv.toolHandlers[name]({ name, arguments: args }, env);
 }
 
 test('协议层：initialize 回 serverInfo 与 protocolVersion', async () => {
@@ -168,18 +129,16 @@ test('协议层：unknown method / unknown tool / ping / 通知帧', async () =>
   assert.deepEqual(notJsonrpc, []);
 });
 
-test('handler 直调 start：_meta 提取 session_id 作为 ctx，cwd 取 ZCODE_PROJECT_DIR', async () => {
+test('handler 直调 start：cwd 取 ZCODE_PROJECT_DIR，ctx 不带会话定向（socket 面无 _meta 通道）', async () => {
   process.env.ZCODE_PROJECT_DIR = '/proj/demo';
   try {
     const fake = makeFakeManager();
     const srv = server.createServer({ manager: fake, nested: false });
-    const result = await callHandler(srv, 'zsub', { action: 'start', task: '任务书', slug: 's1' }, {
-      _meta: { 'com.zcode/request-context': { session_id: 'sess_zzz' } },
-    });
+    const result = await callHandler(srv, 'zsub', { action: 'start', task: '任务书', slug: 's1' });
     assert.equal(result.isError, undefined);
     const payload = JSON.parse(result.content[0].text);
     assert.equal(payload.subagentId, 'sa-x');
-    assert.equal(fake.calls[0].ctx.targetSessionId, 'sess_zzz'); // Z3 通道贯通
+    assert.equal('targetSessionId' in fake.calls[0].ctx, false); // ctx 无会话定向，mailbox 自然降级
     assert.equal(fake.calls[0].ctx.cwd, '/proj/demo');
     assert.equal(fake.calls[0].params.slug, 's1');
   } finally {
@@ -187,7 +146,7 @@ test('handler 直调 start：_meta 提取 session_id 作为 ctx，cwd 取 ZCODE_
   }
 });
 
-test('handler 直调：无 _meta 时 targetSessionId 为 undefined（不报错，mailbox 自然降级）', async () => {
+test('handler 直调：无 _meta 上下文不报错（mailbox 自然降级）', async () => {
   const fake = makeFakeManager();
   const srv = server.createServer({ manager: fake, nested: false });
   const result = await callHandler(srv, 'zsub', { action: 'list' });
@@ -476,65 +435,6 @@ test('tools/call models --all：modelRouter 缺 allProviders 实现 → 可操�
 
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）
 
-test('buildTools：返回数组形态，含 zsub 与 zflow，与单 tool 定义完全一致', () => {
-  const tools = server.buildTools();
-  assert.ok(Array.isArray(tools), 'tools/list 数据源必须是数组（多 tool 注册表形态）');
-  assert.equal(tools.length, 2);
-  assert.equal(tools[0].name, 'zsub');
-  assert.deepEqual(tools[0], server.buildToolDefinition()); // tool 形态不变（回归红线）
-  assert.equal(tools[1].name, 'zflow');
-  assert.deepEqual(tools[1], server.buildRunWorkflowToolDefinition());
-});
-
-test('buildRunWorkflowToolDefinition：action 枚举 9 值（含 W8 创作闭环三 action）、description ≤1000、workflow 自由 string、无源插件品牌残留', () => {
-  const tool = server.buildRunWorkflowToolDefinition();
-  assert.deepEqual(
-    tool.inputSchema.properties.action.enum,
-    ['run', 'abort', 'status', 'list', 'scripts', 'lint', 'script-generate', 'script-save', 'script-delete'],
-  );
-  assert.deepEqual(tool.inputSchema.required, ['action']);
-  assert.ok(tool.description.length <= 1000, `description ${tool.description.length} 字符超限`);
-  // workflow 是自由 string：自定义脚本路径动态发现，静态枚举无法收录
-  assert.equal(tool.inputSchema.properties.workflow.enum, undefined);
-  // D-4 契约：绝对路径引用 + script: 废弃声明 + 创作闭环三 action 登记
-  assert.ok(tool.inputSchema.properties.workflow.description.includes('绝对路径'));
-  assert.ok(tool.inputSchema.properties.workflow.description.includes('script:'));
-  for (const key of ['name', 'script']) {
-    assert.ok(tool.inputSchema.properties[key] !== undefined, `inputSchema.properties 缺 ${key}`);
-  }
-  assert.ok(tool.description.includes('script-generate'));
-  // 内置 5 名速查保留（回接 2b：vendored subagent-core orchestration）
-  for (const wf of ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop']) {
-    assert.ok(tool.description.includes(`"${wf}"`), `description 缺 ${wf}`);
-  }
-  assert.ok(tool.description.includes('vendored subagent-core'));
-  // 品牌统一（M1-a 定案）：zsub 插件不带 dynamic-workflow 字样
-  assert.ok(!tool.description.includes('dynamic-workflow'));
-  assert.ok(!JSON.stringify(tool.inputSchema).includes('dynamic-workflow'));
-});
-
-test('buildRunWorkflowToolDefinition：review-fix-loop core 参数面齐全 + 废弃 flag 不再登记（定义级护栏）', () => {
-  const props = server.buildRunWorkflowToolDefinition().inputSchema.properties;
-  // core 参数面（$ARGS 键全集）：schema 漏登记（与 host 参数面漂移）在此拦下
-  for (const key of [
-    'targetType', 'target', 'batch1', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
-    'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt',
-    'fixPrompt', 'fallowScan', 'autoCommit', 'skipCleanAgents', 'recheckAfterFix',
-    'reviewTarget',
-  ]) {
-    assert.ok(props[key] !== undefined, `inputSchema.properties 缺 ${key}`);
-  }
-  // maxRounds：上限已放开（maximum 删除），默认文案保留
-  assert.equal(props.maxRounds.maximum, undefined);
-  assert.match(props.maxRounds.description, /Default 10/);
-  assert.equal(props.convergeNewIssues.minimum, 1);
-  // 回接 2b 废弃面：reviewers / subtaskCount / maxConcurrent / timeoutMsPerPhase
-  // 不再登记（core 编排无对应面；reviewers 显式报错由 host normalizeRunParams 承接）
-  for (const gone of ['reviewers', 'subtaskCount', 'maxConcurrent', 'timeoutMsPerPhase']) {
-    assert.equal(props[gone], undefined, `inputSchema.properties 应删除 ${gone}`);
-  }
-});
-
 test('dispatchToolCall：恒拒绝（1.0.0 终态 D1）——任何 tool 名同文案，不再 -32601', async () => {
   const wfm = makeFakeWfHost();
   const srv = server.createServer({
@@ -568,13 +468,11 @@ test('注册表隔离：zsub handler 可脱离 dispatch 单独调用（buildTool
     {
       name: 'zsub',
       arguments: { action: 'start', task: '任务书', slug: 'iso' },
-      _meta: { 'com.zcode/request-context': { session_id: 'sess_iso' } },
     },
     { cwd: '/proj/iso' }, // env 显式注入：证明 ctx 组装封装在 handler 内，不依赖 dispatch
   );
   assert.equal(result.isError, undefined);
   assert.equal(JSON.parse(result.content[0].text).subagentId, 'sa-x');
-  assert.equal(fake.calls[0].ctx.targetSessionId, 'sess_iso');
   assert.equal(fake.calls[0].ctx.cwd, '/proj/iso');
 
   // 嵌套门禁也在 handler 内：直接调用同样拒绝且不触达 manager
@@ -625,15 +523,13 @@ function makeWfServer(wfHost = makeFakeWfHost()) {
   return { wfm: wfHost, srv: server.createServer({ manager: makeFakeManager(), wfHost, nested: false }) };
 }
 
-test('zflow run：action 剥离后透传 host.run，_meta session + env.cwd 组装 ctx，立即返回句柄', async () => {
+test('zflow run：action 剥离后透传 host.run，env.cwd 组装 ctx，立即返回句柄', async () => {
   const { wfm, srv } = makeWfServer();
   process.env.ZCODE_PROJECT_DIR = '/proj/wf';
   try {
     const result = await callHandler(srv, 'zflow', {
       action: 'run', workflow: 'chain', task: '接线冒烟', workdir: TMP,
       model: 'GLM-4.7-Flash', timeoutMs: 12345, wait: false,
-    }, {
-      _meta: { 'com.zcode/request-context': { session_id: 'sess_wf' } },
     });
     assert.equal(result.isError, undefined);
     const payload = JSON.parse(result.content[0].text);
@@ -643,7 +539,6 @@ test('zflow run：action 剥离后透传 host.run，_meta session + env.cwd 组�
     // action 不得泄入 run 参数（泄漏会污染 $ARGS 组装）
     assert.equal(wfm.calls[0].params.action, undefined);
     assert.equal(wfm.calls[0].params.workflow, 'chain');
-    assert.equal(wfm.calls[0].ctx.targetSessionId, 'sess_wf');
     assert.equal(wfm.calls[0].ctx.cwd, '/proj/wf');
   } finally {
     delete process.env.ZCODE_PROJECT_DIR;
@@ -682,15 +577,13 @@ test('zflow：abort/status/list 分发与 runId 必填校验', async () => {
   assert.deepEqual(wfm.calls.at(-1), { action: 'list' });
 });
 
-test('zflow scripts：内置 vendored + 用户脚本合并输出（含兼容 file 字段），cwd 透传发现层', async () => {
+test('zflow scripts：内置 vendored + 用户脚本合并输出，cwd 透传发现层', async () => {
   const { wfm, srv } = makeWfServer();
-  const result = await callHandler(srv, 'zflow', { action: 'scripts' }, { env: { cwd: '/proj/scripts-cwd' } });
+  const result = await callHandler(srv, 'zflow', { action: 'scripts' }, { cwd: '/proj/scripts-cwd' });
   assert.equal(result.isError, undefined);
   const payload = JSON.parse(result.content[0].text);
   assert.deepEqual(payload.builtin.map((b) => b.name), ['chain']);
   assert.deepEqual(payload.scripts.map((s) => s.name), ['my-wf']);
-  // 兼容字段：path 与 file 同值（lint action 的 file 参数指引用旧字段名）
-  assert.equal(payload.scripts[0].file, payload.scripts[0].path);
   assert.deepEqual(wfm.calls[0], { action: 'scripts', cwd: '/proj/scripts-cwd' });
 });
 
@@ -759,7 +652,7 @@ test('zflow script-generate/save/delete：handler 分发 + core 管线真跑 + d
   assert.equal(fs.existsSync(savedPath), false);
 });
 
-test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost 缺失 -32603', async () => {
+test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost 缺失 throw 透出', async () => {
   const { wfm, srv } = makeWfServer();
   const call = (args) => callHandler(srv, 'zflow', args);
 
@@ -787,11 +680,12 @@ test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost �
   assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
   assert.equal(wfmNested.calls.length, 0);
 
-  // wfHost 缺失（异常组装防御）：协议级 -32603 而非 TypeError 炸穿
+  // wfHost 缺失（异常组装防御）：handler throw 直接透出（daemon-socket 统一映射
+  // ok:false 帧），而非被吞成 TypeError 假阳性
   const broken = server.createServer({ manager: makeFakeManager(), nested: false });
   await assert.rejects(
     callHandler(broken, 'zflow', { action: 'list' }),
-    (e) => e.code === -32603 && /workflow 运行时/.test(e.message),
+    (e) => /workflow 运行时/.test(e.message),
   );
   assert.equal(wfm.calls.length, 0); // 上面的 fake 未被触碰
 });
@@ -851,8 +745,6 @@ test('zflow 后台冒烟（真实 orchestration-host + fake runner）：run 立�
 
   const result = await callHandler(srv, 'zflow', {
     action: 'run', workflow: 'chain', task: '后台冒烟', workdir: TMP,
-  }, {
-    _meta: { 'com.zcode/request-context': { session_id: 'sess_wf_bg' } },
   });
   assert.equal(result.isError, undefined);
   const h = JSON.parse(result.content[0].text);
@@ -889,8 +781,6 @@ test('zflow abort（真实 orchestration-host）：hanging runner → abort 落 
 
   const h = JSON.parse((await callHandler(srv, 'zflow', {
     action: 'run', workflow: 'chain', task: '中止冒烟', workdir: TMP,
-  }, {
-    _meta: { 'com.zcode/request-context': { session_id: 'sess_wf_abort' } },
   })).content[0].text);
   assert.equal(h.status, 'running');
 

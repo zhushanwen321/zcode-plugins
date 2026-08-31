@@ -45,13 +45,12 @@ function ctx() {
 
 /**
  * 内存 FakeRunner：start 注册待决议 waiter（测试用 finish/finishAll 注入
- * 延迟完成/失败/超时/取消），resume 立即闭环；alive 由 livePids 决定
+ * 延迟完成/失败/超时/取消）；alive 由 livePids 决定
  * （预置 process.pid 供 recover 测试探活）。
  */
 class FakeRunner {
   constructor() {
     this.startCalls = [];
-    this.resumeCalls = [];
     this.livePids = new Set([process.pid]); // 本进程恒活（recover 活探活用）
     this._seq = 0;
     this._pending = new Map(); // pid -> finish(result)
@@ -84,15 +83,6 @@ class FakeRunner {
       resolveDone(final);
     });
     return { exec, cancel: () => this.finish(exec, { status: 'cancelled', response: '' }), done };
-  }
-  resume(exec, message, opts = {}) {
-    this.resumeCalls.push({ exec, message, opts });
-    return Promise.resolve({
-      status: 'closed',
-      response: `续聊回复:${message}`,
-      sessionId: exec.sessionId,
-      usage: { input_tokens: 5, output_tokens: 5 },
-    });
   }
   alive(exec) {
     return Boolean(exec && this.livePids.has(exec.pid));
@@ -342,9 +332,9 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   await assert.rejects(() => manager.message(h2.subagentId, 'hi'), /不支持续聊/);
 });
 
-test('message：idle 续聊流转（idle→running→idle），resume 拿到回填句柄，二轮通知', async () => {
+test('message：idle 续聊在 manager 入口直接报 unavailable（record 不翻转，无二轮通知）', async () => {
   const c = ctx();
-  const { manager, runner, records, slots } = buildManager();
+  const { manager, runner, records } = buildManager();
   const h = await manager.start({ task: '对话任务书', slug: 'chat-demo', conversation: true }, c);
   await waitFor(() => runner.startCalls.length === 1);
   runner.finishAll({ status: 'closed', response: '第一轮回答', sessionId: 'sess-chat-1' });
@@ -356,22 +346,17 @@ test('message：idle 续聊流转（idle→running→idle），resume 拿到回�
   assert.equal(idle1.rounds, 1); // 完成计数：首轮成功收尾 0→1
   assert.equal(idle1.exec.sessionId, 'sess-chat-1');
 
-  const r = await manager.message(h.subagentId, '追问：详细说说');
-  assert.equal(r.status, 'running');
-  assert.equal(r.round, 2); // 即将开始的轮号 = 已完成 + 1
-  const idle2 = await waitFor(() => {
-    const rec = records.get(h.subagentId);
-    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
-  });
-  assert.equal(runner.resumeCalls.length, 1);
-  assert.equal(runner.resumeCalls[0].exec.sessionId, 'sess-chat-1'); // 首轮回填的句柄
-  assert.equal(runner.resumeCalls[0].message, '追问：详细说说');
-  assert.equal(idle2.status, 'idle');
-  // 第二封完成通知（首轮 + 续聊轮各一封）
-  await waitFor(() => envelopeCount(c.targetSessionId) >= 2);
-  const second = readEnvelopes(c.targetSessionId).at(-1);
-  assert.ok(second.content.includes('续聊回复:追问：详细说说'));
-  assert.equal(slots.running(), 0);
+  // 续聊执行线已随 app-server 常驻化重构移除（P3 回归）：入口即报明确
+  // unavailable，不起轮——调用方拿到清晰错误而非深层异常
+  await assert.rejects(
+    () => manager.message(h.subagentId, '追问：详细说说'),
+    (e) => /续聊暂不可用/.test(e.message) && /P3/.test(e.message) && /重新 start/.test(e.message),
+  );
+  const idle2 = records.get(h.subagentId);
+  assert.equal(idle2.status, 'idle', 'record 不发生 idle→running 翻转');
+  assert.equal(idle2.rounds, 1, '入口报错不产生轮，完成计数不动');
+  await sleep(30);
+  assert.equal(envelopeCount(c.targetSessionId), 1, '无二轮通知');
 });
 
 test('cancel（有句柄）：杀进程 + record 落 cancelled + 不发通知', async () => {
@@ -497,7 +482,7 @@ test('R2 回归：start 同步抛错 + wait=false → 句柄正常返回、recor
   }
 });
 
-test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', async () => {
+test('worktree 端口缺省占位：worktree=true 报可操作错误，且不产生 record', async () => {
   const { manager, records } = buildManager(); // 不注入 worktree → noOp 占位
   await assert.rejects(
     () => manager.start({ task: '隔离任务书', slug: 'wt-missing', worktree: true }, ctx()),
@@ -638,8 +623,8 @@ test('notify 三态（MF6）：mailbox 无 target=none（socket/CLI 面）；mai
     && m2.records.get(pollWithTarget.subagentId).status === 'closed');
 });
 
-test('notify 三态（MF6）：wait=true 路径与 message 续聊句柄同款语义', async () => {
-  const { manager, runner, records } = buildManager();
+test('notify 三态（MF6）：wait=true 路径句柄同款 none 语义', async () => {
+  const { manager, runner } = buildManager();
 
   // wait=true + 无 target → 'none'（结果已同步在手，字段语义仍如实标通道）。
   // FakeRunner 的 done 挂起：先拿 promise、触 finish、再 await（直接 await 会永久挂起）
@@ -649,34 +634,6 @@ test('notify 三态（MF6）：wait=true 路径与 message 续聊句柄同款语
   const fin = await finP;
   assert.equal(fin.status, 'closed');
   assert.equal(fin.notify, 'none');
-
-  // message 续聊：句柄 notify 取 record 的 targetSessionId（create 时落盘）
-  const noT = await manager.start(
-    { task: '无target对话任务书', slug: 'chat-no-target', conversation: true },
-    { cwd: TMP },
-  );
-  await waitFor(() => runner.startCalls.length === 2);
-  runner.finishAll({ status: 'closed', response: '首轮回答' });
-  await waitFor(() => {
-    const r = records.get(noT.subagentId);
-    return r && r.status === 'idle' ? r : null;
-  });
-  const msgNoT = await manager.message(noT.subagentId, '追问');
-  assert.equal(msgNoT.notify, 'none', '无 target 的 conversation 任务，续聊句柄同款 none');
-
-  const c = ctx();
-  const hasT = await manager.start(
-    { task: '有target对话任务书', slug: 'chat-has-target', conversation: true },
-    c,
-  );
-  await waitFor(() => runner.startCalls.length === 3);
-  runner.finishAll({ status: 'closed', response: '首轮回答' });
-  await waitFor(() => {
-    const r = records.get(hasT.subagentId);
-    return r && r.status === 'idle' ? r : null;
-  });
-  const msgHasT = await manager.message(hasT.subagentId, '追问');
-  assert.equal(msgHasT.notify, 'mailbox');
 });
 
 test('close：运行中任务先取消再终态化；worktree 清理被调用', async () => {
@@ -879,7 +836,6 @@ class AsyncExecPidRunner {
     }
     this._resolveDone(result);
   }
-  resume() { throw new Error('测试用 runner 不支持 resume'); }
   alive(x) { return Boolean(x && this.livePids.has(x.pid)); }
 }
 
@@ -924,7 +880,7 @@ test('exec 异步回填 pid：running 事件无 pid 时追加 update 事件，�
   assert.equal(fin.exec.pid, 41001, '终态 exec 重写保住 pid');
 });
 
-test('conversation 首轮 wait=true 返回 rounds=1；续聊失败轮不计（E3 回归）', async () => {
+test('conversation 首轮 wait=true 返回 rounds=1；续聊入口报错不动 record（E3 回归）', async () => {
   const c = ctx();
   const { manager, runner, records } = buildManager();
   setTimeout(() => runner.finishAll({ status: 'closed', response: '首轮回答', sessionId: 'sess-rounds-1' }), 20);
@@ -935,17 +891,11 @@ test('conversation 首轮 wait=true 返回 rounds=1；续聊失败轮不计（E3
   assert.equal(res.status, 'idle', 'conversation 首轮完成终态 idle（非 closed）');
   assert.equal(res.rounds, 1, 'wait=true 投影必须带完成计数（E3 断言面，此前缺字段）');
 
-  // 续聊失败轮：resume 抛错（core 面无 resume 入口的真实形态）→ error 终态，
-  // rounds 维持 1——「成功完成的轮数」语义，失败轮不得虚增
-  runner.resume = () => { throw new Error('CoreRunner.resume: core zcode engine 的 EnginePort 面无 resume 入口'); };
-  const r = await manager.message(res.subagentId, '追问');
-  assert.equal(r.status, 'running');
-  const fin = await waitFor(() => {
-    const rec = records.get(res.subagentId);
-    return rec && rec.status === 'error' ? rec : null;
-  });
-  assert.match(fin.error, /无 resume 入口/);
-  assert.equal(fin.rounds, 1, '失败轮不计入完成数');
+  // 续聊执行线已移除（P3 回归）：入口即报明确 unavailable——record 停在
+  // idle、rounds 维持 1，「成功完成的轮数」语义不受影响（无轮产生即无计数扰动）
+  await assert.rejects(() => manager.message(res.subagentId, '追问'), /续聊暂不可用/);
+  assert.equal(records.get(res.subagentId).status, 'idle', '入口报错不翻转 record');
+  assert.equal(records.get(res.subagentId).rounds, 1, '报错不计入完成数');
 });
 
 test('排队期 cancel：槽位占满时取消 → 零 spawn 直接终态化', async () => {
@@ -998,7 +948,6 @@ test('同 id 操作串行化：close 的 await 窗口内并发 message 不越序
   await closeP;
   const rec = records.get(h.subagentId);
   assert.equal(rec.status, 'closed', '终态 closed，未被迟到的 message 再起轮');
-  assert.equal(runner.resumeCalls.length, 0, '迟到 message 未产生 resume 轮');
 });
 
 test('_withLock：同 id 排队按到达序执行，链空自清，不同 id 并行', async () => {
@@ -1070,7 +1019,7 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 单轮降级 / 未请�
   }
 });
 
-test('thinking 标注：resume 轮不改写首轮标注（会话级设置随会话驻留）', async () => {
+test('thinking 标注：conversation 首轮回填值随 idle 终态保留（会话级设置）', async () => {
   const runner = runnerWithKind('appserver');
   const { manager, runner: r, records } = buildManager({ runner });
   const h = await manager.start(
@@ -1080,15 +1029,6 @@ test('thinking 标注：resume 轮不改写首轮标注（会话级设置随会�
   r.finishAll({ status: 'closed', response: '首轮', thinking: 'low', sessionId: 'sess-think-1' });
   await waitFor(() => records.get(h.subagentId).status === 'idle');
   assert.equal(records.get(h.subagentId).thinking, 'low');
-
-  // resume 轮无 create 面（thinking 是会话级），result 无 thinking 字段也不得
-  // 把首轮的 'low' 改写成 null
-  await manager.message(h.subagentId, '续聊');
-  const idle2 = await waitFor(() => {
-    const rec = records.get(h.subagentId);
-    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
-  });
-  assert.equal(idle2.thinking, 'low', 'resume 轮不改写 thinking 标注');
 });
 
 test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 record', async () => {
@@ -1146,8 +1086,8 @@ test('F4 工具限制未生效标注（G6 对称）：spawn+请求了 allowlist 
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.toolsNote, undefined, '未请求 tools 不落 toolsNote');
   }
-  // ④ spawn 通道仅请求 denylist：deny 并集落引擎 --disallowed-tools 硬生效
-  // （runner-core mergeDenyTools），无失效面——落「未生效」标注即失真，不得标
+  // ④ spawn 通道仅请求 denylist：deny 并集在 runner-core 侧去重后落引擎
+  // --disallowed-tools 硬生效，无失效面——落「未生效」标注即失真，不得标
   {
     const runner = runnerWithKind('spawn');
     const { manager, runner: r, records } = buildManager({ runner });

@@ -176,7 +176,7 @@ test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', as
   const record = { subagentId: 'sa-poll', targetSessionId: HOST_SESSION };
 
   const res = await p.notifyCompletion(record, 's');
-  assert.deepStrictEqual(res, { delivered: false, guidance: 'poll via list' });
+  assert.deepStrictEqual(res, { delivered: false });
   assert.deepStrictEqual(listAllFiles(root), [], '零文件写入');
 
   const g = p.pollingGuidance('sa-poll');

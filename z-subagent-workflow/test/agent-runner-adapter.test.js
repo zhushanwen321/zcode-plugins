@@ -15,7 +15,7 @@
  *   拒且文案与 core agent-registry 同源；缺省 → resolveDefault =
  *   general-purpose 内置角色——W6b）。
  *
- * 隔离：fake zsw RunnerPort + fake ModelRouter，零引擎零真实 HOME。
+ * 隔离：fake zsw RunnerPort，零引擎零真实 HOME。
  */
 
 const test = require('node:test');
@@ -61,15 +61,9 @@ function makeFakeZswRunner({ result, kind = 'appserver', hold = false } = {}) {
   };
 }
 
-/** fake ModelRouter（2c 后执行链不再消费；保留注入形态对齐 orchestration-host 组装面）。 */
-function makeFakeRouter() {
-  return { resolveDefault: () => 'prov/model-x' };
-}
-
-function makeAdapter(runner, router, resolver) {
+function makeAdapter(runner, resolver) {
   return createAgentRunnerAdapter({
     runner: runner || makeFakeZswRunner(),
-    modelRouter: router || makeFakeRouter(),
     resolver,
     fallbackCwd: WORKDIR,
   });
@@ -77,8 +71,7 @@ function makeAdapter(runner, router, resolver) {
 
 test('taskCtx 契约：start 收到 prompt/cwd/modelRef/timeoutMs/engine（无 runEnv），done 后 release', async () => {
   const runner = makeFakeZswRunner();
-  const router = makeFakeRouter();
-  const adapter = makeAdapter(runner, router);
+  const adapter = makeAdapter(runner);
   const signal = new AbortController().signal;
 
   const r = await adapter.run({
@@ -176,8 +169,7 @@ test('opts.agent → resolver.resolve（prompt 拼角色段）；非法引用/�
     resolveDefault: () => null,
   };
   const runner = makeFakeZswRunner();
-  const router = makeFakeRouter();
-  const adapter = makeAdapter(runner, router, resolver);
+  const adapter = makeAdapter(runner, resolver);
 
   const r = await adapter.run({ prompt: 'p', agent: '/a/reviewer.md' }, undefined);
   assert.ok(runner.state.starts[0].prompt.includes('你是审查员'), 'agent .md 正文拼进 prompt');
@@ -205,7 +197,7 @@ test('opts.agent 缺省 → resolveDefault 加载 general-purpose 角色（与 p
     resolveDefault: () => ({ name: 'general-purpose', body: '你是通用兜底 agent', filePath: '/a/general-purpose.md' }),
   };
   const runner = makeFakeZswRunner();
-  const adapter = makeAdapter(runner, makeFakeRouter(), resolver);
+  const adapter = makeAdapter(runner, resolver);
   await adapter.run({ prompt: 'p' }, undefined);
   assert.ok(runner.state.starts[0].prompt.includes('通用兜底 agent'), '缺省角色正文拼进 prompt');
 });

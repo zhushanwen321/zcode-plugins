@@ -292,8 +292,9 @@ class SubagentManager {
   /** 精简视图：给主 agent 扫一眼用，全量走 status。 */
   list() {
     return this.records.list()
-      // recordType 过滤：workflow record（wf- 前缀，N2-a 起写入）不经 zsub 面
-      // 露出——双池独立（README 已知边界）；旧 record 无该字段视为 subagent
+      // recordType 过滤：workflow record 不经 zsub 面露出——双池独立（README
+      // 已知边界）。wf 写入线已退役，本防御为 1.x 磁盘旧 record 兼容保留；
+      // 旧 record 无该字段视为 subagent
       .filter((r) => r.recordType === undefined || r.recordType === 'subagent')
       .map((r) => ({
       subagentId: r.subagentId,
@@ -330,8 +331,9 @@ class SubagentManager {
   }
 
   /**
-   * 向 conversation 任务投递续聊消息（仅 idle 可投递，busy 语义对齐 spawn 单轮）。
-   * 不等待本轮完成（与 start 后台语义一致），完成后再通知。
+   * 向 conversation 任务投递续聊消息。续聊执行线已随 app-server 常驻化重构
+   * 移除（P3 回归路线）：入口校验（conversation/busy/idle/text）保持既有
+   * 语义，通过即在 manager 层直接报明确 unavailable 错误，不再起轮。
    * 同 id 并发安全经 _withLock（R2）。
    */
   async message(id, text) {
@@ -366,17 +368,15 @@ class SubagentManager {
     if (typeof text !== 'string' || text.trim() === '') {
       throw new Error('message 需要 text（非空字符串，续聊消息内容）。');
     }
-    // CAS 同步占位：running 期间后续 message 走 busy 分支，天然单轮在飞。
-    // rounds 计数统一在 _completeRun 收尾时 +1（完成计数语义：首轮 done → 1，
-    // 续聊轮 done → 2）；此处只返回「即将开始的轮号」，不预置写盘——预置会让
-    // 失败轮虚增计数，且与 _completeRun 的 +1 双计。
-    this.records.transition(id, 'idle', 'running');
-    const round = (rec.rounds || 0) + 1;
-    const p = this._runResumeRound(id, text);
-    p.catch(() => {}); // 错误已落 record（error 终态），后台路径不产生 unhandledRejection
-    // notify 语义同 start 句柄（MF6）：targetSessionId 取 record（create 时已随
-    // ctx 落盘，null = 无回流通道）——续聊轮与首轮句柄不漂移
-    return { subagentId: id, status: 'running', round, notify: this._notifyLabel(rec.targetSessionId) };
+    // 续聊执行线已随 app-server 常驻化重构移除（core 引擎面无 resume 入口，
+    // 下游起轮链恒败，死代码已删）；冷续聊回归路线已登记 P3。入口层直接报
+    // 明确 unavailable——record 不再 idle→running→error 翻转（失败轮不落盘、
+    // rounds 不动），调用方拿到的是清晰错误而非深层异常
+    throw new Error(
+      `subagent "${id}" 续聊暂不可用：续聊执行线已随 app-server 常驻化重构移除，`
+      + '冷续聊回归路线已登记 P3。'
+      + '恢复指引：需要多轮交互请重新 start 派发新任务（上下文写进 task 文本）。'
+    );
   }
 
   // ------------------------------------------------------- cancel / close
@@ -505,98 +505,58 @@ class SubagentManager {
 
   /** 首轮：占 pending（cancel 等待用），完成后清理句柄表。 */
   _runFirstRound(id, taskCtx) {
-    const p = this._execRound(id, { kind: 'first', taskCtx })
+    const p = this._execRound(id, taskCtx)
       .finally(() => { this.pending.delete(id); this.handles.delete(id); });
     this.pending.set(id, p);
     return p;
   }
 
-  /**
-   * 续聊轮：resume 句柄经 onHandle 挂入 handles（S-6① 接线，取消可杀轮进程，
-   * 同 start 的 pending 句柄管理）；runner 无句柄时维持无句柄路径。
-   */
-  _runResumeRound(id, text) {
-    const p = this._execRound(id, { kind: 'resume', text })
-      .finally(() => { this.pending.delete(id); this.handles.delete(id); });
-    this.pending.set(id, p);
-    return p;
-  }
-
-  async _execRound(id, plan) {
+  async _execRound(id, taskCtx) {
     let release;
     try {
       release = await this.slots.acquire(this._depth());
       const cur = this.records.get(id);
-      const expectStatus = plan.kind === 'first' ? 'created' : 'running';
-      if (!cur || cur.status !== expectStatus) {
+      if (!cur || cur.status !== 'created') {
         // 排队期间被 cancel/close：终态已定，不再启动进程（槽位照常释放）
         return { record: cur, result: null, outputFile: null, patchFile: null };
       }
+      // exec 异步回填的持久化通道（A5 修复）：runner（core 引擎）返回的 exec
+      // 是可变引用——pid 在 spawn 后、sessionId 在 done 后才回填，而 running
+      // 转换事件序列化于 spawn 之前（无 pid）。不补落盘的话 standby 从磁盘
+      // rebuild 后 alive 探活无依据，孤儿进程被误判 dead。经 onExec 钩子在
+      // 字段就绪时追加 update 事件，磁盘 exec 与内存保持同步。
+      // created 期（transition 前）暂存：update 若先于 running 事件落盘，
+      // 会被转换事件携带的旧 exec 覆盖（append-only 按序重放），transition
+      // 后立即 flush。当前 runner 的首次 onExec 必在 routeEngine 异步段，
+      // 天然晚于同步的 transition——暂存是对未来同步回调实现的防御。
+      let stagedExec = null;
+      const handle = this.runner.start(taskCtx, {
+        onExec: (snapshot) => {
+          const cur0 = this.records.get(id);
+          if (cur0 && cur0.status === 'created') { stagedExec = snapshot; return; }
+          this.records.update(id, { exec: snapshot });
+        },
+      });
+      this.handles.set(id, handle);
+      // exec 随 running 事件持久化（此刻无 sessionId；done 后由 _completeRun
+      // 重写回填版——崩溃恢复探活与 P3 冷续聊锚点的磁盘依据）
+      this.records.transition(id, 'created', 'running', { exec: handle.exec });
+      if (stagedExec !== null) this.records.update(id, { exec: stagedExec });
       let result;
-      if (plan.kind === 'first') {
-        // exec 异步回填的持久化通道（A5 修复）：runner（core 引擎）返回的 exec
-        // 是可变引用——pid 在 spawn 后、sessionId 在 done 后才回填，而 running
-        // 转换事件序列化于 spawn 之前（无 pid）。不补落盘的话 standby 从磁盘
-        // rebuild 后 alive 探活无依据，孤儿进程被误判 dead。经 onExec 钩子在
-        // 字段就绪时追加 update 事件，磁盘 exec 与内存保持同步。
-        // created 期（transition 前）暂存：update 若先于 running 事件落盘，
-        // 会被转换事件携带的旧 exec 覆盖（append-only 按序重放），transition
-        // 后立即 flush。当前 runner 的首次 onExec 必在 routeEngine 异步段，
-        // 天然晚于同步的 transition——暂存是对未来同步回调实现的防御。
-        let stagedExec = null;
-        const handle = this.runner.start(plan.taskCtx, {
-          onExec: (snapshot) => {
-            const cur0 = this.records.get(id);
-            if (cur0 && cur0.status === 'created') { stagedExec = snapshot; return; }
-            this.records.update(id, { exec: snapshot });
-          },
-        });
-        this.handles.set(id, handle);
-        // exec 随 running 事件持久化（此刻无 sessionId；done 后由 _completeRun
-        // 重写回填版——重启后 resume 依赖它）
-        this.records.transition(id, 'created', 'running', { exec: handle.exec });
-        if (stagedExec !== null) this.records.update(id, { exec: stagedExec });
-        try {
-          result = await handle.done;
-        } finally {
-          this.handles.delete(id);
-        }
-      } else {
-        // resume 句柄接线（S-6①）：两层取法——①onHandle（SpawnRunner 轮启动
-        // 后同步回调 {pid, cancel}）；②onHandle 未触发时兜底看返回 promise
-        // 自带的 cancel（runner-spawn 的 resume 双取法同款）。挂入 handles
-        // 让 cancel 能杀轮进程（SIGTERM→SIGKILL 链）。appserver 形态的
-        // resume 是 async 无句柄（多余参数被忽略、promise 无 cancel 属性）
-        // ——两层都取不到时维持无句柄路径（终态化 record + 注明进程可能残留）。
-        let handleSet = false;
-        const run = this.runner.resume(
-          cur.exec,
-          plan.text,
-          { timeoutMs: cur.timeoutMs },
-          (h) => {
-            if (h && typeof h.cancel === 'function') {
-              handleSet = true;
-              this.handles.set(id, { pid: h.pid, cancel: () => h.cancel() });
-            }
-          },
-        );
-        if (!handleSet && run && typeof run.cancel === 'function' && typeof run.then === 'function') {
-          this.handles.set(id, { pid: run.pid, cancel: () => run.cancel() });
-        }
-        result = await run;
+      try {
+        result = await handle.done;
+      } finally {
+        this.handles.delete(id);
       }
       const record = await this._completeRun(id, result, {
         conversation: cur.conversation === true,
-        // F4/D5：thinking 请求值随首轮下行——终态标注的判定依据（resume 轮无
-        // create 面，会话级设置随会话驻留，不改写首轮标注）
-        thinkingRequested: plan.kind === 'first' ? plan.taskCtx.thinking : undefined,
-        // F4/D6（G6 标注面对称）：CLI 工具限制中 allow 侧请求值随首轮下行——
+        // F4/D5：thinking 请求值下行——终态标注的判定依据（undefined 即不携带键）
+        thinkingRequested: taskCtx.thinking,
+        // F4/D6（G6 标注面对称）：CLI 工具限制中 allow 侧请求值随轮下行——
         // spawn 单轮通道无白名单 flag 通道，请求了 allowlist 即终态落
         // toolsNote 如实标注；deny 侧并集落引擎 --disallowed-tools 硬生效
         // （runner-core mergeDenyTools），无失效面，不参与标注判定
-        toolsRequested: plan.kind === 'first'
-          ? Boolean(plan.taskCtx.toolAllowlist)
-          : undefined,
+        toolsRequested: Boolean(taskCtx.toolAllowlist),
       });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
     } catch (err) {
@@ -812,4 +772,4 @@ class SubagentManager {
   }
 }
 
-module.exports = { SubagentManager, noOpWorktree };
+module.exports = { SubagentManager };

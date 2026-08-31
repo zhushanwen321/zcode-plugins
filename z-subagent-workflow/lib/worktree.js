@@ -278,11 +278,12 @@ async function listOrphans({ mainRepo, knownSubagentIds = [] } = {}) {
   return orphans;
 }
 
+// GitError/DirtyTreeError 不导出（无外部消费者）：调用方以 err.name 字符串识别错误类型
+// BRANCH_NS 导出：worktree-adapter 错误文案引用，避免对 'zsub/' 字面量镜像
 module.exports = {
   prepare,
   collectPatch,
   cleanup,
   listOrphans,
-  GitError,
-  DirtyTreeError,
+  BRANCH_NS,
 };

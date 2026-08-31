@@ -113,5 +113,4 @@ module.exports = {
   zswCliPath,
   DEFAULTS,
   NESTED,
-  path, os,
 };

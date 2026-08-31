@@ -8,6 +8,11 @@
  *   - outputs/ 下的结果与 patch 是用户资产，「id 不在 known 集合」可能只是
  *     record 重建窗口而非真孤儿——sweepStaleOutputs 只报告不删，删除永远
  *     需显式授权（人工或上层明确指令），本模块不越界。
+ *
+ * 现状声明：reapWorktrees 的 remove:true（授权后删）当前无生产入口——唯一
+ * 接线点 dist/mcp/server.js 启动序列恒传 remove:false（纯报告进日志），
+ * worktree 的实际删除目前为人工执行；true 分支是「显式授权后删」的预留
+ * 能力（语义由单测经真实 repo 覆盖）。
  */
 
 const fs = require('node:fs');

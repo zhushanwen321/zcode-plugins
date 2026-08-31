@@ -409,13 +409,10 @@ module.exports = {
   resolveAgent,
   resolveDefaultAgent,
   agentScanRoots,
-  expandRootExtras,
-  fourRoots,
   parseAgentMd, // 导出供单测直接验证解析逻辑
   normalizeAgentRef,
   invalidAgentRefMessage,
   agentFileNotFoundMessage,
-  DEFAULT_AGENT_NAME,
   list: (cwd) => defaultDiscovery.list(cwd),
   resolve: (ref, cwd) => defaultDiscovery.resolve(ref, cwd),
   resolveDefault: (cwd) => defaultDiscovery.resolveDefault(cwd),

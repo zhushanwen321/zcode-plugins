@@ -155,6 +155,18 @@ function startCapabilityArgs(args) {
   };
 }
 
+/**
+ * start 的 --schema 解析（daemon 与 --local 两形态共用，防漂移）：非绝对路径
+ * 的 .json 文件路径读成内容字符串，其余值（JSON 字面量 / 绝对路径 / 未传）
+ * 原样透传给 manager。
+ */
+function schemaArg(schema) {
+  if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
+    return require('node:fs').readFileSync(schema, 'utf8');
+  }
+  return schema;
+}
+
 // ------------------------------------------------------ workflow 子命令
 
 /** workflow 九 action（与 zflow 语义层 action 枚举同源；script-* 三 action 为 W8 创作闭环）。 */
@@ -772,10 +784,7 @@ async function runDaemonCommand(cmd, args, rest) {
   switch (cmd) {
     case 'start': {
       if (!args.task || !args.slug) usage();
-      let schema = args.schema;
-      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
-        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径（与本地模式同款解析）
-      }
+      const schema = schemaArg(args.schema);
       // wait 刻意不传：执行体由 daemon 持有，CLI 退出不丢——异步启动是安全
       // 默认；--wait 由 runDaemonStartWait 的 sugar 处理（不透传给 daemon）
       params = {
@@ -989,10 +998,7 @@ async function main() {
         );
         process.exit(1);
       }
-      let schema = args.schema;
-      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
-        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径
-      }
+      const schema = schemaArg(args.schema);
       result = await manager.start({
         task: args.task,
         slug: args.slug,
@@ -1049,11 +1055,12 @@ async function main() {
 module.exports = {
   parseArgs,
   csv,
-  // W8 创作闭环（D-6）+ workflow 引用契约（D-4）共享实现：CLI 本地路径与
-  // daemon socket 面单一来源，防两入口漂移
-  workflowScriptDirs,
+  // W8 创作闭环（D-6）+ workflow 引用契约（D-4）：validateWorkflowRef、
+  // script-* 三 action、runningScriptPredicate 供 daemon socket 面
+  // （dist/mcp/server.js 的 zflow handler）经 require 消费，CLI 与 socket
+  // 两入口单一来源防漂移；workflowScriptDirs/requireScriptActionName 仅被
+  // 上述 action 与本文件组帧逻辑内部消费，属实现细节，不外导
   validateWorkflowRef,
-  requireScriptActionName,
   scriptGenerateAction,
   scriptSaveAction,
   scriptDeleteAction,

@@ -128,7 +128,7 @@ function extractTextInline(readResult) {
  */
 async function buildManager(t, opts = {}) {
   const assembled = await assembleManager({ resolver: agentDiscovery.createAgentDiscovery({ homeDir: USER_HOME }), ...opts }); // async：调用方需 await
-  // assembleManager 产物不直接带 runner 键（manager/wfHost/notifier/runnerKind），
+  // assembleManager 产物不直接带 runner 键（manager/wfHost/notifier），
   // 经 manager.runner 取（SubagentManager 构造注入的端口实例）；产物未来补
   // runner 键则优先取之
   const runner = (assembled.manager && assembled.manager.runner) || assembled.runner;
@@ -374,20 +374,18 @@ test('E3 conversation：首轮 idle（conversation 标志作用于 record 状态
   assert.equal(res.status, 'idle', `首轮失败: ${res.error}`); // conversation 首轮完成 → idle（非 closed）
   assert.equal(res.rounds, 1, '首轮完成计数');
 
-  // 续聊轮：明确报错（core 面缺口的可操作暴露，record 收敛 error 终态）
+  // 续聊轮：manager 入口直接拒绝（执行线已随 app-server 常驻化重构移除，
+  // 冷续聊回归登记 P3）——record 不起轮、停留 idle，调用方拿到清晰错误
   CALLS.messages += 1;
-  const r = await manager.message(res.subagentId, '暗号是什么？只回复暗号本身。');
-  assert.equal(r.status, 'running');
-  const fin = await waitFor(() => {
-    const rec = manager.status(res.subagentId);
-    return ['idle', 'error', 'closed'].includes(rec.status) ? rec : null;
-  }, 20_000);
-  assert.equal(fin.status, 'error', '续聊轮必须落 error 终态（resume 不可用）');
-  assert.match(fin.error, /无 resume 入口/);
-  assert.match(fin.error, /重新 start/);
+  await assert.rejects(
+    manager.message(res.subagentId, '暗号是什么？只回复暗号本身。'),
+    /续聊暂不可用/,
+  );
+  const fin = manager.status(res.subagentId);
+  assert.equal(fin.status, 'idle', '续聊被入口拒绝，record 停留 idle（不再 idle→running→error 翻转）');
 
-  // E2+E3 同 target 共 2 封（首轮完成通知 ×2；续聊失败轮的 notify 门卫：
-  // cancel 语义不投，error 终态照投一封失败通知）
+  // E2+E3 同 target：E3 只贡献首轮完成通知 1 封（续聊被入口拒绝，失败轮
+  // 不再落盘，也不产生失败通知）
   await sleep(GAP_MS);
 });
 
@@ -652,15 +650,12 @@ test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 
     assert.ok(Number.isInteger(rec.exec.pid), 'spawn 形态 exec.pid 回填（onChildSpawned）');
   }
 
-  // 续聊面（同 E3 契约）：明确报错不静默
-  const r = await manager.message(res.subagentId, '直接回复文本：完成。禁止使用任何工具。');
-  assert.equal(r.status, 'running');
-  const fin = await waitFor(() => {
-    const x = manager.status(res.subagentId);
-    return ['idle', 'error', 'closed'].includes(x.status) ? x : null;
-  }, 20_000);
-  assert.equal(fin.status, 'error');
-  assert.match(fin.error, /无 resume 入口/);
+  // 续聊面（同 E3 契约）：manager 入口直接拒绝，record 停留 idle 不翻转
+  await assert.rejects(
+    manager.message(res.subagentId, '直接回复文本：完成。禁止使用任何工具。'),
+    /续聊暂不可用/,
+  );
+  assert.equal(manager.status(res.subagentId).status, 'idle', '续聊被入口拒绝，record 停留 idle');
   await sleep(GAP_MS);
 });
 

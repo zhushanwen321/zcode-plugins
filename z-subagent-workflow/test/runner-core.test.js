@@ -474,7 +474,7 @@ test('数据落点推导：真 ZcodeEngine 定向 spawn + fake launch → <ZSW_R
 
   const core = coreRef.requireCore();
   const engine = core.createZcodeEngine({
-    engineDataDir: () => config.zswRoot(), // 与 runner-core zswEngineDataDir 同源
+    engineDataDir: () => config.zswRoot(), // 与 runner-core 引擎数据根同源（zswRoot 单一 SSOT）
     sources: { v2ConfigPath: v2Path },
     launch: fakeLaunchWith(stdoutText, envSink),
     // 定向 spawn：跳过缺省 probe 门控（否则真机会对真 CLI 跑 appserver 冒烟
