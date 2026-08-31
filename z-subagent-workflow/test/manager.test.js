@@ -1103,7 +1103,7 @@ test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 
   assert.equal(rec2.get(res2.subagentId).errorKind, undefined);
 });
 
-test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 allowlist → toolsNote；deny-only / appserver / 未请求 → 不落', async () => {
+test('F4 工具限制未生效标注（G6 对称）：spawn+请求了 allowlist → toolsNote；deny-only / appserver / 未请求 → 不落', async () => {
   const settle = (records, id) =>
     waitFor(() => {
       const r = records.get(id);

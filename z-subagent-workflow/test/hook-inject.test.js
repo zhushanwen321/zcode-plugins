@@ -239,14 +239,14 @@ test('预算边界（subagents）：恰 15 条不截（无兜底行）；16 条�
   assert.ok(over.includes('完整清单：zsw agents'), '截断态兜底指引在场');
 });
 
-test('预算边界（workflows）：恰 10 条不截；11 条截尾 + 「完整清单：zflow scripts」兜底', () => {
+test('预算边界（workflows）：恰 10 条不截；11 条截尾 + 「完整清单：zsw workflow --action scripts」兜底', () => {
   const mk = (n) => Array.from({ length: n }, (_, i) => workflow(`wf-${String(i).padStart(2, '0')}`));
-  assert.ok(!render({ workflows: mk(10) }).includes('完整清单：zflow scripts'), '恰预算不截');
+  assert.ok(!render({ workflows: mk(10) }).includes('完整清单：zsw workflow --action scripts'), '恰预算不截');
   const over = render({ workflows: mk(11) });
   const names = [...over.matchAll(/<workflow><name>([^<]+)<\/name>/g)].map((m) => m[1]);
   assert.equal(names.length, 10, '11 条 → 保留 10');
   assert.ok(names.includes('wf-09') && !names.includes('wf-10'), '尾部裁');
-  assert.ok(over.includes('完整清单：zflow scripts'), '兜底指引在场');
+  assert.ok(over.includes('完整清单：zsw workflow --action scripts'), '兜底指引在场');
 });
 
 test('20+ agents：subagents 段码点序截尾（非 locale 序）+ 兜底指引；workflows/models 段不受影响完整在场', () => {

@@ -14,7 +14,7 @@
  *   agents/       全量 .md（core ≥0.4.0 内置 agent 模板；源无该目录则跳过且
  *                 capabilities.agentsAssets=false——兼容旧版本 --npm 刷新）
  *   dist/         源有即拷；源存在 dist.bundle/index.cjs 时优先拷 dist.bundle/
- *                 （为 core 0.3.0 自包含 bundle 预留），统一落位 vendored dist/
+ *                 （为 core 0.4.0 自包含 bundle 预留），统一落位 vendored dist/
  *   package.json  仅重写 name/version 两个字段（精简版，依赖声明绝不 vendor 进来）
  *
  * 源二选一：
@@ -134,7 +134,7 @@ if (fs.existsSync(srcAgentsDir)) {
   copyTree(srcAgentsDir, path.join(TARGET, 'agents'), (name) => name.endsWith('.md'));
 }
 
-// dist 源选择：dist.bundle/index.cjs 存在则优先（0.3.0 自包含 bundle 预留），
+// dist 源选择：dist.bundle/index.cjs 存在则优先（0.4.0 自包含 bundle 预留），
 // 拷入 vendored dist/ —— lib/core-ref.js 的入口路径跨 core 版本稳定
 const distIsBundle = fs.existsSync(path.join(srcRoot, 'dist.bundle', 'index.cjs'));
 const distSrc = distIsBundle ? path.join(srcRoot, 'dist.bundle') : path.join(srcRoot, 'dist');

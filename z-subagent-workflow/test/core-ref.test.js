@@ -115,7 +115,7 @@ test('错误路径：VENDOR-MANIFEST.json 缺失 → vendorManifest 报错含刷
 });
 
 test('恢复指引分流：manifest source 为 local: 前缀时指向 --local 通道（防 --npm 刷回扩面前旧产物）', () => {
-  // 当前真实 vendored 即 local 源（core 0.3.0 未发 npm）——错误指引会让人把
+  // 当前真实 vendored 即 local 源（core 0.4.0 未发 npm）——错误指引会让人把
   // vendored 副本刷回 0.2.0 npm 旧 tarball（无自包含 bundle），本测试钉住分流
   const { mod, tmp } = makeFakeCoreRef({
     'package.json': '{"version":"0.2.0"}',

@@ -41,7 +41,7 @@ const WORKFLOWS_MAX_ENTRIES = 10;
 
 /** 截断兜底指引（段末追加行；文案与 zsw CLI 查询面对齐）。 */
 const AGENTS_TRUNCATION_NOTICE = '  …（截断，完整清单：zsw agents）';
-const WORKFLOWS_TRUNCATION_NOTICE = '  …（截断，完整清单：zflow scripts）';
+const WORKFLOWS_TRUNCATION_NOTICE = '  …（截断，完整清单：zsw workflow --action scripts）';
 
 /**
  * zsw 版 subagents 段引导（agent 参数契约 = W6b 收紧后语义：仅 .md 绝对路径，

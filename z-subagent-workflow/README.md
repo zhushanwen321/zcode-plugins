@@ -183,7 +183,7 @@ zsub 执行链（runner/spawn 驱动/模型执行解析）已整体替换为 ven
 **其他行为差异**：
 - 工具 denylist 升级：CLI `--deny-tools` 与 frontmatter `disallowedTools` **并集去重**后落引擎 `--disallowed-tools` flag（旧 spawn 通道只消费 frontmatter 侧；`--allow-tools` 白名单仍无 flag 通道，维持 prompt 软约束）。
 - protocol-drift（`errorKind`）分类面随 JSON-RPC 通道消失退役（字段保留兼容旧 record 读取）。
-- thinking / allow-tools 请求值在 zsw 契约面无生效回执（runner 不回填 thinking 生效档位；allow-tools 无 flag 通道），record 维持 `'null (spawn 降级)'` / `toolsNote` 如实标注（标注字面沿用 2c 旧称）。
+- thinking / allow-tools 请求值在 zsw 契约面无生效回执（runner 不回填 thinking 生效档位；allow-tools 无 flag 通道），record 维持 `'null (请求未生效：引擎通道未映射)'` / `toolsNote` 如实标注 `'null (工具限制未生效：引擎通道未映射)'`。
 - 嵌套防护升级：core 公共 nesting-guard（`XYZ_AGENT_SUBAGENT=1` + 剥离 `ZSW_NESTED` 旧标记，防孙代误判嵌套层）。
 
 ## subagent-core 收口 break 变更（agent 发现 core 化 / 引用契约统一 / 注入三段 XML / 创作闭环）
@@ -316,7 +316,7 @@ Current default model: builtin:bigmodel-coding-plan/GLM-5.3-Flash. … Snapshot 
 </available_provider_models>
 ```
 
-（分段条目预算语义：subagents 段条目预算 15、workflows 段 10，条目按 name 码点序排、超预算截尾部条目并追加「完整清单：zsw agents / zflow scripts」兜底指引行；models 段完整永不截。内置条目无截断豁免——码点序统一截尾行为可预测，兜底指引可恢复。旧单块的 45 行总预算与两层渲染已随 W7 退役。）
+（分段条目预算语义：subagents 段条目预算 15、workflows 段 10，条目按 name 码点序排、超预算截尾部条目并追加「完整清单：zsw agents / zsw workflow --action scripts」兜底指引行；models 段完整永不截。内置条目无截断豁免——码点序统一截尾行为可预测，兜底指引可恢复。旧单块的 45 行总预算与两层渲染已随 W7 退役。）
 
 生效条件：
 

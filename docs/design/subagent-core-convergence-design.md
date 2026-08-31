@@ -248,7 +248,7 @@ zcode 会话（仅 session start）:
 
 | 候选 | 长期合理性 | 短期成本 | 风险 |
 |---|---|---|---|
-| **a. 三个 format 纯函数 + xml-injection 下沉 core 并出 barrel，zsw hook-inject 改调 core 渲染（推荐）** | 高——渲染纯函数已零 pi 依赖（核实点 5），下沉是搬运非重写；两平台格式天然一致（G3） | 中——zsw 注入块重写 + 截断策略参数化 | zsw 的 token 成本约束不能沿用原 45 行总预算：三段 XML 每条目是多行块（agent 4 行：name/description/when/location；workflow 3 行），开箱 10 内置 agents ≈ 42 行 + workflows 5+ ≈ 18 行 + models 段——45 行必爆（R1 版未做此估算，被审查击穿）。决策：**分段条目预算 + 码点序排 + 截尾**——subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）、workflows 段条目预算 10、models 段完整永不截；条目先按 name 码点序排（与 pi 侧 `sortByCodepoint` 同口径，排序函数随 W3 下沉 core——不排序时条目序 = core 合并 Map 的低优先级源先入序，截尾会系统性裁掉 project 级高优先级条目），超预算截尾部条目 + 「完整清单：zsw agents / zflow scripts」兜底指引。**内置条目无截断豁免（显式声明，R4）**：混合场景（用户条目超余量且码点序靠前）下内置角色可能被裁出注入段——开箱场景（G1 主场景，无用户条目）不触发，且码点序统一截尾行为可预测、兜底指引可恢复；两段式豁免（内置优先保留）引入额外截断序复杂度且 pi 侧无此概念，不做。开箱总量约 7.5k chars（30-40 物理行；「≈100 行级」为按注入段 XML 展开行的折算口径，实测值见 §5.3 检查点 3）（对比 pi 侧每 turn 注入同量级，zcode 仅 session start 一次，成本可接受）；具体值 W7 实测微调 |
+| **a. 三个 format 纯函数 + xml-injection 下沉 core 并出 barrel，zsw hook-inject 改调 core 渲染（推荐）** | 高——渲染纯函数已零 pi 依赖（核实点 5），下沉是搬运非重写；两平台格式天然一致（G3） | 中——zsw 注入块重写 + 截断策略参数化 | zsw 的 token 成本约束不能沿用原 45 行总预算：三段 XML 每条目是多行块（agent 4 行：name/description/when/location；workflow 3 行），开箱 10 内置 agents ≈ 42 行 + workflows 5+ ≈ 18 行 + models 段——45 行必爆（R1 版未做此估算，被审查击穿）。（此为 pi 侧多行块形态的估算前提；core 终态为单行条目渲染，物理行实测 30-40 见 §5.3 检查点 3——行数口径不用于最终预算，预算按条目数 15/10）。决策：**分段条目预算 + 码点序排 + 截尾**——subagents 段条目预算 15（开箱 10 内置 + 5 用户余量）、workflows 段条目预算 10、models 段完整永不截；条目先按 name 码点序排（与 pi 侧 `sortByCodepoint` 同口径，排序函数随 W3 下沉 core——不排序时条目序 = core 合并 Map 的低优先级源先入序，截尾会系统性裁掉 project 级高优先级条目），超预算截尾部条目 + 「完整清单：zsw agents / zsw workflow --action scripts」兜底指引（兜底指引可执行性 R2 复审修正：zflow MCP 面已下线，指引改为 CLI 真实形态）。**内置条目无截断豁免（显式声明，R4）**：混合场景（用户条目超余量且码点序靠前）下内置角色可能被裁出注入段——开箱场景（G1 主场景，无用户条目）不触发，且码点序统一截尾行为可预测、兜底指引可恢复；两段式豁免（内置优先保留）引入额外截断序复杂度且 pi 侧无此概念，不做。开箱总量约 7.5k chars（30-40 物理行；「≈100 行级」为按注入段 XML 展开行的折算口径，实测值见 §5.3 检查点 3）（对比 pi 侧每 turn 注入同量级，zcode 仅 session start 一次，成本可接受）；具体值 W7 实测微调 |
 | b. 格式各写各的，只统一字段口径 | 低——格式双实现，视觉/结构漂移 | 低 | N3 不解决 |
 | c. zsw 单块格式反向推广给 pi | 低——pi 的分段 XML 是多 injector 链式叠加的结构基础，压成单块破坏 pi 侧扩展性 | 高 | pi 侧 injector 生态被锁死 |
 
@@ -364,7 +364,7 @@ zsw 侧新增 action 面：`zflow` 扩 `script-generate/script-save/script-delet
 
 ### 5.2 版本与发版节奏
 
-- core 当前待发布 0.3.0（host-surface 扩面，已有 changeset）——**先发**，不与本设计混版；
+- core 0.3.0（host-surface 扩面，曾有 changeset）已裁决**并入 0.4.0，永不单独发布**（原「先发」计划取消，扩面随 0.4.0 落地）；
 - 本设计全部收口落 **core 0.4.0**（minor：新增资产/导出/参数化，无破坏性导出变更）；
 - pi-sw 随 core 0.4.0 同步发版（资产迁移 + tools 行为变化在其 CHANGELOG 标注）；
 - zsw 在 core 0.4.0 发布后 `vendor-subagent-core.js --npm 0.4.0` 刷新，随 zsw 2.0.0 一并出（D-4 收紧是 major break，正好同窗）。

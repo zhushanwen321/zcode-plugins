@@ -69,7 +69,7 @@ function requireCore() {
         `加载 vendored subagent-core 主入口失败（${entry}: ${err.code ? `${err.code} ` : ''}${err.message}）。`
         + '当前 vendored 主入口非自包含（ajv/yaml/proper-lockfile 外部依赖未 vendor，'
         + 'VENDOR-MANIFEST.json 的 capabilities.selfContainedIndex 如实记录）。'
-        + '恢复路径：等 @zhushanwen/subagent-core 0.3.0 自包含 bundle 发布后，'
+        + '恢复路径：等 @zhushanwen/subagent-core 0.4.0 自包含 bundle 发布后，'
         + '在本地 core checkout 构建并执行 node scripts/vendor-subagent-core.js --local <core-path> 刷新'
         + '（规范：zcode-plugin-workspace 仓 docs/standards.md「vendored 核心包消费」节）。',
       );
