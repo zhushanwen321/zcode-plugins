@@ -295,8 +295,11 @@ test('normalizeRunParams：reviewers 显式报错 / 旧 sugar 映射 / 无法映
   assert.equal(n5.args.target, 'the-target');
   const n6 = normalizeRunParams({ workflow: 'map-reduce', operation: 'op', items: ['a', 'b'] }, mapReduceMeta);
   assert.deepEqual(n6.args.items, ['a', 'b']);
-  // script: 用户脚本（meta 契约缺失）：白名单外透传 + task 并入
+  // U3：script: 剥壳残迹已删（直调导出面与头注契约一致）——带前缀 ref 不再
+  // 剥壳，原样走 isBuiltin=false 用户脚本分支（meta 契约缺失：白名单外透传 +
+  // task 并入），scriptRef 原样保留不剥
   const n7 = normalizeRunParams({ workflow: 'script:mine', task: 't', customKey: 'v', workdir: '/w' }, undefined);
+  assert.equal(n7.scriptRef, 'script:mine');
   assert.equal(n7.args.task, 't');
   assert.equal(n7.args.customKey, 'v');
   assert.equal(n7.args.workdir, undefined);

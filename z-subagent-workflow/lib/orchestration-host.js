@@ -271,7 +271,10 @@ function normalizeRunParams(params, meta) {
   const warnings = [];
   const workflow = typeof params.workflow === 'string' ? params.workflow : '';
   if (workflow === '') throw workflowRequiredError();
-  const name = workflow.replace(/^script:/, '');
+  // U3：script: 剥壳已退役（本文件头注 registry 段契约：入口三面拒收，host
+  // 层收紧）——直调导出面不再剥壳放行，带前缀 ref 原样参与判定（不命中内置
+  // 名 → isBuiltin=false 用户脚本分支），与入口拒收口径一致，不留第二套口径
+  const name = workflow;
   const isBuiltin = BUILTIN_WORKFLOW_NAMES.includes(name);
   const task = typeof params.task === 'string' ? params.task : '';
   const model = typeof params.model === 'string' && params.model !== '' ? params.model : undefined;

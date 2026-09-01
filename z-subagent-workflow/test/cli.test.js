@@ -391,6 +391,17 @@ test('workflow 引用契约（D-4/D-E3）：script: 前缀拒收；saved 裸名�
   const tildeNotJs = await run(['workflow', '--workflow', '~/notes.txt', '--task', 't', '--workdir', TMP]);
   assert.equal(tildeNotJs.code, 1);
   assert.match(tildeNotJs.stderr, /不是 \.js 脚本路径/);
+  // U2：parent_segment（含 ".." 段的 .js 路径）单独点名真实拒绝原因（安全
+  // 语义拒绝），不得混入 bad_ext/not_absolute 专属的「不是 .js 脚本路径」文案
+  const parentSeg = await run(['workflow', '--workflow', '/tmp/a/../evil.js', '--task', 't', '--workdir', TMP]);
+  assert.equal(parentSeg.code, 1);
+  assert.match(parentSeg.stderr, /Invalid workflow ref/);
+  assert.match(parentSeg.stderr, /路径段 "\.\." 不允许/);
+  assert.match(parentSeg.stderr, /恢复指引/);
+  assert.doesNotMatch(parentSeg.stderr, /不是 \.js 脚本路径/);
+  const tildeParentSeg = await run(['workflow', '--workflow', '~/workflows/../evil.js', '--task', 't', '--workdir', TMP]);
+  assert.equal(tildeParentSeg.code, 1);
+  assert.match(tildeParentSeg.stderr, /路径段 "\.\." 不允许/);
 });
 
 // ------------------------------------- W8 创作闭环（script-generate/save/delete）

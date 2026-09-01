@@ -20,8 +20,11 @@ const VENDOR_DIR = path.join(__dirname, 'vendor', 'subagent-core');
  *   --local 通道按 source 原路刷新（core 仓路径即 source 记录的路径）——
  *   --npm 是正规升级通道但不在此处指定具体版本（已发版 tarball 可能与本地
  *   构建产物不一致）；
- * - 其余（npm@<版本> / manifest 缺失或损坏）：给 --npm <版本> 形态（能读到
- *   vendored package.json 就给具体版本，否则占位符）。
+ * - 其余（vendor 脚本生成的 `npm@<版本>` / manifest 缺失或损坏）：给
+ *   --npm <版本> 形态（能读到 vendored package.json 就给具体版本，否则占位
+ *   符），并追加一行 npm 包 / marketplace 形态用户的受众分流指引（设计
+ *   §3.1）——插件包消费者没有 workspace 仓与 vendor 脚本，可操作的恢复
+ *   动作是升级 z-subagent-workflow 插件包版本（vendored 副本随包分发）。
  */
 function refreshHint() {
   const cmd = 'node scripts/vendor-subagent-core.js';
@@ -41,7 +44,8 @@ function refreshHint() {
   try {
     version = JSON.parse(fs.readFileSync(path.join(VENDOR_DIR, 'package.json'), 'utf8')).version;
   } catch { /* 未 vendor / 清单损坏：占位符形态已可操作 */ }
-  return `恢复指引：workspace 根执行 ${cmd} --npm ${version}`;
+  return `恢复指引：workspace 根执行 ${cmd} --npm ${version}。`
+    + 'npm 包 / marketplace 形态用户（无 workspace vendor 脚本场景）：升级 z-subagent-workflow 插件包版本即可获得配套修复的 vendored 副本。';
 }
 
 function vendorDir() {

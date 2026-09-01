@@ -83,7 +83,7 @@ const { assembleManager } = require('../lib/assemble');
 const { callDaemon } = require('../lib/cli-client');
 const { TERMINAL_STATUSES } = require('../lib/record-store');
 const coreRef = require('../lib/core-ref');
-const { BUILTIN_WORKFLOW_NAMES, buildKnownWorkflowNames } = require('../lib/orchestration-host');
+const { BUILTIN_WORKFLOW_NAMES, buildKnownWorkflowNames, ensureConfigured } = require('../lib/orchestration-host');
 
 function usage(exitCode = 1) {
   process.stderr.write(
@@ -312,11 +312,11 @@ function workflowScriptDirs() {
  * knownNames 参数（可选）：内置 5 名 + 发现面 saved 名，由 lib/orchestration-host
  * 的 buildKnownWorkflowNames 异步构建（CLI 入口 await 后传入，cwd 口径与 host
  * 的 ctx.cwd 同源——⛔D：同一目录集三入口产出同一集）。saved 裸名放行 =
- * D-E3 裁决（known 命中即合法）。daemon socket 面（dist/mcp/server.js）以
- * 单参同步形态消费本函数：knownNames 缺省时回落内置 5 名（= D-4 现契约：
- * 内置名与 .js 绝对路径放行，saved 裸名拒收），socket 面零改动零回归（同步
- * 签名是硬约束：async 化会让 socket 面未 await 的调用把非法 ref 变 unhandled
- * rejection 崩 daemon）；socket 面接全量 knownNames 属后续单元上报项。
+ * D-E3 裁决（known 命中即合法）。run 两入口（CLI buildWorkflowRunParams 与
+ * daemon socket 面 dist/mcp/server.js 的 zflow run 分支）均已 await 全量
+ * knownNames 后传入；单参形态（knownNames 缺省回落内置 5 名）保留为防御位
+ * （同步签名不变：async 化会让未 await 的调用把非法 ref 变 unhandled
+ * rejection 崩 daemon）。
  */
 function validateWorkflowRef(workflow, knownNames) {
   const w = typeof workflow === 'string' ? workflow.trim() : '';
@@ -329,9 +329,15 @@ function validateWorkflowRef(workflow, knownNames) {
   const verdict = coreRef.requireCore().normalizeWorkflowRef(w, { knownNames: knownNames || BUILTIN_WORKFLOW_NAMES });
   if (verdict.kind === 'path') return w;
   if (verdict.kind === 'name') return verdict.name;
-  const why = verdict.reason === 'bad_ext' || verdict.reason === 'not_absolute' || verdict.reason === 'parent_segment'
-    ? `"${w}" 不是 .js 脚本路径`
-    : `"${w}" 不是内置名或已保存脚本名`;
+  // U2：reason → 文案映射。parent_segment（含 ".." 段）单独点名真实拒绝原因
+  // （安全语义拒绝），不再混入「不是 .js 脚本路径」——后者只对应路径形态
+  // 问题（bad_ext / not_absolute），对齐 core agent 线 invalidAgentRefMessage
+  // 的 without ".." path segments 口径与设计 §3.1。
+  const why = verdict.reason === 'parent_segment'
+    ? `"${w}" 路径段 ".." 不允许（workflow 引用须为不含 ".." 段的 .js 绝对路径）`
+    : verdict.reason === 'bad_ext' || verdict.reason === 'not_absolute'
+      ? `"${w}" 不是 .js 脚本路径`
+      : `"${w}" 不是内置名或已保存脚本名`;
   throw new Error(invalidWorkflowRefMessage(w, why));
 }
 
@@ -457,6 +463,12 @@ function requireWorkflowRunArgs(args) {
  * 同一目录集两入口产出同一 knownNames 集（⛔D）。
  */
 async function buildWorkflowRunParams(args, cwd) {
+  // U1（F02 同款惯例）：发现面扫描前显式 ensureConfigured——knownNames 的
+  // saved 名依赖 discoveryRoots（~/.zsw/workflows 借 user-pi 槽）注入，未组装
+  // host 的进程直调本函数会静默缩水成内置 5 名。幂等（进程级 flag），已配置
+  // 时零开销；CLI 正常路径经 runWorkflowCommand → assembleManager 已配置，
+  // 此处是对直调导出面的防御收口
+  ensureConfigured();
   // D-4/D-E3 引用契约入口（CLI 面）：script: 前缀拒收、saved 裸名放行
   // （knownNames = 内置 + 发现面 saved 名）、非法 ref 在此拦下不进 host
   validateWorkflowRef(args.workflow, await buildKnownWorkflowNames(coreRef.requireCore(), cwd));
@@ -1077,8 +1089,12 @@ async function main() {
 
 /** CLI 入口的 knownNames 产出面（C17/D-E3）：内置 5 名 + cwd 发现面 saved 名，
  * 与 orchestration-host registry 的 resolveScriptPath 消费同一构建函数——
- * ⛔D knownNames 一致性断言（orchestration-host.test.js）经此对照两入口。 */
+ * ⛔D knownNames 一致性断言（orchestration-host.test.js）经此对照两入口。
+ * U1：入口显式 ensureConfigured（F02 同款惯例）——本导出面可能被未组装 host
+ * 的进程直调（socket 面/测试），discoveryRoots 未注入时发现面扫描会静默
+ * 缩水 knownNames。幂等（进程级 flag），已配置时零开销。 */
 function knownWorkflowNames(cwd) {
+  ensureConfigured();
   return buildKnownWorkflowNames(coreRef.requireCore(), cwd);
 }
 
