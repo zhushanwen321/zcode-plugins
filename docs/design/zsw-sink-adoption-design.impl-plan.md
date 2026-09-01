@@ -98,7 +98,7 @@ graph TD
 | V8g | committed | 1 | e6a057a（守卫先行拦到陈旧 bundle 后刷新；29 符号守卫 11/11；负面验证过；manifest source=local + sha256 19 文件 0 错配；随刷更新一条过时断言 runner-core pool:0→1，core f163497f5 pre-abort 不变量） |
 | V1a | committed | 1 | 78b55e6（`..` 拒绝走 core 工厂含恢复指引、字符串级拼接避开 path.join 规范化逃逸；slug 闸；MS_PER_TURN 退役 floor 恢复；normalizeAgentRef 薄包装留待 V2p 消化 agent-runner-adapter 调用方；63+102 绿） |
 | V2p | blocked（V1a） | - | - |
-| V3w | blocked（G-core） | - | - |
+| V3w | committed（MCP 尾巴接线中） | 1 | 6875827（鸭子实体退役、三入口统一 normalizeWorkflowRef、saved 裸名 CLI 放行 + 遮蔽 warning、⛔D knownNames 一致性断言过、359/359；定位结论：daemon-MCP 口径点 = dist/mcp/server.js:277-280 require bin 单一实现，零改动零回归；socket 面 saved 放行接线 = 恢复该 agent 收口中） |
 | V4o | blocked（V3w；领地追加 lib/manager.js patchIncomplete→outcome 投影——V6w 上报项 2，⛔A 收口件） | - | - |
 | V5e | committed | 1 | 5ad5773（alive/probeLockHolder 逐分支等值改调 + splitModelRef 薄包装短名策略留包装层 + 常量对齐 + hasApiKey 裁决；46+69 绿） |
 | V6w | committed | 1 | 252288e（⛔A 等值主断言 PASS + 三降级分支钉死 + 三铁律核对；289→271 行，残余为声明保留的布局/孤儿层；上报两项：core gitRun maxBuffer 缺口已派 B3 修、patchIncomplete 进 manager outcome 并入 V4o） |
