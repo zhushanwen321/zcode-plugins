@@ -1,65 +1,50 @@
 'use strict';
 /**
  * WorktreePort 实现（DESIGN-v3.md §3.2 D12，契约见 ports.js）：
- * git worktree 文件隔离子系统——纯 git 命令封装，零第三方依赖。
+ * sidecar 持久锚点 + 布局/孤儿策略层。git 执行面全部下沉 vendored core 的
+ * worktree-git-ops 函数族（经 lib/core-ref.js requireCore 取用）；本模块只保留
+ * core 没有对应概念的 zsw 专属设计：
+ *   - sidecar 锚点布局：基线 commit 落 worktree gitdir 下（工作树与 diff 都
+ *     看不见它，跨 daemon 重启经磁盘可恢复），collectPatch 以
+ *     { kind:'anchor-file', path } 注入 core，由 core 读取并负责降级判定；
+ *   - prepare 编排（core 无 worktree add 封装）：干净主树前置校验 + add + 锚点
+ *     落盘（写失败不阻断任务启动，维持可用性优先语义）；
+ *   - 目录布局与孤儿对账：wt-<id> 目录名 × zswRoot realpath 归账（git 会把
+ *     worktree 路径 realpath 化，macOS /var → /private/var）；
+ *   - patch 落盘收尾：core 直写 patchFile 非原子，经 tmp+rename 保持读者
+ *     「要么旧版要么完整版」的原子替换语义。
  *
- * ── patch 收集语义（三条铁律，前两条源自 pi worktree-manager 复盘）──
- *
- * [MF#1] patch 必须落在 worktree 目录之外。cleanup 会删整个 worktree 目录，
- *        patch 写在里面 = 随任务结束静默丢失。落盘位置由 output-store.writePatch
- *        固定为 <zswRoot>/outputs/<id>.patch，与 worktree 目录 <zswRoot>/wt-<id>
- *        是兄弟目录，结构性保证互不包含。
- *
- * [MF#2] 新增文件必须进 diff：`git add -A -N`（intent-to-add）给 untracked 文件
- *        写入「空 blob、内容将来补」的 index 条目，git diff 才会吐出其全文；
- *        裸 git diff 完全无视 untracked，子 agent 新建的文件会静默漏出 patch。
- *
- * [MF#3] 已提交改动也必须进 diff：子 agent 受用户全局 AGENTS.md「完成即提交」
- *        约束，在 worktree 分支上 commit 是常态而非边角。prepare 把基线 commit
- *        写进 worktree gitdir 下的侧车文件（不在工作树内、永不进 diff），
- *        collectPatch 据此用 `git diff <base>` 一条命令覆盖：已提交 + 未提交 +
- *        新增文件。侧车缺失/损坏时兜底退回裸 `git diff`（仅未提交改动）。
+ * ── patch 收集三条铁律（执行体已随 core 下沉，此处留语义锚）──
+ * [MF#1] patch 必须落在 worktree 之外：固定 <zswRoot>/outputs/<id>.patch，与
+ *        worktree 目录是兄弟目录，cleanup 删整个 worktree 不伤及 patch。
+ * [MF#2] 新增文件必须进 diff：core 以 `git add -A` + `git diff --cached` 覆盖
+ *        （旧自研 intent-to-add 机制的内部等价重构：两机制对同一改动集产出
+ *        字节可不同、但应用后的树状态等价，test/worktree.test.js ⛔A 钉住）。
+ * [MF#3] 已提交改动必须进 diff：锚点基线 `git diff --cached <base>`；锚点
+ *        缺失/空白/被 git 拒绝时 core warn + 降级裸 diff 并置
+ *        patchIncomplete:true。宿主 outcome 投影按此口径——不可把
+ *        written:false 独立解读为无降级（降级 + 无改动时两者同时为真）。
  *
  * ── 与 pi 蓝本（worktree-manager.ts）的取舍 ──
- * 保留：干净主树前置校验（dirty 基线上的 patch 应用回主树必然错位，一开始就
- *       拒绝）；diff stdout 保真落盘（裁尾换行 = git apply 拒绝的 corrupt
- *       patch）；recordId 白名单防路径注入；cleanup 容错三步（remove → prune
- *       → branch -D，任一步失败不阻断其余，防单步失败导致资源泄漏）。
- * 不搬：全局注册表 + pid 死活判孤儿——zsub 已有跨会话 record store（D9），
- *       孤儿判定改为「git worktree list 物理面 × knownSubagentIds 对账」
- *       （listOrphans）；node_modules 软链（pi 的 monorepo 专属需求）；
- *       per-repo 写命令串行队列（zsub 并发上限 3 且 subagentId 全局唯一，
- *       git 自身 index 锁兜底，写冲突窗口可忽略）。
+ * 保留：干净主树前置校验；diff stdout 保真落盘（core finishPatch 不 trim，
+ *       尾换行是 patch 的一部分）；cleanup 容错（remove/prune/branch -D 任一步
+ *       失败不阻断其余）。不搬：全局注册表 + pid 死活判孤儿（zsub 用跨会话
+ *       record store + listOrphans 物理面对账，D9/D12）；node_modules 软链；
+ *       per-repo 写命令串行队列（并发上限 3 且 subagentId 全局唯一，git 自身
+ *       index 锁兜底）。
  */
 
-const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { zswRoot } = require('./config');
-const { writePatch } = require('./output-store');
+const { zswRoot, outputsDir } = require('./config');
+const { requireCore } = require('./core-ref');
 
-/** subagentId 白名单：sa-<rand> 天然满足；防路径注入/分支名注入。 */
-const SAFE_ID_RE = /^[\w-]+$/;
 /** worktree 目录名前缀（<zswRoot>/wt-<subagentId>），listOrphans 按它认领。 */
 const WT_DIR_PREFIX = 'wt-';
 /** 分支命名空间（zsub/<subagentId>），统一前缀便于人肉排查。 */
 const BRANCH_NS = 'zsub/';
 /** 基线 commit 侧车文件名（落 gitdir 下，工作树与 diff 都看不见它）。 */
 const BASE_MARKER = 'zsub-base-commit';
-/** git 单命令超时：挂死的 git 不能拖住任务完成回调（pi 同款值）。 */
-const GIT_TIMEOUT_MS = 30_000;
-/** stdout 缓冲上限：大 diff（批量重构任务）可能远超 execFile 默认 1MB。 */
-const GIT_MAX_BUFFER = 32 * 1024 * 1024;
-
-/** git 命令失败包装：message 含 stderr（恢复线索），exitCode/stderr 供诊断。 */
-class GitError extends Error {
-  constructor(message, props = {}) {
-    super(message);
-    this.name = 'GitError';
-    this.exitCode = props.exitCode;
-    this.stderr = props.stderr;
-  }
-}
 
 /** 主树 dirty：错误文案本身即恢复指引（先 commit/stash，或放弃隔离）。 */
 class DirtyTreeError extends Error {
@@ -70,40 +55,19 @@ class DirtyTreeError extends Error {
 }
 
 /**
- * git 出口（execFile 不经 shell，参数无注入面）。
- * stdout 原样返回不 trim：diff 落 patch 依赖原始输出（保真）；需要干净文本的
- * 消费点（status / rev-parse）自行 trim。
+ * worktree 的 gitdir（<mainRepo>/.git/worktrees/<id>）绝对路径。
+ * core 未导出 gitdir 解析——锚点布局是 zsw 专属设计，最小本地实现。
  */
-function git(repoDir, args) {
-  return new Promise((resolve, reject) => {
-    execFile('git', ['-C', repoDir, ...args], {
-      encoding: 'utf8',
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        const detail = (typeof stderr === 'string' && stderr.trim()) || err.message;
-        reject(new GitError(`git -C ${repoDir} ${args.join(' ')} 失败：${detail}`, {
-          exitCode: typeof err.code === 'number' ? err.code : undefined,
-          stderr: typeof stderr === 'string' ? stderr : undefined,
-        }));
-        return;
-      }
-      resolve(stdout);
-    });
-  });
+async function worktreeGitDir(worktreeDir) {
+  const core = requireCore();
+  const out = (await core.gitRun(['rev-parse', '--git-dir'], { cwd: worktreeDir })).trim();
+  // rev-parse 在部分场景返回相对路径，统一 resolve 成绝对
+  return path.isAbsolute(out) ? out : path.resolve(worktreeDir, out);
 }
 
 /** worktree 目录绝对路径（<zswRoot>/wt-<subagentId>）。 */
 function wtDir(subagentId) {
   return path.join(zswRoot(), WT_DIR_PREFIX + subagentId);
-}
-
-/** worktree 的 gitdir（<mainRepo>/.git/worktrees/<id>）绝对路径。 */
-async function worktreeGitDir(worktreeDir) {
-  const out = (await git(worktreeDir, ['rev-parse', '--git-dir'])).trim();
-  // rev-parse 在部分场景返回相对路径，统一 resolve 成绝对
-  return path.isAbsolute(out) ? out : path.resolve(worktreeDir, out);
 }
 
 /**
@@ -136,33 +100,34 @@ function isUnderZsubRoot(dir) {
  * @returns {Promise<{dir: string, branch: string}>}
  */
 async function prepare({ mainRepo, slug, subagentId } = {}) {
+  const core = requireCore();
   if (!mainRepo || typeof mainRepo !== 'string') {
-    throw new GitError('prepare 需要 mainRepo（主仓库根目录）');
+    throw new Error('prepare 需要 mainRepo（主仓库根目录）');
   }
-  if (!subagentId || !SAFE_ID_RE.test(subagentId)) {
-    throw new GitError(
+  if (!subagentId || !core.isSafeId(subagentId)) {
+    throw new Error(
       `subagentId 不合法："${subagentId}"（须匹配 ^[\\w-]+$），拒绝创建 worktree（防路径注入）`,
     );
   }
 
-  const status = (await git(mainRepo, ['status', '--porcelain'])).trim();
-  if (status.length > 0) {
+  const status = await core.gitRun(['status', '--porcelain'], { cwd: mainRepo });
+  if (core.isTreeDirty(status)) {
     // 错误信息即恢复指引：给出两条出路 + 诊断上下文，而不是只报状态
     throw new DirtyTreeError(
       `主树 dirty，worktree 基线不可靠：先 commit/stash，或改 worktree:false`
       + `（任务 ${slug || '?'} #${subagentId}，仓库 ${mainRepo}）\n`
-      + `git status --porcelain 输出：\n${status}`,
+      + `git status --porcelain 输出：\n${status.trim()}`,
     );
   }
-  const base = (await git(mainRepo, ['rev-parse', 'HEAD'])).trim();
+  const base = (await core.gitRun(['rev-parse', 'HEAD'], { cwd: mainRepo })).trim();
 
   fs.mkdirSync(zswRoot(), { recursive: true });
   const dir = wtDir(subagentId);
   const branch = BRANCH_NS + subagentId;
-  await git(mainRepo, ['worktree', 'add', dir, '-b', branch]);
+  await core.gitRun(['worktree', 'add', dir, '-b', branch], { cwd: mainRepo });
 
   // [MF#3] 基线侧车：collectPatch 据此覆盖「子 agent 已提交」的改动。
-  // 写失败不阻断（collectPatch 兜底退回裸 diff，只损失提交增量）。
+  // 写失败不阻断任务启动（collectPatch 经 core 降级裸 diff，只损失提交增量）。
   try {
     const gitDir = await worktreeGitDir(dir);
     fs.writeFileSync(path.join(gitDir, BASE_MARKER), base + '\n');
@@ -173,40 +138,51 @@ async function prepare({ mainRepo, slug, subagentId } = {}) {
 
 /**
  * 收集 worktree 全部改动为 patch（ports.js WorktreePort.collectPatch）。
+ * git 执行与降级判定全在 core.collectWorktreePatch；本函数负责锚点注入、
+ * patch 落盘收尾（tmp+rename 原子替换）与降级留痕投影。
  *
  * @param {object} p
  * @param {string} p.worktreeDir  prepare 返回的 dir
  * @param {string} p.subagentId   patch 落 outputs/<subagentId>.patch
- * @returns {Promise<string|null>} patch 绝对路径；无改动返回 null
- *   （调用方据此不回填 record.patchFile，避免悬空路径）。
+ * @returns {Promise<{patchFile: string|null, patchIncomplete?: true}>}
+ *   patchFile 为 null = 无改动未落盘（调用方据此不回填 record.patchFile）；
+ *   patchIncomplete = core 已降级（锚点缺失/损坏/add 失败），patch 不完整，
+ *   宿主 outcome 投影必须保留该留痕。
  */
 async function collectPatch({ worktreeDir, subagentId } = {}) {
+  const core = requireCore();
   if (!worktreeDir || !subagentId) {
-    throw new GitError('collectPatch 需要 worktreeDir 与 subagentId');
+    throw new Error('collectPatch 需要 worktreeDir 与 subagentId');
   }
 
-  // [MF#2] intent-to-add 让 untracked 文件以空 blob 进 index，diff 才含其全文。
-  // add 失败不致命（pi 同款语义）：继续 diff，最差漏掉新文件，好过整包失败。
+  // [MF#1] outputs/ 与 worktree 是兄弟目录，结构性保证 cleanup 删不到 patch。
+  const finalPath = path.join(outputsDir(), `${subagentId}.patch`);
+  // tmp 形态与 output-store 原子写一致（.*.tmp 后缀，sweepStaleOutputs 天然排除）
+  const tmpPath = path.join(outputsDir(), `.${subagentId}.patch.${process.pid}.${Date.now()}.tmp`);
+  fs.mkdirSync(outputsDir(), { recursive: true });
+
+  // 锚点注入：gitdir 解析失败（worktree 元数据损坏）时传空基线 commit——
+  // core 判别联合的空串分支即「降级裸 diff + patchIncomplete」入口。
+  let anchor;
   try {
-    await git(worktreeDir, ['add', '-A', '-N']);
-  } catch { /* 见上 */ }
+    anchor = { kind: 'anchor-file', path: path.join(await worktreeGitDir(worktreeDir), BASE_MARKER) };
+  } catch {
+    anchor = { kind: 'commit', baseCommit: '' };
+  }
 
-  // [MF#3] 有基线侧车 → diff <base>（已提交+未提交+新增全覆盖）；
-  // 侧车缺失/形态异常 → 裸 diff（仅未提交）。sha 校验防脏侧车打崩 diff。
-  let base = null;
+  let res;
   try {
-    const gitDir = await worktreeGitDir(worktreeDir);
-    const raw = fs.readFileSync(path.join(gitDir, BASE_MARKER), 'utf8').trim();
-    base = /^[0-9a-f]{7,40}$/.test(raw) ? raw : null;
-  } catch { base = null; }
-
-  // stdout 保真：不 trim，尾换行是 patch 的一部分，裁掉 = git apply 报 corrupt
-  const diff = await git(worktreeDir, base ? ['diff', base] : ['diff']);
-  if (diff.length === 0) return null;
-
-  // [MF#1] writePatch 固定落 <zswRoot>/outputs/（worktree 的兄弟目录），
-  // cleanup 删 worktree 不影响 patch。
-  return writePatch(subagentId, diff);
+    res = await core.collectWorktreePatch({ worktreePath: worktreeDir, patchFile: tmpPath, anchor });
+  } catch (err) {
+    // core 抛错（如 diff 超 git 执行缓冲上限）发生在落盘前；tmp 若已存在则清
+    try { fs.unlinkSync(tmpPath); } catch { /* 未落盘/已清理 */ }
+    throw err;
+  }
+  if (res.written) fs.renameSync(tmpPath, finalPath);
+  return {
+    patchFile: res.written ? finalPath : null,
+    ...(res.patchIncomplete ? { patchIncomplete: true } : {}),
+  };
 }
 
 /**
@@ -219,22 +195,26 @@ async function collectPatch({ worktreeDir, subagentId } = {}) {
  * @param {string} [p.branch]  缺省（detached 场景）时跳过分支删除
  */
 async function cleanup({ mainRepo, worktreeDir, branch } = {}) {
+  const core = requireCore();
   if (!mainRepo || !worktreeDir) {
-    throw new GitError('cleanup 需要 mainRepo 与 worktreeDir');
+    throw new Error('cleanup 需要 mainRepo 与 worktreeDir');
   }
-  // 三步各自容错（pi 语义）：任一步失败不阻断其余，防单步失败导致资源泄漏。
-  // prune 的必要性：worktree 目录已被外部删除时 remove 会失败，且 branch -D
-  // 被「used by worktree」拒绝——prune 清掉缺失目录的元数据后分支才可删。
+  // core cleanupWorktree 无 prune 步：worktree 目录已被外部删除时 remove 会
+  // 失败、branch -D 被「used by worktree」拒绝——prune 先行清掉缺失目录的
+  // 元数据（在册正常 worktree 不受影响），分支才可删。等值旧三步
+  // remove → prune → branch -D 的资源回收语义，任一步失败不阻断其余。
   try {
-    await git(mainRepo, ['worktree', 'remove', '--force', worktreeDir]);
-  } catch { /* 目录已不在/元数据损坏：交给 prune 兜底 */ }
+    await core.gitRun(['worktree', 'prune'], { cwd: mainRepo });
+  } catch { /* prune 失败仍继续 */ }
+  if (branch) {
+    await core.cleanupWorktree({ repo: mainRepo, worktreePath: worktreeDir, branch });
+    return;
+  }
+  // detached 场景（branch 缺省跳过分支删除）：core cleanupWorktree 无条件
+  // branch -D，undefined 会碰运气误删同名分支——单步 remove 兜底。
   try {
-    await git(mainRepo, ['worktree', 'prune']);
-  } catch { /* prune 失败仍尝试 branch -D */ }
-  if (!branch) return;
-  try {
-    await git(mainRepo, ['branch', '-D', branch]);
-  } catch { /* 分支不存在 = 已清理过 */ }
+    await core.gitRun(['worktree', 'remove', '--force', worktreeDir], { cwd: mainRepo });
+  } catch { /* 目录已不在/元数据损坏 */ }
 }
 
 /**
@@ -248,9 +228,11 @@ async function cleanup({ mainRepo, worktreeDir, branch } = {}) {
  * @returns {Promise<Array<{subagentId: string, dir: string, branch: string}>>}
  */
 async function listOrphans({ mainRepo, knownSubagentIds = [] } = {}) {
-  if (!mainRepo) throw new GitError('listOrphans 需要 mainRepo');
+  const core = requireCore();
+  if (!mainRepo) throw new Error('listOrphans 需要 mainRepo');
 
-  const out = await git(mainRepo, ['worktree', 'list', '--porcelain']);
+  // core 供原始 porcelain 输出；解析 + realpath 归账是 zsw 布局层职责
+  const out = await core.listWorktreePorcelain({ repo: mainRepo });
   // porcelain 格式：空行分块，块首 `worktree <path>`，`branch refs/heads/<name>` 可选
   const entries = [];
   let cur = null;
@@ -271,14 +253,14 @@ async function listOrphans({ mainRepo, knownSubagentIds = [] } = {}) {
     if (!name.startsWith(WT_DIR_PREFIX)) continue;
     if (!isUnderZsubRoot(e.dir)) continue; // 字串失配时 realpath 对账（见函数注释）
     const id = name.slice(WT_DIR_PREFIX.length);
-    if (!SAFE_ID_RE.test(id)) continue; // 非 zsub 命名（wt- 后为空/怪字符）不认领
+    if (!core.isSafeId(id)) continue; // 非 zsub 命名（wt- 后为空/怪字符）不认领
     if (known.has(id)) continue;
     orphans.push({ subagentId: id, dir: e.dir, branch: e.branch || BRANCH_NS + id });
   }
   return orphans;
 }
 
-// GitError/DirtyTreeError 不导出（无外部消费者）：调用方以 err.name 字符串识别错误类型
+// DirtyTreeError 不导出（无外部消费者）：调用方以 err.name 字符串识别错误类型
 // BRANCH_NS 导出：worktree-adapter 错误文案引用，避免对 'zsub/' 字面量镜像
 module.exports = {
   prepare,

@@ -52,7 +52,10 @@ function createWorktreeAdapter() {
     },
 
     async collectPatch({ dir, subagentId }) {
-      return worktree.collectPatch({ worktreeDir: dir, subagentId });
+      // worktree 层结构化结果（含降级留痕 patchIncomplete）在此收敛为
+      // string|null：manager 契约（ports.js，typeof p === 'string'）不变。
+      const res = await worktree.collectPatch({ worktreeDir: dir, subagentId });
+      return res.patchFile;
     },
 
     async cleanup({ dir, subagentId, meta }) {
