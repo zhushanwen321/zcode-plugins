@@ -172,7 +172,13 @@ async function collectPatch({ worktreeDir, subagentId } = {}) {
 
   let res;
   try {
-    res = await core.collectWorktreePatch({ worktreePath: worktreeDir, patchFile: tmpPath, anchor });
+    // maxBuffer 32MB：批量重构任务的大 diff 是本通道真实场景（execFile 缺省
+    // 1MB 会使 collectWorktreePatch 的 diff 抛 GitRunError，B3/core 8ddd0029
+    // 起可透传；恢复旧 GIT_MAX_BUFFER 语义）
+    res = await core.collectWorktreePatch({
+      worktreePath: worktreeDir, patchFile: tmpPath, anchor,
+      maxBuffer: 32 * 1024 * 1024,
+    });
   } catch (err) {
     // core 抛错（如 diff 超 git 执行缓冲上限）发生在落盘前；tmp 若已存在则清
     try { fs.unlinkSync(tmpPath); } catch { /* 未落盘/已清理 */ }

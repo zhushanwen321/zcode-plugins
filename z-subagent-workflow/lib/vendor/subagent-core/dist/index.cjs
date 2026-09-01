@@ -25491,7 +25491,12 @@ function gitRun(args, opts) {
     (0, import_node_child_process6.execFile)(
       "git",
       args,
-      { cwd: opts.cwd, timeout: opts.timeout ?? GIT_TIMEOUT_MS, encoding: "utf-8" },
+      {
+        cwd: opts.cwd,
+        timeout: opts.timeout ?? GIT_TIMEOUT_MS,
+        ...opts.maxBuffer !== void 0 ? { maxBuffer: opts.maxBuffer } : {},
+        encoding: "utf-8"
+      },
       (err, stdout, stderr) => {
         if (err) {
           const execErr = err;
@@ -25567,7 +25572,8 @@ async function collectWorktreePatch(opts) {
     try {
       diff2 = await gitRun(["diff", "--cached", baseline], {
         cwd: worktreePath,
-        timeout: opts.timeout
+        timeout: opts.timeout,
+        maxBuffer: opts.maxBuffer
       });
     } catch (err) {
       patchIncomplete = true;
@@ -25579,12 +25585,20 @@ async function collectWorktreePatch(opts) {
           detail: err instanceof Error ? err.message : String(err)
         }
       );
-      diff2 = await gitRun(["diff", "HEAD"], { cwd: worktreePath, timeout: opts.timeout });
+      diff2 = await gitRun(["diff", "HEAD"], {
+        cwd: worktreePath,
+        timeout: opts.timeout,
+        maxBuffer: opts.maxBuffer
+      });
       return finishPatch(diff2, patchFile, patchIncomplete);
     }
     return finishPatch(diff2, patchFile, patchIncomplete);
   }
-  const diff = await gitRun(["diff", "HEAD"], { cwd: worktreePath, timeout: opts.timeout });
+  const diff = await gitRun(["diff", "HEAD"], {
+    cwd: worktreePath,
+    timeout: opts.timeout,
+    maxBuffer: opts.maxBuffer
+  });
   return finishPatch(diff, patchFile, patchIncomplete);
 }
 function finishPatch(diff, patchFile, patchIncomplete) {
