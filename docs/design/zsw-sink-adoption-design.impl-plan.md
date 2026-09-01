@@ -96,7 +96,7 @@ graph TD
 | V0c | committed | 1 | 4aabf8c（`docs/design/zsw-manager-convergence.md` 立案锚点） |
 | V0d | committed | 1 | e45f998（t-sink.md + make-legacy-state-files.js；主 agent 复跑验收：25 文件 = 10 无 v + 15 wf-run-v2，现状 reader loadAll 25/25 = done 19 + running 6；产物头登记快照真实结构与两处事实纠偏） |
 | V8g | committed | 1 | e6a057a（守卫先行拦到陈旧 bundle 后刷新；29 符号守卫 11/11；负面验证过；manifest source=local + sha256 19 文件 0 错配；随刷更新一条过时断言 runner-core pool:0→1，core f163497f5 pre-abort 不变量） |
-| V1a | blocked（G-core） | - | - |
+| V1a | committed | 1 | 78b55e6（`..` 拒绝走 core 工厂含恢复指引、字符串级拼接避开 path.join 规范化逃逸；slug 闸；MS_PER_TURN 退役 floor 恢复；normalizeAgentRef 薄包装留待 V2p 消化 agent-runner-adapter 调用方；63+102 绿） |
 | V2p | blocked（V1a） | - | - |
 | V3w | blocked（G-core） | - | - |
 | V4o | blocked（V3w） | - | - |
