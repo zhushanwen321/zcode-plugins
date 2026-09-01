@@ -103,7 +103,7 @@ graph TD
 | V0d | committed | 1 | e45f998（t-sink.md + make-legacy-state-files.js；主 agent 复跑验收：25 文件 = 10 无 v + 15 wf-run-v2，现状 reader loadAll 25/25 = done 19 + running 6；产物头登记快照真实结构与两处事实纠偏） |
 | V8g | committed | 2 | e6a057a + 5659be3（二次刷新随 core 8ddd0029 maxBuffer 面；zsw collectWorktreePatch 透传 32MB 恢复旧 GIT_MAX_BUFFER 语义；29 守卫+worktree 绿） |
 | V1a | committed | 1 | 78b55e6（`..` 拒绝走 core 工厂含恢复指引、字符串级拼接避开 path.join 规范化逃逸；slug 闸；MS_PER_TURN 退役 floor 恢复；normalizeAgentRef 薄包装留待 V2p 消化 agent-runner-adapter 调用方；63+102 绿） |
-| V2p | committed | 1 | 53990ba（解析族退役 + getCachedParsed 稳定闭包池 + discoverAgents 装配退役 + 去重键声明变更钉住 + 薄包装退役；34/34；getCachedParsed 已导出核实；core 清单 IF1 语义固有差异登记于单元汇报） |
+| V2p | committed | 2 | 53990ba + R1 批次 A（cbd296a：跨引用注释终态化）；V5e/V7i 同批注释修正同 commit |
 | V3w | committed | 2 | 6875827 + 671face（MCP 尾巴：socket 面 saved 放行经 await buildKnownWorkflowNames，三入口 ⛔D 完全闭环，360/360） |
 | V4o | committed | 2 | 3e74ab3 + 693d3ef（bin runningScriptPredicate 改调 core isScriptRunning：raw _runs Map、防御回退保留、无 per-session 差异；65+374 绿。C12/C14/C16 全闭环） |
 | V5e | committed | 1 | 5ad5773（alive/probeLockHolder 逐分支等值改调 + splitModelRef 薄包装短名策略留包装层 + 常量对齐 + hasApiKey 裁决；46+69 绿） |
