@@ -92,7 +92,7 @@ node bin/zsw.js list
 
 确定性多步编排：每次 `agent()` 调用一个独立 agent 会话（经 zsw runner 通道），脚本在 core worker 线程内编排，主会话只收最终 scriptResult（markdown + JSON 双段渲染打 stdout）。**run 是同步阻塞命令且恒本地执行**（执行体 = CLI 进程，跑到终态才退出）——需要「派发后做别的、完成唤醒」时，用 Bash `run_in_background=true` 包裹整条命令，CLI 退出即引擎原生通知（与 zsub wait 同一纪律，不要轮询）。
 
-**workflow 引用契约（与 pi 平台统一，D-4）**：`--workflow` 只收内置名或 .js 绝对路径（`~/` 前缀可展开）；`script:<名>` 前缀与裸名（非内置）已废弃拒收——报错自带恢复指引，路径取 `--action scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 条目的 `<location>`。
+**workflow 引用契约（与 pi 平台统一，D-4/D-E3）**：`--workflow` 收内置名、saved 裸名（script-save 落盘的发现面脚本）或 .js 绝对路径（`~/` 前缀可展开）；`script:<名>` 前缀拒收——报错自带恢复指引；与内置同名的 saved 脚本按名 run 时跑内置并出遮蔽 warning（含双路径），按路径消歧或改名；路径取 `--action scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 条目的 `<location>`。
 
 run 状态面（与旧版差异）：内存索引 + `<zsw 数据根>/workflow-state/<runId>.jsonl` append-only 快照（`status` 返回 `stateFile` 路径）；不再写 zsw record 事件流，也不再投 mailbox 完成通知——异步 run 的结果查询用 `--action status`（done run 内存保留有上限，淘汰后按 stateFile 提示读快照文件）。daemon 重启/接管时遗留的 running run 自动标 `done,failed`（worker 线程随旧进程死亡，无进程可探活）。
 
@@ -126,7 +126,7 @@ node bin/zsw.js workflow --action script-delete --name <名>   → 删 tmp/已�
 
 ### 自定义 workflow 脚本（绝对路径引用 + 创作闭环）
 
-内置 5 种之外的编排用 core 契约脚本扩展，run 按 **.js 绝对路径**引用（`~/` 前缀可展开；`script:<名>` 与裸名已废弃拒收——多源同名遮蔽下按名引用有歧义）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序）：
+内置 5 种之外的编排用 core 契约脚本扩展，run 按 **.js 绝对路径**或 **saved 裸名**引用（`~/` 前缀可展开；`script:<名>` 前缀拒收；saved 裸名与内置同名时内置优先 + 遮蔽 warning——路径引用是最无歧义形态）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序；ref 解析时内置名恒优先于一切发现面）：
 
 ```
 vendored 内置 5（名不可被遮蔽——registry 内置优先于一切发现面）

@@ -87,9 +87,9 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 ### 3.0 依赖契约（core 新导出面，转载自姊妹文档 §3.3/§5.2，已按其 R1 修订版对齐）
 
-消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝——**对两宿主均为行为变更**，现状两宿主均放行）、`normalizeWorkflowRef(ref, {knownNames})`（名/路径二分 + 保留字裁决 + knownNames 注入——内置名优先由宿主清单构造顺序体现，core 名命中即返回，冲突 warning 属宿主层）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`discoverAgents(workspaceRoot, hostRoots): Promise<AgentEntry[]>`（hostRoots 为 `DiscoveryRoot[]` 含 source 标签；发现→解析→按 frontmatter name 去重后写胜→码点序装配）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`createConcurrencyPool({ maxConcurrent, queuePolicy })`（工厂形态，queuePolicy: 'priority' | 'strict-fifo'，缺省 priority）、worktree-git-ops 函数族（`collectWorktreePatch({ worktreePath, patchFile, anchor, timeout? }): Promise<{ patchFile, written, patchIncomplete?: boolean }>`，anchor 为基线锚点抽象（`{kind:'commit', ref}` 内存基线或 `{kind:'anchor-file', path}` 宿主持久锚点文件，**二者均须位于 worktree 之外**，否则 `git add -A` 会把锚点内容暂存进 patch）；锚点缺失/损坏或 add 步骤失败 → warn + 降级裸 diff + `patchIncomplete: true`，`written:false` 不可独立解读为「无降级」）、`recoverCrashedRuns(store, runs, reason, hooks?)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`writeAtomicFileSync(filePath, content, options?)`、`normalizeArgsByMeta(params, meta): {args, warnings}` / `findFlattenedArgKeys(params, meta)` / `argKeysFromMeta`（三者均有可选第三参 reservedKeys）、`loadWorkflowScriptByPath(path): Promise<WorkflowScript | undefined>` + WorkflowScript 类、模型切分原语四件（splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey——hasApiKey 入参为 ZcodeProviderEntry 结构）、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
+消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝——**对两宿主均为行为变更**，现状两宿主均放行）、`normalizeWorkflowRef(ref, {knownNames})`（名/路径二分 + 保留字裁决 + knownNames 注入——内置名优先由宿主清单构造顺序体现，core 名命中即返回，冲突 warning 属宿主层）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`discoverAgents(workspaceRoot, hostRoots): Promise<AgentEntry[]>`（hostRoots 为 `DiscoveryRoot[]` 含 source 标签；发现→解析→按 frontmatter name 去重后写胜→码点序装配）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`createConcurrencyPool({ maxConcurrent, queuePolicy })`（工厂形态，queuePolicy: 'priority' | 'strict-fifo'，缺省 priority）、worktree-git-ops 函数族（`collectWorktreePatch({ worktreePath, patchFile, anchor, timeout? }): Promise<{ patchFile, written, patchIncomplete?: boolean }>`，anchor 为基线锚点抽象（`{kind:'commit', baseCommit}` 内存基线或 `{kind:'anchor-file', path}` 宿主持久锚点文件，**二者均须位于 worktree 之外**，否则 `git add -A` 会把锚点内容暂存进 patch）；锚点缺失/损坏或 add 步骤失败 → warn + 降级裸 diff + `patchIncomplete: true`，`written:false` 不可独立解读为「无降级」）、`recoverCrashedRuns(store, runs, reason, hooks?)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`writeAtomicFileSync(filePath, content, options?)`、`normalizeArgsByMeta(params, meta): {args, warnings}` / `findFlattenedArgKeys(params, meta)` / `argKeysFromMeta`（三者均有可选第三参 reservedKeys）、`loadWorkflowScriptByPath(path): Promise<WorkflowScript | undefined>` + WorkflowScript 类、模型切分原语四件（splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey——hasApiKey 入参为 ZcodeProviderEntry 结构）、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
 
-> 勘误记录（2026-09-01 三路交付审查）：本节初版将原子写函数误写为 `atomicWriteFileSync(file, text)`（core 实名 `writeAtomicFileSync`）、将 `collectWorktreePatch` 误写为单参 `(anchor)` 形态（实为 opts 对象）；均系转载失真，core 导出面无违约。快照版本常量 core 实名为 `SNAPSHOT_VERSION`（值 `"wf-run-v2"`）。
+> 勘误记录（2026-09-01 三路交付审查）：本节初版将原子写函数误写为 `atomicWriteFileSync(file, text)`（core 实名 `writeAtomicFileSync`）、将 `collectWorktreePatch` 误写为单参 `(anchor)` 形态（实为 opts 对象）、将 commit 基线锚点字段误写为 `ref`（core 实名 `baseCommit`）；均系转载失真，core 导出面无违约。快照版本常量 core 实名为 `SNAPSHOT_VERSION`（值 `"wf-run-v2"`）。
 
 ### 3.1 终态（使用者视角）
 
@@ -172,8 +172,8 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 - **效果**：裁决闭环（G3 后半），D1 第二步依赖显式登记且有案可查。
 
 **D-E5：行为变更登记为 2.0.0 breaking notes（选定）**
-- **采用**：release notes 列六项：① `..` 拒绝；② slug 长度闸；③ maxTurns floor 恢复（超时可能变长）；④ saved workflow 按名 run 放宽（内置优先维持，新增遮蔽 warning）；⑤ **workflow-state 历史文件按上限自动清理**（prune 接线后旧文件会被删除，含 env 上限配置说明——用户数据删除行为必须告知）；⑥ patch 收集降级路径新增 warn + `patchIncomplete` 留痕（信号增强，非行为 break，如实标注类别）。patch 机制切换（intent-to-add → add -A+cached）标注为内部等价重构（产物对照验证背书，⛔A）。
-- **被否**：拆 patch 版渐进——六项均依赖同一 core 面，拆开发版面碎；漏报 ⑤/⑥——数据删除与信号变更不可不告（审查 F6/F7 击穿初版四项）。
+- **采用**：release notes 列七项：① `..` 拒绝；② slug 长度闸；③ maxTurns floor 恢复（超时可能变长）；④ saved workflow 按名 run 放宽（内置优先维持，新增遮蔽 warning）；⑤ **workflow-state 历史文件按上限自动清理**（prune 接线后旧文件会被删除，含 env 上限配置说明——用户数据删除行为必须告知）；⑥ patch 收集降级路径新增 warn + `patchIncomplete` 留痕（信号增强，非行为 break，如实标注类别）；⑦ **agents 清单收窄**（随 core discoverAgents 语义：无 frontmatter 或缺 name/description 的自建 .md 不再进清单与注入段，执行面显式路径引用不受影响——R1 审查补录，自建资产从清单消失属用户可感知变更，不可漏报）。patch 机制切换（intent-to-add → add -A+cached）标注为内部等价重构（产物对照验证背书，⛔A）。
+- **被否**：拆 patch 版渐进——各均依赖同一 core 面，拆开发版面碎；漏报 ⑤/⑥/⑦——数据删除、信号变更与清单收窄不可不告（审查 F6/F7 击穿初版四项，R1 补第七项）。
 - **证据**：W9 既有 2.0.0 major 窗口裁决；check-release-needed 已报 UNRELEASED；pi 侧 evict 不动磁盘 + 显式 prune 的先例语义（`index.ts:605-607`）。
 - **效果**：G5。
 
@@ -187,21 +187,21 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 | vendored 缺新符号（半刷新） | core-ref 守卫抛错 | 开发者/CI：`node scripts/vendor-subagent-core.js --npm 0.4.0`；npm/marketplace 用户：升级插件包版本（守卫措辞按形态分流） |
 | 平铺 args（zflow run） | 平铺检测拦截 + 「子字段请放 args 对象」 | 按 @pi-meta parameters 结构传参 |
 
-> 文案口径（2026-09-01 审查后补）：凡经 core 错误文案工厂产出的消息（`..` 拒绝、slug 上限等），**以 core 实际文案为准**（英文，经 `invalidAgentRefMessage(ref, {howToList})` 注入恢复指引）；本表中文为意译示意。S2②/S1 验收断言「消息含恢复指引与拒绝语义」，不做中文字面匹配。core 的 warn 通道需宿主 `configureCore({ log })` 接线方落盘（缺省 console），V8g/接线单元须含此项。
+> 文案口径（2026-09-01 审查后补，2026-09-01 R1 修订）：经 core 错误文案工厂产出的消息（agent 线 `..` 拒绝等）**以 core 实际文案为准**（英文，经 `invalidAgentRefMessage(ref, {howToList})` 注入恢复指引）；本表中文为意译示意。**slug 上限消息为 zsw 手写中文**（core 只导出 `SLUG_MAX_LENGTH` 常量、无 slug 消息工厂）。S2②/S1 验收断言「消息含恢复指引与拒绝语义」，不做中文字面匹配。core 的 warn 通道需宿主 `configureCore({ log })` 接线方落盘（缺省 console），V8g/接线单元须含此项。
 
 ## 4 验收
 
 真实依赖真实路径，禁 mock。回溯标注见各场景。
 
-**S1 复刻清零与行为等值（G1）**：改造分支上 ① 按 §5.3 退役/收缩清单的**全符号集**驱动 grep 归零（normalizeAgentRef/parseAgentMd/parseFrontmatter/toProfile/scalar/stripQuotes/expandHome/stem/MS_PER_TURN/splitModelRef/hasProviderCredentials/SAFE_ID_RE/GIT_TIMEOUT_MS/loadScriptFromPath 鸭子实体——符号清单随 V8 的 core-ref.test.js 符号清单文件维护，以该文件为准防漏）；② 全量单测绿（基线 349+）；③ 真机跑一轮 `zsw start --worktree`（worktree 链路走 core git-ops）+ `zsw workflow --workflow review-fix-loop`（批次解析走 meta 驱动），行为与改造前对照记录一致。回溯 G1。
+**S1 复刻清零与行为等值（G1）**：改造分支上 ① 按 §5.3 退役/收缩清单的**复刻实体集**驱动 grep 归零——判定口径（2026-09-01 R1 修订）：grep 归零的对象是**复刻实现体**（parseAgentMd/parseFrontmatter/toProfile/scalar/stripQuotes/stem/MS_PER_TURN/hasProviderCredentials/SAFE_ID_RE/GIT_TIMEOUT_MS/loadScriptFromPath 鸭子实体）；三类符号例外为**薄委托/契约适配常驻**，不算复刻、不要求归零：`normalizeAgentRef`（manager 面非 string 防御 + homeDir 测试缝适配）、`splitModelRef`（短名归默认 provider 的宿主决策包装）、`expandHome`（lint 入口相对路径容忍的 3 行私有实现）。② 全量单测绿（基线 349+）；③ 真机跑一轮 `zsw start --worktree`（worktree 链路走 core git-ops）+ `zsw workflow --workflow review-fix-loop`（批次解析走 meta 驱动），行为与改造前对照记录一致。回溯 G1。
 
-**S2 漂移修复三连（G2）**：① `maxTurnsToWatchdogMs(2) ≥ 1_800_000` 函数级断言 + `maxTurns: 2` 真机派发断言 watchdog 挂载时长日志；② `zsw start --agent /x/../evil.md` 被拒且消息含恢复指引；③ 自建 block-scalar 测试资产 `t-sink.md`（含多行 `- item` tools 列表）放入 `~/.zcode/agents/`，`zsw agents` 清单 description 与 tools 投影完整（内置 10 角色均单行 description，块标量样例须自建——对齐姊妹文档 S1 同一资产）。回溯 G2。
+**S2 漂移修复三连（G2）**：① `maxTurnsToWatchdogMs(2) ≥ 1_800_000` 函数级断言 + `maxTurns: 2` 真机派发断言 watchdog 挂载时长日志；② `zsw start --agent /x/../evil.md` 被拒且消息含恢复指引；③ 自建 block-scalar 测试资产 `t-sink.md`（含多行 `- item` tools 列表）放入 `~/.zcode/agents/`，**解析面**（R1 修订：清单面只投影 name/description/when 等索引字段、description 按 200 字符截断，tools 从不在清单投影——tools 完整性的可检验面 = `parseAgentProfile`/parseFile 解析输出）description 完整多行 + tools `['read','bash']` + maxTurns=2（内置 10 角色均单行 description，块标量样例须自建——对齐姊妹文档 S1 同一资产）。回溯 G2。
 
 **S3 ref 契约（G3）**：① `zsw workflow --action script-save` 保存脚本后按名 run 成功；② saved 名与内置名同名时 run 跑内置 + 输出遮蔽 warning 列出双路径；③ `script:` 前缀仍拒收；④ 三入口（CLI/daemon/MCP）knownNames 构建的 cwd 口径一致。回溯 G3。
 
 **S4 三形态一致（G4）**：① inline dev 真机全量单测绿 + core-ref 符号守卫绿；② `node scripts/check-pack.js` 绿（files 白名单含新 vendored）；③ 人为回退 vendored 一个文件触发守卫报错（负面验证半刷新拦截）。回溯 G4。
 
-**S5 发版与累积修复（G5）**：① `node scripts/release.js z-subagent-workflow major` 产出 2.0.0 三处同步 + release notes 六项（D-E5）；② 造 25 个历史 workflow-state 文件，**其中 10 个按改造前格式（无 v 字段）构造**——daemon 启动后目录收敛至上限内，且 loadAll/recover 对全部 25 个（含无 v 存量）可读、状态不丢（覆盖姊妹文档 D4 的存量可恢复断言）。回溯 G5 + 例 3。
+**S5 发版与累积修复（G5）**：① `node scripts/release.js z-subagent-workflow major` 产出 2.0.0 三处同步 + release notes 七项（D-E5）；② 造 25 个历史 workflow-state 文件，**其中 10 个按改造前格式（无 v 字段）构造**——以 `ZSW_STATE_KEEP=<25 以下>`（如 10）启动 daemon（R1 修订：缺省上限 1000 大于 25 时「收敛至上限内」恒真无判别力，必须显式压低上限或造超限文件数），目录收敛至该上限内，且 loadAll/recover 对全部 25 个（含无 v 存量）可读、状态不丢（覆盖姊妹文档 D4 的存量可恢复断言）。回溯 G5 + 例 3。
 
 ## 5 下一层拆分
 
@@ -225,7 +225,7 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 ### 5.3 文件改动地图
 
-- 退役：`lib/agent-discovery.js`（parser 族/normalizeAgentRef）、`lib/worktree.js`（收缩至 ~60 行）、`lib/slots.js`（收缩薄层）
+- 退役：`lib/agent-discovery.js`（parser 族/normalizeAgentRef 复刻实体，薄委托/契约适配常驻除外——见 S1① 判定口径）、`lib/worktree.js`（收缩为「sidecar 锚点实现 + prepare 编排 + 布局/孤儿对账 + patch 落盘收尾」的 zsw-owned 层——R1 修订：git 执行面全部下沉后净代码 ~140 行（总行 277 含注释），原「~60 行」目标对声明保留面不可行，以 E6 保留面清单为锚而非行数）、`lib/slots.js`（收缩薄层）
 - 改造：`lib/orchestration-host.js`（鸭子实体/白名单/恢复/投影）、`lib/manager.js`（MS_PER_TURN/slug 闸）、`lib/runner-core.js`（alive/watchdog）、`lib/model-router.js`（切分原语）、`lib/output-store.js`/`lib/notifier-mailbox.js`（atomicWrite）、`bin/zsw.js`（validateWorkflowRef/buildWorkflowRunParams consumedArgs meta 化）、`lib/daemon-socket.js`（probeLockHolder）
 - 新增接线：daemon/session-start 的 prune 调用；core-ref.test.js 符号清单扩展
 - vendored：`--npm 0.4.0` 刷新（manifest source 回归 npm 权威源）

@@ -55,7 +55,7 @@ workflow 管理面（zflow 面九 action 的 CLI 入口；状态面 = `<zsw 数�
 # agent() 每次调用派发一个 agent 会话（core zcode engine：缺省 appserver 常驻复用，
 # XYZ_ZCODE_MODE=spawn 定向回退为每轮独立无头 zcode 进程，~1-2s 冷启动/次）。
 # 需要「派发后做别的、完成唤醒」时用 Bash run_in_background 包裹整条命令，CLI 退出即引擎原生通知）
-# workflow 引用 = 内置名 或 .js 绝对路径（~/ 前缀可展开；script:<名>/裸名已废弃拒收，D-4）
+# workflow 引用 = 内置名 / saved 裸名（script-save 落盘的发现面脚本）或 .js 绝对路径（~/ 前缀可展开；script:<名> 前缀拒收，D-4/D-E3；同名时内置优先并出遮蔽 warning）
 node bin/zsw.js workflow --workflow chain --task "分析并总结 README" --workdir <绝对路径>
 node bin/zsw.js workflow --workflow map-reduce --task "..." --workdir <绝对路径> \
   --operation "提取每个文件的导出" --items '["a.ts","b.ts"]'
@@ -88,7 +88,7 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 
 参数面全集见 `node bin/zsw.js workflow --help`（`--target`（必填）、`--target-type`（缺省 text）、`--batch1..N`（agent .md 路径）/`--batch-names`、`--max-rounds` 默认 10、`--stuck-threshold` 默认 3、`--skip-clean-agents`、`--recheck-after-fix`、`--converge-new-issues`/`--converge-rounds`、`--max-fix-attempts`、`--aggregator-model`、`--review-prompt`/`--fix-prompt`、`--fallow-scan`、`--auto-commit` 等）。老参数兼容：`--review-target <text>` 等价 `--target-type text --target <text>`；`--task` 在 review-fix-loop 场景作为 target 回退。**`--reviewers`（自由文本维度）已废弃**——core 契约批次值 = agent .md 路径，传入显式报错；无 agent .md 的自由文本维度场景改用自定义脚本（`script-generate` 创作后按 .js 绝对路径引用）。
 
-**自定义 workflow 脚本（core 契约，绝对路径引用）**：内置 5 种之外的编排用 core 契约脚本扩展，run 按 .js 绝对路径引用（`~/` 前缀可展开；`script:<名>` 与裸名已废弃拒收——D-4 契约与 pi 平台统一）。发现面 = core 发现面（`~/.zsw/workflows` + `~/.agents/workflows` + `<ws>/.pi/workflows` + `<ws>/.agents/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。创作走闭环：`script-generate`（core 五道闸校验 + tmp 落盘）→ `lint` → `script-save`（固化 `~/.zsw/workflows/`）→ run 按路径引用 → `script-delete` 清理；完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）。
+**自定义 workflow 脚本（core 契约，script-save 后按名或路径引用）**：内置 5 种之外的编排用 core 契约脚本扩展，run 按 .js 绝对路径或 **saved 裸名**引用（`~/` 前缀可展开；D-E3 起 saved 裸名三入口放行——CLI/orchestration-host/daemon-MCP 同一 knownNames 口径；`script:<名>` 前缀维持拒收——D-4；与内置同名时内置优先并输出含双路径的遮蔽 warning）。发现面 = core 发现面（`~/.zsw/workflows` + `~/.agents/workflows` + `<ws>/.pi/workflows` + `<ws>/.agents/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。创作走闭环：`script-generate`（core 五道闸校验 + tmp 落盘）→ `lint` → `script-save`（固化 `~/.zsw/workflows/`）→ run 按名或路径引用 → `script-delete` 清理；完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）。
 
 `--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动 + 聚合等待（`wait` / `start --wait`）走默认 daemon 模式（见下节）。
 
@@ -202,8 +202,8 @@ zsw 的共享面——agent 模板资产与发现、SessionStart 注入渲染、
 |---|---|---|
 | `start --agent "reviewer"`（按名引用） | `start --agent "<location 绝对路径>"` | 按名引用被拒：报错 `Invalid agent ref: ...`（与 pi 侧 core 同源）并自带恢复指引。路径取 `zsw agents` 清单的 `location`/`file` 列，或注入段 `<available_subagents>` 条目的 `<location>` |
 | `start` 不传 `--agent`（无角色裸跑） | 行为变化：缺省加载 `general-purpose` 内置角色 | 子进程 prompt 注入角色 body；record 的 agent 展示名从 `null` 变 `general-purpose`（仅展示面，任务书不受影响）；不想要角色时显式传自定义 .md 路径（project 级同名 .md 可遮蔽内置） |
-| `workflow --workflow "script:tri-review"` | `workflow --workflow "/abs/path/tri-review.js"` | `script:` 前缀已废弃拒收（报错含恢复指引）；路径取 `workflow --action scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 的 `<location>`，支持 `~/` 前缀展开 |
-| `workflow --workflow "tri-review"`（裸名） | 同上（.js 绝对路径） | 裸名仅保留给内置 5 名——多源同名遮蔽下按名引用有歧义（所指取决于扫描序，模型不可见），路径引用所指即所载 |
+| `workflow --workflow "script:tri-review"` | `workflow --workflow "/abs/path/tri-review.js"` 或 **`workflow --workflow "tri-review"`（saved 裸名，D-E3 起放行）** | `script:` 前缀拒收（报错含恢复指引）；script-save 过的脚本按名引用，未 save 的按路径；路径取 `workflow --action scripts` 清单的 `path` 字段或注入段 `<available_workflows>` 的 `<location>`，支持 `~/` 前缀展开 |
+| `workflow --workflow "tri-review"`（saved 裸名） | **不再需要迁移**（D-E3 放行） | saved 裸名按名 run；与内置名同名时内置优先 + 遮蔽 warning（列出双路径，按路径消歧或改名）——路径引用仍是最无歧义形态 |
 | `workflow --workflow "chain"`（内置名） | 不变 | 内置名是稳定 API 面（chain/parallel/map-reduce/scatter-gather/review-fix-loop），保留人机友好形态 |
 
 **agent 发现的两类收窄（W6a 登记，core 单层扫描语义）**——zsw 旧自写 resolver 递归扫描（深度 16、排除 node_modules），收口后 core 扫描**单层不递归**（pi 侧既有契约）：

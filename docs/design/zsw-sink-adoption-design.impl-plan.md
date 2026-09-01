@@ -86,6 +86,12 @@ graph TD
 | 1 | MS_PER_TURN 退役从 V5e 并入 V1a | 符号实际位于 `lib/manager.js`（V1a 领地），按文件现实重划避免两单元同文件冲突；V5e 保留 runner-core 自身的 watchdog 决策（如有） | 2026-09-01 Wave 1 派发时 |
 | 2 | orchestration-host 内 agent-ref 复刻（:107-112 一带）归 V3w 顺带退役 | 与 C3 鸭子实体同文件，V1a 领地只含 agent-discovery.js/manager.js；V1a 若发现领地外调用方保留薄包装并登记，V3w 消化 | 同上 |
 | 3 | V3w 领地显式排除 `lib/daemon-socket.js`（V5e 独占） | daemon/MCP workflow ref 口径点若落在该文件，V3w 停下上报、主 agent 在 V5e 后串行安排 | 同上 |
+| 4 | V4o 六条边缘对齐（reviewers 优先级 / batchN 非内置 warning / undefined 未知键 / runSummary name-slug 字段 / batch0 放行 / perspectives 透传） | R1 区 B 逐条独立判定全部 reasonable——均系随 core 权威契约对齐且不破坏设计目标（batch0 旧手写正则才是与资产契约分叉的一方） | R1 区 B 报告 |
+| 5 | normalizeAgentRef 薄包装常驻（manager 面非 string 防御 + homeDir 测试缝）；splitModelRef 短名归默认 provider 留包装层；expandHome 3 行私有实现留 lint 面 | R1 区 A/C 独立裁决均 reasonable——契约适配/宿主决策非复刻；设计 S1① 已按此口径修订（复刻实体归零 vs 薄委托常驻两类区分） | R1 区 A/C 报告 |
+| 6 | core 清单 IF1 闸固有语义（无 frontmatter/缺 description 的 .md 不进清单）；V2p 继承，第 ⑦ 项 breaking note 已补入 D-E5 | R1 区 A 裁决 reasonable：§3.0 契约固有，执行面路径直达不受影响 | R1 区 A 报告 |
+| 7 | model-router 顶层 requireCore（决策成立——PROVIDER_ID 值导出被顶层解构，惰性不可行；原「hook 链路 +27ms」归因失真已由批次 A 修正）；runner-core pool:0→1 断言更新（随 core 不变量 3，合理） | R1 区 C 裁决；此前仅备案于代码注释/commit message，本次入表 | R1 区 C 报告 |
+| 8 | worktree.js 289→277 行（净代码 ~140）：V6w 行数偏差定性成立——残余全为 E6 声明 zsw-owned 层，无复刻残留；设计 §5.3「~60 行」错误锚点已改 | R1 区 D 裁决 | R1 区 D 报告 |
+| 9 | prune 不用 core envName opt-in 通道、自研 ZSW_STATE_KEEP 解析（缺省 1000、非法值警告回落） | R1 区 D 裁决 reasonable：core 通道 env 未设即 no-op 会让修复默认关，且 core 非法值静默；zsw 语义优于 core 通道 | R1 区 D 报告 |
 
 ## 6 状态表
 
@@ -121,3 +127,4 @@ graph TD
 - 2026-09-01：xyz 交付三路对抗审查完成，用户裁决「都修复」。据此修订本计划与设计 §3.0：① 契约勘误（`writeAtomicFileSync` 实名、`collectWorktreePatch` opts 形态、内置名优先归宿主、hostRoots/hasApiKey/loadWorkflowScriptByPath undefined/reservedKeys 等消费要点入 §3.0）；② V8g 执行序改写（守卫先行 → bundle 重建 → 刷新 → 验证，bundle 为唯一可 vendor 源）；③ V7i 增分层配额不穿透断言。G-user 门解除（清理批 f739ce4/b9ae43f 落库）。审查遗留消费要点（派发时写入各单元任务书）：去重键 stem→frontmatter name 为 V2 已声明行为变更须验收覆盖；AgentEntry 不含执行字段需 parseAgentProfile 二次取；args-meta 第三参 reservedKeys 防平铺误判；`written:false` 不可独立解读为无降级；快照版本常量实名 `SNAPSHOT_VERSION`。
 - 2026-09-01：「都修复」执行完毕——xyz 侧 B1（cf00983eb + 57eaf065b 注释结构修复：MF-4 barrel 导出 ModelConfigService、S-3 hooks 围栏、S-5 可操作 warn、S-1/S-4/S-6 jsdoc 如实化；**S-2 裁决为「分层配额仅 acquire 时点强制」契约登记，不改 pi 锚定行为**）、B2（77a600d3d D9 闭环：reservedKeys=TOOL_TOP_LEVEL 注入）、文档收口（5f3e52cb8 + 655c67228）；dist.bundle 重建后 21/21 契约符号命中。zsw 侧 V0a（10baf33）/V0b（d86f7b2）committed。V4o 补 reservedKeys 契约、V7i 按 S-2 裁决改写。
 - 2026-09-01：V8g committed（e6a057a）——G-core 门兑现，Wave 1 四链（V1a/V3w/V5e/V6w）并行派发；三条合理偏差入登记表（MS_PER_TURN 归 V1a、orchestration-host agent-ref 复刻归 V3w、daemon-socket 归 V5e 独占）。
+- 2026-09-01：**阶段 3 一致性审查 R1**（四区独立 reviewer，区间 408ea95..HEAD，四区测试实跑全绿）：39 reasonable / 13 unreasonable（全 minor）/ 14 doc_errors / 2 requirements gap，零行为破坏级问题。处置：三个修复批次后台执行（A 注释与等值微修、B 测试守卫补强、C 编排 CLI 微修 + 两项 requirements gap 落地——CI vendored sha256 门禁与 core-ref refreshHint 受众分流按「补实现」裁决）；doc_errors 由主 agent 修订（设计 7 处：S1① 判定口径两类区分、S2③ 解析面口径 + 截断注、S5② ZSW_STATE_KEEP 前提、D-E5 补第七项 breaking note、§3.0 anchor 字段名 + 勘误补第三处、§5.3 行数锚改 E6 保留面、文案口径 slug 移出 core 工厂；README/SKILL 裸名契约四处改为 D-E3 放行终态；t-sink.md 时态改历史口径）。9 条新裁决入偏差登记表（表 4-9 行）。
