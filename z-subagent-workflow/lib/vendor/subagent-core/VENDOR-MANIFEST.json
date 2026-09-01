@@ -1,6 +1,6 @@
 {
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
-  "fetchedAt": "2026-08-31T11:51:27.189Z",
+  "fetchedAt": "2026-09-01T00:45:06.272Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
@@ -48,7 +48,7 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "d3a83dc047e3c2ac844c6d07bf0441160342bb58aa206b2fd4f6a7008aed0297"
+      "sha256": "7502097b25ab8050d96136d2bd8133b9c20ef2d3542f34c2cebebcca7d40b33c"
     },
     {
       "path": "package.json",

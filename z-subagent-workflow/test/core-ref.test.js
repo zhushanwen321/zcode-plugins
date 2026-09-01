@@ -77,6 +77,41 @@ test('requireCore：真实 vendored 主入口可加载且暴露 2b/2c 消费面�
   assert.equal(typeof core.configureCore, 'function', 'configureCore 缺失');
 });
 
+test('sink 扩面新导出面全符号在场（V8g 守卫，拦陈旧 vendored bundle）', () => {
+  // V8g 消费面（设计 §3.0 勘误版清单，符号实名以 core barrel 为准）。
+  // 本清单是唯一能拦「陈旧 bundle」的网：后续消费单元（V1a/V3w/V5e/V6w）
+  // 改调这些符号前，vendored 必须先刷到含 sink 扩面的 bundle——符号缺失
+  // 即说明 vendor 产物落后于源，按报错指引刷新。
+  const core = coreRef.requireCore();
+  // 函数类（V1a/V3w/V5e/V6w 各消费单元将改调的原语）
+  for (const k of [
+    'normalizeRef', 'invalidAgentRefMessage',       // agent-ref 面（V1a）
+    'normalizeWorkflowRef', 'loadWorkflowScriptByPath', // workflow 面（V3w）
+    'parseAgentProfile', 'discoverAgents',          // 发现/解析面（V1a）
+    'maxTurnsToWatchdogMs', 'createConcurrencyPool', 'isProcessAlive', // 引擎与进程面（V5e）
+    'splitZcodeModelRef', 'hasApiKey', 'getModelConfigService', // 模型面（V5e）
+    'collectWorktreePatch',                          // worktree git 内核（V6w）
+    'recoverCrashedRuns', 'runSummary', 'isScriptRunning', // 运行时面
+    'writeAtomicFileSync',                           // 原子写（勘误实名，非 atomicWriteFileSync）
+    'normalizeArgsByMeta', 'argKeysFromMeta', 'findFlattenedArgKeys', // args-meta 面
+    'displayAgentName',                              // 显示名投影
+  ]) {
+    assert.equal(typeof core[k], 'function', `sink 扩面消费符号 ${k} 缺失——vendored bundle 落后于源，重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新`);
+  }
+  // 类/值类：typeof 'function' 同样适用（class 即构造器）
+  for (const k of ['WorkflowScript', 'ModelConfigService']) {
+    assert.equal(typeof core[k], 'function', `sink 扩面消费类 ${k} 缺失——vendored bundle 落后于源，重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新`);
+  }
+  // 常量类：按值形态断言（函数循环的 typeof 'function' 不适用于此组）
+  for (const k of ['AGENT_REF_EXT', 'WORKFLOW_REF_EXT', 'DEFAULT_PROVIDER_ID', 'ZCODE_FALLBACK_DEFAULT_MODEL']) {
+    assert.equal(typeof core[k], 'string', `sink 扩面常量 ${k} 缺失或非 string——vendored bundle 落后于源，重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新`);
+  }
+  assert.equal(typeof core.SLUG_MAX_LENGTH, 'number', 'sink 扩面常量 SLUG_MAX_LENGTH 缺失或非 number——vendored bundle 落后于源，重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新');
+  // 快照版本值断言：落盘快照兼容性锚点（版本漂移 = 存量快照不可读）
+  assert.equal(core.SNAPSHOT_VERSION, 'wf-run-v2',
+    'SNAPSHOT_VERSION 值漂移——存量 workflow-state 快照按 "wf-run-v2" 落盘，刷新后版本不符须先核实快照兼容性');
+});
+
 test('错误路径：主入口缺失 → 报错含刷新命令与具体版本号', () => {
   const { mod, tmp } = makeFakeCoreRef({ 'package.json': '{"version":"9.9.9"}' });
   try {

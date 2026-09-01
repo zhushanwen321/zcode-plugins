@@ -107,17 +107,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path9) {
-      const ctrl = callVisitor(key, node, visitor, path9);
+    function visit_(key, node, visitor, path18) {
+      const ctrl = callVisitor(key, node, visitor, path18);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path9, ctrl);
-        return visit_(key, ctrl, visitor, path9);
+        replaceNode(key, path18, ctrl);
+        return visit_(key, ctrl, visitor, path18);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path9 = Object.freeze(path9.concat(node));
+          path18 = Object.freeze(path18.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path9);
+            const ci = visit_(i, node.items[i], visitor, path18);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -128,13 +128,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path9 = Object.freeze(path9.concat(node));
-          const ck = visit_("key", node.key, visitor, path9);
+          path18 = Object.freeze(path18.concat(node));
+          const ck = visit_("key", node.key, visitor, path18);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path9);
+          const cv = visit_("value", node.value, visitor, path18);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -155,17 +155,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path9) {
-      const ctrl = await callVisitor(key, node, visitor, path9);
+    async function visitAsync_(key, node, visitor, path18) {
+      const ctrl = await callVisitor(key, node, visitor, path18);
       if (identity.isNode(ctrl) || identity.isPair(ctrl)) {
-        replaceNode(key, path9, ctrl);
-        return visitAsync_(key, ctrl, visitor, path9);
+        replaceNode(key, path18, ctrl);
+        return visitAsync_(key, ctrl, visitor, path18);
       }
       if (typeof ctrl !== "symbol") {
         if (identity.isCollection(node)) {
-          path9 = Object.freeze(path9.concat(node));
+          path18 = Object.freeze(path18.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path9);
+            const ci = await visitAsync_(i, node.items[i], visitor, path18);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -176,13 +176,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity.isPair(node)) {
-          path9 = Object.freeze(path9.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path9);
+          path18 = Object.freeze(path18.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path18);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path9);
+          const cv = await visitAsync_("value", node.value, visitor, path18);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -209,23 +209,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path9) {
+    function callVisitor(key, node, visitor, path18) {
       if (typeof visitor === "function")
-        return visitor(key, node, path9);
+        return visitor(key, node, path18);
       if (identity.isMap(node))
-        return visitor.Map?.(key, node, path9);
+        return visitor.Map?.(key, node, path18);
       if (identity.isSeq(node))
-        return visitor.Seq?.(key, node, path9);
+        return visitor.Seq?.(key, node, path18);
       if (identity.isPair(node))
-        return visitor.Pair?.(key, node, path9);
+        return visitor.Pair?.(key, node, path18);
       if (identity.isScalar(node))
-        return visitor.Scalar?.(key, node, path9);
+        return visitor.Scalar?.(key, node, path18);
       if (identity.isAlias(node))
-        return visitor.Alias?.(key, node, path9);
+        return visitor.Alias?.(key, node, path18);
       return void 0;
     }
-    function replaceNode(key, path9, node) {
-      const parent = path9[path9.length - 1];
+    function replaceNode(key, path18, node) {
+      const parent = path18[path18.length - 1];
       if (identity.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity.isPair(parent)) {
@@ -835,10 +835,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path9, value) {
+    function collectionFromPath(schema, path18, value) {
       let v = value;
-      for (let i = path9.length - 1; i >= 0; --i) {
-        const k = path9[i];
+      for (let i = path18.length - 1; i >= 0; --i) {
+        const k = path18[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -857,7 +857,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path9) => path9 == null || typeof path9 === "object" && !!path9[Symbol.iterator]().next().done;
+    var isEmptyPath = (path18) => path18 == null || typeof path18 === "object" && !!path18[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -887,11 +887,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path9, value) {
-        if (isEmptyPath(path9))
+      addIn(path18, value) {
+        if (isEmptyPath(path18))
           this.add(value);
         else {
-          const [key, ...rest] = path9;
+          const [key, ...rest] = path18;
           const node = this.get(key, true);
           if (identity.isCollection(node))
             node.addIn(rest, value);
@@ -905,8 +905,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path9) {
-        const [key, ...rest] = path9;
+      deleteIn(path18) {
+        const [key, ...rest] = path18;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -920,8 +920,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path9, keepScalar) {
-        const [key, ...rest] = path9;
+      getIn(path18, keepScalar) {
+        const [key, ...rest] = path18;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity.isScalar(node) ? node.value : node;
@@ -939,8 +939,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path9) {
-        const [key, ...rest] = path9;
+      hasIn(path18) {
+        const [key, ...rest] = path18;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -950,8 +950,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path9, value) {
-        const [key, ...rest] = path9;
+      setIn(path18, value) {
+        const [key, ...rest] = path18;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -3466,9 +3466,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path9, value) {
+      addIn(path18, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path9, value);
+          this.contents.addIn(path18, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -3543,14 +3543,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path9) {
-        if (Collection.isEmptyPath(path9)) {
+      deleteIn(path18) {
+        if (Collection.isEmptyPath(path18)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path9) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path18) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -3565,10 +3565,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path9, keepScalar) {
-        if (Collection.isEmptyPath(path9))
+      getIn(path18, keepScalar) {
+        if (Collection.isEmptyPath(path18))
           return !keepScalar && identity.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity.isCollection(this.contents) ? this.contents.getIn(path9, keepScalar) : void 0;
+        return identity.isCollection(this.contents) ? this.contents.getIn(path18, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -3579,10 +3579,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path9) {
-        if (Collection.isEmptyPath(path9))
+      hasIn(path18) {
+        if (Collection.isEmptyPath(path18))
           return this.contents !== void 0;
-        return identity.isCollection(this.contents) ? this.contents.hasIn(path9) : false;
+        return identity.isCollection(this.contents) ? this.contents.hasIn(path18) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -3599,13 +3599,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path9, value) {
-        if (Collection.isEmptyPath(path9)) {
+      setIn(path18, value) {
+        if (Collection.isEmptyPath(path18)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path9), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path18), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path9, value);
+          this.contents.setIn(path18, value);
         }
       }
       /**
@@ -5565,9 +5565,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path9) => {
+    visit.itemAtPath = (cst, path18) => {
       let item = cst;
-      for (const [field, index] of path9) {
+      for (const [field, index] of path18) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -5576,23 +5576,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path9) => {
-      const parent = visit.itemAtPath(cst, path9.slice(0, -1));
-      const field = path9[path9.length - 1][0];
+    visit.parentCollection = (cst, path18) => {
+      const parent = visit.itemAtPath(cst, path18.slice(0, -1));
+      const field = path18[path18.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path9, item, visitor) {
-      let ctrl = visitor(item, path9);
+    function _visit(path18, item, visitor) {
+      let ctrl = visitor(item, path18);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path9.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path18.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -5603,10 +5603,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path9);
+            ctrl = ctrl(item, path18);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path9) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path18) : ctrl;
     }
     exports2.visit = visit;
   }
@@ -6908,14 +6908,14 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs13 = this.flowScalar(this.type);
+              const fs25 = this.flowScalar(this.type);
               if (atNextItem || it.value) {
-                map.items.push({ start, key: fs13, sep: [] });
+                map.items.push({ start, key: fs25, sep: [] });
                 this.onKeyLine = true;
               } else if (it.sep) {
-                this.stack.push(fs13);
+                this.stack.push(fs25);
               } else {
-                Object.assign(it, { key: fs13, sep: [] });
+                Object.assign(it, { key: fs25, sep: [] });
                 this.onKeyLine = true;
               }
               return;
@@ -7043,13 +7043,13 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs13 = this.flowScalar(this.type);
+              const fs25 = this.flowScalar(this.type);
               if (!it || it.value)
-                fc.items.push({ start: [], key: fs13, sep: [] });
+                fc.items.push({ start: [], key: fs25, sep: [] });
               else if (it.sep)
-                this.stack.push(fs13);
+                this.stack.push(fs25);
               else
-                Object.assign(it, { key: fs13, sep: [] });
+                Object.assign(it, { key: fs25, sep: [] });
               return;
             }
             case "flow-map-end":
@@ -7426,12 +7426,12 @@ var require_code = __commonJS({
     exports2._ = _;
     var plus = new _Code("+");
     function str(strs, ...args) {
-      const expr = [safeStringify(strs[0])];
+      const expr = [safeStringify2(strs[0])];
       let i = 0;
       while (i < args.length) {
         expr.push(plus);
         addCodeArg(expr, args[i]);
-        expr.push(plus, safeStringify(strs[++i]));
+        expr.push(plus, safeStringify2(strs[++i]));
       }
       optimize(expr);
       return new _Code(expr);
@@ -7483,16 +7483,16 @@ var require_code = __commonJS({
     }
     exports2.strConcat = strConcat;
     function interpolate(x) {
-      return typeof x == "number" || typeof x == "boolean" || x === null ? x : safeStringify(Array.isArray(x) ? x.join(",") : x);
+      return typeof x == "number" || typeof x == "boolean" || x === null ? x : safeStringify2(Array.isArray(x) ? x.join(",") : x);
     }
     function stringify(x) {
-      return new _Code(safeStringify(x));
+      return new _Code(safeStringify2(x));
     }
     exports2.stringify = stringify;
-    function safeStringify(x) {
+    function safeStringify2(x) {
       return JSON.stringify(x).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     }
-    exports2.safeStringify = safeStringify;
+    exports2.safeStringify = safeStringify2;
     function getProperty(key) {
       return typeof key == "string" && exports2.IDENTIFIER.test(key) ? new _Code(`.${key}`) : _`[${key}]`;
     }
@@ -10553,8 +10553,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path9) {
-      let input = path9;
+    function removeDotSegments(path18) {
+      let input = path18;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -10806,8 +10806,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path9, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path9 && path9 !== "/" ? path9 : void 0;
+        const [path18, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path18 && path18 !== "/" ? path18 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -11779,13 +11779,13 @@ var require_core = __commonJS({
     }, warn() {
     }, error() {
     } };
-    function getLogger2(logger21) {
-      if (logger21 === false)
+    function getLogger2(logger35) {
+      if (logger35 === false)
         return noLogs;
-      if (logger21 === void 0)
+      if (logger35 === void 0)
         return console;
-      if (logger21.log && logger21.warn && logger21.error)
-        return logger21;
+      if (logger35.log && logger35.warn && logger35.error)
+        return logger35;
       throw new Error("logger must implement log, warn and error methods");
     }
     var KEYWORD_NAME = /^[a-z_$][a-z0-9_$:-]*$/i;
@@ -13896,52 +13896,1708 @@ var require_ajv = __commonJS({
   }
 });
 
+// ../../node_modules/graceful-fs/polyfills.js
+var require_polyfills = __commonJS({
+  "../../node_modules/graceful-fs/polyfills.js"(exports2, module2) {
+    "use strict";
+    var constants = require("constants");
+    var origCwd = process.cwd;
+    var cwd = null;
+    var platform = process.env.GRACEFUL_FS_PLATFORM || process.platform;
+    process.cwd = function() {
+      if (!cwd)
+        cwd = origCwd.call(process);
+      return cwd;
+    };
+    try {
+      process.cwd();
+    } catch (er) {
+    }
+    if (typeof process.chdir === "function") {
+      chdir = process.chdir;
+      process.chdir = function(d) {
+        cwd = null;
+        chdir.call(process, d);
+      };
+      if (Object.setPrototypeOf) Object.setPrototypeOf(process.chdir, chdir);
+    }
+    var chdir;
+    module2.exports = patch;
+    function patch(fs25) {
+      if (constants.hasOwnProperty("O_SYMLINK") && process.version.match(/^v0\.6\.[0-2]|^v0\.5\./)) {
+        patchLchmod(fs25);
+      }
+      if (!fs25.lutimes) {
+        patchLutimes(fs25);
+      }
+      fs25.chown = chownFix(fs25.chown);
+      fs25.fchown = chownFix(fs25.fchown);
+      fs25.lchown = chownFix(fs25.lchown);
+      fs25.chmod = chmodFix(fs25.chmod);
+      fs25.fchmod = chmodFix(fs25.fchmod);
+      fs25.lchmod = chmodFix(fs25.lchmod);
+      fs25.chownSync = chownFixSync(fs25.chownSync);
+      fs25.fchownSync = chownFixSync(fs25.fchownSync);
+      fs25.lchownSync = chownFixSync(fs25.lchownSync);
+      fs25.chmodSync = chmodFixSync(fs25.chmodSync);
+      fs25.fchmodSync = chmodFixSync(fs25.fchmodSync);
+      fs25.lchmodSync = chmodFixSync(fs25.lchmodSync);
+      fs25.stat = statFix(fs25.stat);
+      fs25.fstat = statFix(fs25.fstat);
+      fs25.lstat = statFix(fs25.lstat);
+      fs25.statSync = statFixSync(fs25.statSync);
+      fs25.fstatSync = statFixSync(fs25.fstatSync);
+      fs25.lstatSync = statFixSync(fs25.lstatSync);
+      if (fs25.chmod && !fs25.lchmod) {
+        fs25.lchmod = function(path18, mode, cb) {
+          if (cb) process.nextTick(cb);
+        };
+        fs25.lchmodSync = function() {
+        };
+      }
+      if (fs25.chown && !fs25.lchown) {
+        fs25.lchown = function(path18, uid, gid, cb) {
+          if (cb) process.nextTick(cb);
+        };
+        fs25.lchownSync = function() {
+        };
+      }
+      if (platform === "win32") {
+        fs25.rename = typeof fs25.rename !== "function" ? fs25.rename : (function(fs$rename) {
+          function rename2(from, to, cb) {
+            var start = Date.now();
+            var backoff = 0;
+            fs$rename(from, to, function CB(er) {
+              if (er && (er.code === "EACCES" || er.code === "EPERM" || er.code === "EBUSY") && Date.now() - start < 6e4) {
+                setTimeout(function() {
+                  fs25.stat(to, function(stater, st) {
+                    if (stater && stater.code === "ENOENT")
+                      fs$rename(from, to, CB);
+                    else
+                      cb(er);
+                  });
+                }, backoff);
+                if (backoff < 100)
+                  backoff += 10;
+                return;
+              }
+              if (cb) cb(er);
+            });
+          }
+          if (Object.setPrototypeOf) Object.setPrototypeOf(rename2, fs$rename);
+          return rename2;
+        })(fs25.rename);
+      }
+      fs25.read = typeof fs25.read !== "function" ? fs25.read : (function(fs$read) {
+        function read(fd, buffer, offset, length, position, callback_) {
+          var callback;
+          if (callback_ && typeof callback_ === "function") {
+            var eagCounter = 0;
+            callback = function(er, _, __) {
+              if (er && er.code === "EAGAIN" && eagCounter < 10) {
+                eagCounter++;
+                return fs$read.call(fs25, fd, buffer, offset, length, position, callback);
+              }
+              callback_.apply(this, arguments);
+            };
+          }
+          return fs$read.call(fs25, fd, buffer, offset, length, position, callback);
+        }
+        if (Object.setPrototypeOf) Object.setPrototypeOf(read, fs$read);
+        return read;
+      })(fs25.read);
+      fs25.readSync = typeof fs25.readSync !== "function" ? fs25.readSync : /* @__PURE__ */ (function(fs$readSync) {
+        return function(fd, buffer, offset, length, position) {
+          var eagCounter = 0;
+          while (true) {
+            try {
+              return fs$readSync.call(fs25, fd, buffer, offset, length, position);
+            } catch (er) {
+              if (er.code === "EAGAIN" && eagCounter < 10) {
+                eagCounter++;
+                continue;
+              }
+              throw er;
+            }
+          }
+        };
+      })(fs25.readSync);
+      function patchLchmod(fs26) {
+        fs26.lchmod = function(path18, mode, callback) {
+          fs26.open(
+            path18,
+            constants.O_WRONLY | constants.O_SYMLINK,
+            mode,
+            function(err, fd) {
+              if (err) {
+                if (callback) callback(err);
+                return;
+              }
+              fs26.fchmod(fd, mode, function(err2) {
+                fs26.close(fd, function(err22) {
+                  if (callback) callback(err2 || err22);
+                });
+              });
+            }
+          );
+        };
+        fs26.lchmodSync = function(path18, mode) {
+          var fd = fs26.openSync(path18, constants.O_WRONLY | constants.O_SYMLINK, mode);
+          var threw = true;
+          var ret;
+          try {
+            ret = fs26.fchmodSync(fd, mode);
+            threw = false;
+          } finally {
+            if (threw) {
+              try {
+                fs26.closeSync(fd);
+              } catch (er) {
+              }
+            } else {
+              fs26.closeSync(fd);
+            }
+          }
+          return ret;
+        };
+      }
+      function patchLutimes(fs26) {
+        if (constants.hasOwnProperty("O_SYMLINK") && fs26.futimes) {
+          fs26.lutimes = function(path18, at, mt, cb) {
+            fs26.open(path18, constants.O_SYMLINK, function(er, fd) {
+              if (er) {
+                if (cb) cb(er);
+                return;
+              }
+              fs26.futimes(fd, at, mt, function(er2) {
+                fs26.close(fd, function(er22) {
+                  if (cb) cb(er2 || er22);
+                });
+              });
+            });
+          };
+          fs26.lutimesSync = function(path18, at, mt) {
+            var fd = fs26.openSync(path18, constants.O_SYMLINK);
+            var ret;
+            var threw = true;
+            try {
+              ret = fs26.futimesSync(fd, at, mt);
+              threw = false;
+            } finally {
+              if (threw) {
+                try {
+                  fs26.closeSync(fd);
+                } catch (er) {
+                }
+              } else {
+                fs26.closeSync(fd);
+              }
+            }
+            return ret;
+          };
+        } else if (fs26.futimes) {
+          fs26.lutimes = function(_a, _b, _c, cb) {
+            if (cb) process.nextTick(cb);
+          };
+          fs26.lutimesSync = function() {
+          };
+        }
+      }
+      function chmodFix(orig) {
+        if (!orig) return orig;
+        return function(target, mode, cb) {
+          return orig.call(fs25, target, mode, function(er) {
+            if (chownErOk(er)) er = null;
+            if (cb) cb.apply(this, arguments);
+          });
+        };
+      }
+      function chmodFixSync(orig) {
+        if (!orig) return orig;
+        return function(target, mode) {
+          try {
+            return orig.call(fs25, target, mode);
+          } catch (er) {
+            if (!chownErOk(er)) throw er;
+          }
+        };
+      }
+      function chownFix(orig) {
+        if (!orig) return orig;
+        return function(target, uid, gid, cb) {
+          return orig.call(fs25, target, uid, gid, function(er) {
+            if (chownErOk(er)) er = null;
+            if (cb) cb.apply(this, arguments);
+          });
+        };
+      }
+      function chownFixSync(orig) {
+        if (!orig) return orig;
+        return function(target, uid, gid) {
+          try {
+            return orig.call(fs25, target, uid, gid);
+          } catch (er) {
+            if (!chownErOk(er)) throw er;
+          }
+        };
+      }
+      function statFix(orig) {
+        if (!orig) return orig;
+        return function(target, options, cb) {
+          if (typeof options === "function") {
+            cb = options;
+            options = null;
+          }
+          function callback(er, stats) {
+            if (stats) {
+              if (stats.uid < 0) stats.uid += 4294967296;
+              if (stats.gid < 0) stats.gid += 4294967296;
+            }
+            if (cb) cb.apply(this, arguments);
+          }
+          return options ? orig.call(fs25, target, options, callback) : orig.call(fs25, target, callback);
+        };
+      }
+      function statFixSync(orig) {
+        if (!orig) return orig;
+        return function(target, options) {
+          var stats = options ? orig.call(fs25, target, options) : orig.call(fs25, target);
+          if (stats) {
+            if (stats.uid < 0) stats.uid += 4294967296;
+            if (stats.gid < 0) stats.gid += 4294967296;
+          }
+          return stats;
+        };
+      }
+      function chownErOk(er) {
+        if (!er)
+          return true;
+        if (er.code === "ENOSYS")
+          return true;
+        var nonroot = !process.getuid || process.getuid() !== 0;
+        if (nonroot) {
+          if (er.code === "EINVAL" || er.code === "EPERM")
+            return true;
+        }
+        return false;
+      }
+    }
+  }
+});
+
+// ../../node_modules/graceful-fs/legacy-streams.js
+var require_legacy_streams = __commonJS({
+  "../../node_modules/graceful-fs/legacy-streams.js"(exports2, module2) {
+    "use strict";
+    var Stream = require("stream").Stream;
+    module2.exports = legacy;
+    function legacy(fs25) {
+      return {
+        ReadStream,
+        WriteStream
+      };
+      function ReadStream(path18, options) {
+        if (!(this instanceof ReadStream)) return new ReadStream(path18, options);
+        Stream.call(this);
+        var self = this;
+        this.path = path18;
+        this.fd = null;
+        this.readable = true;
+        this.paused = false;
+        this.flags = "r";
+        this.mode = 438;
+        this.bufferSize = 64 * 1024;
+        options = options || {};
+        var keys = Object.keys(options);
+        for (var index = 0, length = keys.length; index < length; index++) {
+          var key = keys[index];
+          this[key] = options[key];
+        }
+        if (this.encoding) this.setEncoding(this.encoding);
+        if (this.start !== void 0) {
+          if ("number" !== typeof this.start) {
+            throw TypeError("start must be a Number");
+          }
+          if (this.end === void 0) {
+            this.end = Infinity;
+          } else if ("number" !== typeof this.end) {
+            throw TypeError("end must be a Number");
+          }
+          if (this.start > this.end) {
+            throw new Error("start must be <= end");
+          }
+          this.pos = this.start;
+        }
+        if (this.fd !== null) {
+          process.nextTick(function() {
+            self._read();
+          });
+          return;
+        }
+        fs25.open(this.path, this.flags, this.mode, function(err, fd) {
+          if (err) {
+            self.emit("error", err);
+            self.readable = false;
+            return;
+          }
+          self.fd = fd;
+          self.emit("open", fd);
+          self._read();
+        });
+      }
+      function WriteStream(path18, options) {
+        if (!(this instanceof WriteStream)) return new WriteStream(path18, options);
+        Stream.call(this);
+        this.path = path18;
+        this.fd = null;
+        this.writable = true;
+        this.flags = "w";
+        this.encoding = "binary";
+        this.mode = 438;
+        this.bytesWritten = 0;
+        options = options || {};
+        var keys = Object.keys(options);
+        for (var index = 0, length = keys.length; index < length; index++) {
+          var key = keys[index];
+          this[key] = options[key];
+        }
+        if (this.start !== void 0) {
+          if ("number" !== typeof this.start) {
+            throw TypeError("start must be a Number");
+          }
+          if (this.start < 0) {
+            throw new Error("start must be >= zero");
+          }
+          this.pos = this.start;
+        }
+        this.busy = false;
+        this._queue = [];
+        if (this.fd === null) {
+          this._open = fs25.open;
+          this._queue.push([this._open, this.path, this.flags, this.mode, void 0]);
+          this.flush();
+        }
+      }
+    }
+  }
+});
+
+// ../../node_modules/graceful-fs/clone.js
+var require_clone = __commonJS({
+  "../../node_modules/graceful-fs/clone.js"(exports2, module2) {
+    "use strict";
+    module2.exports = clone;
+    var getPrototypeOf = Object.getPrototypeOf || function(obj) {
+      return obj.__proto__;
+    };
+    function clone(obj) {
+      if (obj === null || typeof obj !== "object")
+        return obj;
+      if (obj instanceof Object)
+        var copy = { __proto__: getPrototypeOf(obj) };
+      else
+        var copy = /* @__PURE__ */ Object.create(null);
+      Object.getOwnPropertyNames(obj).forEach(function(key) {
+        Object.defineProperty(copy, key, Object.getOwnPropertyDescriptor(obj, key));
+      });
+      return copy;
+    }
+  }
+});
+
+// ../../node_modules/graceful-fs/graceful-fs.js
+var require_graceful_fs = __commonJS({
+  "../../node_modules/graceful-fs/graceful-fs.js"(exports2, module2) {
+    "use strict";
+    var fs25 = require("fs");
+    var polyfills = require_polyfills();
+    var legacy = require_legacy_streams();
+    var clone = require_clone();
+    var util = require("util");
+    var gracefulQueue;
+    var previousSymbol;
+    if (typeof Symbol === "function" && typeof Symbol.for === "function") {
+      gracefulQueue = /* @__PURE__ */ Symbol.for("graceful-fs.queue");
+      previousSymbol = /* @__PURE__ */ Symbol.for("graceful-fs.previous");
+    } else {
+      gracefulQueue = "___graceful-fs.queue";
+      previousSymbol = "___graceful-fs.previous";
+    }
+    function noop() {
+    }
+    function publishQueue(context, queue2) {
+      Object.defineProperty(context, gracefulQueue, {
+        get: function() {
+          return queue2;
+        }
+      });
+    }
+    var debug = noop;
+    if (util.debuglog)
+      debug = util.debuglog("gfs4");
+    else if (/\bgfs4\b/i.test(process.env.NODE_DEBUG || ""))
+      debug = function() {
+        var m = util.format.apply(util, arguments);
+        m = "GFS4: " + m.split(/\n/).join("\nGFS4: ");
+        console.error(m);
+      };
+    if (!fs25[gracefulQueue]) {
+      queue = global[gracefulQueue] || [];
+      publishQueue(fs25, queue);
+      fs25.close = (function(fs$close) {
+        function close(fd, cb) {
+          return fs$close.call(fs25, fd, function(err) {
+            if (!err) {
+              resetQueue();
+            }
+            if (typeof cb === "function")
+              cb.apply(this, arguments);
+          });
+        }
+        Object.defineProperty(close, previousSymbol, {
+          value: fs$close
+        });
+        return close;
+      })(fs25.close);
+      fs25.closeSync = (function(fs$closeSync) {
+        function closeSync5(fd) {
+          fs$closeSync.apply(fs25, arguments);
+          resetQueue();
+        }
+        Object.defineProperty(closeSync5, previousSymbol, {
+          value: fs$closeSync
+        });
+        return closeSync5;
+      })(fs25.closeSync);
+      if (/\bgfs4\b/i.test(process.env.NODE_DEBUG || "")) {
+        process.on("exit", function() {
+          debug(fs25[gracefulQueue]);
+          require("assert").equal(fs25[gracefulQueue].length, 0);
+        });
+      }
+    }
+    var queue;
+    if (!global[gracefulQueue]) {
+      publishQueue(global, fs25[gracefulQueue]);
+    }
+    module2.exports = patch(clone(fs25));
+    if (process.env.TEST_GRACEFUL_FS_GLOBAL_PATCH && !fs25.__patched) {
+      module2.exports = patch(fs25);
+      fs25.__patched = true;
+    }
+    function patch(fs26) {
+      polyfills(fs26);
+      fs26.gracefulify = patch;
+      fs26.createReadStream = createReadStream;
+      fs26.createWriteStream = createWriteStream2;
+      var fs$readFile = fs26.readFile;
+      fs26.readFile = readFile4;
+      function readFile4(path18, options, cb) {
+        if (typeof options === "function")
+          cb = options, options = null;
+        return go$readFile(path18, options, cb);
+        function go$readFile(path19, options2, cb2, startTime) {
+          return fs$readFile(path19, options2, function(err) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([go$readFile, [path19, options2, cb2], err, startTime || Date.now(), Date.now()]);
+            else {
+              if (typeof cb2 === "function")
+                cb2.apply(this, arguments);
+            }
+          });
+        }
+      }
+      var fs$writeFile = fs26.writeFile;
+      fs26.writeFile = writeFile;
+      function writeFile(path18, data, options, cb) {
+        if (typeof options === "function")
+          cb = options, options = null;
+        return go$writeFile(path18, data, options, cb);
+        function go$writeFile(path19, data2, options2, cb2, startTime) {
+          return fs$writeFile(path19, data2, options2, function(err) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([go$writeFile, [path19, data2, options2, cb2], err, startTime || Date.now(), Date.now()]);
+            else {
+              if (typeof cb2 === "function")
+                cb2.apply(this, arguments);
+            }
+          });
+        }
+      }
+      var fs$appendFile = fs26.appendFile;
+      if (fs$appendFile)
+        fs26.appendFile = appendFile3;
+      function appendFile3(path18, data, options, cb) {
+        if (typeof options === "function")
+          cb = options, options = null;
+        return go$appendFile(path18, data, options, cb);
+        function go$appendFile(path19, data2, options2, cb2, startTime) {
+          return fs$appendFile(path19, data2, options2, function(err) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([go$appendFile, [path19, data2, options2, cb2], err, startTime || Date.now(), Date.now()]);
+            else {
+              if (typeof cb2 === "function")
+                cb2.apply(this, arguments);
+            }
+          });
+        }
+      }
+      var fs$copyFile = fs26.copyFile;
+      if (fs$copyFile)
+        fs26.copyFile = copyFile;
+      function copyFile(src, dest, flags, cb) {
+        if (typeof flags === "function") {
+          cb = flags;
+          flags = 0;
+        }
+        return go$copyFile(src, dest, flags, cb);
+        function go$copyFile(src2, dest2, flags2, cb2, startTime) {
+          return fs$copyFile(src2, dest2, flags2, function(err) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([go$copyFile, [src2, dest2, flags2, cb2], err, startTime || Date.now(), Date.now()]);
+            else {
+              if (typeof cb2 === "function")
+                cb2.apply(this, arguments);
+            }
+          });
+        }
+      }
+      var fs$readdir = fs26.readdir;
+      fs26.readdir = readdir3;
+      var noReaddirOptionVersions = /^v[0-5]\./;
+      function readdir3(path18, options, cb) {
+        if (typeof options === "function")
+          cb = options, options = null;
+        var go$readdir = noReaddirOptionVersions.test(process.version) ? function go$readdir2(path19, options2, cb2, startTime) {
+          return fs$readdir(path19, fs$readdirCallback(
+            path19,
+            options2,
+            cb2,
+            startTime
+          ));
+        } : function go$readdir2(path19, options2, cb2, startTime) {
+          return fs$readdir(path19, options2, fs$readdirCallback(
+            path19,
+            options2,
+            cb2,
+            startTime
+          ));
+        };
+        return go$readdir(path18, options, cb);
+        function fs$readdirCallback(path19, options2, cb2, startTime) {
+          return function(err, files) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([
+                go$readdir,
+                [path19, options2, cb2],
+                err,
+                startTime || Date.now(),
+                Date.now()
+              ]);
+            else {
+              if (files && files.sort)
+                files.sort();
+              if (typeof cb2 === "function")
+                cb2.call(this, err, files);
+            }
+          };
+        }
+      }
+      if (process.version.substr(0, 4) === "v0.8") {
+        var legStreams = legacy(fs26);
+        ReadStream = legStreams.ReadStream;
+        WriteStream = legStreams.WriteStream;
+      }
+      var fs$ReadStream = fs26.ReadStream;
+      if (fs$ReadStream) {
+        ReadStream.prototype = Object.create(fs$ReadStream.prototype);
+        ReadStream.prototype.open = ReadStream$open;
+      }
+      var fs$WriteStream = fs26.WriteStream;
+      if (fs$WriteStream) {
+        WriteStream.prototype = Object.create(fs$WriteStream.prototype);
+        WriteStream.prototype.open = WriteStream$open;
+      }
+      Object.defineProperty(fs26, "ReadStream", {
+        get: function() {
+          return ReadStream;
+        },
+        set: function(val) {
+          ReadStream = val;
+        },
+        enumerable: true,
+        configurable: true
+      });
+      Object.defineProperty(fs26, "WriteStream", {
+        get: function() {
+          return WriteStream;
+        },
+        set: function(val) {
+          WriteStream = val;
+        },
+        enumerable: true,
+        configurable: true
+      });
+      var FileReadStream = ReadStream;
+      Object.defineProperty(fs26, "FileReadStream", {
+        get: function() {
+          return FileReadStream;
+        },
+        set: function(val) {
+          FileReadStream = val;
+        },
+        enumerable: true,
+        configurable: true
+      });
+      var FileWriteStream = WriteStream;
+      Object.defineProperty(fs26, "FileWriteStream", {
+        get: function() {
+          return FileWriteStream;
+        },
+        set: function(val) {
+          FileWriteStream = val;
+        },
+        enumerable: true,
+        configurable: true
+      });
+      function ReadStream(path18, options) {
+        if (this instanceof ReadStream)
+          return fs$ReadStream.apply(this, arguments), this;
+        else
+          return ReadStream.apply(Object.create(ReadStream.prototype), arguments);
+      }
+      function ReadStream$open() {
+        var that = this;
+        open3(that.path, that.flags, that.mode, function(err, fd) {
+          if (err) {
+            if (that.autoClose)
+              that.destroy();
+            that.emit("error", err);
+          } else {
+            that.fd = fd;
+            that.emit("open", fd);
+            that.read();
+          }
+        });
+      }
+      function WriteStream(path18, options) {
+        if (this instanceof WriteStream)
+          return fs$WriteStream.apply(this, arguments), this;
+        else
+          return WriteStream.apply(Object.create(WriteStream.prototype), arguments);
+      }
+      function WriteStream$open() {
+        var that = this;
+        open3(that.path, that.flags, that.mode, function(err, fd) {
+          if (err) {
+            that.destroy();
+            that.emit("error", err);
+          } else {
+            that.fd = fd;
+            that.emit("open", fd);
+          }
+        });
+      }
+      function createReadStream(path18, options) {
+        return new fs26.ReadStream(path18, options);
+      }
+      function createWriteStream2(path18, options) {
+        return new fs26.WriteStream(path18, options);
+      }
+      var fs$open = fs26.open;
+      fs26.open = open3;
+      function open3(path18, flags, mode, cb) {
+        if (typeof mode === "function")
+          cb = mode, mode = null;
+        return go$open(path18, flags, mode, cb);
+        function go$open(path19, flags2, mode2, cb2, startTime) {
+          return fs$open(path19, flags2, mode2, function(err, fd) {
+            if (err && (err.code === "EMFILE" || err.code === "ENFILE"))
+              enqueue([go$open, [path19, flags2, mode2, cb2], err, startTime || Date.now(), Date.now()]);
+            else {
+              if (typeof cb2 === "function")
+                cb2.apply(this, arguments);
+            }
+          });
+        }
+      }
+      return fs26;
+    }
+    function enqueue(elem) {
+      debug("ENQUEUE", elem[0].name, elem[1]);
+      fs25[gracefulQueue].push(elem);
+      retry();
+    }
+    var retryTimer;
+    function resetQueue() {
+      var now = Date.now();
+      for (var i = 0; i < fs25[gracefulQueue].length; ++i) {
+        if (fs25[gracefulQueue][i].length > 2) {
+          fs25[gracefulQueue][i][3] = now;
+          fs25[gracefulQueue][i][4] = now;
+        }
+      }
+      retry();
+    }
+    function retry() {
+      clearTimeout(retryTimer);
+      retryTimer = void 0;
+      if (fs25[gracefulQueue].length === 0)
+        return;
+      var elem = fs25[gracefulQueue].shift();
+      var fn = elem[0];
+      var args = elem[1];
+      var err = elem[2];
+      var startTime = elem[3];
+      var lastTime = elem[4];
+      if (startTime === void 0) {
+        debug("RETRY", fn.name, args);
+        fn.apply(null, args);
+      } else if (Date.now() - startTime >= 6e4) {
+        debug("TIMEOUT", fn.name, args);
+        var cb = args.pop();
+        if (typeof cb === "function")
+          cb.call(null, err);
+      } else {
+        var sinceAttempt = Date.now() - lastTime;
+        var sinceStart = Math.max(lastTime - startTime, 1);
+        var desiredDelay = Math.min(sinceStart * 1.2, 100);
+        if (sinceAttempt >= desiredDelay) {
+          debug("RETRY", fn.name, args);
+          fn.apply(null, args.concat([startTime]));
+        } else {
+          fs25[gracefulQueue].push(elem);
+        }
+      }
+      if (retryTimer === void 0) {
+        retryTimer = setTimeout(retry, 0);
+      }
+    }
+  }
+});
+
+// ../../node_modules/retry/lib/retry_operation.js
+var require_retry_operation = __commonJS({
+  "../../node_modules/retry/lib/retry_operation.js"(exports2, module2) {
+    "use strict";
+    function RetryOperation(timeouts, options) {
+      if (typeof options === "boolean") {
+        options = { forever: options };
+      }
+      this._originalTimeouts = JSON.parse(JSON.stringify(timeouts));
+      this._timeouts = timeouts;
+      this._options = options || {};
+      this._maxRetryTime = options && options.maxRetryTime || Infinity;
+      this._fn = null;
+      this._errors = [];
+      this._attempts = 1;
+      this._operationTimeout = null;
+      this._operationTimeoutCb = null;
+      this._timeout = null;
+      this._operationStart = null;
+      if (this._options.forever) {
+        this._cachedTimeouts = this._timeouts.slice(0);
+      }
+    }
+    module2.exports = RetryOperation;
+    RetryOperation.prototype.reset = function() {
+      this._attempts = 1;
+      this._timeouts = this._originalTimeouts;
+    };
+    RetryOperation.prototype.stop = function() {
+      if (this._timeout) {
+        clearTimeout(this._timeout);
+      }
+      this._timeouts = [];
+      this._cachedTimeouts = null;
+    };
+    RetryOperation.prototype.retry = function(err) {
+      if (this._timeout) {
+        clearTimeout(this._timeout);
+      }
+      if (!err) {
+        return false;
+      }
+      var currentTime = (/* @__PURE__ */ new Date()).getTime();
+      if (err && currentTime - this._operationStart >= this._maxRetryTime) {
+        this._errors.unshift(new Error("RetryOperation timeout occurred"));
+        return false;
+      }
+      this._errors.push(err);
+      var timeout = this._timeouts.shift();
+      if (timeout === void 0) {
+        if (this._cachedTimeouts) {
+          this._errors.splice(this._errors.length - 1, this._errors.length);
+          this._timeouts = this._cachedTimeouts.slice(0);
+          timeout = this._timeouts.shift();
+        } else {
+          return false;
+        }
+      }
+      var self = this;
+      var timer = setTimeout(function() {
+        self._attempts++;
+        if (self._operationTimeoutCb) {
+          self._timeout = setTimeout(function() {
+            self._operationTimeoutCb(self._attempts);
+          }, self._operationTimeout);
+          if (self._options.unref) {
+            self._timeout.unref();
+          }
+        }
+        self._fn(self._attempts);
+      }, timeout);
+      if (this._options.unref) {
+        timer.unref();
+      }
+      return true;
+    };
+    RetryOperation.prototype.attempt = function(fn, timeoutOps) {
+      this._fn = fn;
+      if (timeoutOps) {
+        if (timeoutOps.timeout) {
+          this._operationTimeout = timeoutOps.timeout;
+        }
+        if (timeoutOps.cb) {
+          this._operationTimeoutCb = timeoutOps.cb;
+        }
+      }
+      var self = this;
+      if (this._operationTimeoutCb) {
+        this._timeout = setTimeout(function() {
+          self._operationTimeoutCb();
+        }, self._operationTimeout);
+      }
+      this._operationStart = (/* @__PURE__ */ new Date()).getTime();
+      this._fn(this._attempts);
+    };
+    RetryOperation.prototype.try = function(fn) {
+      console.log("Using RetryOperation.try() is deprecated");
+      this.attempt(fn);
+    };
+    RetryOperation.prototype.start = function(fn) {
+      console.log("Using RetryOperation.start() is deprecated");
+      this.attempt(fn);
+    };
+    RetryOperation.prototype.start = RetryOperation.prototype.try;
+    RetryOperation.prototype.errors = function() {
+      return this._errors;
+    };
+    RetryOperation.prototype.attempts = function() {
+      return this._attempts;
+    };
+    RetryOperation.prototype.mainError = function() {
+      if (this._errors.length === 0) {
+        return null;
+      }
+      var counts = {};
+      var mainError = null;
+      var mainErrorCount = 0;
+      for (var i = 0; i < this._errors.length; i++) {
+        var error = this._errors[i];
+        var message = error.message;
+        var count = (counts[message] || 0) + 1;
+        counts[message] = count;
+        if (count >= mainErrorCount) {
+          mainError = error;
+          mainErrorCount = count;
+        }
+      }
+      return mainError;
+    };
+  }
+});
+
+// ../../node_modules/retry/lib/retry.js
+var require_retry = __commonJS({
+  "../../node_modules/retry/lib/retry.js"(exports2) {
+    "use strict";
+    var RetryOperation = require_retry_operation();
+    exports2.operation = function(options) {
+      var timeouts = exports2.timeouts(options);
+      return new RetryOperation(timeouts, {
+        forever: options && options.forever,
+        unref: options && options.unref,
+        maxRetryTime: options && options.maxRetryTime
+      });
+    };
+    exports2.timeouts = function(options) {
+      if (options instanceof Array) {
+        return [].concat(options);
+      }
+      var opts = {
+        retries: 10,
+        factor: 2,
+        minTimeout: 1 * 1e3,
+        maxTimeout: Infinity,
+        randomize: false
+      };
+      for (var key in options) {
+        opts[key] = options[key];
+      }
+      if (opts.minTimeout > opts.maxTimeout) {
+        throw new Error("minTimeout is greater than maxTimeout");
+      }
+      var timeouts = [];
+      for (var i = 0; i < opts.retries; i++) {
+        timeouts.push(this.createTimeout(i, opts));
+      }
+      if (options && options.forever && !timeouts.length) {
+        timeouts.push(this.createTimeout(i, opts));
+      }
+      timeouts.sort(function(a, b) {
+        return a - b;
+      });
+      return timeouts;
+    };
+    exports2.createTimeout = function(attempt, opts) {
+      var random = opts.randomize ? Math.random() + 1 : 1;
+      var timeout = Math.round(random * opts.minTimeout * Math.pow(opts.factor, attempt));
+      timeout = Math.min(timeout, opts.maxTimeout);
+      return timeout;
+    };
+    exports2.wrap = function(obj, options, methods) {
+      if (options instanceof Array) {
+        methods = options;
+        options = null;
+      }
+      if (!methods) {
+        methods = [];
+        for (var key in obj) {
+          if (typeof obj[key] === "function") {
+            methods.push(key);
+          }
+        }
+      }
+      for (var i = 0; i < methods.length; i++) {
+        var method = methods[i];
+        var original = obj[method];
+        obj[method] = function retryWrapper(original2) {
+          var op = exports2.operation(options);
+          var args = Array.prototype.slice.call(arguments, 1);
+          var callback = args.pop();
+          args.push(function(err) {
+            if (op.retry(err)) {
+              return;
+            }
+            if (err) {
+              arguments[0] = op.mainError();
+            }
+            callback.apply(this, arguments);
+          });
+          op.attempt(function() {
+            original2.apply(obj, args);
+          });
+        }.bind(obj, original);
+        obj[method].options = options;
+      }
+    };
+  }
+});
+
+// ../../node_modules/retry/index.js
+var require_retry2 = __commonJS({
+  "../../node_modules/retry/index.js"(exports2, module2) {
+    "use strict";
+    module2.exports = require_retry();
+  }
+});
+
+// ../../node_modules/proper-lockfile/node_modules/signal-exit/signals.js
+var require_signals = __commonJS({
+  "../../node_modules/proper-lockfile/node_modules/signal-exit/signals.js"(exports2, module2) {
+    "use strict";
+    module2.exports = [
+      "SIGABRT",
+      "SIGALRM",
+      "SIGHUP",
+      "SIGINT",
+      "SIGTERM"
+    ];
+    if (process.platform !== "win32") {
+      module2.exports.push(
+        "SIGVTALRM",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGUSR2",
+        "SIGTRAP",
+        "SIGSYS",
+        "SIGQUIT",
+        "SIGIOT"
+        // should detect profiler and enable/disable accordingly.
+        // see #21
+        // 'SIGPROF'
+      );
+    }
+    if (process.platform === "linux") {
+      module2.exports.push(
+        "SIGIO",
+        "SIGPOLL",
+        "SIGPWR",
+        "SIGSTKFLT",
+        "SIGUNUSED"
+      );
+    }
+  }
+});
+
+// ../../node_modules/proper-lockfile/node_modules/signal-exit/index.js
+var require_signal_exit = __commonJS({
+  "../../node_modules/proper-lockfile/node_modules/signal-exit/index.js"(exports2, module2) {
+    "use strict";
+    var process2 = global.process;
+    var processOk = function(process3) {
+      return process3 && typeof process3 === "object" && typeof process3.removeListener === "function" && typeof process3.emit === "function" && typeof process3.reallyExit === "function" && typeof process3.listeners === "function" && typeof process3.kill === "function" && typeof process3.pid === "number" && typeof process3.on === "function";
+    };
+    if (!processOk(process2)) {
+      module2.exports = function() {
+        return function() {
+        };
+      };
+    } else {
+      assert = require("assert");
+      signals = require_signals();
+      isWin = /^win/i.test(process2.platform);
+      EE = require("events");
+      if (typeof EE !== "function") {
+        EE = EE.EventEmitter;
+      }
+      if (process2.__signal_exit_emitter__) {
+        emitter = process2.__signal_exit_emitter__;
+      } else {
+        emitter = process2.__signal_exit_emitter__ = new EE();
+        emitter.count = 0;
+        emitter.emitted = {};
+      }
+      if (!emitter.infinite) {
+        emitter.setMaxListeners(Infinity);
+        emitter.infinite = true;
+      }
+      module2.exports = function(cb, opts) {
+        if (!processOk(global.process)) {
+          return function() {
+          };
+        }
+        assert.equal(typeof cb, "function", "a callback must be provided for exit handler");
+        if (loaded === false) {
+          load();
+        }
+        var ev = "exit";
+        if (opts && opts.alwaysLast) {
+          ev = "afterexit";
+        }
+        var remove = function() {
+          emitter.removeListener(ev, cb);
+          if (emitter.listeners("exit").length === 0 && emitter.listeners("afterexit").length === 0) {
+            unload();
+          }
+        };
+        emitter.on(ev, cb);
+        return remove;
+      };
+      unload = function unload2() {
+        if (!loaded || !processOk(global.process)) {
+          return;
+        }
+        loaded = false;
+        signals.forEach(function(sig) {
+          try {
+            process2.removeListener(sig, sigListeners[sig]);
+          } catch (er) {
+          }
+        });
+        process2.emit = originalProcessEmit;
+        process2.reallyExit = originalProcessReallyExit;
+        emitter.count -= 1;
+      };
+      module2.exports.unload = unload;
+      emit = function emit2(event, code, signal) {
+        if (emitter.emitted[event]) {
+          return;
+        }
+        emitter.emitted[event] = true;
+        emitter.emit(event, code, signal);
+      };
+      sigListeners = {};
+      signals.forEach(function(sig) {
+        sigListeners[sig] = function listener() {
+          if (!processOk(global.process)) {
+            return;
+          }
+          var listeners = process2.listeners(sig);
+          if (listeners.length === emitter.count) {
+            unload();
+            emit("exit", null, sig);
+            emit("afterexit", null, sig);
+            if (isWin && sig === "SIGHUP") {
+              sig = "SIGINT";
+            }
+            process2.kill(process2.pid, sig);
+          }
+        };
+      });
+      module2.exports.signals = function() {
+        return signals;
+      };
+      loaded = false;
+      load = function load2() {
+        if (loaded || !processOk(global.process)) {
+          return;
+        }
+        loaded = true;
+        emitter.count += 1;
+        signals = signals.filter(function(sig) {
+          try {
+            process2.on(sig, sigListeners[sig]);
+            return true;
+          } catch (er) {
+            return false;
+          }
+        });
+        process2.emit = processEmit;
+        process2.reallyExit = processReallyExit;
+      };
+      module2.exports.load = load;
+      originalProcessReallyExit = process2.reallyExit;
+      processReallyExit = function processReallyExit2(code) {
+        if (!processOk(global.process)) {
+          return;
+        }
+        process2.exitCode = code || /* istanbul ignore next */
+        0;
+        emit("exit", process2.exitCode, null);
+        emit("afterexit", process2.exitCode, null);
+        originalProcessReallyExit.call(process2, process2.exitCode);
+      };
+      originalProcessEmit = process2.emit;
+      processEmit = function processEmit2(ev, arg) {
+        if (ev === "exit" && processOk(global.process)) {
+          if (arg !== void 0) {
+            process2.exitCode = arg;
+          }
+          var ret = originalProcessEmit.apply(this, arguments);
+          emit("exit", process2.exitCode, null);
+          emit("afterexit", process2.exitCode, null);
+          return ret;
+        } else {
+          return originalProcessEmit.apply(this, arguments);
+        }
+      };
+    }
+    var assert;
+    var signals;
+    var isWin;
+    var EE;
+    var emitter;
+    var unload;
+    var emit;
+    var sigListeners;
+    var loaded;
+    var load;
+    var originalProcessReallyExit;
+    var processReallyExit;
+    var originalProcessEmit;
+    var processEmit;
+  }
+});
+
+// ../../node_modules/proper-lockfile/lib/mtime-precision.js
+var require_mtime_precision = __commonJS({
+  "../../node_modules/proper-lockfile/lib/mtime-precision.js"(exports2, module2) {
+    "use strict";
+    var cacheSymbol = /* @__PURE__ */ Symbol();
+    function probe(file, fs25, callback) {
+      const cachedPrecision = fs25[cacheSymbol];
+      if (cachedPrecision) {
+        return fs25.stat(file, (err, stat3) => {
+          if (err) {
+            return callback(err);
+          }
+          callback(null, stat3.mtime, cachedPrecision);
+        });
+      }
+      const mtime = new Date(Math.ceil(Date.now() / 1e3) * 1e3 + 5);
+      fs25.utimes(file, mtime, mtime, (err) => {
+        if (err) {
+          return callback(err);
+        }
+        fs25.stat(file, (err2, stat3) => {
+          if (err2) {
+            return callback(err2);
+          }
+          const precision = stat3.mtime.getTime() % 1e3 === 0 ? "s" : "ms";
+          Object.defineProperty(fs25, cacheSymbol, { value: precision });
+          callback(null, stat3.mtime, precision);
+        });
+      });
+    }
+    function getMtime(precision) {
+      let now = Date.now();
+      if (precision === "s") {
+        now = Math.ceil(now / 1e3) * 1e3;
+      }
+      return new Date(now);
+    }
+    module2.exports.probe = probe;
+    module2.exports.getMtime = getMtime;
+  }
+});
+
+// ../../node_modules/proper-lockfile/lib/lockfile.js
+var require_lockfile = __commonJS({
+  "../../node_modules/proper-lockfile/lib/lockfile.js"(exports2, module2) {
+    "use strict";
+    var path18 = require("path");
+    var fs25 = require_graceful_fs();
+    var retry = require_retry2();
+    var onExit = require_signal_exit();
+    var mtimePrecision = require_mtime_precision();
+    var locks = {};
+    function getLockFile(file, options) {
+      return options.lockfilePath || `${file}.lock`;
+    }
+    function resolveCanonicalPath(file, options, callback) {
+      if (!options.realpath) {
+        return callback(null, path18.resolve(file));
+      }
+      options.fs.realpath(file, callback);
+    }
+    function acquireLock(file, options, callback) {
+      const lockfilePath = getLockFile(file, options);
+      options.fs.mkdir(lockfilePath, (err) => {
+        if (!err) {
+          return mtimePrecision.probe(lockfilePath, options.fs, (err2, mtime, mtimePrecision2) => {
+            if (err2) {
+              options.fs.rmdir(lockfilePath, () => {
+              });
+              return callback(err2);
+            }
+            callback(null, mtime, mtimePrecision2);
+          });
+        }
+        if (err.code !== "EEXIST") {
+          return callback(err);
+        }
+        if (options.stale <= 0) {
+          return callback(Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED", file }));
+        }
+        options.fs.stat(lockfilePath, (err2, stat3) => {
+          if (err2) {
+            if (err2.code === "ENOENT") {
+              return acquireLock(file, { ...options, stale: 0 }, callback);
+            }
+            return callback(err2);
+          }
+          if (!isLockStale(stat3, options)) {
+            return callback(Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED", file }));
+          }
+          removeLock(file, options, (err3) => {
+            if (err3) {
+              return callback(err3);
+            }
+            acquireLock(file, { ...options, stale: 0 }, callback);
+          });
+        });
+      });
+    }
+    function isLockStale(stat3, options) {
+      return stat3.mtime.getTime() < Date.now() - options.stale;
+    }
+    function removeLock(file, options, callback) {
+      options.fs.rmdir(getLockFile(file, options), (err) => {
+        if (err && err.code !== "ENOENT") {
+          return callback(err);
+        }
+        callback();
+      });
+    }
+    function updateLock(file, options) {
+      const lock2 = locks[file];
+      if (lock2.updateTimeout) {
+        return;
+      }
+      lock2.updateDelay = lock2.updateDelay || options.update;
+      lock2.updateTimeout = setTimeout(() => {
+        lock2.updateTimeout = null;
+        options.fs.stat(lock2.lockfilePath, (err, stat3) => {
+          const isOverThreshold = lock2.lastUpdate + options.stale < Date.now();
+          if (err) {
+            if (err.code === "ENOENT" || isOverThreshold) {
+              return setLockAsCompromised(file, lock2, Object.assign(err, { code: "ECOMPROMISED" }));
+            }
+            lock2.updateDelay = 1e3;
+            return updateLock(file, options);
+          }
+          const isMtimeOurs = lock2.mtime.getTime() === stat3.mtime.getTime();
+          if (!isMtimeOurs) {
+            return setLockAsCompromised(
+              file,
+              lock2,
+              Object.assign(
+                new Error("Unable to update lock within the stale threshold"),
+                { code: "ECOMPROMISED" }
+              )
+            );
+          }
+          const mtime = mtimePrecision.getMtime(lock2.mtimePrecision);
+          options.fs.utimes(lock2.lockfilePath, mtime, mtime, (err2) => {
+            const isOverThreshold2 = lock2.lastUpdate + options.stale < Date.now();
+            if (lock2.released) {
+              return;
+            }
+            if (err2) {
+              if (err2.code === "ENOENT" || isOverThreshold2) {
+                return setLockAsCompromised(file, lock2, Object.assign(err2, { code: "ECOMPROMISED" }));
+              }
+              lock2.updateDelay = 1e3;
+              return updateLock(file, options);
+            }
+            lock2.mtime = mtime;
+            lock2.lastUpdate = Date.now();
+            lock2.updateDelay = null;
+            updateLock(file, options);
+          });
+        });
+      }, lock2.updateDelay);
+      if (lock2.updateTimeout.unref) {
+        lock2.updateTimeout.unref();
+      }
+    }
+    function setLockAsCompromised(file, lock2, err) {
+      lock2.released = true;
+      if (lock2.updateTimeout) {
+        clearTimeout(lock2.updateTimeout);
+      }
+      if (locks[file] === lock2) {
+        delete locks[file];
+      }
+      lock2.options.onCompromised(err);
+    }
+    function lock(file, options, callback) {
+      options = {
+        stale: 1e4,
+        update: null,
+        realpath: true,
+        retries: 0,
+        fs: fs25,
+        onCompromised: (err) => {
+          throw err;
+        },
+        ...options
+      };
+      options.retries = options.retries || 0;
+      options.retries = typeof options.retries === "number" ? { retries: options.retries } : options.retries;
+      options.stale = Math.max(options.stale || 0, 2e3);
+      options.update = options.update == null ? options.stale / 2 : options.update || 0;
+      options.update = Math.max(Math.min(options.update, options.stale / 2), 1e3);
+      resolveCanonicalPath(file, options, (err, file2) => {
+        if (err) {
+          return callback(err);
+        }
+        const operation = retry.operation(options.retries);
+        operation.attempt(() => {
+          acquireLock(file2, options, (err2, mtime, mtimePrecision2) => {
+            if (operation.retry(err2)) {
+              return;
+            }
+            if (err2) {
+              return callback(operation.mainError());
+            }
+            const lock2 = locks[file2] = {
+              lockfilePath: getLockFile(file2, options),
+              mtime,
+              mtimePrecision: mtimePrecision2,
+              options,
+              lastUpdate: Date.now()
+            };
+            updateLock(file2, options);
+            callback(null, (releasedCallback) => {
+              if (lock2.released) {
+                return releasedCallback && releasedCallback(Object.assign(new Error("Lock is already released"), { code: "ERELEASED" }));
+              }
+              unlock(file2, { ...options, realpath: false }, releasedCallback);
+            });
+          });
+        });
+      });
+    }
+    function unlock(file, options, callback) {
+      options = {
+        fs: fs25,
+        realpath: true,
+        ...options
+      };
+      resolveCanonicalPath(file, options, (err, file2) => {
+        if (err) {
+          return callback(err);
+        }
+        const lock2 = locks[file2];
+        if (!lock2) {
+          return callback(Object.assign(new Error("Lock is not acquired/owned by you"), { code: "ENOTACQUIRED" }));
+        }
+        lock2.updateTimeout && clearTimeout(lock2.updateTimeout);
+        lock2.released = true;
+        delete locks[file2];
+        removeLock(file2, options, callback);
+      });
+    }
+    function check(file, options, callback) {
+      options = {
+        stale: 1e4,
+        realpath: true,
+        fs: fs25,
+        ...options
+      };
+      options.stale = Math.max(options.stale || 0, 2e3);
+      resolveCanonicalPath(file, options, (err, file2) => {
+        if (err) {
+          return callback(err);
+        }
+        options.fs.stat(getLockFile(file2, options), (err2, stat3) => {
+          if (err2) {
+            return err2.code === "ENOENT" ? callback(null, false) : callback(err2);
+          }
+          return callback(null, !isLockStale(stat3, options));
+        });
+      });
+    }
+    function getLocks() {
+      return locks;
+    }
+    onExit(() => {
+      for (const file in locks) {
+        const options = locks[file].options;
+        try {
+          options.fs.rmdirSync(getLockFile(file, options));
+        } catch (e) {
+        }
+      }
+    });
+    module2.exports.lock = lock;
+    module2.exports.unlock = unlock;
+    module2.exports.check = check;
+    module2.exports.getLocks = getLocks;
+  }
+});
+
+// ../../node_modules/proper-lockfile/lib/adapter.js
+var require_adapter = __commonJS({
+  "../../node_modules/proper-lockfile/lib/adapter.js"(exports2, module2) {
+    "use strict";
+    var fs25 = require_graceful_fs();
+    function createSyncFs(fs26) {
+      const methods = ["mkdir", "realpath", "stat", "rmdir", "utimes"];
+      const newFs = { ...fs26 };
+      methods.forEach((method) => {
+        newFs[method] = (...args) => {
+          const callback = args.pop();
+          let ret;
+          try {
+            ret = fs26[`${method}Sync`](...args);
+          } catch (err) {
+            return callback(err);
+          }
+          callback(null, ret);
+        };
+      });
+      return newFs;
+    }
+    function toPromise(method) {
+      return (...args) => new Promise((resolve6, reject) => {
+        args.push((err, result) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve6(result);
+          }
+        });
+        method(...args);
+      });
+    }
+    function toSync(method) {
+      return (...args) => {
+        let err;
+        let result;
+        args.push((_err, _result) => {
+          err = _err;
+          result = _result;
+        });
+        method(...args);
+        if (err) {
+          throw err;
+        }
+        return result;
+      };
+    }
+    function toSyncOptions(options) {
+      options = { ...options };
+      options.fs = createSyncFs(options.fs || fs25);
+      if (typeof options.retries === "number" && options.retries > 0 || options.retries && typeof options.retries.retries === "number" && options.retries.retries > 0) {
+        throw Object.assign(new Error("Cannot use retries with the sync api"), { code: "ESYNC" });
+      }
+      return options;
+    }
+    module2.exports = {
+      toPromise,
+      toSync,
+      toSyncOptions
+    };
+  }
+});
+
+// ../../node_modules/proper-lockfile/index.js
+var require_proper_lockfile = __commonJS({
+  "../../node_modules/proper-lockfile/index.js"(exports2, module2) {
+    "use strict";
+    var lockfile2 = require_lockfile();
+    var { toPromise, toSync, toSyncOptions } = require_adapter();
+    async function lock(file, options) {
+      const release = await toPromise(lockfile2.lock)(file, options);
+      return toPromise(release);
+    }
+    function lockSync(file, options) {
+      const release = toSync(lockfile2.lock)(file, toSyncOptions(options));
+      return toSync(release);
+    }
+    function unlock(file, options) {
+      return toPromise(lockfile2.unlock)(file, options);
+    }
+    function unlockSync(file, options) {
+      return toSync(lockfile2.unlock)(file, toSyncOptions(options));
+    }
+    function check(file, options) {
+      return toPromise(lockfile2.check)(file, options);
+    }
+    function checkSync(file, options) {
+      return toSync(lockfile2.check)(file, toSyncOptions(options));
+    }
+    module2.exports = lock;
+    module2.exports.lock = lock;
+    module2.exports.unlock = unlock;
+    module2.exports.lockSync = lockSync;
+    module2.exports.unlockSync = unlockSync;
+    module2.exports.check = check;
+    module2.exports.checkSync = checkSync;
+  }
+});
+
 // src/index.ts
 var src_exports = {};
 __export(src_exports, {
+  AGENT_REF_EXT: () => AGENT_REF_EXT,
+  AgentRegistry: () => AgentRegistry,
+  BG_MESSAGE: () => BG_MESSAGE,
   CORE_PACKAGE_VERSION: () => CORE_PACKAGE_VERSION,
   DEFAULT_DATA_ROOT: () => DEFAULT_DATA_ROOT,
+  DEFAULT_LIST_LIMIT: () => DEFAULT_LIST_LIMIT,
+  DEFAULT_PROVIDER_ID: () => DEFAULT_PROVIDER_ID,
   DEFAULT_WORKFLOW_SAVED_DIR: () => DEFAULT_WORKFLOW_SAVED_DIR,
   DEFAULT_WORKFLOW_TMP_DIR: () => DEFAULT_WORKFLOW_TMP_DIR,
+  DirtyWorktreeError: () => DirtyWorktreeError,
+  FORK_FROM_DEFAULT_PROMPT: () => FORK_FROM_DEFAULT_PROMPT,
   FileRunStore: () => FileRunStore,
+  ForkDepthExceededError: () => ForkDepthExceededError,
+  GitRunError: () => GitRunError,
+  MAX_LIST_LIMIT: () => MAX_LIST_LIMIT,
   MAX_RETAINED_DONE_RUNS: () => MAX_RETAINED_DONE_RUNS,
+  ModelConfigService: () => ModelConfigService,
+  NOTIFY_CONTRACT: () => NOTIFY_CONTRACT,
+  RecordStore: () => RecordStore,
+  ResurrectDeniedError: () => ResurrectDeniedError,
+  SAFE_ID_RE: () => SAFE_ID_RE,
+  SLUG_MAX_LENGTH: () => SLUG_MAX_LENGTH,
+  SNAPSHOT_VERSION: () => SNAPSHOT_VERSION,
+  SUBAGENT_RECORD_CUSTOM_TYPE: () => SUBAGENT_RECORD_CUSTOM_TYPE,
+  SubagentService: () => SubagentService,
+  WORKFLOW_REF_EXT: () => WORKFLOW_REF_EXT,
+  WORKFLOW_REF_RESERVED_NAMES: () => WORKFLOW_REF_RESERVED_NAMES,
   WorkerHostImpl: () => WorkerHostImpl,
+  WorkflowRun: () => WorkflowRun,
+  WorkflowScript: () => WorkflowScript,
   WorkflowScriptRegistryImpl: () => WorkflowScriptRegistryImpl,
+  ZCODE_FALLBACK_DEFAULT_MODEL: () => ZCODE_FALLBACK_DEFAULT_MODEL,
   abortRun: () => abortRun,
+  argKeysFromMeta: () => argKeysFromMeta,
+  assertSafeId: () => assertSafeId,
+  atomicTmpPathFor: () => atomicTmpPathFor,
+  boundedPrettySerialize: () => boundedPrettySerialize,
+  cancelHandler: () => cancelHandler,
+  cleanupStaleTmpFiles: () => cleanupStaleTmpFiles,
+  cleanupWorktree: () => cleanupWorktree,
+  closeHandler: () => closeHandler,
+  collectWorktreePatch: () => collectWorktreePatch,
   configureCore: () => configureCore,
   configureNotifyDomain: () => configureNotifyDomain,
+  createConcurrencyPool: () => createConcurrencyPool,
+  createSubagentService: () => createSubagentService,
   createZcodeEngine: () => createZcodeEngine,
   deleteWorkflow: () => deleteWorkflow,
+  discoverAgents: () => discoverAgents,
   discoverResources: () => discoverResources,
   discoverWorkflows: () => discoverWorkflows,
+  displayAgentName: () => displayAgentName,
+  endedMessageGuard: () => endedMessageGuard,
   escapeXml: () => escapeXml,
   evictDoneRunsBeyondCap: () => evictDoneRunsBeyondCap,
   executeNestedWorkflow: () => executeNestedWorkflow,
+  findFlattenedArgKeys: () => findFlattenedArgKeys,
   findWorkspaceRoot: () => findWorkspaceRoot,
+  forkFromHandler: () => forkFromHandler,
   formatAgentList: () => formatAgentList,
   formatModelList: () => formatModelList,
   formatWorkflowList: () => formatWorkflowList,
+  fromRunSnapshot: () => fromRunSnapshot,
   generateWorkflowScript: () => generateWorkflowScript,
   getCachedFileContent: () => getCachedFileContent,
   getCachedParsed: () => getCachedParsed,
   getLogger: () => getLogger,
+  getModelConfigService: () => getModelConfigService,
   getWorkflow: () => getWorkflow,
   getWorkflowByPath: () => getWorkflowByPath,
+  gitRun: () => gitRun,
+  hasApiKey: () => hasApiKey,
+  invalidAgentRefMessage: () => invalidAgentRefMessage,
   invalidateCache: () => invalidateCache,
+  isProcessAlive: () => isProcessAlive,
+  isSafeId: () => isSafeId,
+  isScriptRunning: () => isScriptRunning,
+  isTreeDirty: () => isTreeDirty,
   killAllSpawnedChildren: () => killAllSpawnedChildren,
   lintScript: () => lintScript,
+  listHandler: () => listHandler,
+  listStaleTmpFiles: () => listStaleTmpFiles,
+  listWorktreePorcelain: () => listWorktreePorcelain,
+  loadWorkflowScriptByPath: () => loadWorkflowScriptByPath,
   loadWorkflows: () => loadWorkflows,
+  mapExternalState: () => mapExternalState,
+  maxTurnsToWatchdogMs: () => maxTurnsToWatchdogMs,
+  messageHandler: () => messageHandler,
+  normalizeArgsByMeta: () => normalizeArgsByMeta,
+  normalizeRef: () => normalizeRef,
+  normalizeWorkflowRef: () => normalizeWorkflowRef,
+  parseAgentProfile: () => parseAgentProfile,
+  parseAtomicTmpPath: () => parseAtomicTmpPath,
   parseResourceMeta: () => parseResourceMeta,
+  recordToListItem: () => recordToListItem,
+  recoverCrashedRuns: () => recoverCrashedRuns,
   registerZcodeEngine: () => registerZcodeEngine,
   renderXmlSection: () => renderXmlSection,
   routeEngine: () => routeEngine,
   runAndWait: () => runAndWait,
+  runSummary: () => runSummary,
   runWorkflow: () => runWorkflow,
   saveWorkflow: () => saveWorkflow,
   scheduleTimeBudget: () => scheduleTimeBudget,
   sortByCodepoint: () => sortByCodepoint,
+  splitZcodeModelRef: () => splitZcodeModelRef,
+  startHandler: () => startHandler,
   summarizeDescription: () => summarizeDescription,
-  terminateRunningRuns: () => terminateRunningRuns
+  terminateRunningRuns: () => terminateRunningRuns,
+  toRunSnapshot: () => toRunSnapshot,
+  toSubagentRecordEntry: () => toSubagentRecordEntry,
+  wrapForkFromPrompt: () => wrapForkFromPrompt,
+  writeAtomicFile: () => writeAtomicFile,
+  writeAtomicFileSync: () => writeAtomicFileSync
 });
 module.exports = __toCommonJS(src_exports);
 
@@ -14002,6 +15658,15 @@ function getLogger(component) {
 var configuredPorts;
 function configureNotifyDomain(ports) {
   configuredPorts = ports;
+}
+var DEFAULT_NOTIFY_PORTS = {
+  // 计数缺省恒 0：零活跃是安全侧语义（pending 门全开），且把「缺席按零处理」从
+  // 消费方约定收敛为端口层的机器事实。
+  countActiveFromEntries: () => 0
+  // createDelivery 刻意缺席（见文件头「缺席语义」）。
+};
+function getNotifyDomainPorts() {
+  return configuredPorts ?? DEFAULT_NOTIFY_PORTS;
 }
 
 // src/execution/engine/common/errors.ts
@@ -14188,9 +15853,9 @@ async function routeEngine(opts) {
 }
 function fallbackTargetId(routingInput, resolved) {
   if (resolved.source === "default") return DEFAULT_ENGINE_ID;
-  const global = routingInput.globalDefaultEngine;
-  if (hasText(global) && global !== DEFAULT_ENGINE_ID && global !== resolved.engineId) {
-    return global;
+  const global2 = routingInput.globalDefaultEngine;
+  if (hasText(global2) && global2 !== DEFAULT_ENGINE_ID && global2 !== resolved.engineId) {
+    return global2;
   }
   return DEFAULT_ENGINE_ID;
 }
@@ -14584,7 +16249,7 @@ function typecheckMeta(raw, kind) {
   const when = isString(o.when) ? o.when : void 0;
   const notFor = isString(o.notFor) ? o.notFor : void 0;
   if (kind === "workflow") {
-    if (o.examples !== void 0 || o.tools !== void 0 || o.model !== void 0 || o.engine !== void 0) {
+    if (o.examples !== void 0 || o.tools !== void 0 || o.model !== void 0 || o.engine !== void 0 || o.maxTurns !== void 0 || o.disallowedTools !== void 0 || o.skills !== void 0) {
       return null;
     }
     if (!Array.isArray(o.phases)) return null;
@@ -14642,6 +16307,14 @@ function typecheckMeta(raw, kind) {
   }
   const model = isString(o.model) ? o.model : void 0;
   const engine = isString(o.engine) ? o.engine : void 0;
+  if (o.maxTurns !== void 0 && (typeof o.maxTurns !== "number" || !Number.isFinite(o.maxTurns))) {
+    return null;
+  }
+  const maxTurns = typeof o.maxTurns === "number" ? o.maxTurns : void 0;
+  const disallowedTools = parseStringListField(o.disallowedTools);
+  if (disallowedTools === null) return null;
+  const skills = parseStringListField(o.skills);
+  if (skills === null) return null;
   const meta = {
     kind: "agent",
     name: o.name,
@@ -14650,10 +16323,25 @@ function typecheckMeta(raw, kind) {
     ...tools !== void 0 ? { tools } : {},
     ...model !== void 0 ? { model } : {},
     ...engine !== void 0 ? { engine } : {},
+    ...maxTurns !== void 0 ? { maxTurns } : {},
+    ...disallowedTools !== void 0 ? { disallowedTools } : {},
+    ...skills !== void 0 ? { skills } : {},
     ...when !== void 0 ? { when } : {},
     ...notFor !== void 0 ? { notFor } : {}
   };
   return meta;
+}
+function parseStringListField(raw) {
+  if (raw === void 0) return void 0;
+  if (Array.isArray(raw)) {
+    if (!raw.every(isString)) return null;
+    return raw;
+  }
+  if (isString(raw)) {
+    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : void 0;
+  }
+  return null;
 }
 function parseResourceMeta(content, kind) {
   const block = extractBlock(content, kind);
@@ -14859,14 +16547,14 @@ var ajv = new import_ajv.default({
 });
 function formatMessage(name, errors) {
   const lines = errors.map((e) => {
-    let path9 = "/";
+    let path18 = "/";
     let msg = "invalid";
     if (e !== null && typeof e === "object") {
       const err = e;
-      if (typeof err.instancePath === "string" && err.instancePath) path9 = err.instancePath;
+      if (typeof err.instancePath === "string" && err.instancePath) path18 = err.instancePath;
       if (typeof err.message === "string") msg = err.message;
     }
-    return `- ${path9}: ${msg}`;
+    return `- ${path18}: ${msg}`;
   });
   return `Invalid args for workflow '${name}': ${errors.length} error(s)
 ${lines.join("\n")}
@@ -14975,6 +16663,36 @@ function raceTimeout(p, ms) {
 var SLUG_MAX_LENGTH = 35;
 
 // src/execution/execution-record.ts
+var ACTIVITY_LABEL_MAX = 60;
+var TURN_SUMMARY_MAX = 80;
+var TOOL_LABEL_MAX = 100;
+var MS_PER_SECOND = 1e3;
+function extractLabelFromArgs(toolName, args) {
+  if (typeof args !== "object" || args === null) return toolName;
+  const a = args;
+  const pathLike = a.path ?? a.file_path ?? a.filePath;
+  if (typeof pathLike === "string" && pathLike.length > 0) {
+    const base = pathLike.split(/[\\/]/).pop() ?? pathLike;
+    return `${toolName} ${truncateLabel(base)}`;
+  }
+  const cmd = a.command;
+  if (typeof cmd === "string" && cmd.length > 0) {
+    const firstLine = cmd.split("\n", 1)[0].trim();
+    return `${toolName} ${truncateLabel(firstLine)}`;
+  }
+  const query = a.query;
+  if (typeof query === "string" && query.length > 0) {
+    return `${toolName} ${truncateLabel(query)}`;
+  }
+  const url = a.url;
+  if (typeof url === "string" && url.length > 0) {
+    return `${toolName} ${truncateLabel(url)}`;
+  }
+  return toolName;
+}
+function truncateLabel(label) {
+  return label.length > TOOL_LABEL_MAX ? label.slice(0, TOOL_LABEL_MAX) : label;
+}
 function addUsage(prev, next) {
   if (prev === void 0) {
     return {
@@ -15168,6 +16886,201 @@ function updateFromEvent(record, event) {
     }
   }
 }
+function getEventLog(record) {
+  const log = [];
+  for (const turn of record.turns) {
+    for (const tc of turn.toolCalls) {
+      const label = extractLabelFromArgs(tc.toolName, tc.args);
+      const ts = tc.startedTs;
+      log.push({ type: "tool_start", label, ts, status: "running" });
+      if (tc._status !== "running") {
+        log.push({ type: "tool_end", label, ts, status: tc._status });
+      }
+    }
+    if (turn.closed) {
+      const summary = turn.text.length > 0 ? turn.text.length > TURN_SUMMARY_MAX ? turn.text.slice(0, TURN_SUMMARY_MAX) : turn.text : "turn";
+      log.push({ type: "turn_end", label: summary, ts: turn.closedTs ?? record.startedAt });
+    }
+  }
+  if (record.lastError) {
+    log.push({ type: "error", label: record.lastError, ts: Date.now() });
+  }
+  return log;
+}
+function getDisplayItems(record) {
+  const items = [];
+  for (const turn of record.turns) {
+    if (turn.text.length > 0) {
+      items.push({ type: "text", text: turn.text });
+    }
+    for (const tc of turn.toolCalls) {
+      items.push({
+        type: "toolCall",
+        name: tc.toolName,
+        args: tc.args ?? {},
+        status: tc._status
+      });
+    }
+  }
+  return items;
+}
+function getCurrentActivity(record) {
+  if (record.status !== "running") return void 0;
+  const turn = record.turns[record.turns.length - 1];
+  if (turn === void 0 || turn.closed) return void 0;
+  for (let i = turn.toolCalls.length - 1; i >= 0; i--) {
+    const tc = turn.toolCalls[i];
+    if (tc?._status === "running") {
+      return { type: "tool", label: extractLabelFromArgs(tc.toolName, tc.args) };
+    }
+  }
+  if (turn.thinking) {
+    return { type: "thinking", label: turn.thinking.slice(0, ACTIVITY_LABEL_MAX) };
+  }
+  if (turn.text) {
+    return { type: "text", label: turn.text.slice(0, ACTIVITY_LABEL_MAX) };
+  }
+  return void 0;
+}
+function getFullText(record) {
+  return record.turns.map((t) => t.text).filter((text) => text.length > 0).join("\n\n");
+}
+function getFullTextFrom(record, fromTurnIndex) {
+  return record.turns.slice(Math.max(0, fromTurnIndex)).map((t) => t.text).filter((text) => text.length > 0).join("\n\n");
+}
+function nextRoundBaseTurnIndex(record) {
+  const last = record.turns[record.turns.length - 1];
+  const trailingOpenEmpty = last !== void 0 && !last.closed && last.text.length === 0 ? 1 : 0;
+  return record.turns.length - trailingOpenEmpty;
+}
+function getAllToolCalls(record) {
+  return record.turns.flatMap((t) => t.toolCalls.map(stripInternal));
+}
+function stripInternal(tc) {
+  return {
+    toolName: tc.toolName,
+    args: tc.args,
+    result: tc.result,
+    isError: tc.isError
+  };
+}
+function getTotalUsage(record) {
+  let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+  for (const turn of record.turns) {
+    const u = turn.usageDelta;
+    if (u) {
+      input += u.input ?? 0;
+      output += u.output ?? 0;
+      cacheRead += u.cacheRead ?? 0;
+      cacheWrite += u.cacheWrite ?? 0;
+      cost += u.cost ?? 0;
+    }
+  }
+  const total = input + output + cacheRead + cacheWrite;
+  if (total === 0) return void 0;
+  return { input, output, cacheRead, cacheWrite, total, cost };
+}
+function tryTransition(record, target, closedReason) {
+  if (record.status !== "running") return false;
+  record.status = target;
+  record.closedReason = closedReason ?? "gc";
+  return true;
+}
+function resurrectClosed(record) {
+  if (record.status !== "closed") return false;
+  record.status = "running";
+  record.closedReason = void 0;
+  record.endedAt = void 0;
+  return true;
+}
+function markReconstructedStatus(record, status) {
+  record.status = status;
+}
+function completeRecord(record, result, status, closedReason) {
+  record.status = status;
+  record.closedReason = closedReason ?? "gc";
+  record.outcome = deriveOutcome(record.closedReason, result.error);
+  record.endedAt = Date.now();
+  record.agentResult = result;
+  record.result = result.text;
+  record.error = result.error;
+}
+function deriveOutcome(closedReason, error) {
+  if (closedReason === "cancelled") return "cancelled";
+  if (error) return "failed";
+  return "completed";
+}
+function projectOutcome(record) {
+  if (record.status !== "closed") return void 0;
+  return record.outcome ?? deriveOutcome(record.closedReason, record.error);
+}
+function computeElapsedSeconds(record) {
+  const end = record.endedAt ?? Date.now();
+  return Math.floor((end - record.startedAt) / MS_PER_SECOND);
+}
+function project(record) {
+  return {
+    status: record.status,
+    outcome: projectOutcome(record),
+    mode: record.mode,
+    agent: record.agent,
+    model: record.model,
+    thinkingLevel: record.thinkingLevel,
+    slug: record.slug,
+    turns: record.turnCount,
+    totalTokens: record.totalTokens,
+    elapsedSeconds: computeElapsedSeconds(record),
+    eventLog: getEventLog(record),
+    displayItems: getDisplayItems(record),
+    result: record.result,
+    error: record.error,
+    currentActivity: getCurrentActivity(record),
+    parsedOutput: record.agentResult?.parsedOutput,
+    sessionFile: record.sessionFile,
+    patchFile: record.patchFile
+  };
+}
+function snapshot(record) {
+  return {
+    id: record.id,
+    agent: record.agent,
+    model: record.model,
+    thinkingLevel: record.thinkingLevel,
+    mode: record.mode,
+    task: record.task,
+    slug: record.slug,
+    status: record.status,
+    chatMode: record.chatMode,
+    turns: record.turnCount,
+    totalTokens: record.totalTokens,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    result: record.result,
+    error: record.error,
+    sessionFile: record.sessionFile
+  };
+}
+
+// src/execution/host-mode.ts
+function resolveHostMode(mode) {
+  if (mode === "tui") return "tui";
+  if (mode === "rpc") return "gui";
+  return "headless";
+}
+function willRespondToAskUser(mode) {
+  const host = resolveHostMode(mode);
+  return host === "tui" || host === "gui";
+}
+
+// src/execution/relay-env.ts
+var RELAY_ENV_SOCKET = "XYZ_SUBAGENT_RELAY_SOCKET";
+var RELAY_ENV_NODE = "XYZ_SUBAGENT_RELAY_NODE";
+var RELAY_ENV_SCRIPT = "XYZ_SUBAGENT_RELAY_SCRIPT";
+var RELAY_ENV_SESSION_ID = "XYZ_SUBAGENT_RELAY_SESSION_ID";
+var RELAY_ENV_RECORD_ID = "XYZ_SUBAGENT_RELAY_RECORD_ID";
+function isRelayActive(env) {
+  return Boolean(env[RELAY_ENV_SOCKET] && env[RELAY_ENV_NODE] && env[RELAY_ENV_SCRIPT]);
+}
 
 // src/execution/stream-sink.ts
 var STREAM_FLUSH_MS = 100;
@@ -15219,6 +17132,11 @@ var SubagentStream = class {
     ]);
   }
 };
+function createBackgroundStream(recordId, sink, mode, env) {
+  if (sink === null) return void 0;
+  if (isRelayActive(env) && resolveHostMode(mode) === "gui") return void 0;
+  return new SubagentStream(recordId, sink);
+}
 
 // src/orchestration/skill-discovery.ts
 var fs = __toESM(require("fs"), 1);
@@ -16491,6 +18409,38 @@ function evictDoneRunsBeyondCap(runs, keepDone) {
   }
   return excess;
 }
+async function recoverCrashedRuns(store, runs, reason, hooks) {
+  const loaded = await store.loadAll();
+  for (const run of loaded) {
+    if (run.state.status === "running") {
+      run.state.error = reason;
+      run.transition("done", "failed");
+      try {
+        hooks?.onRunRecovered?.({ id: run.runId, reason: "failed" });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger5.warn(
+          `[workflow] recoverCrashedRuns onRunRecovered hook failed for run ${run.runId} (recovery continues): ${msg}`
+        );
+      }
+      try {
+        await store.save(run);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger5.error(
+          `[workflow] recoverCrashedRuns store.save failed for run ${run.runId}: ${msg} (reason: ${reason})`
+        );
+      }
+    }
+    runs.set(run.runId, run);
+  }
+  const evicted = evictDoneRunsBeyondCap(runs, MAX_RETAINED_DONE_RUNS);
+  if (evicted > 0) {
+    logger5.debug(
+      `[workflow] recoverCrashedRuns evicted ${evicted} done runs beyond cap (keep=${MAX_RETAINED_DONE_RUNS})`
+    );
+  }
+}
 
 // src/orchestration/launcher.ts
 var STATUS_POLL_INTERVAL_MS = 500;
@@ -17166,6 +19116,8 @@ var WorkerHostImpl = class {
 
 // src/orchestration/script-lint.ts
 var DESC_MAX_LENGTH = 200;
+var EXAMPLES_MIN_COUNT = 2;
+var EXAMPLES_MAX_COUNT = 4;
 var ENTRY_POINT_PATTERNS = [/\bagent\s*\(/, /\bparallel\s*\(/, /\bpipeline\s*\(/];
 function checkEntryPoint(source) {
   const hasEntryPoint = ENTRY_POINT_PATTERNS.some((p) => p.test(source));
@@ -17523,6 +19475,49 @@ function checkMetaQuality(meta) {
   }
   return findings;
 }
+function lintAgentMeta(meta) {
+  const findings = [];
+  const fields = [
+    ["description", meta.description],
+    ["when", meta.when ?? ""],
+    ["notFor", meta.notFor ?? ""]
+  ];
+  for (const [field, value] of fields) {
+    if (value.length === 0) continue;
+    findings.push(...checkMetaFieldQuality(field, value));
+  }
+  const examples = meta.examples;
+  if (examples === void 0) return findings;
+  if (examples.length === 0) {
+    findings.push({
+      severity: "error",
+      line: 1,
+      message: `agent '${meta.name}' \u58F0\u660E\u4E86 examples \u4F46\u4E3A\u7A7A\u2014\u2014\u9700 \u22652 \u6761\u4E14\u6B63\u53CD\u5404\u4E00`,
+      suggestion: "\u8865\u6B63\u5411\u6837\u672C\uFF08\u4F55\u65F6\u8C03\u7528\uFF09+ \u53CD\u5411\u6837\u672C\uFF08\u4F55\u65F6\u4E0D\u8C03\u7528\uFF09"
+    });
+    return findings;
+  }
+  const hasPositive = examples.some((e) => e.positive === true);
+  const hasNegative = examples.some((e) => e.positive === false);
+  if (examples.length < EXAMPLES_MIN_COUNT || !hasPositive || !hasNegative) {
+    findings.push({
+      severity: "error",
+      line: 1,
+      message: `agent '${meta.name}' \u7684 examples \u9700 \u22652 \u6761\u4E14\u6B63\u53CD\u5404\u4E00\uFF08positive:true \u89E6\u53D1\u8DEF\u7531 + positive:false \u53CD\u4F8B\uFF09`,
+      suggestion: "\u8865\u6B63\u5411\u6837\u672C\uFF08\u4F55\u65F6\u8C03\u7528\uFF09+ \u53CD\u5411\u6837\u672C\uFF08\u4F55\u65F6\u4E0D\u8C03\u7528\uFF09"
+    });
+    return findings;
+  }
+  if (examples.length > EXAMPLES_MAX_COUNT) {
+    findings.push({
+      severity: "error",
+      line: 1,
+      message: `agent '${meta.name}' \u7684 examples ${examples.length} \u6761\u8D85\u8FC7\u4E0A\u9650 ${EXAMPLES_MAX_COUNT}\uFF08\u6CE8\u5165\u6BB5\u662F\u6BCF turn \u5E38\u9A7B\u6210\u672C\uFF09`,
+      suggestion: "\u7CBE\u7B80\u5230 2-4 \u6761\uFF1A\u6B63\u53CD\u5404\u4E00 + \u6700\u591A 2 \u6761\u5197\u4F59"
+    });
+  }
+  return findings;
+}
 function lintScript(source) {
   const lines = source.split("\n");
   const findings = [];
@@ -17608,15 +19603,54 @@ var import_node_path4 = require("path");
 var import_node_os3 = require("os");
 var import_node_path3 = require("path");
 var HOME_DIR_PREFIX = "~/";
+function hasParentSegment(ref) {
+  return ref.split(/[\\/]/).includes("..");
+}
 function normalizeRef(ref, ext) {
   const trimmed = ref.trim();
   if (!trimmed) return null;
+  if (hasParentSegment(trimmed)) return null;
   const expanded = trimmed.startsWith(HOME_DIR_PREFIX) ? (0, import_node_path3.join)((0, import_node_os3.homedir)(), trimmed.slice(HOME_DIR_PREFIX.length)) : trimmed;
   if (!(0, import_node_path3.isAbsolute)(expanded)) return null;
   if (ext !== void 0 && !expanded.endsWith(ext)) return null;
   return expanded;
 }
+function invalidAgentRefMessage(ref, opts) {
+  const howToList = opts?.howToList ?? "<available_subagents>";
+  if (hasParentSegment(ref)) {
+    return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files without ".." path segments (use <location> from ${howToList}).`;
+  }
+  return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from ${howToList}).`;
+}
+var WORKFLOW_REF_RESERVED_NAMES = [".", ".."];
+function normalizeWorkflowRef(ref, opts) {
+  const trimmed = ref.trim();
+  if (!trimmed) return { kind: "invalid", ref, reason: "empty" };
+  const looksLikePath = trimmed.includes("/") || trimmed.includes("\\") || trimmed.startsWith("~");
+  if (looksLikePath) {
+    const path18 = normalizeRef(trimmed, WORKFLOW_REF_EXT);
+    if (path18 !== null) return { kind: "path", path: path18 };
+    const expanded = trimmed.startsWith(HOME_DIR_PREFIX) ? (0, import_node_path3.join)((0, import_node_os3.homedir)(), trimmed.slice(HOME_DIR_PREFIX.length)) : trimmed;
+    const reason = hasParentSegment(trimmed) ? "parent_segment" : !(0, import_node_path3.isAbsolute)(expanded) ? "not_absolute" : "bad_ext";
+    return { kind: "invalid", ref, reason };
+  }
+  if (WORKFLOW_REF_RESERVED_NAMES.includes(trimmed)) {
+    return { kind: "invalid", ref, reason: "reserved" };
+  }
+  const known = opts?.knownNames;
+  if (known !== void 0) {
+    for (const name of known) {
+      if (name === trimmed) return { kind: "name", name: trimmed };
+    }
+  }
+  return { kind: "invalid", ref, reason: "unknown_name" };
+}
+var AGENT_REF_EXT = ".md";
 var WORKFLOW_REF_EXT = ".js";
+function displayAgentName(ref) {
+  const base = ref.split(/[\\/]/).pop() ?? ref;
+  return base.endsWith(AGENT_REF_EXT) ? base.slice(0, -AGENT_REF_EXT.length) : base;
+}
 
 // src/orchestration/config-loader.ts
 var logger6 = getLogger("config-loader");
@@ -17749,6 +19783,9 @@ function invalidateCache() {
 }
 
 // src/orchestration/workflow-script-registry-impl.ts
+async function loadWorkflowScriptByPath(path18) {
+  return new WorkflowScriptRegistryImpl().getPath(path18);
+}
 var WorkflowScriptRegistryImpl = class {
   constructor(config) {
     this.config = config;
@@ -17942,38 +19979,41 @@ function generateWorkflowScript(name, script, options) {
 // src/orchestration/file-run-store.ts
 var import_promises2 = require("fs/promises");
 var import_node_path7 = require("path");
-var logger7 = getLogger("file-run-store");
-var STATE_DIR_NAME = "workflow-state";
-function toBudgetSnapshot(b) {
-  return {
-    maxTokens: b.maxTokens,
-    maxCost: b.maxCost,
-    maxTimeMs: b.maxTimeMs,
-    usedTokens: b.usedTokens,
-    usedCost: b.usedCost,
-    totalCallCount: b.totalCallCount
-  };
-}
-function toSnapshot(run) {
+
+// src/orchestration/run-snapshot.ts
+var SNAPSHOT_VERSION = "wf-run-v2";
+function toRunSnapshot(run) {
   const { budgetRef: _budgetRef, ...spec } = run.spec;
   return {
+    v: SNAPSHOT_VERSION,
     runId: run.runId,
     spec,
     state: {
       status: run.state.status,
       reason: run.state.reason,
-      budget: toBudgetSnapshot(run.state.budget),
-      calls: Array.from(run.state.calls.values(), (c) => ({
-        id: c.id,
-        opts: c.opts,
-        status: c.status,
-        attempts: c.attempts,
-        result: c.result,
-        sessionId: c.sessionId,
-        sessionFile: c.sessionFile,
-        traceNode: c.traceNode
-      })),
-      trace: [...run.state.trace.toArray()],
+      budget: {
+        maxTokens: run.state.budget.maxTokens,
+        maxCost: run.state.budget.maxCost,
+        maxTimeMs: run.state.budget.maxTimeMs,
+        usedTokens: run.state.budget.usedTokens,
+        usedCost: run.state.budget.usedCost,
+        totalCallCount: run.state.budget.totalCallCount
+      },
+      calls: Array.from(run.state.calls.values(), (c) => {
+        const { live: _live, ...traceNodeRest } = c.traceNode;
+        return {
+          id: c.id,
+          opts: c.opts,
+          status: c.status,
+          attempts: c.attempts,
+          result: c.result,
+          sessionId: c.sessionId,
+          sessionFile: c.sessionFile,
+          traceNode: traceNodeRest
+        };
+      }),
+      // trace 节点浅拷贝时 strip live 字段
+      trace: run.state.trace.toArray().map(({ live: _live, ...rest }) => rest),
       errorLogs: run.state.errorLogs,
       error: run.state.error,
       scriptResult: run.state.scriptResult
@@ -17981,9 +20021,10 @@ function toSnapshot(run) {
     meta: run.meta
   };
 }
-function fromSnapshot(snap) {
+function fromRunSnapshot(snap) {
   if (snap === null || typeof snap !== "object") return void 0;
   const s = snap;
+  if (s.v !== SNAPSHOT_VERSION) return void 0;
   if (typeof s.runId !== "string" || !s.runId) return void 0;
   if (!s.spec || typeof s.spec !== "object") return void 0;
   const st = s.state;
@@ -18022,6 +20063,14 @@ function fromSnapshot(snap) {
     s.meta
   );
 }
+
+// src/orchestration/file-run-store.ts
+var logger7 = getLogger("file-run-store");
+var STATE_DIR_NAME = "workflow-state";
+var STATE_FILE_GLOB = /^wf-.*\.jsonl$/;
+function isEnoentError(err) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT";
+}
 var FileRunStore = class {
   /** run 状态目录绝对路径（dataRoot 每次现取——宿主覆盖配置即刻生效，对齐
    *  data-dir.ts「不缓存路径防测试/宿主切换读到旧值」先例）。 */
@@ -18033,7 +20082,7 @@ var FileRunStore = class {
   }
   async save(run) {
     await (0, import_promises2.mkdir)(this.stateDir(), { recursive: true });
-    const line = JSON.stringify(toSnapshot(run));
+    const line = JSON.stringify(toRunSnapshot(run));
     await (0, import_promises2.appendFile)(this.stateFilePath(run.runId), line + "\n", "utf8");
   }
   async loadAll() {
@@ -18071,7 +20120,19 @@ var FileRunStore = class {
     logger7.warn(`[file-run-store] no valid snapshot line in ${display} (empty or all corrupted)`);
     return void 0;
   }
-  /** 单行解析 + 形状校验；损坏 warn 并返回 undefined。 */
+  /**
+   * 单行解析 + 版本衔接预处理（D4 裁决②③，宿主侧职责）+ 形状校验；损坏
+   * warn 并返回 undefined。
+   *
+   * - 缺 v 字段（core 存量行）→ 就地补当前版本再进 codec（「缺版本 = 当前
+   *   版本」宽容读，不做自动迁移——写回时经 toRunSnapshot 自然补 v 完成渐进
+   *   收敛）；预处理留在 store 层而非 codec，保 pi 侧「v1 存量静默跳过」语义
+   *   不被宽容化误读（D4 裁决②归属裁决）。
+   * - v 存在但不匹配（未知更高版本/降级写入）→ 跳过 + warn（补可见性，对齐
+   *   pi 静默跳过语义；字符串版本无大小序，不引入比较逻辑——D4 裁决③）。
+   *   此处版本判断仅为 warn 可见性，数据防线仍是 codec 内 guard（双保险，
+   *   pi 切换 codec 后共享同一防线）。
+   */
   parseLine(line, display, lineNo) {
     let parsed;
     try {
@@ -18081,12 +20142,89 @@ var FileRunStore = class {
       logger7.warn(`[file-run-store] skip corrupted line ${display}:${lineNo}: ${msg}`);
       return void 0;
     }
-    const run = fromSnapshot(parsed);
+    if (parsed !== null && typeof parsed === "object") {
+      const rec = parsed;
+      if (rec.v === void 0) {
+        rec.v = SNAPSHOT_VERSION;
+      } else if (rec.v !== SNAPSHOT_VERSION) {
+        logger7.warn(
+          `[file-run-store] skip snapshot with unsupported version ${display}:${lineNo}: v=${JSON.stringify(rec.v)} (this build only reads v=${JSON.stringify(SNAPSHOT_VERSION)}; the run line is skipped). To recover: upgrade @zhushanwen/subagent-core, or migrate/delete this state file if its runs are no longer needed`
+        );
+        return void 0;
+      }
+    }
+    const run = fromRunSnapshot(parsed);
     if (run === void 0) {
       logger7.warn(`[file-run-store] skip malformed snapshot ${display}:${lineNo} (shape validation failed)`);
       return void 0;
     }
     return run;
+  }
+  /**
+   * 把 workflow-state 目录裁剪到上限个最新 state 文件（mtime 升序删最旧，C1）。
+   *
+   * 语义对齐 pi jsonl-run-store.pruneStateFilesBeyondCap（逐段同构）：
+   * - 只删本目录内命中 {@link STATE_FILE_GLOB} 的文件；任何失败都不抛（清理是
+   *   旁路维护，不能拖垮持久化主链路）：readdir 失败静默放弃本轮（ENOENT =
+   *   从未持久化，正常态），单个 unlink 失败（非 ENOENT）warn 留证后继续删
+   *   其余——ENOENT 视为并发删除竞态下的已达成目标，不告警；
+   * - stat 全集取 mtime，allSettled 部分降级——单文件 stat 失败（并发删除
+   *   ENOENT 等）静默跳过该文件，不阻断本轮裁剪。
+   *
+   * 上限解析（envName 通道，对齐 pi getEnvStateMaxRuns 解析规则）：
+   * - `envName` 提供 → opt-in 通道：`process.env[envName]` 未设/空/非有限数/≤0
+   *   → no-op（**默认关**，pi B1 opt-in 语义）；设了有限正数 → 上限 = env 值
+   *   （env 值即上限，对齐 pi env 语义）；
+   * - `envName` 缺省 → 无 env 通道，直接按 `max` 参数裁剪（上限 = max，调用方
+   *   自管启用时机）。
+   *
+   * 本方法只做磁盘裁剪，不动内存 runs Map（内存侧淘汰归
+   * lifecycle.evictDoneRunsBeyondCap，两域独立）。
+   *
+   * @param max 上限（envName 缺省时生效；env 通道启用时被 env 值覆盖）
+   * @param envName opt-in 开关 + 上限覆盖 env 变量名（可选；pi 先例
+   *   `XYZ_SUBAGENT_STATE_MAX_RUNS`）
+   */
+  async pruneStateFilesBeyondCap(max, envName) {
+    let cap = max;
+    if (envName !== void 0) {
+      const raw = process.env[envName];
+      if (!raw) return;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) return;
+      cap = parsed;
+    }
+    const stateDir = this.stateDir();
+    let names;
+    try {
+      names = await (0, import_promises2.readdir)(stateDir);
+    } catch (err) {
+      if (!isEnoentError(err)) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger7.warn(`[file-run-store] state retention: readdir ${stateDir} failed: ${reason}`);
+      }
+      return;
+    }
+    const stateFiles = names.filter((n) => STATE_FILE_GLOB.test(n)).sort();
+    if (stateFiles.length <= cap) return;
+    const settled = await Promise.allSettled(
+      stateFiles.map(async (name) => {
+        const full = (0, import_node_path7.join)(stateDir, name);
+        return { full, mtimeMs: (await (0, import_promises2.stat)(full)).mtimeMs };
+      })
+    );
+    const byMtimeAsc = settled.flatMap((r) => r.status === "fulfilled" ? [r.value] : []).sort((a, b) => a.mtimeMs - b.mtimeMs);
+    const victims = byMtimeAsc.slice(0, byMtimeAsc.length - cap);
+    for (const victim of victims) {
+      try {
+        await (0, import_promises2.unlink)(victim.full);
+        logger7.debug(`[file-run-store] state retention: pruned ${victim.full}`);
+      } catch (err) {
+        if (isEnoentError(err)) continue;
+        const reason = err instanceof Error ? err.message : String(err);
+        logger7.warn(`[file-run-store] state retention: failed to delete ${victim.full}: ${reason}`);
+      }
+    }
   }
 };
 
@@ -18144,7 +20282,7 @@ var ZCODE_APPSERVER_HARVEST_GRACE_MS = 1e3;
 // src/execution/engine/engines/zcode/zcode-engine.ts
 var import_node_child_process4 = require("child_process");
 var fs6 = __toESM(require("fs"), 1);
-var path4 = __toESM(require("path"), 1);
+var path5 = __toESM(require("path"), 1);
 
 // src/execution/engine/common/schema-emulation.ts
 var import_ajv2 = __toESM(require_ajv(), 1);
@@ -18223,12 +20361,12 @@ function extractFirstFencedBlock(text) {
 function extractByBracketScan(text) {
   const objOpen = text.indexOf("{");
   const arrOpen = text.indexOf("[");
-  const open2 = objOpen === -1 ? arrOpen : arrOpen === -1 ? objOpen : Math.min(objOpen, arrOpen);
+  const open3 = objOpen === -1 ? arrOpen : arrOpen === -1 ? objOpen : Math.min(objOpen, arrOpen);
   const objClose = text.lastIndexOf("}");
   const arrClose = text.lastIndexOf("]");
   const close = Math.max(objClose, arrClose);
-  if (open2 === -1 || close === -1 || open2 >= close) return void 0;
-  return text.slice(open2, close + 1);
+  if (open3 === -1 || close === -1 || open3 >= close) return void 0;
+  return text.slice(open3, close + 1);
 }
 var ajvCache = /* @__PURE__ */ new WeakMap();
 function getOrCompileValidator(schema) {
@@ -18243,16 +20381,172 @@ function getOrCompileValidator(schema) {
   }
 }
 
+// src/execution/engine/common/persona-router.ts
+var PERSONA_FILE_NAME = "persona.md";
+function applyPersona(persona, capabilities) {
+  switch (capabilities.personaInjection) {
+    case "file": {
+      const content = buildPersonaBody(persona);
+      if (content === "") return { promptSegment: "" };
+      return { promptSegment: "", fileCandidate: { suggestedPath: PERSONA_FILE_NAME, content } };
+    }
+    case "flag":
+      return { promptSegment: buildPersonaBody(persona) };
+    case "prompt":
+      return { promptSegment: buildPromptSegment(persona) };
+  }
+}
+function buildPersonaBody(persona) {
+  const parts = [];
+  if (persona.agentRef !== void 0) parts.push(`# Agent: ${persona.agentRef}`);
+  if (persona.skillPath !== void 0) parts.push(`Skill context: ${persona.skillPath}`);
+  const body = persona.appendSystemPrompt?.join("\n") ?? "";
+  if (body !== "") parts.push(body);
+  return parts.join("\n");
+}
+function buildPromptSegment(persona) {
+  const body = buildPersonaBody(persona);
+  if (body === "") return "";
+  return `## Persona
+${body}`;
+}
+var DEFAULT_ARGV_BUDGET_BYTES = (
+  // eslint-disable-next-line no-magic-numbers -- 128KB = 128 * 1024 bytes 预算换算常数
+  128 * 1024
+);
+function estimateArgvBytes(argv) {
+  let total = 0;
+  for (const arg of argv) {
+    total += Buffer.byteLength(arg, "utf8") + 1;
+  }
+  return total;
+}
+function assertArgvBudget(argv, limitBytes = DEFAULT_ARGV_BUDGET_BYTES) {
+  const actual = estimateArgvBytes(argv);
+  if (actual > limitBytes) {
+    throw promptTooLargeError(actual, limitBytes);
+  }
+}
+
 // src/execution/engine/common/event-journal.ts
 var import_promises3 = require("fs/promises");
 var import_node_fs3 = require("fs");
 var import_node_path8 = require("path");
 var logger9 = getLogger("subagents");
+var FLUSH_THRESHOLD_LINES = 64;
 var FLUSH_THRESHOLD_BYTES = 32 * 1024;
-function replayJournal(path9) {
+var defaultFs = {
+  mkdir: (p, o) => (0, import_promises3.mkdir)(p, o),
+  appendFile: (p, d) => (0, import_promises3.appendFile)(p, d, "utf8"),
+  open: (p, f) => (0, import_promises3.open)(p, f)
+};
+var JournalWriter = class {
+  opts;
+  fs;
+  warn;
+  buffer = [];
+  bufferedBytes = 0;
+  seq = 0;
+  /** 串行化异步写（promise 链），防交错 append。 */
+  chain = Promise.resolve();
+  failed = false;
+  closed = false;
+  /** 是否成功落过盘——close 的 fsync 只对已存在的文件做（无事件任务不产生空文件）。 */
+  wrote = false;
+  constructor(opts, fs25 = defaultFs, warn = defaultWarn2) {
+    this.opts = opts;
+    this.fs = fs25;
+    this.warn = warn;
+  }
+  /** 追加一个事件（同步入队；缓冲达阈值自动排队 flush）。closed/failed 后丢弃。 */
+  append(event) {
+    if (this.failed || this.closed) return;
+    const line = {
+      v: 1,
+      ts: Date.now(),
+      taskId: this.opts.taskId,
+      engineId: this.opts.engineId,
+      seq: this.seq++,
+      event
+    };
+    const serialized = JSON.stringify(line);
+    this.buffer.push(serialized);
+    this.bufferedBytes += serialized.length;
+    if (this.buffer.length >= FLUSH_THRESHOLD_LINES || this.bufferedBytes >= FLUSH_THRESHOLD_BYTES) {
+      void this.flush();
+    }
+  }
+  /** 把缓冲写入磁盘（串行排队；等待此前所有排队写完成）。 */
+  flush() {
+    if (this.failed || this.buffer.length === 0) return this.chain;
+    const chunk = `${this.buffer.join("\n")}
+`;
+    this.buffer = [];
+    this.bufferedBytes = 0;
+    this.chain = this.chain.then(() => this.writeChunk(chunk));
+    return this.chain;
+  }
+  /** run 终态后调用：flush 全部 + fsync 一次 + 关闭（幂等）。 */
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    await this.flush();
+    if (this.failed || !this.wrote) return;
+    this.chain = this.chain.then(async () => {
+      const fh = await this.fs.open(this.opts.path, "r");
+      try {
+        await fh.sync();
+      } finally {
+        await fh.close();
+      }
+    });
+    await this.chain;
+  }
+  /** 是否已写失败（降级诊断用；failed 后 journal 不可作为②级数据源）。 */
+  get isFailed() {
+    return this.failed;
+  }
+  /**
+   * 重定向落盘路径（对齐点③：journal 路径权威 = 引擎声明的池 key）。
+   * 仅在尚未落盘（wrote=false）时允许——已 flush 过的文件搬家会制造两份半截 journal，
+   * 重放语义破坏；已落盘时 warn 拒绝（不静默）。事件在重定向前到达的场景由调用方
+   * 契约保证（RunContext.onPoolResolved 注释：引擎须在首个事件 emit 前回调）。
+   */
+  retarget(path18) {
+    if (this.closed || this.failed) return;
+    if (this.wrote) {
+      this.warn(
+        `[event-journal] retarget ignored for task ${this.opts.taskId}: journal already flushed to ${this.opts.path} (events must not precede onPoolResolved)`
+      );
+      return;
+    }
+    this.opts.path = path18;
+  }
+  /** 当前落盘路径（handle.journalPath 回填数据源）。 */
+  get path() {
+    return this.opts.path;
+  }
+  async writeChunk(chunk) {
+    try {
+      await this.fs.mkdir((0, import_node_path8.dirname)(this.opts.path), { recursive: true });
+      await this.fs.appendFile(this.opts.path, chunk);
+      this.wrote = true;
+    } catch (err) {
+      this.failed = true;
+      this.buffer = [];
+      this.warn(
+        `[event-journal] write failed, journal for task ${this.opts.taskId} is unavailable (read falls back to lower tiers): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+};
+function defaultWarn2(msg) {
+  logger9.warn(msg);
+}
+function replayJournal(path18) {
   let raw;
   try {
-    raw = (0, import_node_fs3.readFileSync)(path9, "utf8");
+    raw = (0, import_node_fs3.readFileSync)(path18, "utf8");
   } catch {
     return [];
   }
@@ -18370,6 +20664,9 @@ function resolveEngineDir(dataDir, engineId) {
 function resolvePoolDir(dataDir, engineId, poolKey) {
   return (0, import_node_path9.join)(resolveEngineDir(dataDir, sanitizeSeg(engineId)), sanitizeSeg(poolKey));
 }
+function resolveJournalPath(dataDir, engineId, poolKey, taskId) {
+  return (0, import_node_path9.join)(resolvePoolDir(dataDir, engineId, poolKey), `journal-${sanitizeSeg(taskId)}.jsonl`);
+}
 
 // src/execution/engine/engines/zcode/golden-sample.ts
 var ZCODE_GOLDEN_STDOUT = `{
@@ -18417,25 +20714,6 @@ function buildNestedSpawnEnv(baseEnv) {
   }
   env[NESTED_SPAWN_ENV] = "1";
   return env;
-}
-
-// src/execution/engine/common/persona-router.ts
-var DEFAULT_ARGV_BUDGET_BYTES = (
-  // eslint-disable-next-line no-magic-numbers -- 128KB = 128 * 1024 bytes 预算换算常数
-  128 * 1024
-);
-function estimateArgvBytes(argv) {
-  let total = 0;
-  for (const arg of argv) {
-    total += Buffer.byteLength(arg, "utf8") + 1;
-  }
-  return total;
-}
-function assertArgvBudget(argv, limitBytes = DEFAULT_ARGV_BUDGET_BYTES) {
-  const actual = estimateArgvBytes(argv);
-  if (actual > limitBytes) {
-    throw promptTooLargeError(actual, limitBytes);
-  }
 }
 
 // src/execution/engine/engines/zcode/launcher.ts
@@ -18750,14 +21028,166 @@ function buildRunFailedMessage(opts) {
 
 // src/execution/engine/engines/zcode/appserver-home.ts
 var import_node_child_process2 = require("child_process");
-var crypto = __toESM(require("crypto"), 1);
+var crypto2 = __toESM(require("crypto"), 1);
 var fs3 = __toESM(require("fs"), 1);
-var path3 = __toESM(require("path"), 1);
+var path4 = __toESM(require("path"), 1);
+
+// src/shared/atomic-write.ts
+var import_node_fs4 = require("fs");
+var fsPromises = __toESM(require("fs/promises"), 1);
+var path2 = __toESM(require("path"), 1);
+var logger10 = getLogger("subagents");
+var TMP_MARKER = ".tmp.";
+var TMP_NAME_PATTERN = /^(.+)\.tmp\.(\d+)\.[0-9A-Za-z-]+$/;
+var tmpSeq = 0;
+function atomicTmpPathFor(filePath) {
+  tmpSeq += 1;
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${filePath}${TMP_MARKER}${process.pid}.${tmpSeq}-${rand}`;
+}
+function parseAtomicTmpPath(tmpPath) {
+  const match = TMP_NAME_PATTERN.exec(tmpPath);
+  if (match === null) return null;
+  return { tmpPath, targetPath: match[1], pid: Number(match[2]) };
+}
+var DEFAULT_ENCODING = "utf8";
+function removeTmpBestEffortSync(tmpPath) {
+  try {
+    (0, import_node_fs4.unlinkSync)(tmpPath);
+  } catch (cleanupErr) {
+    logger10.debug("[subagent-core] atomic-write cleanup tmp failed", {
+      detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      tmpPath
+    });
+  }
+}
+function writeAtomicFileSync(filePath, content, options = {}) {
+  const encoding = options.encoding ?? DEFAULT_ENCODING;
+  if (options.ensureDir !== false) {
+    (0, import_node_fs4.mkdirSync)(path2.dirname(filePath), { recursive: true });
+  }
+  const tmpPath = atomicTmpPathFor(filePath);
+  try {
+    (0, import_node_fs4.writeFileSync)(tmpPath, content, encoding);
+    (0, import_node_fs4.renameSync)(tmpPath, filePath);
+  } catch (err) {
+    removeTmpBestEffortSync(tmpPath);
+    throw err;
+  }
+}
+async function writeAtomicFile(filePath, content, options = {}) {
+  const encoding = options.encoding ?? DEFAULT_ENCODING;
+  const fsyncDir = options.fsyncDir ?? true;
+  if (options.ensureDir !== false) {
+    (0, import_node_fs4.mkdirSync)(path2.dirname(filePath), { recursive: true });
+  }
+  const tmpPath = atomicTmpPathFor(filePath);
+  const dirPath = path2.dirname(filePath);
+  let renamed = false;
+  try {
+    const fh = await fsPromises.open(tmpPath, "w");
+    try {
+      await fh.writeFile(content, encoding);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await fsPromises.rename(tmpPath, filePath);
+    renamed = true;
+    if (fsyncDir) {
+      try {
+        const dirFh = await fsPromises.open(dirPath, "r");
+        try {
+          await dirFh.sync();
+        } finally {
+          await dirFh.close();
+        }
+      } catch (dirSyncErr) {
+        logger10.debug("[subagent-core] atomic-write fsync dir failed", {
+          detail: dirSyncErr instanceof Error ? dirSyncErr.message : String(dirSyncErr),
+          dirPath
+        });
+      }
+    }
+  } catch (err) {
+    if (!renamed) {
+      try {
+        await fsPromises.unlink(tmpPath);
+      } catch (cleanupErr) {
+        logger10.debug("[subagent-core] atomic-write cleanup tmp failed", {
+          detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          tmpPath
+        });
+      }
+    }
+    throw err;
+  }
+}
+function listStaleTmpFiles(dir) {
+  let names;
+  try {
+    names = (0, import_node_fs4.readdirSync)(dir);
+  } catch (readdirErr) {
+    if (typeof readdirErr.code === "string" && readdirErr.code === "ENOENT") {
+      return [];
+    }
+    throw readdirErr;
+  }
+  const refs = [];
+  for (const name of names) {
+    const ref = parseAtomicTmpPath(path2.join(dir, name));
+    if (ref !== null) {
+      refs.push(ref);
+    }
+  }
+  return refs;
+}
+function cleanupStaleTmpFiles(dir, options = {}) {
+  const now = options.now ?? Date.now();
+  const result = { removed: [], kept: [], failed: [] };
+  for (const ref of listStaleTmpFiles(dir)) {
+    if (options.maxAgeMs !== void 0) {
+      try {
+        const mtimeMs = (0, import_node_fs4.statSync)(ref.tmpPath).mtimeMs;
+        if (now - mtimeMs < options.maxAgeMs) {
+          result.kept.push(ref.tmpPath);
+          continue;
+        }
+      } catch (statErr) {
+        if (typeof statErr.code === "string" && statErr.code === "ENOENT") {
+          result.removed.push(ref.tmpPath);
+          continue;
+        }
+        logger10.debug("[subagent-core] cleanupStaleTmpFiles stat failed", {
+          detail: statErr instanceof Error ? statErr.message : String(statErr),
+          tmpPath: ref.tmpPath
+        });
+        result.failed.push(ref.tmpPath);
+        continue;
+      }
+    }
+    try {
+      (0, import_node_fs4.unlinkSync)(ref.tmpPath);
+      result.removed.push(ref.tmpPath);
+    } catch (unlinkErr) {
+      if (typeof unlinkErr.code === "string" && unlinkErr.code === "ENOENT") {
+        result.removed.push(ref.tmpPath);
+      } else {
+        logger10.debug("[subagent-core] cleanupStaleTmpFiles unlink failed", {
+          detail: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+          tmpPath: ref.tmpPath
+        });
+        result.failed.push(ref.tmpPath);
+      }
+    }
+  }
+  return result;
+}
 
 // src/execution/engine/engines/zcode/preparer.ts
 var fs2 = __toESM(require("fs"), 1);
 var os = __toESM(require("os"), 1);
-var path2 = __toESM(require("path"), 1);
+var path3 = __toESM(require("path"), 1);
 var ZcodePrepareError = class extends Error {
   code;
   constructor(code, message) {
@@ -18815,7 +21245,7 @@ function hasApiKey(entry) {
   return typeof key === "string" && key !== "";
 }
 function defaultV2ConfigPath() {
-  return path2.join(os.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
+  return path3.join(os.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
 }
 var DEFAULT_PROVIDER_ID = "builtin:bigmodel-coding-plan";
 function defaultProviderForShortName(merged, withKey) {
@@ -18900,7 +21330,7 @@ function prepareZcodeHome(opts) {
   const { engineDataDir, modelRef } = opts;
   const poolKey = computeZcodePoolKey(modelRef);
   const homeDir = resolvePoolDir(engineDataDir, "zcode", poolKey);
-  const configPath = path2.join(homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
+  const configPath = path3.join(homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
   const v2Path = opts.sources?.v2ConfigPath ?? defaultV2ConfigPath();
   const v2 = readSourceConfig(v2Path);
   const provider = providerOf(modelRef);
@@ -18920,26 +21350,15 @@ function prepareZcodeHome(opts) {
   const hitSourceMtime = v2.mtimeMs;
   let wroteConfig = false;
   if (homeNeedsBootstrap(configPath, hitSourceMtime)) {
-    fs2.mkdirSync(path2.dirname(configPath), { recursive: true });
     const payload = JSON.stringify({ model: { main: modelRef }, provider: { [provider]: entry } }, null, CONFIG_INDENT_SPACES);
-    const tmp = `${configPath}.tmp-${process.pid}-${Date.now()}`;
-    try {
-      fs2.writeFileSync(tmp, payload, "utf8");
-      fs2.renameSync(tmp, configPath);
-    } finally {
-      try {
-        if (fs2.existsSync(tmp)) fs2.unlinkSync(tmp);
-      } catch (err) {
-        void err;
-      }
-    }
+    writeAtomicFileSync(configPath, payload);
     wroteConfig = true;
   }
   return { modelRef, poolKey, homeDir, configPath, wroteConfig };
 }
 
 // src/execution/engine/engines/zcode/appserver-home.ts
-var logger10 = getLogger("subagents");
+var logger11 = getLogger("subagents");
 var PID_REAP_POLL_INTERVAL_MS = 50;
 function errMessage(err) {
   return err instanceof Error ? err.message : String(err);
@@ -18950,7 +21369,7 @@ function providersWithKey(sources) {
 }
 function hashProviderRegistry(providers) {
   const canonical = [...providers.keys()].sort().map((id) => [id, providers.get(id)]);
-  return crypto.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  return crypto2.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 function hashPoolConfigProviders(configPath) {
   let parsed;
@@ -18974,31 +21393,17 @@ function bootstrapAppServerConfig(opts) {
       `zcode \u5E38\u9A7B HOME \u5F15\u5BFC\u5931\u8D25\uFF1Av2 config \u65E0\u4EFB\u4F55\u5E26 apiKey \u7684 provider\uFF08${opts.sources?.v2ConfigPath ?? defaultV2ConfigPath()}\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5148\u5728 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u5E76\u914D\u7F6E provider \u540E\u91CD\u8BD5\u3002`
     );
   }
-  const configPath = path3.join(opts.homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
+  const configPath = path4.join(opts.homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
   const providerHash = hashProviderRegistry(providers);
   let wroteConfig = false;
   if (hashPoolConfigProviders(configPath) !== providerHash) {
-    fs3.mkdirSync(path3.dirname(configPath), { recursive: true });
     const providerObj = {};
     for (const [id, entry] of providers) providerObj[id] = entry;
     const payload = JSON.stringify({ model: { main: opts.modelRef }, provider: providerObj }, null, CONFIG_INDENT_SPACES);
-    writeAtomic(configPath, payload);
+    writeAtomicFileSync(configPath, payload);
     wroteConfig = true;
   }
   return { configPath, wroteConfig, providerHash, providerIds: [...providers.keys()] };
-}
-function writeAtomic(filePath, content) {
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    fs3.writeFileSync(tmp, content, "utf8");
-    fs3.renameSync(tmp, filePath);
-  } finally {
-    try {
-      if (fs3.existsSync(tmp)) fs3.unlinkSync(tmp);
-    } catch (err) {
-      logger10.debug(`[zcode-preparer] \u539F\u5B50\u5199\u6B8B\u7559\u6E05\u7406\u5931\u8D25\uFF08${filePath}\uFF0Cbest-effort\uFF09: ${errMessage(err)}`);
-    }
-  }
 }
 function isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -19041,7 +21446,7 @@ function acquireAppServerHomeLock(engineDataDir, opts = {}) {
     const name = n === 1 ? ZCODE_APPSERVER_POOL_KEY : `${ZCODE_APPSERVER_POOL_KEY}-${n}`;
     const homeDir = resolvePoolDir(engineDataDir, ZCODE_ENGINE_ID, name);
     fs3.mkdirSync(homeDir, { recursive: true });
-    const lockPath = path3.join(homeDir, ZCODE_APPSERVER_LOCKFILE_NAME);
+    const lockPath = path4.join(homeDir, ZCODE_APPSERVER_LOCKFILE_NAME);
     let tookOver = false;
     for (; ; ) {
       if (tryCreateLock(lockPath)) return { poolKey: name, homeDir, lockPath, tookOver };
@@ -19053,7 +21458,7 @@ function acquireAppServerHomeLock(engineDataDir, opts = {}) {
       try {
         fs3.unlinkSync(lockPath);
       } catch (err) {
-        logger10.debug(`[zcode-preparer] \u63A5\u7BA1\u5220\u9501\u5931\u8D25\uFF08${lockPath}\uFF0C\u7EE7\u7EED\u4E89\u593A\uFF09: ${errMessage(err)}`);
+        logger11.debug(`[zcode-preparer] \u63A5\u7BA1\u5220\u9501\u5931\u8D25\uFF08${lockPath}\uFF0C\u7EE7\u7EED\u4E89\u593A\uFF09: ${errMessage(err)}`);
       }
       opts.hooks?.afterTakeoverUnlink?.(lockPath);
     }
@@ -19068,14 +21473,14 @@ function startLockHeartbeat(lockPath) {
       const now = /* @__PURE__ */ new Date();
       fs3.utimesSync(lockPath, now, now);
     } catch (err) {
-      logger10.debug(`[zcode-preparer] \u9501\u5FC3\u8DF3 touch \u5931\u8D25\uFF08${lockPath}\uFF0C\u505C\u8DF3\uFF09: ${errMessage(err)}`);
+      logger11.debug(`[zcode-preparer] \u9501\u5FC3\u8DF3 touch \u5931\u8D25\uFF08${lockPath}\uFF0C\u505C\u8DF3\uFF09: ${errMessage(err)}`);
     }
   }, ZCODE_APPSERVER_LOCK_HEARTBEAT_MS);
   if (typeof timer.unref === "function") timer.unref();
   return () => clearInterval(timer);
 }
 function pidfilePath(homeDir) {
-  return path3.join(homeDir, ZCODE_APPSERVER_PIDFILE_NAME);
+  return path4.join(homeDir, ZCODE_APPSERVER_PIDFILE_NAME);
 }
 function psField(pid, field) {
   return new Promise((resolve6) => {
@@ -19096,7 +21501,7 @@ async function writeAppServerPidFile(homeDir, pid) {
     startedAt: Date.now(),
     ...pid > 0 ? { lstart: await probePidLstart(pid) } : {}
   };
-  writeAtomic(pidfilePath(homeDir), JSON.stringify(content, null, CONFIG_INDENT_SPACES));
+  writeAtomicFileSync(pidfilePath(homeDir), JSON.stringify(content, null, CONFIG_INDENT_SPACES), { ensureDir: false });
 }
 async function reapOrphanAppServer(homeDir, opts = {}) {
   const file = pidfilePath(homeDir);
@@ -19114,7 +21519,7 @@ async function reapOrphanAppServer(homeDir, opts = {}) {
     try {
       fs3.unlinkSync(file);
     } catch (err) {
-      logger10.debug(`[zcode-preparer] pidfile \u6E05\u7406\u5931\u8D25\uFF08${file}\uFF0C\u5DF2\u88AB\u5E76\u53D1\u6E05\u7406\u5219\u65E0\u59A8\uFF09: ${errMessage(err)}`);
+      logger11.debug(`[zcode-preparer] pidfile \u6E05\u7406\u5931\u8D25\uFF08${file}\uFF0C\u5DF2\u88AB\u5E76\u53D1\u6E05\u7406\u5219\u65E0\u59A8\uFF09: ${errMessage(err)}`);
     }
   };
   if (!isPidAlive(content.pid)) {
@@ -19138,7 +21543,7 @@ function reapPid(pid, graceMs) {
     try {
       process.kill(pid, signal);
     } catch (err) {
-      logger10.debug(`[zcode-preparer] \u5B64\u513F\u56DE\u6536\u4FE1\u53F7 ${signal} \u672A\u9001\u8FBE\uFF08pid ${pid}\uFF0C\u53EF\u80FD\u5DF2\u9000\u51FA\uFF09: ${errMessage(err)}`);
+      logger11.debug(`[zcode-preparer] \u5B64\u513F\u56DE\u6536\u4FE1\u53F7 ${signal} \u672A\u9001\u8FBE\uFF08pid ${pid}\uFF0C\u53EF\u80FD\u5DF2\u9000\u51FA\uFF09: ${errMessage(err)}`);
     }
   };
   killWith("SIGTERM");
@@ -19376,10 +21781,10 @@ async function readZcodeSessionView(dbPath, sessionId) {
       "\u5347\u7EA7 node \u6216\u6539\u7528\u7B2C\u2461\u7EA7\uFF08\u5BBF\u4E3B event journal\uFF09\u8BFB\u53D6\u3002"
     );
   }
-  const open2 = DatabaseSyncCtor;
+  const open3 = DatabaseSyncCtor;
   let db;
   try {
-    db = new open2(dbPath, { readOnly: true });
+    db = new open3(dbPath, { readOnly: true });
     return buildView(db, resolveSessionId(db, sessionId));
   } catch (err) {
     if (err instanceof ZcodeReaderError) throw err;
@@ -19400,7 +21805,7 @@ async function readZcodeSessionView(dbPath, sessionId) {
 var import_node_child_process3 = require("child_process");
 var fs5 = __toESM(require("fs"), 1);
 var import_node_path10 = require("path");
-var logger11 = getLogger("subagents");
+var logger12 = getLogger("subagents");
 var RAW_FRAME_LOG_CHARS = 200;
 var RUNTIME_PREFERENCES = Object.freeze({
   nativeSearchEnhancementsEnabled: true,
@@ -19449,8 +21854,13 @@ var AppServerConnection = class {
   stderrTail = "";
   stderrStream = null;
   stderrStreamFailed = false;
-  /** 本代我方杀链是否已发起（close/shutdown 幂等守卫）。 */
-  killStarted = false;
+  /**
+   * 本代我方杀链 promise（close/shutdown 共用）。入口顺序不破「shutdown resolve 于
+   * 进程退出」契约：close 先行发起时 shutdown await 同一 promise 而非直接 return。
+   * killChain 永不 reject（内部 raceTimeout 吞 reject）——close 的 fire-and-forget
+   * 无 unhandled rejection 面。
+   */
+  killChainPromise;
   generation = 0;
   pushHandlers = /* @__PURE__ */ new Map();
   /** [R4] 连接级崩溃通知面（onClose 订阅者集合；与 pushHandlers 同构的 refCount 形态）。 */
@@ -19552,24 +21962,28 @@ var AppServerConnection = class {
   }
   /**
    * 同步关闭面（R4 dispose 编排的原语）：立即发 SIGTERM（同步系统调用，返回前信号
-   * 已发出），grace→SIGKILL 升级由后台杀链跟进（fire-and-forget）。幂等；对未启动
-   * 连接是零成本 no-op。
+   * 已发出），grace→SIGKILL 升级由杀链 promise 跟进（fire-and-forget）。幂等；对未启动
+   * 连接是零成本 no-op。close 之后调 shutdown 会 await 同一杀链再 resolve（见
+   * killChainPromise 字段注释）。
    */
   close() {
     const child = this.child;
-    if (child === null || this.killStarted) return;
-    this.killStarted = true;
-    void killChain(child, { graceMs: ZCODE_KILL_GRACE_MS });
+    if (child === null || this.killChainPromise !== void 0) return;
+    this.killChainPromise = killChain(child, { graceMs: ZCODE_KILL_GRACE_MS });
   }
   /**
    * 异步完整关闭面：SIGTERM → grace → SIGKILL 杀链走完（含收尸），resolve 于进程
-   * 退出。幂等。之后首个 request() 自动重建（与崩溃重建同路径，§3.4 不变量 4）。
+   * 退出。幂等：与 close 共享同一杀链 promise——close 先行时 await 它再 resolve，
+   * 不另起杀链（graceMs 取首次发起值）。之后首个 request() 自动重建（与崩溃重建
+   * 同路径，§3.4 不变量 4）。
    */
   async shutdown(opts) {
-    const child = this.child;
-    if (child === null || this.killStarted) return;
-    this.killStarted = true;
-    await killChain(child, { graceMs: opts?.graceMs ?? ZCODE_KILL_GRACE_MS });
+    if (this.killChainPromise === void 0) {
+      const child = this.child;
+      if (child === null) return;
+      this.killChainPromise = killChain(child, { graceMs: opts?.graceMs ?? ZCODE_KILL_GRACE_MS });
+    }
+    await this.killChainPromise;
   }
   // ============================================================
   // 进程生命周期（代管理）
@@ -19582,7 +21996,7 @@ var AppServerConnection = class {
     this.pending = /* @__PURE__ */ new Map();
     this.reqSeq = 0;
     this.stderrTail = "";
-    this.killStarted = false;
+    this.killChainPromise = void 0;
     this.generation += 1;
     const gen = this.generation;
     const child = (0, import_node_child_process3.spawn)(this.nodeBin, [this.cliPath, "app-server", "--cwd", this.cwd], {
@@ -19594,7 +22008,7 @@ var AppServerConnection = class {
       try {
         this.onSpawned(child);
       } catch (err) {
-        logger11.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage2(err)}`);
+        logger12.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage2(err)}`);
       }
     }
     let finalized = false;
@@ -19613,7 +22027,7 @@ var AppServerConnection = class {
         try {
           fn(reason);
         } catch (err2) {
-          logger11.warn(`close handler \u5F02\u5E38: ${errMessage2(err2)}`);
+          logger12.warn(`close handler \u5F02\u5E38: ${errMessage2(err2)}`);
         }
       }
     };
@@ -19653,14 +22067,14 @@ var AppServerConnection = class {
     try {
       frame = JSON.parse(text);
     } catch {
-      logger11.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger12.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     this.handleFrame(frame, text);
   }
   handleFrame(frame, rawText) {
     if (!isRecord2(frame)) {
-      logger11.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger12.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     if (isRecord2(frame.protocol)) this.capturedProtocolInfo = frame.protocol;
@@ -19675,19 +22089,19 @@ var AppServerConnection = class {
     }
     if (frame.id !== void 0 && frame.id !== null) {
       if (typeof frame.id !== "number") {
-        logger11.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+        logger12.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
         return;
       }
       this.settlePending(frame.id, frame);
       return;
     }
     if (isRecord2(frame.protocol)) return;
-    logger11.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+    logger12.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
   }
   settlePending(id, frame) {
     const entry = this.pending.get(id);
     if (!entry) {
-      logger11.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
+      logger12.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
       return;
     }
     this.pending.delete(id);
@@ -19713,7 +22127,7 @@ var AppServerConnection = class {
       try {
         fn(params);
       } catch (err) {
-        logger11.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage2(err)}`);
+        logger12.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage2(err)}`);
       }
     }
   }
@@ -19723,12 +22137,12 @@ var AppServerConnection = class {
   answerReverse(id, method, params) {
     const handler = this.reverseHandlers[method];
     if (!handler) {
-      logger11.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
+      logger12.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
       this.writeFrame({ id, result: {} });
       return;
     }
     Promise.resolve().then(() => handler(params)).then((result) => this.writeFrame({ id, result: result ?? {} })).catch((err) => {
-      logger11.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage2(err)}`);
+      logger12.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage2(err)}`);
       this.writeFrame({ id, error: { code: -32e3, message: errMessage2(err) } });
     });
   }
@@ -19744,7 +22158,7 @@ var AppServerConnection = class {
 `);
       return true;
     } catch (err) {
-      logger11.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage2(err)}`);
+      logger12.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage2(err)}`);
       return false;
     }
   }
@@ -19777,7 +22191,7 @@ var AppServerConnection = class {
 
 // src/execution/engine/engines/zcode/session-channel.ts
 var import_node_crypto = require("crypto");
-var logger12 = getLogger("subagents");
+var logger13 = getLogger("subagents");
 var SUBSCRIBE_DELIVERY_KIND = "desktop-continuous";
 var WORKSPACE_KEY_HASH_CHARS = 16;
 var CREATE_REPLY_LOG_CHARS = 300;
@@ -19970,7 +22384,7 @@ var SessionChannel = class {
         { timeoutMs: ZCODE_APPSERVER_TURN_CLOSE_TIMEOUT_MS }
       );
     } catch (err) {
-      logger12.warn(
+      logger13.warn(
         `session/close \u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0Cbest-effort \u5FFD\u7565\uFF09: ${errMessage3(
           err
         )}`
@@ -20092,7 +22506,7 @@ var SessionChannel = class {
     }
     if (typeof payload.delta === "string" && payload.delta !== "") {
       if (turn.settled) {
-        logger12.warn(
+        logger13.warn(
           `\u7EC8\u6001\u540E\u8FDF\u5230\u7684 delta \u4E22\u5F03\uFF08\u4F1A\u8BDD ${turn.sessionId}\uFF0C\u4E0D\u53D8\u91CF 2\uFF1Aresolve \u540E\u4E0D\u518D\u53D1\u4E8B\u4EF6\uFF09: ${payload.delta.slice(
             0,
             DELTA_LOG_CHARS
@@ -20141,7 +22555,7 @@ var SessionChannel = class {
         }
       );
     } catch (err) {
-      logger12.warn(
+      logger13.warn(
         `session/read \u515C\u5E95\u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0C\u964D\u7EA7\u6536\u5C3E\u5E27/delta \u805A\u5408\uFF09: ${errMessage3(
           err
         )}`
@@ -20152,7 +22566,7 @@ var SessionChannel = class {
 };
 
 // src/execution/engine/engines/zcode/appserver-probe.ts
-var logger13 = getLogger("subagents");
+var logger14 = getLogger("subagents");
 var CREATE_REPLY_LOG_CHARS2 = 300;
 function errMessage4(err) {
   return err instanceof Error ? err.message : String(err);
@@ -20205,7 +22619,7 @@ async function runAppServerSmokeProbe(opts) {
     deadline.then(() => void 0)
   ]);
   await conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS }).catch((err) => {
-    logger13.debug(`[zcode-probe] \u63A2\u9488\u8FDE\u63A5 shutdown \u5931\u8D25\uFF08best-effort\uFF09: ${errMessage4(err)}`);
+    logger14.debug(`[zcode-probe] \u63A2\u9488\u8FDE\u63A5 shutdown \u5931\u8D25\uFF08best-effort\uFF09: ${errMessage4(err)}`);
   });
   if (failure !== void 0) {
     return { ok: false, detail: `\u63A2\u9488\u4F1A\u8BDD\u5931\u8D25: ${errMessage4(failure)}` };
@@ -20223,8 +22637,9 @@ async function runAppServerSmokeProbe(opts) {
 }
 
 // src/execution/engine/engines/zcode/zcode-engine.ts
-var logger14 = getLogger("subagents");
+var logger15 = getLogger("subagents");
 var PROBE_VERSION_TIMEOUT_MS = 15e3;
+var COMMON_THOUGHT_LEVELS = ["low", "high", "max"];
 function pinnedZcodeMode(env = process.env) {
   const v = env[ZCODE_MODE_ENV_VAR];
   return v === "appserver" || v === "spawn" ? v : void 0;
@@ -20376,12 +22791,13 @@ var ZcodeEngine = class {
     const { result, driftCode } = await this.runViaAppServer(task, ctx);
     if (driftCode === void 0) return result;
     this.driftDegraded = true;
-    logger14.warn(
+    logger15.warn(
       `[zcode-engine] app-server \u6F02\u79FB\u7C7B\u9519\u8BEF\uFF08RPC code ${driftCode}\uFF09\u2014\u2014\u672C\u4EFB\u52A1\u964D\u7EA7 spawn \u91CD\u8DD1\uFF0C\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn`,
       { taskId: ctx.taskId }
     );
     return this.runViaSpawn(task, ctx, {
-      degradedReason: `protocol-drift\uFF08\u9996\u4EFB\u52A1 app-server \u547D\u4E2D RPC code ${driftCode}\uFF0C\u5DF2\u964D\u7EA7 spawn \u91CD\u8DD1\u672C\u4EFB\u52A1\uFF1B\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn\uFF09`
+      degradedReason: `protocol-drift\uFF08\u9996\u4EFB\u52A1 app-server \u547D\u4E2D RPC code ${driftCode}\uFF0C\u5DF2\u964D\u7EA7 spawn \u91CD\u8DD1\u672C\u4EFB\u52A1\uFF1B\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn\uFF09`,
+      skipCtxModelWarn: true
     });
   }
   /**
@@ -20407,18 +22823,18 @@ var ZcodeEngine = class {
       cliPath,
       homeDir: home.homeDir,
       baseEnv: this.deps.processEnv ?? process.env,
-      stderrLogPath: path4.join(this.deps.engineDataDir(), "logs", "zcode-appserver-probe-stderr.log"),
+      stderrLogPath: path5.join(this.deps.engineDataDir(), "logs", "zcode-appserver-probe-stderr.log"),
       ...this.deps.probeBudgetMs !== void 0 ? { budgetMs: this.deps.probeBudgetMs } : {}
     });
     this.smokeConclusion = { cliMtimeMs, ok: r.ok, detail: r.detail };
-    logger14.debug("[zcode-engine] appserver smoke probe", { ok: r.ok, detail: r.detail, cliMtimeMs });
+    logger15.debug("[zcode-engine] appserver smoke probe", { ok: r.ok, detail: r.detail, cliMtimeMs });
     return this.smokeConclusion;
   }
   // ============================================================
   // [R4] app-server 常驻路径（D1/D3/D4/D7）
   // ============================================================
   /**
-   * 常驻路径主编排：常驻 HOME（锁/派生/孤儿回收/凭据刷新——preparer D7 全量）→
+   * 常驻路径主编排：常驻 HOME（锁/派生/孤儿回收/凭据刷新——appserver-home D7 全量）→
    * 惰性连接 + runTurn（事件时序前移：text_delta 流式、终态后 message_end/turn_end）→
    * schema 仿真重试（与 spawn 同编排）→ outcome/handle。poolKey 静态常量，
    * onPoolResolved 在 prepare 期、onHandleReady 在 create 应答后（§3.4 不变量 3）。
@@ -20430,6 +22846,8 @@ var ZcodeEngine = class {
   async runViaAppServer(task, ctx) {
     const startedAt = Date.now();
     if (ctx.signal?.aborted === true) {
+      const poolKey = this.homeState?.poolKey ?? ZCODE_APPSERVER_POOL_KEY;
+      ctx.onPoolResolved?.(poolKey);
       const outcome2 = this.finalizeOutcome(
         task,
         ctx,
@@ -20437,10 +22855,11 @@ var ZcodeEngine = class {
         { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, has: false },
         startedAt
       );
-      const poolKey = this.homeState?.poolKey ?? ZCODE_APPSERVER_POOL_KEY;
       return { result: { handle: this.appServerHandle(poolKey, outcome2), outcome: outcome2 }, driftCode: void 0 };
     }
     const modelRef = resolveZcodeModelRef(task.model, this.deps.sources);
+    this.warnIgnoredCtxModel(task, ctx, modelRef);
+    this.warnThoughtLevelUncommon(task, ctx);
     const home = await this.ensureAppServerHome(modelRef);
     ctx.onPoolResolved?.(home.poolKey);
     const cwd = task.cwd ?? process.cwd();
@@ -20483,12 +22902,14 @@ var ZcodeEngine = class {
     const rt = this.ensureAppServerRuntime(home);
     const { providerId, modelId } = splitZcodeModelRef(modelRef);
     const denyTools = (task.denyTools ?? []).filter((t) => typeof t === "string" && t.trim() !== "");
+    const thoughtLevel = task.effort?.trim();
     const createParams = {
       workspacePath: cwd,
       mode: "yolo",
       // per-session model（G3）：create 参数透传（A.2 ① strict 对象）——同进程任务
       // 各用各的模型，互不干扰
       model: { providerId, modelId },
+      ...thoughtLevel !== void 0 && thoughtLevel !== "" ? { thoughtLevel } : {},
       ...denyTools.length > 0 ? { toolDenylist: denyTools } : {}
     };
     let currentSessionId;
@@ -20531,10 +22952,14 @@ var ZcodeEngine = class {
       return {
         kind: "run-failed",
         output: syntheticAppServerOutput(null),
-        message: buildAppServerRunFailedMessage(err, home),
+        message: buildAppServerRunFailedMessage(err, home, currentSessionId),
         // [R5] RPC code 透传给 run 编排（-32601/-32602 漂移降级判据；连接级/超时类
         // 错误无 code 不参与降级）
-        ...isAppServerRpcError(err) && err.code !== void 0 ? { rpcCode: err.code } : {}
+        ...isAppServerRpcError(err) && err.code !== void 0 ? { rpcCode: err.code } : {},
+        // 错误规格表 -32004 行「按任务失败上报（含会话 id）」：create 成功后运行中失败
+        // （-32004/-32010 等）时留痕会话 id——经 applyRunFailedOutcome 落 outcome.sessionId
+        // 与 handle.sessionRef（create 阶段失败无会话，缺省不带）
+        ...currentSessionId !== void 0 ? { sessionId: currentSessionId } : {}
       };
     } finally {
       if (currentSessionId !== void 0) rt.activeSessions.delete(currentSessionId);
@@ -20559,7 +22984,7 @@ var ZcodeEngine = class {
       try {
         await rt.conn.request("session/stop", { sessionId }, { timeoutMs: ZCODE_APPSERVER_STOP_TIMEOUT_MS });
       } catch (err) {
-        logger14.debug(
+        logger15.debug(
           `[zcode-engine] session/stop \u5931\u8D25\uFF08${errMessage5(err)}\uFF09\u2014\u2014grace \u540E\u8D70 killChain \u515C\u5E95`
         );
       }
@@ -20572,7 +22997,7 @@ var ZcodeEngine = class {
       delayResolved(ZCODE_APPSERVER_ABORT_GRACE_MS, false)
     ]);
     if (settled) return;
-    logger14.warn(
+    logger15.warn(
       `[zcode-engine] abort grace \u7A97\u53E3\u5185\u672A\u89C1\u7EC8\u6001\u2014\u2014killChain \u6536\u5272\u5171\u4EAB\u8FDB\u7A0B\uFF08\u63A5\u53D7\u8FDE\u5750\uFF0C\u5728\u9014\u4EFB\u52A1\u8D70\u5D29\u6E83\u8DEF\u5F84\uFF09`
     );
     await rt.conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS });
@@ -20590,7 +23015,7 @@ var ZcodeEngine = class {
       try {
         await this.homeAcquireInFlight;
       } catch (err) {
-        logger14.debug(
+        logger15.debug(
           `[zcode-engine] \u5E76\u53D1\u7B49\u5F85\u7684\u9996\u4EFB\u52A1 home acquire \u5931\u8D25\uFF08${errMessage5(err)}\uFF09\u2014\u2014\u81EA\u884C\u91CD\u8D70 acquire`
         );
       }
@@ -20620,7 +23045,7 @@ var ZcodeEngine = class {
         lockPath: fresh.lockPath,
         stopHeartbeat: startLockHeartbeat(fresh.lockPath)
       };
-      logger14.debug("[zcode-engine] appserver home acquired", {
+      logger15.debug("[zcode-engine] appserver home acquired", {
         poolKey: fresh.poolKey,
         tookOver: fresh.tookOver,
         orphanReap: fresh.orphanReap,
@@ -20656,11 +23081,11 @@ var ZcodeEngine = class {
       // workspace.workspacePath 按任务传递——D10 基线不预设任务级进程 cwd）
       cwd: home.homeDir,
       env: buildAppServerEnv(home.homeDir, this.deps.processEnv ?? process.env),
-      stderrLogPath: path4.join(this.deps.engineDataDir(), "logs", "zcode-appserver-stderr.log"),
+      stderrLogPath: path5.join(this.deps.engineDataDir(), "logs", "zcode-appserver-stderr.log"),
       // 每代进程 spawn 后写 pidfile（D6③ 孤儿回收的数据源；崩溃重建的代同样覆盖写）
       onSpawned: (child) => {
         void writeAppServerPidFile(home.homeDir, child.pid ?? -1).catch((err) => {
-          logger14.debug(`[zcode-engine] pidfile \u5199\u5165\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
+          logger15.debug(`[zcode-engine] pidfile \u5199\u5165\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
         });
       }
     });
@@ -20680,9 +23105,9 @@ var ZcodeEngine = class {
     if (rt === void 0) return;
     this.appserverRuntime = void 0;
     void this.shutdownRuntimeAndDisposeChannel(rt).catch((err) => {
-      logger14.debug(`[zcode-engine] \u5E38\u9A7B\u8FDE\u63A5\u5173\u95ED\u5931\u8D25\uFF08${reason}\uFF0Cbest-effort\uFF09: ${errMessage5(err)}`);
+      logger15.debug(`[zcode-engine] \u5E38\u9A7B\u8FDE\u63A5\u5173\u95ED\u5931\u8D25\uFF08${reason}\uFF0Cbest-effort\uFF09: ${errMessage5(err)}`);
     });
-    logger14.debug(`[zcode-engine] appserver runtime torn down (${reason})`, { poolKey: rt.homePoolKey });
+    logger15.debug(`[zcode-engine] appserver runtime torn down (${reason})`, { poolKey: rt.homePoolKey });
   }
   /**
    * [R5 修复 R4 既有竞态] shutdown → 等崩溃收割实际发生 → channel 退订。killChain 在
@@ -20716,14 +23141,16 @@ var ZcodeEngine = class {
     const rt = this.appserverRuntime;
     if (rt === void 0) return;
     this.appserverRuntime = void 0;
-    for (const sessionId of [...rt.activeSessions]) {
-      rt.conn.post("session/close", { sessionId });
+    if (rt.conn.alive) {
+      for (const sessionId of [...rt.activeSessions]) {
+        rt.conn.post("session/close", { sessionId });
+      }
     }
     await this.shutdownRuntimeAndDisposeChannel(rt);
     try {
-      fs6.rmSync(path4.join(rt.homeDir, ZCODE_APPSERVER_PIDFILE_NAME), { force: true });
+      fs6.rmSync(path5.join(rt.homeDir, ZCODE_APPSERVER_PIDFILE_NAME), { force: true });
     } catch (err) {
-      logger14.debug(`[zcode-engine] dispose \u540E pidfile \u6E05\u7406\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
+      logger15.debug(`[zcode-engine] dispose \u540E pidfile \u6E05\u7406\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
     }
   }
   // ============================================================
@@ -20734,18 +23161,25 @@ var ZcodeEngine = class {
    * [R5] degrade 参数：降级链落点（探针失败 / 漂移首败重跑 / 降级后直走）——结果经
    * outcome.engineFallback 标注「degraded: spawn + 原因」（D9① 留痕面复用，record
    * 同步投影；capabilities 声明不降级——D2 降级是任务级兜底非能力级）。
+   * [RX2-F3] degrade.skipCtxModelWarn（内部标志）：漂移首败重跑场景置 true——该任务
+   * 的 appserver 首跑已输出过 ctxModel 忽略留痕，spawn 重跑侧跳过防同 taskId 双份
+   * 相同 warn；warnEffortUnsupportedBySpawn 不受此标志影响（降级重跑时最终结果出自
+   * spawn，其出声合理，保持现状）。探针失败/降级直走两个落点不置位——任务此前未走
+   * 过 appserver，spawn 侧的 warn 是首次出声。
    */
   async runViaSpawn(task, ctx, degrade) {
     const startedAt = Date.now();
     this.rejectUnsupportedTaskShapes(task);
+    this.warnEffortUnsupportedBySpawn(task, ctx);
     const modelRef = resolveZcodeModelRef(task.model, this.deps.sources);
+    if (degrade?.skipCtxModelWarn !== true) this.warnIgnoredCtxModel(task, ctx, modelRef);
     const prepared = prepareZcodeHome({
       engineDataDir: this.deps.engineDataDir(),
       modelRef,
       sources: this.deps.sources
     });
     ctx.onPoolResolved?.(prepared.poolKey);
-    logger14.debug("[zcode-engine] isolated home prepared", {
+    logger15.debug("[zcode-engine] isolated home prepared", {
       poolKey: prepared.poolKey,
       wroteConfig: prepared.wroteConfig,
       modelRef,
@@ -20816,9 +23250,14 @@ var ZcodeEngine = class {
     outcome.error = isHostTimeoutAbort(ctx) ? synthesizeTimeoutOutcome(task, final.output.stdoutText, ZCODE_ENGINE_ID).error ?? engineTimeoutDetail(final.output.stdoutText) : final.abortMessage ?? `engine_run_failed: zcode \u4EFB\u52A1\u88AB\u4E2D\u6B62\uFF08\u6740\u94FE SIGTERM\u2192${ZCODE_KILL_GRACE_MS}ms\u2192SIGKILL\uFF0C\u5BBF\u4E3B\u5408\u6210\u7EC8\u6001\uFF09\u3002stdout \u5C3E\u90E8: ${final.output.stdoutText.slice(-ZCODE_ERROR_TAIL_CHARS)}`;
     emit({ type: "error", message: outcome.error });
   }
-  /** run-failed 合成终态：错误信息由 buildRunFailedMessage 产出（已含恢复指引），直接透传。 */
+  /**
+   * run-failed 合成终态：错误信息由 buildRunFailedMessage 产出（已含恢复指引）直接透传；
+   * appserver 路径附带的会话 id 落 outcome.sessionId（错误规格表 -32004 行「含会话 id」
+   * ——appServerHandle 据此写 handle.sessionRef，run-failed 不再恒缺）。
+   */
   applyRunFailedOutcome(outcome, final, emit) {
     outcome.exitCode = final.output.exitCode;
+    if (final.sessionId !== void 0) outcome.sessionId = final.sessionId;
     outcome.error = final.message;
     emit({ type: "error", message: outcome.error });
   }
@@ -20945,11 +23384,11 @@ var ZcodeEngine = class {
     const sessionId = handle.data.sessionRef["sessionId"];
     const dbPathRaw = handle.data.sessionRef["dbPath"];
     if (typeof sessionId === "string" && typeof dbPathRaw === "string") {
-      const dbPath = path4.isAbsolute(dbPathRaw) ? dbPathRaw : path4.join(resolvePoolDir(this.deps.engineDataDir(), ZCODE_ENGINE_ID, handle.data.poolKey), dbPathRaw);
+      const dbPath = path5.isAbsolute(dbPathRaw) ? dbPathRaw : path5.join(resolvePoolDir(this.deps.engineDataDir(), ZCODE_ENGINE_ID, handle.data.poolKey), dbPathRaw);
       try {
         return await readZcodeSessionView(dbPath, sessionId);
       } catch (err) {
-        logger14.warn("[zcode-engine] native session read failed, degrade to journal replay", {
+        logger15.warn("[zcode-engine] native session read failed, degrade to journal replay", {
           dbPath,
           sessionId,
           reason: err instanceof Error ? err.message : String(err)
@@ -20990,12 +23429,72 @@ var ZcodeEngine = class {
     }
   }
   /**
+   * [F15b] spawn 路径的 effort 丢弃信号：spawn CLI 无 thoughtLevel 类 flag（协议
+   * 通道是 appserver 路径专属），effort 只能丢弃——但静默丢弃会让调用方误以为推理
+   * 档位已生效，故出声留痕（引擎现成信号风格：logger.warn，同漂移降级先例）。
+   * 诊断语义：effort 是可忽略档位（降档不改变任务正确性），warn 留痕而非硬拒绝
+   * （与 maxTurns「传了上限却失控」的假象不同质性）。
+   */
+  warnEffortUnsupportedBySpawn(task, ctx) {
+    const effort = task.effort?.trim();
+    if (effort === void 0 || effort === "") return;
+    logger15.warn(
+      `[zcode-engine] effort=${effort} \u88AB\u5FFD\u7565\uFF1Azcode spawn \u4E0D\u652F\u6301 thoughtLevel \u901A\u9053\uFF08CLI \u65E0\u5BF9\u5E94 flag\uFF09\uFF0C\u4EFB\u52A1\u6309\u5F15\u64CE\u7F3A\u7701\u63A8\u7406\u6863\u4F4D\u6267\u884C\uFF1B\u9700\u8981 effort \u8BF7\u8D70 appserver \u6A21\u5F0F`,
+      { taskId: ctx.taskId }
+    );
+  }
+  /**
+   * [RX2-F1] appserver 路径的非常见档位提示：effort → thoughtLevel 恒等透传（F15a），
+   * 全 7 档放行不拦截——但部分档位（off/minimal/medium/xhigh 等）不在部分模型的合法
+   * 值域内（如 GLM-5.3 仅接受 low/high/max），app-server 侧对不支持的档位 warn-skip
+   * （会话照常但档位静默失效），调用方无从察觉。此处仅对 COMMON_THOUGHT_LEVELS 之外
+   * 的档位出声一行提示（措辞是「若不支持将被忽略/回落」的或然警告，非无效断言）；
+   * 是否真不支持由目标模型决定，core 不做权威校验（引擎层不掌握各模型值域）。
+   */
+  warnThoughtLevelUncommon(task, ctx) {
+    const thoughtLevel = task.effort?.trim();
+    if (thoughtLevel === void 0 || thoughtLevel === "") return;
+    if (COMMON_THOUGHT_LEVELS.includes(thoughtLevel)) return;
+    logger15.warn(
+      `[zcode-engine] effort=${thoughtLevel} \u5DF2\u900F\u4F20\u4E3A thoughtLevel\uFF08\u975E\u5E38\u89C1\u6863\u4F4D\uFF09\uFF1A\u82E5\u76EE\u6807\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u6863\u4F4D\u5C06\u88AB\u5FFD\u7565/\u56DE\u843D\u5230\u6A21\u578B\u7F3A\u7701\u63A8\u7406\u6863\u4F4D\uFF08\u5E38\u89C1\u6863\u4F4D\uFF1A${COMMON_THOUGHT_LEVELS.join("/")}\uFF09\uFF1B\u6863\u4F4D\u662F\u5426\u751F\u6548\u4EE5\u6A21\u578B\u5B9E\u9645\u884C\u4E3A\u4E3A\u51C6`,
+      { taskId: ctx.taskId }
+    );
+  }
+  /**
+   * [F16b] ctxModel 忽略留痕：ctxModel 是 pi 链路的第三层兜底（port.ts 契约——
+   * 依赖 pi resolveModel 链的引擎才消费它），zcode 自带 provider 体系与缺省模型
+   * （resolveZcodeModelRef：requested > ZCODE_FALLBACK_DEFAULT_MODEL），不消费
+   * ctxModel。「调用方给了 ctxModel 但 task.model 未显式指定」时出声一行，说明
+   * 实际落引擎缺省模型（含实际 model id）——防静默降档无据可查。只在「ctx 有模型
+   * 但被忽略」场景输出：显式 task.model 走正常解析链、ctx 本就无模型属预期缺省，
+   * 均不出声（避免噪音）。探针期（appServerProbeGate）不调用——同一任务的正式
+   * run 链路必经此处，双份输出是噪音。[RX2-F3] 漂移首败的 spawn 重跑同理由调用方
+   * 带 degrade.skipCtxModelWarn 跳过——appserver 首跑已出声过，同任务双份相同 warn
+   * 是噪音（与探针场景同一自我要求）。
+   */
+  warnIgnoredCtxModel(task, ctx, modelRef) {
+    if (ctx.ctxModel === void 0) return;
+    const requested = task.model?.trim();
+    if (requested !== void 0 && requested !== "") return;
+    logger15.warn(
+      `[zcode-engine] ctx.ctxModel\uFF08${ctx.ctxModel.id}\uFF09\u88AB\u5FFD\u7565\u2014\u2014ctxModel \u662F pi \u94FE\u8DEF\u515C\u5E95\uFF0Czcode \u4E0D\u6D88\u8D39\uFF1Btask.model \u672A\u663E\u5F0F\u6307\u5B9A\uFF0C\u5B9E\u9645\u4F7F\u7528\u5F15\u64CE\u7F3A\u7701\u6A21\u578B ${modelRef}`,
+      { taskId: ctx.taskId }
+    );
+  }
+  /**
    * persona 拼接后的完整 prompt（personaInjection: 'prompt'——zcode 无 flag 通道）：
-   * appendSystemPrompt 段在前（人设/约束语境），task 正文居中，schema 仿真段尾置
-   * （common/schema-emulation 公共层产出，D4 emulated 侧——zcode 无 native schema 通道）。
+   * persona 段经 common/persona-router.applyPersona 按 capabilities 路由产出
+   * （agentRef/skillPath 引用行 + appendSystemPrompt 正文统一拼装，S5 接线——替换
+   * 原手拼 appendSystemPrompt 段，skillPath/agentRef 不再丢弃），task 正文居中，
+   * schema 仿真段尾置（common/schema-emulation 公共层产出，D4 emulated 侧——zcode
+   * 无 native schema 通道）。
    */
   buildPrompt(task, schema) {
-    const segments = [...task.persona?.appendSystemPrompt ?? []];
+    const segments = [];
+    if (task.persona !== void 0) {
+      const routed = applyPersona(task.persona, this.capabilities());
+      if (routed.promptSegment !== "") segments.push(routed.promptSegment);
+    }
     segments.push(task.task);
     if (schema !== void 0) segments.push(buildSchemaEmulationSegment(schema));
     return segments.join("\n\n");
@@ -21035,12 +23534,17 @@ function turnResultToPayload(r) {
     ...mapZcodeOutcomeUsage(r.usage, void 0) !== void 0 ? { outcomeUsage: mapZcodeOutcomeUsage(r.usage, void 0) } : {}
   };
 }
-function buildAppServerRunFailedMessage(err, home) {
+function buildAppServerRunFailedMessage(err, home, sessionId) {
   if (isAppServerRpcError(err) && err.code === ZCODE_APPSERVER_ERR_MODEL_CONFIG_MISSING && /Model config is missing/.test(err.message)) {
     return `engine_credential_missing: app-server \u62A5 "Model config is missing"\uFF08\u5E38\u9A7B HOME ${home.homeDir} \u7684 config.json \u65E0\u53EF\u7528\u6A21\u578B\u914D\u7F6E\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5728 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u5E76\u914D\u7F6E provider \u51ED\u636E\u540E\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u5F15\u64CE\u5C06\u5728\u4E0B\u4EFB\u52A1\u91CD\u5199\u5E38\u9A7B config \u5E76\u91CD\u5EFA\u8FDE\u63A5\uFF09\u3002`;
   }
+  if (isAppServerRpcError(err) && err.code === -32010) {
+    const sid2 = sessionId !== void 0 ? `\uFF08\u4F1A\u8BDD id: ${sessionId}\uFF09` : "";
+    return `engine_run_failed: app-server \u62A5 -32010${sid2}\uFF08send \u65F6\u8BE5\u4F1A\u8BDD\u5DF2\u6709\u8F6E\u5728\u8DD1\uFF0Cbusy \u4E0D\u6392\u961F\u4E0D\u6253\u65AD\uFF09\u3002\u5355\u4F1A\u8BDD\u4E00\u4EFB\u52A1\u662F\u7ED3\u6784\u4FDD\u8BC1\uFF0C\u51FA\u73B0\u5373 bug\uFF1B\u8BF7\u9644\u5E26 sessionId \u4E0E state \u6D41\u6C34\uFF08\u8FDE\u63A5/\u4F1A\u8BDD\u4E8B\u4EF6\u65E5\u5FD7\uFF09\u4E0A\u62A5\u95EE\u9898\u3002`;
+  }
   const code = isAppServerRpcError(err) && err.code !== void 0 ? `\uFF08code ${err.code}\uFF09` : "";
-  return `engine_run_failed: app-server \u4F1A\u8BDD\u6267\u884C\u5931\u8D25${code}: ${errMessage5(err).slice(-ZCODE_ERROR_TAIL_CHARS)}\u3002\u6062\u590D\u6307\u5F15\uFF1A\u76F4\u63A5\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u8FDE\u63A5\u5D29\u6E83\u540E\u81EA\u52A8\u91CD\u5EFA\u8FDB\u7A0B\uFF09\uFF1B\u82E5\u6301\u7EED\u5931\u8D25\uFF0C\u8DD1 probe \u6838\u5BF9\u534F\u8BAE\u6F02\u79FB\uFF08R5 \u964D\u7EA7\u94FE\uFF09\u6216\u6539\u7528 engine: pi\u3002`;
+  const sid = sessionId !== void 0 ? `\uFF08\u4F1A\u8BDD ${sessionId}\uFF09` : "";
+  return `engine_run_failed: app-server \u4F1A\u8BDD\u6267\u884C\u5931\u8D25${code}${sid}: ${errMessage5(err).slice(-ZCODE_ERROR_TAIL_CHARS)}\u3002\u6062\u590D\u6307\u5F15\uFF1A\u76F4\u63A5\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u8FDE\u63A5\u5D29\u6E83\u540E\u81EA\u52A8\u91CD\u5EFA\u8FDB\u7A0B\uFF09\uFF1B\u82E5\u6301\u7EED\u5931\u8D25\uFF0C\u8DD1 probe \u6838\u5BF9\u534F\u8BAE\u6F02\u79FB\uFF08R5 \u964D\u7EA7\u94FE\uFF09\u6216\u6539\u7528 engine: pi\u3002`;
 }
 function accumulateUsage(acc, r) {
   if (r.kind !== "parsed") return;
@@ -21084,7 +23588,7 @@ async function defaultProbeVersion(cliPath) {
       );
     });
   } catch (err) {
-    logger14.debug(
+    logger15.debug(
       `[zcode-engine] probe version check failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
     );
     return void 0;
@@ -21110,47 +23614,838 @@ var import_node_child_process5 = require("child_process");
 var fs12 = __toESM(require("fs"), 1);
 
 // src/execution/best-effort.ts
-var logger15 = getLogger("subagents");
+var logger16 = getLogger("subagents");
+function bestEffort(err, context, level = "debug") {
+  const detail = err instanceof Error ? err.message : err;
+  const msg = `[subagents] best-effort ${context} failed`;
+  if (level === "error") {
+    logger16.error(msg, { detail });
+  } else {
+    logger16.debug(msg, { detail });
+  }
+}
 
 // src/execution/lifecycle-manager.ts
-var MS_PER_SECOND = 1e3;
+var MS_PER_SECOND2 = 1e3;
 var SECONDS_PER_MINUTE = 60;
 var IDLE_TIMEOUT_MINUTES = 5;
-var DEFAULT_IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND;
+var DEFAULT_IDLE_TIMEOUT_MS = IDLE_TIMEOUT_MINUTES * SECONDS_PER_MINUTE * MS_PER_SECOND2;
+function getEnvIdleTimeoutMs() {
+  const raw = process.env.XYZ_SUBAGENT_IDLE_TIMEOUT_MS;
+  if (!raw) return void 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  return parsed;
+}
+var idleTimers = /* @__PURE__ */ new Map();
+function armIdleTimer(recordId, onTimeout, timeoutMs) {
+  if (timeoutMs !== void 0 && timeoutMs <= 0) {
+    disarmIdleTimer(recordId);
+    return;
+  }
+  const resolved = timeoutMs ?? getEnvIdleTimeoutMs() ?? DEFAULT_IDLE_TIMEOUT_MS;
+  assertSafeTimerDelay(resolved, "idleTimeoutMs");
+  disarmIdleTimer(recordId);
+  const timer = setTimeout(() => {
+    idleTimers.delete(recordId);
+    onTimeout();
+  }, resolved);
+  timer.unref?.();
+  idleTimers.set(recordId, { timer, timeoutMs: resolved });
+}
+function disarmIdleTimer(recordId) {
+  const entry = idleTimers.get(recordId);
+  if (!entry) {
+    return;
+  }
+  clearTimeout(entry.timer);
+  idleTimers.delete(recordId);
+}
+function hasIdleTimer(recordId) {
+  return idleTimers.has(recordId);
+}
+var activateLockTails = /* @__PURE__ */ new Map();
 var ACTIVATE_LOCK_TIMEOUT_SECONDS = 30;
-var ACTIVATE_LOCK_TIMEOUT_MS = ACTIVATE_LOCK_TIMEOUT_SECONDS * MS_PER_SECOND;
+var ACTIVATE_LOCK_TIMEOUT_MS = ACTIVATE_LOCK_TIMEOUT_SECONDS * MS_PER_SECOND2;
+function acquireActivateLock(recordId) {
+  const prev = activateLockTails.get(recordId) ?? Promise.resolve();
+  let releaseFn;
+  let settleCurrent;
+  const current = new Promise((resolve6) => {
+    settleCurrent = resolve6;
+    releaseFn = () => {
+      resolve6();
+      queueMicrotask(() => {
+        if (activateLockTails.get(recordId) === tail) {
+          activateLockTails.delete(recordId);
+        }
+      });
+    };
+  });
+  const tail = prev.then(() => current);
+  activateLockTails.set(recordId, tail);
+  let timeoutId;
+  let acquired = false;
+  const acquirePromise = prev.then(() => {
+    acquired = true;
+    clearTimeout(timeoutId);
+    return releaseFn;
+  });
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      if (acquired) return;
+      settleCurrent();
+      tail.then(() => {
+        if (activateLockTails.get(recordId) === tail) {
+          activateLockTails.delete(recordId);
+        }
+      });
+      reject(
+        new Error(
+          `subagent ${recordId} activation timed out; retry action: message`
+        )
+      );
+    }, ACTIVATE_LOCK_TIMEOUT_MS);
+  });
+  return Promise.race([acquirePromise, timeoutPromise]);
+}
 
 // src/execution/session-pending.ts
 var fs7 = __toESM(require("fs"), 1);
-var logger16 = getLogger("subagents");
+var logger17 = getLogger("subagents");
+var RECENT_UNREGISTER_WINDOW_MS = 6e4;
+var cursors = /* @__PURE__ */ new Map();
+function isPendingLineLike(v) {
+  return typeof v === "object" && v !== null;
+}
+function readActivePendingFromSessionFile(sessionFile) {
+  if (!sessionFile) {
+    return { count: 0, recentUnregister: false, error: "no sessionFile (handshake not settled)" };
+  }
+  let size;
+  try {
+    size = fs7.statSync(sessionFile).size;
+  } catch (err) {
+    return {
+      count: 0,
+      recentUnregister: false,
+      error: `session file unreadable: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  let cursor = cursors.get(sessionFile);
+  if (cursor === void 0 || size < cursor.offset) {
+    cursor = { offset: 0, entries: [], latestUnregisterMs: 0 };
+  }
+  let chunk;
+  try {
+    if (cursor.offset === 0) {
+      chunk = fs7.readFileSync(sessionFile, "utf-8");
+    } else {
+      const fd = fs7.openSync(sessionFile, "r");
+      try {
+        const len = size - cursor.offset;
+        const buf = Buffer.alloc(len);
+        let total = 0;
+        while (total < len) {
+          const n = fs7.readSync(fd, buf, total, len - total, cursor.offset + total);
+          if (n <= 0) break;
+          total += n;
+        }
+        chunk = buf.toString("utf-8", 0, total);
+      } finally {
+        fs7.closeSync(fd);
+      }
+    }
+  } catch (err) {
+    return {
+      count: 0,
+      recentUnregister: false,
+      error: `session file unreadable: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  const lastNl = chunk.lastIndexOf("\n");
+  const complete = lastNl === -1 ? "" : chunk.slice(0, lastNl);
+  cursor.offset += Buffer.byteLength(complete, "utf-8");
+  cursors.set(sessionFile, cursor);
+  for (const line of complete.split("\n")) {
+    if (!line.includes('"pending:register"') && !line.includes('"pending:unregister"')) continue;
+    try {
+      const entry = JSON.parse(line);
+      if (!isPendingLineLike(entry)) continue;
+      cursor.entries.push(entry);
+      if (entry.customType === "pending:unregister" && entry.timestamp) {
+        const ts = Date.parse(entry.timestamp);
+        if (Number.isFinite(ts) && ts > cursor.latestUnregisterMs) cursor.latestUnregisterMs = ts;
+      }
+    } catch {
+      logger17.debug("skipped malformed pending line", { sessionFile });
+    }
+  }
+  const countActive = getNotifyDomainPorts().countActiveFromEntries;
+  const active = countActive ? countActive(cursor.entries) : 0;
+  return {
+    count: active,
+    recentUnregister: cursor.latestUnregisterMs > 0 && Date.now() - cursor.latestUnregisterMs < RECENT_UNREGISTER_WINDOW_MS
+  };
+}
+
+// src/execution/argv-mirror.ts
+var VALUED_FLAGS = /* @__PURE__ */ new Set([
+  "--extension",
+  "-e",
+  "--skill",
+  "--model",
+  "--system-prompt",
+  "--append-system-prompt",
+  "--tools",
+  "-t",
+  "--exclude-tools",
+  "-xt",
+  "--fork",
+  "--session-dir",
+  "--mode",
+  "--thinking",
+  "--models"
+]);
+var ARGV_FLAG_START = 2;
+var memoArgv;
+var memoResult;
+function mirrorMainProcessFlags(argv) {
+  if (memoResult !== void 0 && memoArgv === argv) return memoResult;
+  let hasNoExtensions = false;
+  let hasApprove = false;
+  let hasNoContextFiles = false;
+  const extensionPaths = [];
+  const flagArgs = argv.length > ARGV_FLAG_START ? argv.slice(ARGV_FLAG_START) : [];
+  for (let i = 0; i < flagArgs.length; i++) {
+    const tok = flagArgs[i];
+    if (tok === "--no-extensions" || tok === "-ne") {
+      hasNoExtensions = true;
+      continue;
+    }
+    if (tok === "--approve" || tok === "-a") {
+      hasApprove = true;
+      continue;
+    }
+    if (tok === "--no-context-files" || tok === "-nc") {
+      hasNoContextFiles = true;
+      continue;
+    }
+    const eqMatch = /^(--extension|-e)=(.*)$/.exec(tok);
+    if (eqMatch) {
+      const val = eqMatch[2];
+      if (val) extensionPaths.push(val);
+      continue;
+    }
+    if (tok === "--extension" || tok === "-e") {
+      const next = flagArgs[i + 1];
+      if (next !== void 0 && !next.startsWith("--") && next.length > 0) {
+        extensionPaths.push(next);
+        i++;
+      }
+      continue;
+    }
+    if (VALUED_FLAGS.has(tok)) {
+      i++;
+      continue;
+    }
+  }
+  const result = { noExtensions: hasNoExtensions, approve: hasApprove, extensionPaths, noContextFiles: hasNoContextFiles };
+  memoArgv = argv;
+  memoResult = result;
+  return result;
+}
 
 // src/execution/alive-store.ts
 var fs8 = __toESM(require("fs"), 1);
+var ALIVE_SOFT_TIMEOUT_MS = 36e5;
+function writeAliveMarker(sessionFile, marker) {
+  const alivePath = `${sessionFile}.alive`;
+  fs8.writeFileSync(alivePath, `${JSON.stringify(marker)}
+`, "utf-8");
+}
+function readAliveMarker(sessionFile) {
+  let raw;
+  try {
+    raw = fs8.readFileSync(`${sessionFile}.alive`, "utf-8");
+  } catch {
+    return void 0;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.pid === "number" && typeof parsed.id === "string" && typeof parsed.startedAt === "number") {
+      return parsed;
+    }
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+function removeAliveMarker(sessionFile) {
+  try {
+    fs8.unlinkSync(`${sessionFile}.alive`);
+  } catch {
+  }
+}
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (isErrnoException(err) && err.code === "EPERM") {
+      return true;
+    }
+    return false;
+  }
+}
+function findForeignLiveInstance(sessionFile, now = Date.now()) {
+  const marker = readAliveMarker(sessionFile);
+  if (!marker) return void 0;
+  if (!isProcessAlive(marker.pid)) return void 0;
+  if (now - marker.startedAt >= ALIVE_SOFT_TIMEOUT_MS) return void 0;
+  return marker;
+}
+function isErrnoException(err) {
+  return err instanceof Error && "code" in err;
+}
 
 // src/execution/stdin-writer.ts
-var crypto2 = __toESM(require("crypto"), 1);
-var logger17 = getLogger("subagents");
+var crypto3 = __toESM(require("crypto"), 1);
+var logger18 = getLogger("subagents");
+var epipeConsecutiveFailures = /* @__PURE__ */ new Map();
+var EPIPE_FAILURE_THRESHOLD = 2;
+function recordEpipeFailure(recordId) {
+  const count = (epipeConsecutiveFailures.get(recordId) ?? 0) + 1;
+  epipeConsecutiveFailures.set(recordId, count);
+  return count;
+}
+function clearEpipeFailure(recordId) {
+  epipeConsecutiveFailures.delete(recordId);
+}
+function resetAllEpipeFailures() {
+  epipeConsecutiveFailures.clear();
+}
+function respond(child, id, out, signal) {
+  if (signal?.aborted) return;
+  let line;
+  try {
+    if ("value" in out) line = JSON.stringify({ type: "extension_ui_response", id, value: out.value });
+    else if ("confirmed" in out) line = JSON.stringify({ type: "extension_ui_response", id, confirmed: out.confirmed });
+    else if ("cancelled" in out) line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
+  } catch (err) {
+    logger18.warn(`[subagents] JSON.stringify failed for ui response ${id}, degrading to cancelled`, {
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
+  }
+  if (line === void 0) return;
+  writeStdinLine(child, line, `ui response for request ${id}`);
+}
+function sendPromptCommand(child, task, options) {
+  if (!child.stdin || child.stdin.destroyed) return;
+  const payload = {
+    id: crypto3.randomUUID(),
+    type: "prompt",
+    message: task
+  };
+  if (options?.streamingBehavior) {
+    payload.streamingBehavior = options.streamingBehavior;
+  }
+  writeStdinLine(child, JSON.stringify(payload), "prompt command");
+}
+function sendGetStateCommand(child) {
+  const id = crypto3.randomUUID();
+  const command = JSON.stringify({
+    id,
+    type: "get_state"
+  });
+  writeStdinLine(child, command, "get_state command");
+  return id;
+}
+function writeStdinLine(child, line, warnTag) {
+  if (!child.stdin || child.stdin.destroyed) return;
+  try {
+    const ok = child.stdin.write(line + "\n");
+    if (!ok) logger18.warn(`[subagents] stdin backpressure on ${warnTag}`);
+  } catch (err) {
+    if (err !== null && typeof err === "object" && "code" in err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) {
+      throw new Error(
+        `[subagents] EPIPE on stdin write (${warnTag}): pipe broken, child process likely exited. Recovery: treat as dead process and resume via cold path.`
+      );
+    }
+    logger18.warn(`[subagents] unexpected stdin write error on ${warnTag}`, {
+      detail: err instanceof Error ? err.message : String(err)
+    });
+  }
+}
+
+// src/execution/get-state-handshake.ts
+var GET_STATE_MAX_RETRIES = 3;
+var GET_STATE_RETRY_INTERVAL_MS = 500;
+var GET_STATE_TIMEOUT_MS = 2e3;
+function performGetStateHandshake(child, addResponseListener) {
+  return new Promise((resolve6) => {
+    const collected = {};
+    let attempts = 0;
+    let resolved = false;
+    function tryOnce() {
+      if (resolved) return;
+      attempts++;
+      const reqId = sendGetStateCommand(child);
+      let pendingRetry;
+      const timer = setTimeout(() => {
+        pendingRetry = void 0;
+        if (attempts < GET_STATE_MAX_RETRIES && !resolved) {
+          pendingRetry = setTimeout(() => tryOnce(), GET_STATE_RETRY_INTERVAL_MS);
+          pendingRetry.unref();
+        } else if (!resolved) {
+          resolved = true;
+          resolve6(collected);
+        }
+      }, GET_STATE_TIMEOUT_MS);
+      timer.unref();
+      addResponseListener(reqId, (data) => {
+        if (resolved) return;
+        clearTimeout(timer);
+        if (pendingRetry) clearTimeout(pendingRetry);
+        if (data && typeof data === "object") {
+          const d = data;
+          if (typeof d.sessionFile === "string" && d.sessionFile.length > 0) {
+            collected.sessionFile = d.sessionFile;
+          }
+          if (typeof d.sessionId === "string" && d.sessionId.length > 0) {
+            collected.sessionId = d.sessionId;
+          }
+        }
+        if (collected.sessionFile) {
+          resolved = true;
+          resolve6(collected);
+        }
+      });
+    }
+    tryOnce();
+  });
+}
+
+// src/execution/output-collector.ts
+var STRUCTURED_OUTPUT_TOOL = "structured-output";
+var FAILED_SO_SUMMARY_MAX_CHARS = 300;
+function extractParsedOutput(toolCalls) {
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    const tc = toolCalls[i];
+    if (tc.toolName === STRUCTURED_OUTPUT_TOOL && tc.isError !== true && tc.result?.details !== void 0) {
+      return tc.result.details;
+    }
+  }
+  return void 0;
+}
+function neutralizeStalePatterns(text) {
+  let out = text;
+  for (const pattern of STALE_CONTEXT_PATTERNS) {
+    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(escaped, "gi"), "[redacted]");
+  }
+  return out;
+}
+function describeMissingParsedOutput(toolCalls) {
+  if (extractParsedOutput(toolCalls) !== void 0) return void 0;
+  const soCalls = toolCalls.filter((tc) => tc.toolName === STRUCTURED_OUTPUT_TOOL);
+  if (soCalls.length === 0) {
+    return `${DETERMINISTIC_SCHEMA_FAILURE_PREFIX} Agent finished without producing a structured output: the structured-output tool was never called. Recovery: verify the structured-output extension is installed and enabled for this agent, and that the agent's final answer conforms to the requested schema.`;
+  }
+  const failed = soCalls.filter((tc) => tc.isError === true);
+  if (failed.length > 0) {
+    const last = failed[failed.length - 1];
+    const lastErrorSummary = neutralizeStalePatterns(summarizeToolContent(last.result?.content));
+    const failureKind = lastErrorSummary.toLowerCase().includes("validation failed") ? "schema validation" : "execution failure";
+    return `${DETERMINISTIC_SCHEMA_FAILURE_PREFIX} Agent finished without a valid structured output: ${failed.length} structured-output call(s) failed (${failureKind}). Last error: ${lastErrorSummary}`;
+  }
+  return "Agent finished without a valid structured output: structured-output was called but none of the successful calls carried result details.";
+}
+function summarizeToolContent(content) {
+  let summary = "(no detail)";
+  if (Array.isArray(content)) {
+    const texts = content.map((item) => item && typeof item === "object" && "text" in item ? String(item.text) : "").filter((t) => t !== "");
+    if (texts.length > 0) summary = texts.join(" ");
+  } else if (typeof content === "string" && content !== "") {
+    summary = content;
+  }
+  return summary.length > FAILED_SO_SUMMARY_MAX_CHARS ? `${summary.slice(0, FAILED_SO_SUMMARY_MAX_CHARS)}...` : summary;
+}
+function collectResult(record, args) {
+  const toolCalls = getAllToolCalls(record);
+  const parsedOutput = extractParsedOutput(toolCalls);
+  const result = {
+    text: getFullText(record),
+    turns: record.turnCount,
+    durationMs: Date.now() - args.startTime,
+    success: args.success,
+    error: args.error,
+    sessionId: args.sessionId,
+    toolCalls,
+    usage: getTotalUsage(record),
+    sessionFile: args.sessionFile,
+    parsedOutput
+  };
+  if (args.schemaExpected === true && result.success && parsedOutput === void 0) {
+    result.success = false;
+    result.error = describeMissingParsedOutput(toolCalls) ?? result.error;
+  }
+  return result;
+}
 
 // src/execution/path-encoding.ts
-var path5 = __toESM(require("path"), 1);
+var path6 = __toESM(require("path"), 1);
+function encodeCwd(cwd) {
+  return "--" + cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
+}
+function getSubagentSessionDir(agentDir, mainCwd) {
+  return path6.join(agentDir, "subagents", encodeCwd(mainCwd), "sessions");
+}
+function getSubagentRecordsDir(agentDir, mainCwd) {
+  return path6.join(agentDir, "subagents", encodeCwd(mainCwd), "records");
+}
 
 // src/execution/pi-invocation.ts
 var fs9 = __toESM(require("fs"), 1);
-var path6 = __toESM(require("path"), 1);
+var path7 = __toESM(require("path"), 1);
+var BUN_VIRTUAL_PREFIX = "/$bunfs/root/";
+function isGenericRuntime(execPath) {
+  const execName = path7.basename(execPath).toLowerCase();
+  return /^(node|bun)(\.exe)?$/.test(execName);
+}
+var scriptExistsCache;
+function currentScriptExists() {
+  const currentScript = process.argv[1];
+  if (scriptExistsCache === void 0 || scriptExistsCache.script !== currentScript) {
+    scriptExistsCache = {
+      script: currentScript,
+      exists: currentScript !== void 0 && !currentScript.startsWith(BUN_VIRTUAL_PREFIX) && fs9.existsSync(currentScript)
+    };
+  }
+  return scriptExistsCache.exists;
+}
+function getPiInvocation(userArgs, opts) {
+  const currentScript = process.argv[1];
+  const isBunVirtualScript = currentScript?.startsWith(BUN_VIRTUAL_PREFIX);
+  if (opts?.relay !== false && isRelayActive(process.env)) {
+    const relayNode = process.env[RELAY_ENV_NODE];
+    const relayScript = process.env[RELAY_ENV_SCRIPT];
+    if (relayNode !== void 0 && relayScript !== void 0) {
+      return { command: relayNode, args: [relayScript, ...userArgs] };
+    }
+  }
+  if (currentScript && !isBunVirtualScript && currentScriptExists()) {
+    return { command: process.execPath, args: [currentScript, ...userArgs] };
+  }
+  if (!isGenericRuntime(process.execPath)) {
+    return { command: process.execPath, args: userArgs };
+  }
+  return { command: "pi", args: userArgs };
+}
+
+// src/shared/model-ref.ts
+var THINKING_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+var MODEL_LIST_LIMIT = 20;
+function assertThinkingLevel(level) {
+  if (level === void 0) return void 0;
+  const hit = THINKING_ORDER.find((l) => l === level);
+  if (hit === void 0) {
+    throw new Error(
+      `Invalid thinkingLevel "${level}". Allowed values: ${THINKING_ORDER.join(", ")}. Retry with one of the allowed values, or omit the param.`
+    );
+  }
+  return hit;
+}
+function stripThinkingSuffix(modelStr) {
+  const alt = THINKING_ORDER.slice().sort((a, b) => b.length - a.length).join("|");
+  return modelStr.replace(new RegExp(`:(${alt})$`), "");
+}
+function collectCaseVariants(provider, id, source) {
+  const lowerId = id.toLowerCase();
+  return source.getAvailable().filter((m) => m.provider === provider && m.id !== id && m.id.toLowerCase() === lowerId).map((m) => `${m.provider}/${m.id}`);
+}
+function ambiguousVariantError(ref, variants) {
+  return new Error(
+    `Model "${ref}" matches a registry entry exactly, but registry contains ambiguous case variants for ${ref}: [${variants.join(", ")}].
+Recovery: remove the duplicate case variant from models.json (or the models-store cache) so exactly one case form remains, then retry with the exact registry string.`
+  );
+}
+function modelRefFromVerified(info, source) {
+  const twins = collectCaseVariants(info.provider, info.id, source);
+  if (twins.length > 0) {
+    throw ambiguousVariantError(`${info.provider}/${info.id}`, [`${info.provider}/${info.id}`, ...twins]);
+  }
+  return { provider: info.provider, id: info.id };
+}
+function findCaseVariantSuggestions(provider, id, source) {
+  const lowerId = id.toLowerCase();
+  return source.getAvailable().filter((m) => m.provider === provider && m.id.toLowerCase() === lowerId).map((m) => `${m.provider}/${m.id}`);
+}
+function findSimilarSuggestions(provider, id, source, exclude) {
+  const lowerId = id.toLowerCase();
+  const lowerProvider = provider.toLowerCase();
+  return source.getAvailable().map((m) => `${m.provider}/${m.id}`).filter((full) => {
+    if (exclude.has(full)) return false;
+    const slashIdx = full.indexOf("/");
+    const mProvider = full.slice(0, slashIdx);
+    const mId = full.slice(slashIdx + 1);
+    const lowerMId = mId.toLowerCase();
+    const lowerMProvider = mProvider.toLowerCase();
+    return lowerMId.includes(lowerId) || lowerId.includes(lowerMId) || lowerMProvider.includes(lowerProvider) || lowerProvider.includes(lowerMProvider);
+  }).slice(0, MODEL_LIST_LIMIT);
+}
+function notFoundError(input, prefix, provider, id, source) {
+  const lines = [
+    `Model "${input}"${prefix} is not a registry entry. Registry match is case-sensitive \u2014 the string must equal a registry entry exactly, including letter case.`
+  ];
+  const caseVariants = id.length > 0 ? findCaseVariantSuggestions(provider, id, source) : [];
+  if (caseVariants.length > 0) {
+    lines.push(`Did you mean one of these?`);
+    for (const full of caseVariants) {
+      lines.push(`  ${full}   \u2190 case variant of "${id}"`);
+    }
+    const similar = findSimilarSuggestions(provider, id, source, new Set(caseVariants));
+    if (similar.length > 0) {
+      lines.push(`Other models you may have meant (similar id/provider):`);
+      for (const full of similar) lines.push(`  ${full}`);
+    }
+  } else {
+    const available = source.getAvailable().map((m) => `${m.provider}/${m.id}`);
+    if (available.length === 0) {
+      lines.push(`Registry has no available models.`);
+    } else {
+      const similar = findSimilarSuggestions(provider, id, source, /* @__PURE__ */ new Set());
+      if (similar.length > 0) {
+        lines.push(`Other models you may have meant (similar id/provider):`);
+        for (const full of similar) lines.push(`  ${full}`);
+      } else {
+        lines.push(`No similar models found.`);
+        lines.push(`Available models:`);
+        for (const full of available.slice(0, MODEL_LIST_LIMIT)) lines.push(`  ${full}`);
+      }
+    }
+  }
+  lines.push(`Or omit the \`model\` param to inherit the main agent model.`);
+  return new Error(lines.join("\n"));
+}
+function assertCanonicalModelRef(input, source, opts = {}) {
+  const prefix = opts.source ? ` (${opts.source})` : "";
+  const clean = stripThinkingSuffix(input);
+  const slashIdx = clean.indexOf("/");
+  const provider = slashIdx > 0 ? clean.slice(0, slashIdx) : "";
+  const id = slashIdx > 0 ? clean.slice(slashIdx + 1) : "";
+  if (provider.length > 0 && id.length > 0) {
+    const exact = source.getAvailable().find((m) => m.provider === provider && m.id === id);
+    if (exact) {
+      const twins = collectCaseVariants(exact.provider, exact.id, source);
+      if (twins.length > 0) {
+        throw ambiguousVariantError(`${exact.provider}/${exact.id}`, [
+          `${exact.provider}/${exact.id}`,
+          ...twins
+        ]);
+      }
+      return { provider: exact.provider, id: exact.id };
+    }
+  }
+  throw notFoundError(input, prefix, provider, id, source);
+}
 
 // src/shared/schema-env.ts
+var SCHEMA_ENV_VAR = "PI_WORKFLOW_SCHEMA";
 var BYTES_PER_KIB = 1024;
 var SCHEMA_ENV_MAX_KIB = 256;
 var SCHEMA_ENV_MAX_BYTES = SCHEMA_ENV_MAX_KIB * BYTES_PER_KIB;
+function schemaEnvByteLength(schemaEnv) {
+  return Buffer.byteLength(schemaEnv, "utf8");
+}
+
+// src/execution/types.ts
+var DEFAULT_AGENT_NAME = "general-purpose";
+var RECONNECTABLE_FINAL_REASONS = ["disconnected", "parent-shutdown"];
+function isReconnectableFinalReason(reason) {
+  return RECONNECTABLE_FINAL_REASONS.includes(reason ?? "");
+}
+var ResurrectDeniedError = class extends Error {
+};
+var CLOSED_REASONS = [
+  "parent-shutdown",
+  "parent-fork",
+  "parent-new",
+  "user-close",
+  "cancelled",
+  "gc"
+];
+var ForkDepthExceededError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ForkDepthExceededError";
+  }
+};
+var DirtyWorktreeError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "DirtyWorktreeError";
+  }
+};
+
+// src/execution/session-context-resolver.ts
+var MAX_FORK_DEPTH = 10;
 
 // src/execution/spawn-event-adapter.ts
 var fs10 = __toESM(require("fs"), 1);
-var path7 = __toESM(require("path"), 1);
+var path8 = __toESM(require("path"), 1);
+function isSessionHeader(obj) {
+  if (typeof obj !== "object" || obj === null) return false;
+  const r = obj;
+  return r.type === "session" && typeof r.id === "string" && typeof r.timestamp === "string" && typeof r.cwd === "string";
+}
+function isRpcResponse(obj) {
+  if (typeof obj !== "object" || obj === null) return false;
+  const r = obj;
+  return r.type === "response" && typeof r.command === "string" && typeof r.success === "boolean";
+}
+function isExtensionUiRequest(obj) {
+  if (typeof obj !== "object" || obj === null) return false;
+  const r = obj;
+  return r.type === "extension_ui_request" && typeof r.id === "string" && typeof r.method === "string";
+}
+function buildExtensionUiRequest(env) {
+  const r = env;
+  switch (env.method) {
+    case "select":
+      return {
+        method: "select",
+        title: typeof r.title === "string" ? r.title : "",
+        options: Array.isArray(r.options) ? r.options.filter((x) => typeof x === "string") : [],
+        ...typeof r.timeout === "number" ? { timeout: r.timeout } : {}
+      };
+    case "confirm":
+      return {
+        method: "confirm",
+        title: typeof r.title === "string" ? r.title : "",
+        message: typeof r.message === "string" ? r.message : "",
+        ...typeof r.timeout === "number" ? { timeout: r.timeout } : {}
+      };
+    case "input":
+      return {
+        method: "input",
+        title: typeof r.title === "string" ? r.title : "",
+        ...typeof r.placeholder === "string" ? { placeholder: r.placeholder } : {},
+        ...typeof r.timeout === "number" ? { timeout: r.timeout } : {}
+      };
+    case "editor":
+      return {
+        method: "editor",
+        title: typeof r.title === "string" ? r.title : "",
+        ...typeof r.prefill === "string" ? { prefill: r.prefill } : {}
+      };
+    case "notify":
+      return {
+        method: "notify",
+        message: typeof r.message === "string" ? r.message : "",
+        ...r.notifyType === "info" || r.notifyType === "warning" || r.notifyType === "error" ? { notifyType: r.notifyType } : {}
+      };
+    case "setStatus":
+      return {
+        method: "setStatus",
+        statusKey: typeof r.statusKey === "string" ? r.statusKey : "",
+        statusText: typeof r.statusText === "string" ? r.statusText : void 0
+      };
+    case "setWidget": {
+      const placement = r.widgetPlacement;
+      const widgetLines = Array.isArray(r.widgetLines) ? r.widgetLines.filter((x) => typeof x === "string") : void 0;
+      return {
+        method: "setWidget",
+        widgetKey: typeof r.widgetKey === "string" ? r.widgetKey : "",
+        widgetLines,
+        ...placement === "aboveEditor" || placement === "belowEditor" ? { widgetPlacement: placement } : {}
+      };
+    }
+    case "setTitle":
+      return {
+        method: "setTitle",
+        title: typeof r.title === "string" ? r.title : ""
+      };
+    case "set_editor_text":
+      return {
+        method: "set_editor_text",
+        text: typeof r.text === "string" ? r.text : ""
+      };
+    default:
+      return { method: env.method, raw: r };
+  }
+}
+function parseSpawnLine(line) {
+  const trimmed = line.trim();
+  if (trimmed === "") return null;
+  let obj;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch (err) {
+    return {
+      kind: "invalid",
+      raw: trimmed,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+  if (isSessionHeader(obj)) {
+    return { kind: "header", header: obj };
+  }
+  if (isExtensionUiRequest(obj)) {
+    return { kind: "extension_ui_request", id: obj.id, request: buildExtensionUiRequest(obj) };
+  }
+  if (isRpcResponse(obj)) {
+    return {
+      kind: "response",
+      ...typeof obj.id === "string" ? { id: obj.id } : {},
+      command: obj.command,
+      success: obj.success,
+      ...obj.data !== void 0 ? { data: obj.data } : {},
+      ...typeof obj.error === "string" ? { error: obj.error } : {}
+    };
+  }
+  if (typeof obj === "object" && obj !== null && typeof obj.type === "string") {
+    return { kind: "event", event: obj };
+  }
+  return {
+    kind: "invalid",
+    raw: trimmed,
+    error: "JSON missing string 'type' field"
+  };
+}
+function deriveSessionFilePath(header, sessionDir) {
+  const fileTimestamp = header.timestamp.replace(/[:.]/g, "-");
+  return `${sessionDir}/${fileTimestamp}_${header.id}.jsonl`;
+}
+function findSessionFileByHeaderId(sessionDir, sessionId) {
+  try {
+    const files = fs10.readdirSync(sessionDir);
+    const match = files.find((f) => f.endsWith(`_${sessionId}.jsonl`));
+    return match ? path8.join(sessionDir, match) : void 0;
+  } catch {
+    return void 0;
+  }
+}
 
 // src/execution/temp-prompt.ts
 var fs11 = __toESM(require("fs"), 1);
 var os2 = __toESM(require("os"), 1);
-var path8 = __toESM(require("path"), 1);
+var path9 = __toESM(require("path"), 1);
+async function writePromptToTempFile(agentName, prompt) {
+  const dir = await fs11.promises.mkdtemp(path9.join(os2.tmpdir(), "pi-subagent-"));
+  const safeName = agentName.replace(/[^\w.-]+/g, "_");
+  const filePath = path9.join(dir, `prompt-${safeName}.md`);
+  await fs11.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 384 });
+  return { dir, filePath };
+}
+async function cleanupTempPrompt(file) {
+  try {
+    await fs11.promises.rm(file.dir, { recursive: true, force: true });
+  } catch (err) {
+    bestEffort(err, `cleanup temp prompt dir ${file.dir}`);
+  }
+}
 
 // src/execution/turn-limiter.ts
 var WRAP_UP_MESSAGE = [
@@ -21167,21 +24462,299 @@ var WRAP_UP_HINT = [
   "3. State the single most important next step for whoever continues.",
   "Do NOT claim the task is complete if any part remains unfinished."
 ].join(" ");
+function createTurnLimiter(opts) {
+  let steered = false;
+  let aborted = false;
+  const limit = opts.maxTurns > 0 ? opts.maxTurns : Infinity;
+  const grace = opts.graceTurns > 0 ? opts.graceTurns : 0;
+  const onTurnEnd = (turn) => {
+    if (aborted || !Number.isFinite(limit)) return;
+    if (!steered && turn >= limit) {
+      steered = true;
+      opts.steer(WRAP_UP_MESSAGE);
+    }
+    if (steered && turn >= limit + grace) {
+      aborted = true;
+      opts.abort();
+    }
+  };
+  const reset = () => {
+    steered = false;
+    aborted = false;
+  };
+  return {
+    onTurnEnd,
+    reset,
+    get didSteer() {
+      return steered;
+    },
+    get didAbort() {
+      return aborted;
+    }
+  };
+}
+
+// src/execution/ui-channels.ts
+var NUL = "\0";
+function normalizeChannelName(markerLiteral) {
+  let name = markerLiteral;
+  if (name.startsWith("XYZ_")) {
+    name = name.slice("XYZ_".length);
+  }
+  if (name.endsWith(":")) {
+    name = name.slice(0, -1);
+  }
+  return name.toLowerCase();
+}
+function parseMarkerFromField(str) {
+  if (!str.startsWith(NUL)) return void 0;
+  const literal = str.slice(NUL.length);
+  if (literal === "") return void 0;
+  return normalizeChannelName(literal);
+}
+function parseInlineMarkerFromField(str) {
+  if (!str.startsWith(NUL)) return void 0;
+  const rest = str.slice(NUL.length);
+  const colonIdx = rest.indexOf(":");
+  let literal;
+  if (colonIdx >= 0) {
+    literal = rest.slice(0, colonIdx + 1);
+  } else {
+    literal = rest;
+  }
+  if (literal === "") return void 0;
+  return { channel: normalizeChannelName(literal) };
+}
+function parseFromMarkerString(title, options) {
+  if (title === void 0) return {};
+  const channel = parseMarkerFromField(title);
+  if (channel === void 0) return {};
+  let payload;
+  if (options !== void 0 && options.length > 0) {
+    try {
+      payload = JSON.parse(options[0]);
+    } catch {
+      payload = void 0;
+    }
+  }
+  return { channel, channelPayload: payload };
+}
+function parseFromMarkerArray(widgetLines) {
+  if (widgetLines === void 0 || widgetLines.length === 0) return {};
+  const firstLine = widgetLines[0];
+  if (typeof firstLine !== "string") return {};
+  const parsed = parseInlineMarkerFromField(firstLine);
+  if (parsed === void 0) return {};
+  let payload;
+  const rest = firstLine.slice(NUL.length);
+  const colonIdx = rest.indexOf(":");
+  if (colonIdx >= 0) {
+    const jsonStr = rest.slice(colonIdx + 1);
+    if (jsonStr !== "") {
+      try {
+        payload = JSON.parse(jsonStr);
+      } catch {
+        payload = void 0;
+      }
+    }
+  }
+  return { channel: parsed.channel, channelPayload: payload };
+}
+function parseChannel(req) {
+  switch (req.method) {
+    case "select":
+      return parseFromMarkerString(req.title, req.options);
+    case "setWidget":
+      return parseFromMarkerArray(req.widgetLines);
+    default:
+      return {};
+  }
+}
 
 // src/execution/ui-request-observability.ts
-var logger18 = getLogger("subagents");
+var logger19 = getLogger("subagents");
+var GLOBAL_OBSERVABILITY_KEY = /* @__PURE__ */ Symbol.for("pi-subagent-workflow.ui-observability");
+function registerGlobalObservability(obs) {
+  globalThis[GLOBAL_OBSERVABILITY_KEY] = obs;
+}
+function notifyMissingHandlerGlobal(sessionId) {
+  const obs = globalThis[GLOBAL_OBSERVABILITY_KEY];
+  if (obs) {
+    obs.notifyMissingHandler(sessionId);
+  } else {
+    logger19.warn(
+      `[subagents] uiRequestHandler missing (session=${sessionId}, global observability not registered)`
+    );
+  }
+}
+var MAX_WARNED_SESSIONS = 1024;
+var UiRequestObservability = class {
+  sessionMode;
+  warnedMissingHandlerSessions = /* @__PURE__ */ new Set();
+  setMode(mode) {
+    this.sessionMode = mode;
+  }
+  getMode() {
+    return this.sessionMode;
+  }
+  /** handler 变化时重置告警去重（新 handler 就位后允许重新 warn）。 */
+  resetMissingHandlerWarnings() {
+    this.warnedMissingHandlerSessions.clear();
+  }
+  /** 记录 handler 缺失（per-session 去重，每 session 只 warn 一次）。
+   *  #14：Set 加 cap——超 MAX_WARNED_SESSIONS 时先清空再 add，防无界增长。
+   *  清空策略：当前会话首条告警丢失可接受（去重本身只是降噪，非数据完整性约束）。 */
+  notifyMissingHandler(sessionId) {
+    if (this.warnedMissingHandlerSessions.has(sessionId)) return;
+    if (this.warnedMissingHandlerSessions.size >= MAX_WARNED_SESSIONS) {
+      this.warnedMissingHandlerSessions.clear();
+    }
+    this.warnedMissingHandlerSessions.add(sessionId);
+    logger19.warn(`[subagents] uiRequestHandler missing (session=${sessionId}, mode=${this.sessionMode})`);
+  }
+};
 
 // src/execution/ui-request-queue.ts
-var logger19 = getLogger("subagents");
+var logger20 = getLogger("subagents");
+function createUiRequestQueue(child, ctx) {
+  const abortController = new AbortController();
+  const queue = [];
+  let processing = false;
+  let closed = false;
+  function processNext() {
+    if (processing || queue.length === 0 || closed) return;
+    processing = true;
+    const { id, request, signal } = queue.shift();
+    handleUiRequest(child, id, request, ctx, signal).catch((err) => {
+      const m = err instanceof Error ? err.message : String(err);
+      logger20.error(`[subagents] ui request ${id} (${request.method}) failed unexpectedly: ${m}`);
+    }).finally(() => {
+      processing = false;
+      processNext();
+    });
+  }
+  const onClose = () => {
+    if (closed) return;
+    closed = true;
+    abortController.abort();
+    queue.length = 0;
+    if (child.pid !== void 0) {
+      ctx.dialogQueue?.rejectChildDialogs({ pid: child.pid });
+    }
+  };
+  child.on("close", onClose);
+  child.on("error", onClose);
+  return function enqueue(id, request) {
+    if (closed) return;
+    queue.push({ id, request, signal: abortController.signal });
+    processNext();
+  };
+}
+async function handleUiRequest(child, id, request, ctx, signal) {
+  const handler = ctx.uiRequestHandler;
+  if (!handler) {
+    notifyMissingHandlerGlobal(child.pid?.toString() ?? id);
+    respond(child, id, { cancelled: true }, signal);
+    return;
+  }
+  const { channel, channelPayload } = parseChannel(request);
+  const uiReq = {
+    id,
+    method: request.method,
+    ...child.pid !== void 0 ? { _childPid: child.pid } : {},
+    ...channel !== void 0 ? { channel } : {},
+    ...channelPayload !== void 0 ? { channelPayload } : {},
+    ...extractMethodFields(request)
+  };
+  try {
+    const result = await handler(uiReq);
+    if (signal?.aborted) return;
+    respond(child, id, result, signal);
+  } catch (err) {
+    if (signal?.aborted) return;
+    logger20.error("[subagents] uiRequestHandler threw", {
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    respond(child, id, { cancelled: true }, signal);
+  }
+}
+function extractMethodFields(req) {
+  const out = {};
+  if ("title" in req && typeof req.title === "string") out.title = req.title;
+  if ("options" in req && Array.isArray(req.options)) out.options = req.options;
+  if ("message" in req && typeof req.message === "string") out.message = req.message;
+  if ("placeholder" in req && typeof req.placeholder === "string") out.placeholder = req.placeholder;
+  if ("prefill" in req && typeof req.prefill === "string") out.prefill = req.prefill;
+  if ("notifyType" in req && typeof req.notifyType === "string") out.notifyType = req.notifyType;
+  if ("statusKey" in req && typeof req.statusKey === "string") out.statusKey = req.statusKey;
+  if ("statusText" in req) out.statusText = req.statusText;
+  if ("widgetKey" in req && typeof req.widgetKey === "string") out.widgetKey = req.widgetKey;
+  if ("widgetLines" in req) out.widgetLines = req.widgetLines;
+  if ("widgetPlacement" in req) out.widgetPlacement = req.widgetPlacement;
+  if ("text" in req && typeof req.text === "string") out.text = req.text;
+  if ("timeout" in req && typeof req.timeout === "number") out.timeout = req.timeout;
+  return out;
+}
 
 // src/execution/session-runner.ts
-var logger20 = getLogger("subagents");
-var MS_PER_SECOND2 = 1e3;
+var logger21 = getLogger("subagents");
+function isSdkEvent(x) {
+  if (typeof x !== "object" || x === null) return false;
+  if (!("type" in x)) return false;
+  return typeof x.type === "string";
+}
+function isAgentEndEvt(x) {
+  if (typeof x !== "object" || x === null) return false;
+  if (!("type" in x)) return false;
+  return x.type === "agent_end";
+}
+function isAgentSettledEvt(x) {
+  if (typeof x !== "object" || x === null) return false;
+  if (!("type" in x)) return false;
+  return x.type === "agent_settled";
+}
+function mapAssistantMessageDelta(ame) {
+  if (ame.type === "thinking_delta") return { type: "thinking_delta", delta: ame.delta ?? "" };
+  if (ame.type === "text_delta" && ame.delta !== void 0) return { type: "text_delta", delta: ame.delta };
+  return null;
+}
+var MS_PER_SECOND3 = 1e3;
 var SECONDS_PER_MINUTE2 = 60;
+var DEFAULT_GRACE_TURNS = 2;
 var WATCHDOG_FLOOR_MINUTES = 30;
-var SPAWN_WATCHDOG_FLOOR_MS = WATCHDOG_FLOOR_MINUTES * SECONDS_PER_MINUTE2 * MS_PER_SECOND2;
+var SPAWN_WATCHDOG_FLOOR_MS = WATCHDOG_FLOOR_MINUTES * SECONDS_PER_MINUTE2 * MS_PER_SECOND3;
 var WATCHDOG_MINUTES_PER_TURN = 5;
-var WATCHDOG_MS_PER_TURN = WATCHDOG_MINUTES_PER_TURN * SECONDS_PER_MINUTE2 * MS_PER_SECOND2;
+var WATCHDOG_MS_PER_TURN = WATCHDOG_MINUTES_PER_TURN * SECONDS_PER_MINUTE2 * MS_PER_SECOND3;
+var WAKEUP_GRACE_MS = 15e3;
+function maxTurnsToWatchdogMs(maxTurns) {
+  return Math.max(SPAWN_WATCHDOG_FLOOR_MS, maxTurns * WATCHDOG_MS_PER_TURN);
+}
+var SPAWN_WATCHDOG_ENV = "XYZ_SUBAGENT_SPAWN_WATCHDOG_MS";
+function getEnvSpawnWatchdogMs() {
+  const raw = process.env[SPAWN_WATCHDOG_ENV];
+  if (!raw) return void 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  return parsed;
+}
+function resolveSpawnWatchdogMs(maxTurns) {
+  if (maxTurns === void 0 || maxTurns === null) {
+    const envMs = getEnvSpawnWatchdogMs();
+    if (envMs !== void 0) assertSafeTimerDelay(envMs, SPAWN_WATCHDOG_ENV);
+    return envMs;
+  }
+  const turns = Number(maxTurns);
+  if (!Number.isFinite(turns)) {
+    assertSafeTimerDelay(turns, `maxTurns=${String(maxTurns)}`);
+  }
+  if (turns > 0) {
+    const estimated = maxTurnsToWatchdogMs(turns);
+    assertSafeTimerDelay(estimated, `maxTurnsToWatchdogMs(maxTurns=${maxTurns})`);
+    return estimated;
+  }
+  return void 0;
+}
+var STDERR_MAX_CHARS = 65536;
 var ASK_USER_RPC_PROMPT = `
 ## ask_user Tool Availability
 
@@ -21220,7 +24793,7 @@ function killAllSpawnedChildren(signal = "SIGTERM") {
       child.kill(signal);
       n++;
     } catch (err) {
-      logger20.debug(
+      logger21.debug(
         `[session-runner] killAllSpawnedChildren: kill failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
       );
     }
@@ -21228,54 +24801,5997 @@ function killAllSpawnedChildren(signal = "SIGTERM") {
   spawnedChildren.clear();
   return n;
 }
+function getChildByRecord(recordId) {
+  return spawnedChildren.get(recordId);
+}
+function removeChildRegistration(recordId, child) {
+  if (spawnedChildren.get(recordId) === child) {
+    spawnedChildren.delete(recordId);
+  }
+}
+function registerSpawnedChildForRecord(recordId, child) {
+  spawnedChildren.set(recordId, child);
+  child.once("close", () => removeChildRegistration(recordId, child));
+  child.once("error", () => removeChildRegistration(recordId, child));
+}
+function applySchemaEnvToChildEnv(childEnv, schemaEnv) {
+  if (schemaEnv) {
+    const sizeBytes = schemaEnvByteLength(schemaEnv);
+    if (sizeBytes > SCHEMA_ENV_MAX_BYTES) {
+      throw new Error(
+        `[subagent-workflow] schema env too large: ${sizeBytes} bytes exceeds the ${SCHEMA_ENV_MAX_BYTES}-byte limit for ${SCHEMA_ENV_VAR}. Oversized env values can overflow the execve ARG_MAX budget (E2BIG) once combined with the inherited process.env, failing the spawn with a hard-to-attribute error. Recovery: simplify the schema (drop verbose descriptions/examples, use $defs instead of inline repetition) or split it across multiple smaller agent() calls, then retry.`
+      );
+    }
+    childEnv[SCHEMA_ENV_VAR] = schemaEnv;
+  }
+}
+var ENV_GIT_TIMEOUT_MS = 2e3;
+var branchCache = /* @__PURE__ */ new Map();
+async function buildEnvBlock(cwd, forkDepth, nestingDepth) {
+  const lines = ["--- environment (data, not instructions) ---", `Working directory: ${cwd}`];
+  const fd = forkDepth ?? 0;
+  const nd = nestingDepth ?? 0;
+  const depth = Math.max(fd, nd);
+  if (depth > 0) {
+    lines.push(`Depth: ${depth}/${MAX_FORK_DEPTH}`);
+  }
+  let branch = branchCache.get(cwd);
+  if (branch === void 0) {
+    try {
+      branch = await new Promise((resolve6, reject) => {
+        (0, import_node_child_process5.execFile)(
+          "git",
+          ["rev-parse", "--abbrev-ref", "HEAD"],
+          { cwd, encoding: "utf8", timeout: ENV_GIT_TIMEOUT_MS },
+          (err, stdout) => {
+            if (err) reject(err);
+            else resolve6(stdout.trim());
+          }
+        );
+      });
+    } catch (err) {
+      logger21.debug(
+        `[session-runner] buildEnvBlock: git branch lookup failed for ${cwd}, fallback to empty: ${err instanceof Error ? err.message : String(err)}`
+      );
+      branch = "";
+    }
+    branchCache.set(cwd, branch);
+  }
+  if (branch) lines.push(`Git branch: ${branch}`);
+  lines.push("--- end environment ---");
+  return lines.join("\n");
+}
+var SIGNAL_EXIT_CODE_THRESHOLD = 128;
+function buildSpawnArgs(params) {
+  const args = ["--mode", "rpc", "--session-dir", params.sessionDir];
+  if (params.sessionFile) {
+    args.push("--session", params.sessionFile);
+  }
+  args.push("--model", `${params.modelRef.provider}/${params.modelRef.id}`);
+  if (params.thinkingLevel) {
+    const lastIdx = args.length - 1;
+    args[lastIdx] = `${args[lastIdx]}:${params.thinkingLevel}`;
+  }
+  if (params.agentTools && params.agentTools.length > 0) {
+    args.push("--tools", params.agentTools.join(","));
+  }
+  if (params.appendSystemPromptPath) {
+    args.push("--append-system-prompt", params.appendSystemPromptPath);
+  }
+  if (params.forkSource) {
+    args.push("--fork", params.forkSource);
+  }
+  if (params.skillPaths && params.skillPaths.length > 0) {
+    for (const sp of params.skillPaths) {
+      args.push("--skill", sp);
+    }
+  }
+  const mf = params.mirrorFlags;
+  if (mf) {
+    if (mf.noExtensions) args.push("--no-extensions");
+    if (mf.approve) args.push("--approve");
+    if (mf.noContextFiles) args.push("--no-context-files");
+    for (const ep of mf.extensionPaths) {
+      args.push("--extension", ep);
+    }
+  }
+  return args;
+}
+function writeAliveMarkerBestEffort(sessionFile, pid, id) {
+  try {
+    writeAliveMarker(sessionFile, { pid, id, startedAt: Date.now() });
+  } catch (err) {
+    logger21.debug(
+      `[session-runner] alive marker write failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
 var SIGKILL_ESCALATION_SECONDS = 30;
-var SIGKILL_ESCALATION_MS = SIGKILL_ESCALATION_SECONDS * MS_PER_SECOND2;
+var SIGKILL_ESCALATION_MS = SIGKILL_ESCALATION_SECONDS * MS_PER_SECOND3;
+function killChildWithEscalation(state, child, source) {
+  child.kill("SIGTERM");
+  if (state.escalationTimer) clearTimeout(state.escalationTimer);
+  assertSafeTimerDelay(SIGKILL_ESCALATION_MS, `SIGKILL escalation (${source})`);
+  const escalation = setTimeout(
+    () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        logger21.warn(
+          `[session-runner] child ${state.record.id} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND3}s after SIGTERM, escalating to SIGKILL (source: ${source})`
+        );
+        child.kill("SIGKILL");
+      }
+    },
+    SIGKILL_ESCALATION_MS
+  );
+  escalation.unref();
+  child.once("exit", () => clearTimeout(escalation));
+  state.escalationTimer = escalation;
+}
+function createSpawnEventHandlers(state) {
+  const { record, opts, ctx } = state;
+  const pendingTools = /* @__PURE__ */ new Map();
+  const limiter = createTurnLimiter({
+    maxTurns: opts.maxTurns ?? 0,
+    graceTurns: opts.graceTurns ?? DEFAULT_GRACE_TURNS,
+    steer: () => {
+    },
+    abort: () => {
+      if (state.proc) killChildWithEscalation(state, state.proc, "turn limiter abort");
+    }
+  });
+  const agentEvent = (event) => {
+    updateFromEvent(record, event);
+    if (event.type === "turn_end") limiter.onTurnEnd(record.turnCount);
+    if (event.type === "text_delta") opts.stream?.onDelta(event.delta);
+    opts.onEvent?.(event);
+  };
+  const accumulateMessageEnd = (raw) => {
+    const msg = raw.message;
+    if (msg?.usage) {
+      const { cost: costObj, ...usageBase } = msg.usage;
+      const usage = { ...usageBase, cost: costObj?.total };
+      agentEvent({ type: "message_end", usage });
+    }
+    const stopReason = msg?.stopReason;
+    if (stopReason === "error" || stopReason === "aborted") {
+      const errMsg = msg?.errorMessage ?? raw.reason ?? stopReason;
+      agentEvent({ type: "error", message: errMsg });
+    }
+  };
+  const handleSdkEvent = (raw) => {
+    if (isAgentSettledEvt(raw)) {
+      if (record.chatMode) {
+        try {
+          armIdleTimer(record.id, () => {
+            const child = getChildByRecord(record.id);
+            if (child && !child.killed) killChildWithEscalation(state, child, "idle timer");
+          }, record.idleTimeoutMs);
+        } catch (err) {
+          bestEffort(err, "armIdleTimer (agent_settled chatMode)", "error");
+        }
+        limiter.reset();
+        record.turnCount = 0;
+        ctx.onRoundSettled?.(record);
+        state.resolveRun?.(0);
+      }
+      return;
+    }
+    switch (raw.type) {
+      case "tool_execution_start": {
+        const toolName = raw.toolName ?? "";
+        if (raw.toolCallId) {
+          pendingTools.set(raw.toolCallId, { toolName, args: raw.args });
+        }
+        agentEvent({ type: "tool_start", toolName, args: raw.args });
+        return;
+      }
+      case "tool_execution_end": {
+        const toolName = raw.toolName ?? "";
+        let args = raw.args;
+        if (raw.toolCallId) {
+          const pending = pendingTools.get(raw.toolCallId);
+          if (pending) {
+            if (args === void 0) args = pending.args;
+            pendingTools.delete(raw.toolCallId);
+          }
+        }
+        agentEvent({ type: "tool_end", toolName, args, result: raw.result, isError: raw.isError });
+        return;
+      }
+      case "message_update": {
+        const mapped = mapAssistantMessageDelta(raw.assistantMessageEvent ?? {});
+        if (mapped) agentEvent(mapped);
+        return;
+      }
+      case "turn_end": {
+        agentEvent({ type: "turn_end" });
+        return;
+      }
+      case "message_end": {
+        accumulateMessageEnd(raw);
+        return;
+      }
+      case "compaction_start": {
+        agentEvent({ type: "compaction" });
+        return;
+      }
+      // [review 修复] 已删除 turn_start / message_start 两 case 的 pendingMessages
+      // 消费确认 shift（MF-5）：三段消费链（deliverToRunning push / message_start(user)
+      // shift / redeliverPending 补投）随 deliverToRunning 一并移除——SP-5 upgrade 后
+      // 无生产调用方，整条链路不可达。两 case 均为 no-op，落 default 即可。
+      default:
+        return;
+    }
+  };
+  return handleSdkEvent;
+}
+async function writeAppendSystemPromptFile(record, opts, ctx) {
+  const ownForkDepth = opts.fork ? (opts.parentForkDepth ?? 0) + 1 : void 0;
+  const appendParts = [await buildEnvBlock(ctx.cwd, ownForkDepth, record.depth)];
+  if (opts.agentConfig?.systemPrompt) appendParts.push(opts.agentConfig.systemPrompt);
+  if (opts.appendSystemPrompt) appendParts.push(...opts.appendSystemPrompt);
+  if (opts.maxTurns && opts.maxTurns > 0) appendParts.push(WRAP_UP_HINT);
+  if (opts.agentConfig?.tools?.includes("ask_user") && willRespondToAskUser(ctx.mode)) {
+    appendParts.push(ASK_USER_RPC_PROMPT);
+  }
+  if (opts.worktree) {
+    appendParts.push(WORKTREE_GUIDANCE_PROMPT);
+  }
+  if (appendParts.length > 0) {
+    return writePromptToTempFile(record.agent, appendParts.join("\n\n"));
+  }
+  return void 0;
+}
+function buildChildEnv(record, opts, ctx) {
+  const childEnv = { ...process.env };
+  if (opts.fork && opts.parentForkDepth !== void 0) {
+    childEnv.PI_SUBAGENT_FORK_DEPTH = String(opts.parentForkDepth + 1);
+  }
+  childEnv.PI_SUBAGENT_ROOT_SESSION_ID = ctx.sessionRootId;
+  childEnv.PI_SUBAGENT_SELF_RECORD_ID = record.id;
+  childEnv.PI_SUBAGENT_DEPTH = String(record.depth);
+  childEnv.PI_SUBAGENT_ROOT_CWD = ctx.rootCwd;
+  childEnv.PI_SUBAGENT_AGENT = record.agent;
+  childEnv.PI_SUBAGENT_MODE = record.mode;
+  childEnv.PI_SUBAGENT_TASK = record.task;
+  childEnv.PI_SUBAGENT_SLUG = record.slug;
+  childEnv.PI_SUBAGENT_STARTED_AT = String(record.startedAt);
+  childEnv.PI_SUBAGENT_PARENT_RECORD_ID = record.parentRecordId;
+  childEnv.PI_SUBAGENT_CHAT_MODE = record.chatMode !== void 0 ? String(record.chatMode) : void 0;
+  childEnv.PI_SUBAGENT_WORKTREE = opts.worktree !== void 0 ? "true" : void 0;
+  if (isRelayActive(process.env)) {
+    childEnv[RELAY_ENV_SESSION_ID] = ctx.sessionRootId;
+    childEnv[RELAY_ENV_RECORD_ID] = record.id;
+  }
+  applySchemaEnvToChildEnv(childEnv, opts.schemaEnv);
+  return childEnv;
+}
+function buildSpawnInvocation(opts, ctx, resume, tempPromptFile, sessionDir, forkSource) {
+  const skillPaths = [...ctx.skillDirs, opts.skillPath].filter(
+    (p) => typeof p === "string" && p.length > 0
+  );
+  const modelRef = resume?.model ? splitRecordModelRef(resume.model) : { provider: opts.resolved.model.provider, id: opts.resolved.model.id };
+  const effectiveThinkingLevel = assertThinkingLevel(
+    resume?.thinkingLevel ?? opts.resolved.thinkingLevel
+  );
+  const spawnArgs = buildSpawnArgs(
+    {
+      modelRef,
+      thinkingLevel: effectiveThinkingLevel,
+      agentTools: opts.agentConfig?.tools,
+      appendSystemPromptPath: tempPromptFile?.filePath,
+      sessionDir,
+      sessionFile: resume?.sessionFile,
+      forkSource,
+      skillPaths: skillPaths.length > 0 ? skillPaths : void 0,
+      // 镜像主进程 argv 的 extension/approve flag，让子进程加载行为对齐主进程
+      mirrorFlags: mirrorMainProcessFlags(process.argv)
+    }
+  );
+  return getPiInvocation(spawnArgs);
+}
+function splitRecordModelRef(model) {
+  const slashIdx = model.indexOf("/");
+  if (slashIdx <= 0) return { provider: "unknown", id: model };
+  return { provider: model.slice(0, slashIdx), id: model.slice(slashIdx + 1) };
+}
+function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
+  const { record, opts, ctx } = state;
+  const enqueueUiRequest = createUiRequestQueue(child, ctx);
+  const get_stateListeners = /* @__PURE__ */ new Map();
+  let stdoutBuffer = "";
+  let settleHandshake;
+  const handshakeSettled = new Promise((resolveSettled) => {
+    settleHandshake = resolveSettled;
+  });
+  const settleHandshakeNow = () => {
+    settleHandshake?.();
+    settleHandshake = void 0;
+  };
+  const finishHandshake = (r) => {
+    state.handshakeResult = r;
+    if (r.sessionFile && !record.sessionFile) {
+      record.sessionFile = r.sessionFile;
+      if (child.pid) {
+        writeAliveMarkerBestEffort(r.sessionFile, child.pid, r.sessionId ?? record.id);
+      }
+    }
+    settleHandshakeNow();
+  };
+  child.stdout.on("data", (data) => {
+    stdoutBuffer += data;
+    const lines = stdoutBuffer.split("\n");
+    stdoutBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const parsed = parseSpawnLine(line);
+      if (!parsed) continue;
+      if (parsed.kind === "header") {
+        state.sessionHeader = parsed.header;
+        record.sessionFile = deriveSessionFilePath(parsed.header, sessionDir);
+        if (record.sessionFile && child.pid) {
+          writeAliveMarkerBestEffort(record.sessionFile, child.pid, parsed.header.id);
+        }
+        if (opts.worktree && child.pid) {
+          try {
+            void ctx.onWorktreePid?.(opts.worktree.branch, child.pid, record.sessionFile);
+          } catch (err) {
+            bestEffort(err, "onWorktreePid callback (first header)");
+          }
+        }
+        if (settleHandshake) {
+          finishHandshake({
+            ...record.sessionFile ? { sessionFile: record.sessionFile } : {},
+            sessionId: parsed.header.id
+          });
+        }
+      } else if (parsed.kind === "event") {
+        const evt = parsed.event;
+        if (isAgentEndEvt(evt)) {
+          if (evt.willRetry) {
+          } else {
+            if (record.chatMode) {
+              continue;
+            }
+            const pending = readActivePendingFromSessionFile(record.sessionFile);
+            if (pending.count > 0 || pending.error) {
+              if (pending.error) {
+                logger21.warn(
+                  `[session-runner] agent_end: keep alive (sessionFile unreadable, conservative): ${pending.error}`
+                );
+              } else {
+                logger21.debug(
+                  `[session-runner] agent_end: keep alive, ${pending.count} active descendant(s) pending`
+                );
+              }
+              clearTimeout(state.watchdog);
+              let keepAliveMs;
+              try {
+                keepAliveMs = resolveSpawnWatchdogMs(opts.maxTurns);
+              } catch (err) {
+                bestEffort(err, "resolveSpawnWatchdogMs (agent_end keep-alive re-arm)", "error");
+                keepAliveMs = void 0;
+              }
+              if (keepAliveMs !== void 0) {
+                state.watchdog = setTimeout(
+                  () => killChildWithEscalation(state, child, "keep-alive watchdog"),
+                  keepAliveMs
+                );
+                state.watchdog.unref();
+              }
+            } else if (pending.recentUnregister) {
+              logger21.debug(
+                "[session-runner] agent_end: keep alive, recent descendant completion (wake-up in flight)"
+              );
+              clearTimeout(state.watchdog);
+              state.watchdog = setTimeout(
+                () => killChildWithEscalation(state, child, "wakeup grace timer"),
+                WAKEUP_GRACE_MS
+              );
+              state.watchdog.unref();
+            } else {
+              killChildWithEscalation(state, child, "agent_end final kill");
+            }
+          }
+        }
+        if (isSdkEvent(parsed.event)) handleSdkEvent(parsed.event);
+      } else if (parsed.kind === "response") {
+        if (parsed.command === "get_state" && parsed.success && parsed.id) {
+          const resolver = get_stateListeners.get(parsed.id);
+          if (resolver) {
+            get_stateListeners.delete(parsed.id);
+            resolver(parsed.data);
+          }
+        }
+      } else if (parsed.kind === "extension_ui_request") {
+        enqueueUiRequest(parsed.id, parsed.request);
+      }
+    }
+  });
+  return {
+    registerGetStateListener: (id, resolver) => {
+      get_stateListeners.set(id, resolver);
+    },
+    finishHandshake,
+    abandonHandshake: settleHandshakeNow,
+    isHandshakePending: () => settleHandshake !== void 0,
+    handshakeSettled,
+    processTrailingLine: () => {
+      if (stdoutBuffer.trim()) {
+        const parsed = parseSpawnLine(stdoutBuffer);
+        if (parsed?.kind === "event" && isSdkEvent(parsed.event)) {
+          handleSdkEvent(parsed.event);
+        }
+      }
+    },
+    clearGetStateListeners: () => {
+      get_stateListeners.clear();
+    }
+  };
+}
+function waitForChildExit(child, state, spawnCwd, pump) {
+  return new Promise((resolve6) => {
+    state.resolveRun = resolve6;
+    child.on("close", async (code) => {
+      removeChildRegistration(state.record.id, child);
+      pump.clearGetStateListeners();
+      pump.abandonHandshake();
+      await pump.handshakeSettled;
+      pump.processTrailingLine();
+      resolve6(code ?? 0);
+    });
+    child.on("error", (err) => {
+      removeChildRegistration(state.record.id, child);
+      const errno = err;
+      const errCode = "code" in err ? errno.code : void 0;
+      const cwdHint = errCode === "ENOENT" ? ` (cwd: ${spawnCwd})` : "";
+      state.record.lastError = `${err.message}${cwdHint}`;
+      resolve6(SIGNAL_EXIT_CODE_THRESHOLD);
+    });
+  });
+}
+async function runSpawn(record, task, opts, ctx, resume) {
+  const startTime = Date.now();
+  if (resume) {
+    record.sessionFile = resume.sessionFile;
+  }
+  const state = {
+    record,
+    opts,
+    ctx,
+    proc: void 0,
+    watchdog: void 0,
+    escalationTimer: void 0,
+    sessionHeader: void 0,
+    handshakeResult: void 0,
+    resolveRun: void 0
+  };
+  const handleSdkEvent = createSpawnEventHandlers(state);
+  const sessionDir = getSubagentSessionDir(ctx.agentDir, ctx.rootCwd);
+  fs12.mkdirSync(sessionDir, { recursive: true });
+  const spawnCwd = opts.worktree?.path ?? ctx.cwd;
+  const forkSource = opts.forkSource ?? (opts.fork ? ctx.mainSessionFile : void 0);
+  const tempPromptFile = await writeAppendSystemPromptFile(record, opts, ctx);
+  const childEnv = buildChildEnv(record, opts, ctx);
+  const invocation = buildSpawnInvocation(opts, ctx, resume, tempPromptFile, sessionDir, forkSource);
+  let stderrBuffer = "";
+  try {
+    const child = (0, import_node_child_process5.spawn)(invocation.command, invocation.args, {
+      cwd: spawnCwd,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: childEnv
+    });
+    state.proc = child;
+    if (opts.worktree && child.pid) {
+      void ctx.onWorktreePid?.(opts.worktree.branch, child.pid);
+    }
+    spawnedChildren.set(record.id, child);
+    if (child.pid !== void 0) record.pid = child.pid;
+    if (opts.worktree && child.pid) {
+      try {
+        void ctx.onWorktreePid?.(opts.worktree.branch, child.pid);
+      } catch (err) {
+        logger21.warn("[worktree] worktree pid registration failed (defensive)", {
+          branch: opts.worktree.branch,
+          pid: child.pid,
+          err: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdin.on("error", (err) => {
+      removeChildRegistration(record.id, child);
+      const count = recordEpipeFailure(record.id);
+      logger21.warn(`[subagents] async stdin error for ${record.id}`, {
+        detail: err.message,
+        epipeCount: count,
+        threshold: EPIPE_FAILURE_THRESHOLD,
+        hint: count >= EPIPE_FAILURE_THRESHOLD ? "sync path will throw on next write EPIPE" : void 0
+      });
+    });
+    sendPromptCommand(child, task);
+    const onAbort = () => {
+      killChildWithEscalation(state, child, "abort signal");
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    if (opts.signal?.aborted) onAbort();
+    const watchdogMs = resolveSpawnWatchdogMs(opts.maxTurns);
+    if (watchdogMs !== void 0) {
+      state.watchdog = setTimeout(
+        () => killChildWithEscalation(state, child, "spawn watchdog"),
+        watchdogMs
+      );
+      state.watchdog.unref();
+    }
+    const pump = attachStdoutPump(child, state, sessionDir, handleSdkEvent);
+    void performGetStateHandshake(child, pump.registerGetStateListener).then((r) => {
+      if (pump.isHandshakePending()) pump.finishHandshake(r);
+    }).catch((err) => {
+      const m = err instanceof Error ? err.message : String(err);
+      logger21.error(`[session-runner] get_state handshake failed: ${m}`);
+      pump.abandonHandshake();
+    });
+    child.stderr.on("data", (data) => {
+      stderrBuffer = (stderrBuffer + data).slice(-STDERR_MAX_CHARS);
+    });
+    const exitCode = await waitForChildExit(child, state, spawnCwd, pump);
+    opts.signal?.removeEventListener("abort", onAbort);
+    clearTimeout(state.watchdog);
+    clearTimeout(state.escalationTimer);
+    if (record.sessionFile) {
+      if (!fs12.existsSync(record.sessionFile)) {
+        const lookupId = state.sessionHeader?.id ?? state.handshakeResult?.sessionId;
+        if (lookupId) {
+          const actual = findSessionFileByHeaderId(sessionDir, lookupId);
+          if (actual) record.sessionFile = actual;
+        }
+      }
+    }
+    let success;
+    let error;
+    if (record.lastError) {
+      success = false;
+      error = record.lastError;
+    } else if (exitCode !== 0 && exitCode < SIGNAL_EXIT_CODE_THRESHOLD) {
+      success = false;
+      error = stderrBuffer.trim() || `pi subprocess exited with code ${exitCode}`;
+    } else if (opts.signal?.aborted) {
+      success = false;
+      error = void 0;
+    } else {
+      success = true;
+      error = record.lastError;
+    }
+    return collectResult(record, {
+      startTime,
+      success,
+      error,
+      sessionId: state.sessionHeader?.id ?? record.id,
+      sessionFile: record.sessionFile,
+      schemaExpected: opts.schema !== void 0 || opts.schemaEnv !== void 0
+    });
+  } finally {
+    if (tempPromptFile) {
+      await cleanupTempPrompt(tempPromptFile);
+    }
+  }
+}
+
+// src/execution/concurrency-pool.ts
+var DefaultConcurrencyPool = class {
+  _active = 0;
+  queue = [];
+  seqCounter = 0;
+  queuePolicy;
+  /** 下限 1——maxConcurrent=0 会让 acquire 永久排队死锁（C3 修复）。 */
+  maxConcurrent;
+  constructor(maxConcurrent, queuePolicy = "priority") {
+    this.maxConcurrent = Math.max(1, maxConcurrent);
+    this.queuePolicy = queuePolicy;
+  }
+  acquire(priority, effectiveMaxConcurrent, signal) {
+    const effective = effectiveMaxConcurrent ?? this.maxConcurrent;
+    if (this._active < effective) {
+      this._active += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve6, reject) => {
+      const entry = { priority, resolve: resolve6, reject, seq: this.seqCounter++ };
+      if (signal) {
+        if (signal.aborted) {
+          const err = new Error("acquire aborted");
+          err.name = "AbortError";
+          reject(err);
+          return;
+        }
+        entry.signal = signal;
+        entry.onAbort = () => {
+          const idx = this.queue.indexOf(entry);
+          if (idx >= 0) {
+            this.queue.splice(idx, 1);
+            const err = new Error("acquire aborted");
+            err.name = "AbortError";
+            reject(err);
+          }
+        };
+        signal.addEventListener("abort", entry.onAbort, { once: true });
+      }
+      this.queue.push(entry);
+    });
+  }
+  /**
+   * 出队候选比较：cur 是否优于 best（release 时选谁获得释放的槽位）。
+   * 策略单一分派点——新增策略只需在此分支，acquire/abort/clamp 逻辑策略无关。
+   */
+  isBetterCandidate(cur, best) {
+    if (this.queuePolicy === "strict-fifo") {
+      return cur.seq < best.seq;
+    }
+    return cur.priority < best.priority || cur.priority === best.priority && cur.seq < best.seq;
+  }
+  release() {
+    if (this.queue.length > 0) {
+      let bestIdx = 0;
+      for (let i = 1; i < this.queue.length; i++) {
+        if (this.isBetterCandidate(this.queue[i], this.queue[bestIdx])) {
+          bestIdx = i;
+        }
+      }
+      const next = this.queue.splice(bestIdx, 1)[0];
+      if (next.onAbort && next.signal) {
+        next.signal.removeEventListener("abort", next.onAbort);
+      }
+      next.resolve();
+    } else if (this._active > 0) {
+      this._active -= 1;
+    }
+  }
+  get active() {
+    return this._active;
+  }
+};
+function createConcurrencyPool(options) {
+  return new DefaultConcurrencyPool(options.maxConcurrent, options.queuePolicy ?? "priority");
+}
+
+// src/execution/worktree-git-ops.ts
+var import_node_child_process6 = require("child_process");
+var fs13 = __toESM(require("fs"), 1);
+var logger22 = getLogger("subagents");
+var GIT_TIMEOUT_MS = 3e4;
+var GitRunError = class extends Error {
+  exitCode;
+  stderr;
+  timedOut;
+  constructor(message, props) {
+    super(message);
+    this.name = "GitRunError";
+    this.exitCode = props.exitCode;
+    this.stderr = props.stderr;
+    this.timedOut = props.timedOut;
+  }
+};
+var SAFE_ID_RE = /^[\w-]+$/;
+function isSafeId(id) {
+  return SAFE_ID_RE.test(id);
+}
+function assertSafeId(id, label = "recordId") {
+  if (!SAFE_ID_RE.test(id)) {
+    throw new DirtyWorktreeError(
+      `${label} contains unsafe characters: "${id}" (must match ^[\\w-]+$)`
+    );
+  }
+}
+function isTreeDirty(statusPorcelain) {
+  return statusPorcelain.trim().length > 0;
+}
+function gitRun(args, opts) {
+  return new Promise((resolve6, reject) => {
+    (0, import_node_child_process6.execFile)(
+      "git",
+      args,
+      { cwd: opts.cwd, timeout: opts.timeout ?? GIT_TIMEOUT_MS, encoding: "utf-8" },
+      (err, stdout, stderr) => {
+        if (err) {
+          const execErr = err;
+          reject(
+            new GitRunError(`git ${args[0]} failed: ${execErr.message}`, {
+              exitCode: typeof execErr.code === "number" ? execErr.code : void 0,
+              stderr: typeof stderr === "string" ? stderr : void 0,
+              timedOut: execErr.killed === true && execErr.signal === "SIGTERM"
+            })
+          );
+          return;
+        }
+        resolve6(stdout);
+      }
+    );
+  });
+}
+async function collectWorktreePatch(opts) {
+  const { worktreePath, patchFile, anchor } = opts;
+  let patchIncomplete = false;
+  let baseline;
+  if (anchor.kind === "commit") {
+    const commit = anchor.baseCommit.trim();
+    if (commit.length === 0) {
+      patchIncomplete = true;
+      logger22.warn(
+        "[worktree-git-ops] patch baseline anchor commit is empty, degrading to bare diff (uncommitted changes only); patch marked incomplete",
+        { worktreePath }
+      );
+    } else {
+      baseline = commit;
+    }
+  } else {
+    try {
+      const commit = fs13.readFileSync(anchor.path, "utf-8").trim();
+      if (commit.length === 0) {
+        patchIncomplete = true;
+        logger22.warn(
+          "[worktree-git-ops] patch baseline anchor file is empty or blank, degrading to bare diff (uncommitted changes only); patch marked incomplete",
+          { worktreePath, anchorFile: anchor.path }
+        );
+      } else {
+        baseline = commit;
+      }
+    } catch (err) {
+      patchIncomplete = true;
+      logger22.warn(
+        "[worktree-git-ops] patch baseline anchor file missing or unreadable, degrading to bare diff (uncommitted changes only); patch marked incomplete",
+        {
+          worktreePath,
+          anchorFile: anchor.path,
+          detail: err instanceof Error ? err.message : String(err)
+        }
+      );
+    }
+  }
+  let addFailed = false;
+  try {
+    await gitRun(["add", "-A"], { cwd: worktreePath, timeout: opts.timeout });
+  } catch (err) {
+    addFailed = true;
+    patchIncomplete = true;
+    logger22.warn(
+      "[worktree-git-ops] git add -A failed, continuing with bare diff (tracked uncommitted changes only); patch marked incomplete",
+      {
+        worktreePath,
+        detail: err instanceof Error ? err.message : String(err)
+      }
+    );
+  }
+  if (baseline !== void 0 && !addFailed) {
+    let diff2;
+    try {
+      diff2 = await gitRun(["diff", "--cached", baseline], {
+        cwd: worktreePath,
+        timeout: opts.timeout
+      });
+    } catch (err) {
+      patchIncomplete = true;
+      logger22.warn(
+        "[worktree-git-ops] patch baseline anchor rejected by git (corrupted?), degrading to bare diff (uncommitted changes only); patch marked incomplete",
+        {
+          worktreePath,
+          baseline,
+          detail: err instanceof Error ? err.message : String(err)
+        }
+      );
+      diff2 = await gitRun(["diff", "HEAD"], { cwd: worktreePath, timeout: opts.timeout });
+      return finishPatch(diff2, patchFile, patchIncomplete);
+    }
+    return finishPatch(diff2, patchFile, patchIncomplete);
+  }
+  const diff = await gitRun(["diff", "HEAD"], { cwd: worktreePath, timeout: opts.timeout });
+  return finishPatch(diff, patchFile, patchIncomplete);
+}
+function finishPatch(diff, patchFile, patchIncomplete) {
+  if (diff.length === 0) {
+    return {
+      patchFile,
+      written: false,
+      ...patchIncomplete ? { patchIncomplete: true } : {}
+    };
+  }
+  fs13.writeFileSync(patchFile, diff, "utf-8");
+  return {
+    patchFile,
+    written: true,
+    ...patchIncomplete ? { patchIncomplete: true } : {}
+  };
+}
+async function cleanupWorktree(opts) {
+  try {
+    await gitRun(["worktree", "remove", "--force", opts.worktreePath], {
+      cwd: opts.repo,
+      timeout: opts.timeout
+    });
+  } catch (err) {
+    bestEffort(err, "worktree remove (cleanup)");
+  }
+  try {
+    await gitRun(["branch", "-D", opts.branch], {
+      cwd: opts.repo,
+      timeout: opts.timeout
+    });
+  } catch (err) {
+    bestEffort(err, "branch delete (cleanup)");
+  }
+  if (opts.onRemoved) {
+    try {
+      await opts.onRemoved();
+    } catch (err) {
+      logger22.warn("[worktree-git-ops] cleanup onRemoved host hook failed (worktree/branch already cleaned)", {
+        branch: opts.branch,
+        detail: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+}
+async function listWorktreePorcelain(opts) {
+  return gitRun(["worktree", "list", "--porcelain"], { cwd: opts.repo, timeout: opts.timeout });
+}
+
+// src/execution/agent-registry.ts
+var path10 = __toESM(require("path"), 1);
+var logger23 = getLogger("subagents");
+var FM_DELIM = "---";
+function parseAgentWithMeta(filePath, content) {
+  const name = path10.basename(filePath, ".md");
+  if (!content.startsWith(FM_DELIM)) {
+    return { config: { name, systemPrompt: content.trim() }, meta: null };
+  }
+  const closeIdx = content.indexOf(FM_DELIM, FM_DELIM.length);
+  if (closeIdx === -1) {
+    const yamlBlock2 = content.slice(FM_DELIM.length);
+    return {
+      config: {
+        name: extractYamlField(yamlBlock2, "name") ?? name,
+        systemPrompt: content.trim()
+      },
+      meta: null
+    };
+  }
+  const yamlBlock = content.slice(FM_DELIM.length, closeIdx);
+  const body = content.slice(closeIdx + FM_DELIM.length).trim();
+  const meta = parseResourceMeta(content, "agent");
+  const agentMeta = meta?.kind === "agent" ? meta : null;
+  const modelFallback = extractYamlField(yamlBlock, "model");
+  const toolsFallbackRaw = extractYamlField(yamlBlock, "tools");
+  const toolsFallback = toolsFallbackRaw ? toolsFallbackRaw.split(",").map((s) => s.trim()).filter(Boolean) : void 0;
+  if (!agentMeta && /^model:|^tools:/m.test(yamlBlock)) {
+    logger23.warn(
+      `[agent-registry] ${filePath}: agent frontmatter \u7F3A name/description\uFF08IF1 \u5FC5\u586B\uFF09\uFF0Cmodel/tools \u7ECF legacy fallback \u751F\u6548\uFF08\u76F4\u63A5\u8DEF\u5F84\u4E0D\u4E22\u914D\u7F6E\uFF09\uFF0C\u4F46\u7ED3\u6784\u5316\u8DEF\u7531\u4E0D\u53EF\u89C1\u2014\u2014\u8BF7\u8865\u5145 description`
+    );
+  }
+  const defaultBackgroundRaw = extractYamlField(yamlBlock, "defaultBackground");
+  const engine = agentMeta?.engine ?? extractYamlField(yamlBlock, "engine");
+  if (engine !== void 0 && !hasEngine(engine)) {
+    throw new EngineNotFoundError(engine, listEngines(), filePath);
+  }
+  return {
+    config: {
+      name: agentMeta?.name ?? name,
+      systemPrompt: body,
+      model: agentMeta?.model ?? modelFallback ?? void 0,
+      thinkingLevel: extractYamlField(yamlBlock, "thinkingLevel") ?? void 0,
+      ...engine !== void 0 ? { engine } : {},
+      tools: agentMeta?.tools && agentMeta.tools.length > 0 ? agentMeta.tools : toolsFallback && toolsFallback.length > 0 ? toolsFallback : void 0,
+      defaultBackground: defaultBackgroundRaw === "true" ? true : void 0
+    },
+    meta: agentMeta
+  };
+}
+function extractYamlField(yaml, key) {
+  const regex = new RegExp(`^${key}:\\s*(.+)$`, "m");
+  const match = yaml.match(regex);
+  if (!match) return void 0;
+  let value = match[1].trim();
+  if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+    value = value.slice(1, -1);
+  }
+  return value || void 0;
+}
+function parseAgentProfile(text, filePath) {
+  const stem3 = path10.basename(filePath, ".md");
+  const warnings = [];
+  if (!text.startsWith(FM_DELIM)) {
+    return {
+      name: stem3,
+      description: "",
+      body: text.trim(),
+      meta: null,
+      warnings
+    };
+  }
+  const closeIdx = text.indexOf(FM_DELIM, FM_DELIM.length);
+  if (closeIdx === -1) {
+    const yamlBlock2 = text.slice(FM_DELIM.length);
+    warnings.push(
+      `[agent-registry] ${filePath}: frontmatter \u672A\u95ED\u5408\u2014\u2014name \u7ECF legacy fallback\uFF08\u4EC5\u5355\u884C key:value\uFF09\uFF0C\u5168\u6587\u4F5C body`
+    );
+    return {
+      name: extractYamlField(yamlBlock2, "name") ?? stem3,
+      description: "",
+      body: text.trim(),
+      meta: null,
+      warnings
+    };
+  }
+  const yamlBlock = text.slice(FM_DELIM.length, closeIdx);
+  const body = text.slice(closeIdx + FM_DELIM.length).trim();
+  const meta = parseResourceMeta(text, "agent");
+  const agentMeta = meta?.kind === "agent" ? meta : null;
+  if (agentMeta !== null) {
+    const thinkingLevelRaw = extractYamlField(yamlBlock, "thinkingLevel");
+    const defaultBackgroundRaw2 = extractYamlField(yamlBlock, "defaultBackground");
+    return {
+      name: agentMeta.name,
+      description: agentMeta.description,
+      body,
+      ...agentMeta.when !== void 0 ? { when: agentMeta.when } : {},
+      ...agentMeta.examples !== void 0 ? { examples: agentMeta.examples } : {},
+      ...agentMeta.model !== void 0 ? { model: agentMeta.model } : {},
+      ...agentMeta.tools !== void 0 && agentMeta.tools.length > 0 ? { tools: agentMeta.tools } : {},
+      ...agentMeta.engine !== void 0 ? { engine: agentMeta.engine } : {},
+      ...thinkingLevelRaw !== void 0 ? { thinkingLevel: thinkingLevelRaw } : {},
+      ...defaultBackgroundRaw2 === "true" ? { defaultBackground: true } : {},
+      ...agentMeta.maxTurns !== void 0 ? { maxTurns: agentMeta.maxTurns } : {},
+      ...agentMeta.disallowedTools !== void 0 && agentMeta.disallowedTools.length > 0 ? { disallowedTools: agentMeta.disallowedTools } : {},
+      ...agentMeta.skills !== void 0 && agentMeta.skills.length > 0 ? { skills: agentMeta.skills } : {},
+      meta: agentMeta,
+      warnings
+    };
+  }
+  warnings.push(
+    `[agent-registry] ${filePath}: agent frontmatter \u672A\u901A\u8FC7\u4E25\u683C\u6821\u9A8C\uFF08IF1\uFF1Ayaml \u89E3\u6790\u5931\u8D25\u6216\u7F3A name/description\uFF09\u2014\u2014\u6267\u884C\u5B57\u6BB5\u7ECF legacy fallback\uFF08\u4EC5\u5355\u884C key:value \u5F62\u6001\uFF09\u751F\u6548\uFF0C\u7ED3\u6784\u5316\u8DEF\u7531\u4E0D\u53EF\u89C1\uFF0C\u5EFA\u8BAE\u8865 name/description`
+  );
+  const nameFallback = extractYamlField(yamlBlock, "name") ?? stem3;
+  const modelFallback = extractYamlField(yamlBlock, "model");
+  const toolsFallback = parseCommaListFallback(extractYamlField(yamlBlock, "tools"));
+  const maxTurnsFallback = parseNumberFallback(extractYamlField(yamlBlock, "maxTurns"), filePath, "maxTurns", warnings);
+  const disallowedToolsFallback = parseCommaListFallback(extractYamlField(yamlBlock, "disallowedTools"));
+  const skillsFallback = parseCommaListFallback(extractYamlField(yamlBlock, "skills"));
+  const thinkingLevelFallback = extractYamlField(yamlBlock, "thinkingLevel");
+  const defaultBackgroundRaw = extractYamlField(yamlBlock, "defaultBackground");
+  const engineFallback = extractYamlField(yamlBlock, "engine");
+  return {
+    name: nameFallback,
+    description: "",
+    body,
+    ...modelFallback !== void 0 ? { model: modelFallback } : {},
+    ...toolsFallback !== void 0 && toolsFallback.length > 0 ? { tools: toolsFallback } : {},
+    ...engineFallback !== void 0 ? { engine: engineFallback } : {},
+    ...thinkingLevelFallback !== void 0 ? { thinkingLevel: thinkingLevelFallback } : {},
+    ...defaultBackgroundRaw === "true" ? { defaultBackground: true } : {},
+    ...maxTurnsFallback !== void 0 ? { maxTurns: maxTurnsFallback } : {},
+    ...disallowedToolsFallback !== void 0 && disallowedToolsFallback.length > 0 ? { disallowedTools: disallowedToolsFallback } : {},
+    ...skillsFallback !== void 0 && skillsFallback.length > 0 ? { skills: skillsFallback } : {},
+    meta: null,
+    warnings
+  };
+}
+function parseCommaListFallback(raw) {
+  return raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : void 0;
+}
+function parseNumberFallback(raw, filePath, field, warnings) {
+  if (raw === void 0) return void 0;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    warnings.push(`[agent-registry] ${filePath}: ${field} \u503C "${raw}" \u4E0D\u662F\u6709\u9650\u6570\u5B57\uFF0C\u5FFD\u7565`);
+    return void 0;
+  }
+  return n;
+}
+var AgentRegistry = class {
+  /** 文件级 mtime 缓存（key=绝对路径，跨 loadByPath 保留）。 */
+  fileCache = /* @__PURE__ */ new Map();
+  loadByPath(ref, require2) {
+    const filePath = normalizeRef(ref, AGENT_REF_EXT);
+    if (filePath === null) {
+      if (require2) {
+        throw new Error(
+          `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>).`
+        );
+      }
+      return void 0;
+    }
+    const file = getCachedFile(filePath);
+    if (file === null) {
+      this.fileCache.delete(filePath);
+      if (require2) {
+        throw new Error(
+          `Agent file not found or unreadable: ${filePath}. Use an absolute path from <available_subagents> <location>.`
+        );
+      }
+      return void 0;
+    }
+    const cached = this.fileCache.get(filePath);
+    if (cached && cached.mtimeMs === file.mtimeMs) {
+      return cached.config;
+    }
+    const { config, meta } = parseAgentWithMeta(filePath, file.content);
+    const lintFindings = meta ? lintAgentMeta(meta) : [];
+    for (const finding of lintFindings) {
+      logger23.warn(`[agent-registry] ${filePath}: ${finding.message}`);
+    }
+    this.fileCache.set(filePath, { mtimeMs: file.mtimeMs, config, meta });
+    return config;
+  }
+};
+
+// src/execution/config.ts
+var fs14 = __toESM(require("fs"), 1);
+var path11 = __toESM(require("path"), 1);
+var logger24 = getLogger("subagents");
+var DEFAULT_CONFIG = {
+  version: 1,
+  maxConcurrent: 6
+};
+var DEFAULT_MAX_CONCURRENT = 6;
+function getGlobalConfigPath(agentDir) {
+  return path11.join(agentDir, "subagents", "config.json");
+}
+function loadGlobalConfig(agentDir) {
+  try {
+    const raw = fs14.readFileSync(getGlobalConfigPath(agentDir), "utf-8");
+    const parsed = JSON.parse(raw);
+    return sanitizeParsedConfig(parsed);
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
+}
+function readGlobalConfig(agentDir) {
+  const configPath = getGlobalConfigPath(agentDir);
+  let raw;
+  try {
+    raw = fs14.readFileSync(configPath, "utf-8");
+  } catch (err) {
+    if (errnoCodeOf(err) === "ENOENT") {
+      return { status: "absent", config: { ...DEFAULT_CONFIG } };
+    }
+    return readFailure(configPath, err);
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { status: "ok", config: sanitizeParsedConfig(parsed) };
+  } catch (err) {
+    return readFailure(configPath, err);
+  }
+}
+function readFailure(configPath, err) {
+  const reason = err instanceof Error ? err.message : String(err);
+  logger24.warn(`[subagents] global config read failed (read-failure) at ${configPath}: ${reason}`);
+  return { status: "failed", reason };
+}
+function errnoCodeOf(err) {
+  if (typeof err !== "object" || err === null || !("code" in err)) return void 0;
+  const code = Reflect.get(err, "code");
+  return typeof code === "string" ? code : void 0;
+}
+function sanitizeParsedConfig(parsed) {
+  const defaultEngine = sanitizeDefaultEngine(parsed.defaultEngine);
+  const engineRouting = sanitizeEngineRouting(parsed.engineRouting);
+  return {
+    version: parsed.version ?? DEFAULT_CONFIG.version,
+    maxConcurrent: sanitizeMaxConcurrent(parsed.maxConcurrent),
+    ...defaultEngine !== void 0 ? { defaultEngine } : {},
+    ...engineRouting !== void 0 ? { engineRouting } : {}
+  };
+}
+function sanitizeMaxConcurrent(value) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_CONCURRENT;
+}
+function sanitizeDefaultEngine(value) {
+  return typeof value === "string" && value.trim() !== "" ? value : void 0;
+}
+function sanitizeEngineRouting(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const strict = value.strict;
+  return typeof strict === "boolean" ? { strict } : void 0;
+}
+
+// src/execution/model-resolver.ts
+var MODEL_LIST_LIMIT2 = 20;
+function resolveModel(agentConfig, modelRegistry, paramOverride, ctxModel) {
+  if (paramOverride?.model) {
+    return lookupAndResolve(
+      paramOverride.model,
+      paramOverride.thinkingLevel ?? agentConfig?.thinkingLevel,
+      modelRegistry,
+      "paramOverride"
+    );
+  }
+  if (agentConfig?.model) {
+    return lookupAndResolve(
+      agentConfig.model,
+      agentConfig.thinkingLevel,
+      modelRegistry,
+      "agentConfig"
+    );
+  }
+  if (ctxModel) {
+    modelRefFromVerified(ctxModel, modelRegistry);
+    return {
+      model: ctxModel,
+      thinkingLevel: paramOverride?.thinkingLevel ?? agentConfig?.thinkingLevel ?? maxThinkingForModel(ctxModel)
+    };
+  }
+  const available = modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+  throw new Error(
+    `No available model. Main agent has no active model, and no override was resolved.` + (available.length > 0 ? `
+Available models:
+  ${available.slice(0, MODEL_LIST_LIMIT2).join("\n  ")}` : "")
+  );
+}
+function lookupAndResolve(modelStr, requestedThinking, registry, source) {
+  const ref = assertCanonicalModelRef(modelStr, registry, { source });
+  const model = registry.find(ref.provider, ref.id);
+  if (!model) {
+    throw new Error(
+      `Model "${modelStr}" (${source}) passed the canonical ref check but registry.find missed it (registry snapshot inconsistent). Retry with an exact entry from the available models list.`
+    );
+  }
+  if (!registry.hasConfiguredAuth(model)) {
+    throw new Error(
+      `Model "${modelStr}" (${source}) exists but auth is not configured. Configure auth in models.json or switch to an authorized model.`
+    );
+  }
+  return {
+    model,
+    // 无显式请求时兜底「模型最高可用档」（不落 pi 默认 medium）。
+    thinkingLevel: resolveThinkingLevel(model, requestedThinking ?? maxThinkingForModel(model))
+  };
+}
+function maxThinkingForModel(model) {
+  const levels = availableThinkingLevels(model);
+  if (levels.length > 0) return levels[levels.length - 1];
+  return model.reasoning ? "xhigh" : void 0;
+}
+function resolveThinkingLevel(model, requested) {
+  const levels = availableThinkingLevels(model);
+  if (levels.length === 0) return model.reasoning ? requested : void 0;
+  if (requested && levels.includes(requested)) return requested;
+  return levels[levels.length - 1];
+}
+function availableThinkingLevels(model) {
+  if (!model.reasoning) return [];
+  const map = model.thinkingLevelMap;
+  if (!map) return [];
+  return THINKING_ORDER.filter((lvl) => map[lvl] != null);
+}
+
+// src/execution/model-config-service.ts
+var ModelConfigService = class {
+  globalConfig;
+  agentRegistry;
+  agentRegistryDir;
+  modelRegistry = null;
+  _sessionId;
+  /** 主 agent 当前 model 缓存（session_start 注入，model_select 刷新）。 */
+  _ctxModel;
+  constructor(init) {
+    this.agentRegistryDir = init.agentDir;
+    this.globalConfig = loadGlobalConfig(init.agentDir);
+    this.agentRegistry = new AgentRegistry();
+  }
+  // ── 生命周期（index.ts 调）──────────────────────────────
+  /**
+   * session_start 注入。封装 3 步固定时序：
+   *   1. reloadGlobalConfig（复用时拿最新 config）
+   *   2. injectModelRegistry（fail-fast：null 抛错）
+   *   3. setSessionId
+   */
+  initModel(init) {
+    this.reloadGlobalConfig();
+    if (init.modelRegistry === null) {
+      throw new Error("modelRegistry is required but got null");
+    }
+    this.modelRegistry = init.modelRegistry;
+    this._sessionId = init.sessionId;
+    this._ctxModel = init.ctxModel;
+  }
+  /**
+   * 将一次三态读取结果提交到路由缓存（纯赋值幂等）。
+   *
+   * ok/absent 覆盖缓存、failed 保持缓存不动（坏 JSON 不能把好缓存打回缺省）；
+   * 返回入参便于链式消费。用途 = 构造性同源：session_start 初始化与 per-turn 引擎
+   * 检测各只读一次文件，同一读取结果既刷新路由缓存又充当检测基准，消灭两次独立
+   * 读取之间的分叉窗口（两次读值不一致时检测走 unchanged，状态段/路由永停旧值）。
+   */
+  applyGlobalConfig(read) {
+    if (read.status !== "failed") {
+      this.globalConfig = read.config;
+    }
+    return read;
+  }
+  /**
+   * 三态重读全局配置并提交缓存（幂等可重入），返回本次读取结果供调用方感知。
+   *
+   * 从 initModel 提取（设计 D2）：引擎感知检测器 per-turn poll 发现 config 变更时
+   * 调用本方法，使「system prompt 现值、路由缓存、变更通知」同 turn 对齐——只改注入
+   * 不刷新路由缓存，会出现 prompt 说引擎 B、实际派发跑引擎 A（权威信息源说谎）。
+   * 幂等性：只做「读文件 → 按三态提交缓存」单向赋值，无时序状态，重复调用收敛到
+   * 同一结果。三态语义（failed 保持缓存、静默回落 DEFAULT 是旧缺陷——读失败曾把
+   * 好缓存打回缺省且调用方无法感知）：ok/absent 覆盖、failed 保持并携带原因。
+   */
+  reloadGlobalConfig() {
+    return this.applyGlobalConfig(readGlobalConfig(this.agentRegistryDir));
+  }
+  /**
+   * 刷新主 agent model 缓存。model_select 事件时调用。
+   * renderCall 的 resolveModel 读此缓存以显示标题行 model。
+   */
+  setCtxModel(model) {
+    this._ctxModel = model;
+  }
+  // ── 模型解析（SubagentService.execute 内部调）──────────────
+  /**
+   * 解析 agent 的模型（三层：override → agentConfig → 主 agent model）。
+   *
+   * @param agentRef   agent 引用（.md 绝对路径；查 agentConfig 的 model override）
+   * @param override   调用方显式 override（最高优先级）
+   * @param ctxModel   主 agent 当前模型（兜底，直接透传）
+   */
+  resolveModel(agentRef, override, ctxModel, agentConfig) {
+    this.assertReady();
+    const config = agentConfig ?? (agentRef ? this.agentRegistry.loadByPath(agentRef) : void 0);
+    return resolveModel(config, this.modelRegistry, override, ctxModel ?? this._ctxModel);
+  }
+  /** 查询 agent 配置（SubagentService 内部判定 defaultBackground 用）。
+   *  undefined = 合法缺省语义（未点名 / 默认 general-purpose 形态）。 */
+  getAgentConfig(agentRef) {
+    return agentRef ? this.agentRegistry.loadByPath(agentRef) : void 0;
+  }
+  /**
+   * 查询 agent 配置——显式 ref 失败即 throw（SubagentService.resolveIdentity 用）。
+   *
+   * 与 getAgentConfig 的语义分界（「用户显式点名」vs「默认 general-purpose」）：
+   * 用户显式点名的 agentRef（工具 agent 参数 / workflow agent({agent}) opts）解析
+   * 失败 = 配置错误，必须显式报错——错误文案含 <available_subagents> 恢复指引
+   * （对齐 workflow name not found 反馈风格），不允许静默降级为无配置
+   * general-purpose 形态（systemPrompt/工具白名单全丢且零反馈）。默认形态
+   * （不传 agent）走 getAgentConfig：undefined = 合法缺省，走 override → ctxModel 兑底。
+   */
+  getRequiredAgentConfig(agentRef) {
+    return this.agentRegistry.loadByPath(agentRef, true);
+  }
+  // ── 配置读取（subagent-service 调）────────────────────────
+  /** 全局配置深拷贝（调用方拿到副本，改不影响 Service 内部）。 */
+  getGlobalConfig() {
+    return structuredClone(this.globalConfig);
+  }
+  /** 内部：session id 缓存（initModel 注入；当前无消费者，保留供未来 session 作用域需求）。 */
+  get sessionId() {
+    return this._sessionId;
+  }
+  /** agent 配置目录（SubagentService 构造 store/SessionRunnerContext 时读）。 */
+  getAgentDir() {
+    return this.agentRegistryDir;
+  }
+  /** modelRegistry（SubagentService 构造 factoryCtx 时读）。已注入保证非 null。 */
+  getModelRegistry() {
+    if (this.modelRegistry === null) {
+      throw new Error("modelRegistry not injected (initModel not called?)");
+    }
+    return this.modelRegistry;
+  }
+  // ── 内部 ────────────────────────────────────────────────
+  /** 校验 modelRegistry 已注入。 */
+  assertReady() {
+    if (this.modelRegistry === null) {
+      throw new Error("modelRegistry not injected (initModel not called?)");
+    }
+  }
+};
+var MODEL_SERVICE_SLOT_KEY = /* @__PURE__ */ Symbol.for("@zhushanwen/pi-subagents.model-service");
+function getModelServiceSlot() {
+  let slot = Reflect.get(globalThis, MODEL_SERVICE_SLOT_KEY);
+  if (!slot) {
+    slot = { current: null };
+    Reflect.set(globalThis, MODEL_SERVICE_SLOT_KEY, slot);
+  }
+  return slot;
+}
+function getModelConfigService() {
+  return getModelServiceSlot().current;
+}
+
+// src/execution/subagent-service.ts
+var import_node_async_hooks = require("async_hooks");
+var fs24 = __toESM(require("fs"), 1);
+
+// src/execution/agent-result-mapper.ts
+var TOOL_ARGS_JSON_MAX_CHARS = 500;
+function mapToWorkflowAgentResult(r) {
+  return {
+    content: r.text,
+    parsedOutput: r.parsedOutput,
+    error: r.success ? void 0 : r.error || "Agent call failed (aborted or unknown error)",
+    durationMs: r.durationMs,
+    sessionId: r.sessionId,
+    sessionFile: r.sessionFile,
+    usage: r.usage ? mapUsage(r.usage, r.turns) : void 0,
+    toolCalls: r.toolCalls ? mapToolCalls(r.toolCalls) : void 0
+  };
+}
+function mapUsage(u, turns) {
+  return {
+    input: u.input,
+    output: u.output,
+    cacheRead: u.cacheRead,
+    cacheWrite: u.cacheWrite,
+    cost: u.cost,
+    contextTokens: u.total,
+    turns
+  };
+}
+function mapToolCalls(calls) {
+  return calls.map((c) => ({
+    name: c.toolName,
+    input: c.args === void 0 ? "" : safeStringify(c.args)
+  }));
+}
+function safeStringify(value) {
+  try {
+    const s = JSON.stringify(value);
+    return s.length > TOOL_ARGS_JSON_MAX_CHARS ? `${s.slice(0, TOOL_ARGS_JSON_MAX_CHARS)}...` : s;
+  } catch {
+    return String(value);
+  }
+}
+
+// src/execution/finalize-record.ts
+var fs17 = __toESM(require("fs"), 1);
+var path12 = __toESM(require("path"), 1);
+
+// src/execution/finalized-marker.ts
+var fs15 = __toESM(require("fs"), 1);
+function writeFinalized(sessionFile, reason) {
+  try {
+    fs15.rmSync(`${sessionFile}.cancelled`, { force: true });
+    fs15.writeFileSync(`${sessionFile}.finalized`, reason ?? "", "utf-8");
+  } catch (_e) {
+    void _e;
+  }
+}
+function readFinalizedReason(sessionFile) {
+  try {
+    return fs15.readFileSync(`${sessionFile}.finalized`, "utf-8").trim();
+  } catch {
+    return void 0;
+  }
+}
+
+// src/execution/tombstone-store.ts
+var fs16 = __toESM(require("fs"), 1);
+function writeCancelledTombstone(sessionFile, meta) {
+  try {
+    const tombstonePath = `${sessionFile}.cancelled`;
+    fs16.writeFileSync(tombstonePath, `${JSON.stringify(meta)}
+`, "utf-8");
+  } catch (_e) {
+    void _e;
+  }
+}
+function readCancelledTombstone(sessionFile) {
+  let raw;
+  try {
+    raw = fs16.readFileSync(`${sessionFile}.cancelled`, "utf-8");
+  } catch {
+    return void 0;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed.id === "string" && parsed.status === "cancelled" && typeof parsed.agent === "string" && typeof parsed.startedAt === "number" && typeof parsed.endedAt === "number") {
+      return parsed;
+    }
+    return void 0;
+  } catch {
+    return void 0;
+  }
+}
+
+// src/execution/finalize-record.ts
+var logger25 = getLogger("subagents");
+async function doFinalizeRecord(deps, record, result, status, closedReason) {
+  if (record.worktreeHandle) {
+    try {
+      const sessionsDir = getSubagentSessionDir(
+        deps.modelService.getAgentDir(),
+        record.worktreeHandle.mainCwd
+      );
+      fs17.mkdirSync(sessionsDir, { recursive: true });
+      const patchFile = path12.join(sessionsDir, `${record.worktreeHandle.branch}.patch`);
+      const patch = await deps.worktreeManager.collectPatch(record.worktreeHandle, patchFile);
+      if (patch.written) record.patchFile = patchFile;
+    } catch (pe) {
+      bestEffort(pe, "collectPatch (finalizeRecord Step0)");
+    }
+  }
+  try {
+    completeRecord(record, result, status, closedReason);
+  } catch (err) {
+    bestEffort(err, "completeRecord (finalizeRecord B9)", "error");
+  }
+  try {
+    deps.store.archive(record);
+  } catch (err) {
+    bestEffort(err, "store.archive (finalizeRecord B9)", "error");
+  }
+  if (record.sessionFile) {
+    try {
+      if (closedReason === "cancelled") {
+        writeCancelledTombstone(record.sessionFile, {
+          id: record.id,
+          status: "cancelled",
+          agent: record.agent,
+          startedAt: record.startedAt,
+          endedAt: record.endedAt ?? Date.now()
+        });
+      } else {
+        writeFinalized(record.sessionFile, closedReason);
+      }
+    } catch (err) {
+      bestEffort(err, "writeFinalized/tombstone (finalizeRecord Step3)");
+    }
+  }
+  if (record.worktreeHandle) {
+    try {
+      await deps.worktreeManager.cleanup(record.worktreeHandle);
+    } catch (err) {
+      bestEffort(err, "worktree cleanup (finalizeRecord Step3)");
+    }
+  }
+  if (record.sessionFile) {
+    try {
+      removeAliveMarker(record.sessionFile);
+    } catch (err) {
+      bestEffort(err, "removeAliveMarker (finalizeRecord Step3)");
+    }
+  }
+  deps.emitUnregister(record.id, status);
+  try {
+    await deps.manifestStore.writeManifest({
+      id: record.id,
+      rootSessionId: record.rootSessionId ?? "",
+      parentRecordId: record.parentRecordId,
+      agentName: record.agent,
+      // v4 B-1: manifest status 统一为 closed（cancelled 折入 closed，区分靠 tombstone sidecar）
+      status: "closed",
+      createdAt: record.startedAt,
+      completedAt: record.endedAt ?? Date.now(),
+      sessionFile: record.sessionFile,
+      task: record.task,
+      slug: record.slug,
+      model: record.model
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger25.error(`[subagent] manifest \u5199\u5165\u5931\u8D25 (record=${record.id}): ${msg}`);
+    deps.pi?.appendEntry?.("subagent:manifest-write-failed", {
+      id: record.id,
+      error: msg
+    });
+  }
+}
+async function doFinalizeRoundToIdle(deps, record, result) {
+  let nextResult;
+  if (result.text) {
+    nextResult = result.text;
+  } else if (result.error) {
+    nextResult = `round did not complete: ${result.error}`;
+  } else if (record.chatMode) {
+    nextResult = "(no output this round)";
+  } else {
+    nextResult = record.result ?? "(empty)";
+  }
+  record.result = nextResult;
+  if (record.sessionFile) {
+    try {
+      removeAliveMarker(record.sessionFile);
+    } catch (err) {
+      bestEffort(err, "removeAliveMarker (doFinalizeRoundToIdle)");
+    }
+  }
+  deps.emitUnregister(record.id, "running");
+  record.status = "running";
+  record.closedReason = void 0;
+  record.round = (record.round ?? 0) + 1;
+  record.idleSince = Date.now();
+  record.resumable = true;
+  deps.store.reportRecordTransition(record);
+}
+
+// src/execution/engine/host-task-spec.ts
+function executeOptionsToEngineTaskSpec(opts) {
+  const persona = opts.skillPath !== void 0 || opts.appendSystemPrompt !== void 0 ? {
+    ...opts.skillPath !== void 0 ? { skillPath: opts.skillPath } : {},
+    ...opts.appendSystemPrompt !== void 0 ? { appendSystemPrompt: opts.appendSystemPrompt } : {}
+  } : void 0;
+  return {
+    task: opts.task,
+    slug: opts.slug,
+    agent: opts.agent,
+    model: opts.model,
+    // pi 7 档 thinkingLevel 是引擎私有语义——中立层透传 effort 字符串，各引擎自行映射
+    effort: opts.thinkingLevel,
+    ...persona !== void 0 ? { persona } : {},
+    schema: opts.schema,
+    maxTurns: opts.maxTurns,
+    graceTurns: opts.graceTurns,
+    fork: opts.fork,
+    worktree: opts.worktree,
+    cwd: opts.cwd,
+    conversation: opts.conversation,
+    idleTimeoutMs: opts.idleTimeoutMs
+    // 运行期字段（signal/ctxModel）不入声明——归 RunContext（port.ts 删字段去向）。
+  };
+}
+
+// src/execution/manifest-store.ts
+var fs18 = __toESM(require("fs"), 1);
+var fsPromises2 = __toESM(require("fs/promises"), 1);
+var path13 = __toESM(require("path"), 1);
+var MANIFEST_INDENT_SPACES = 2;
+function statStamp(p) {
+  try {
+    const s = fs18.statSync(p);
+    return { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+var VALID_MANIFEST_STATUSES = /* @__PURE__ */ new Set([
+  "running",
+  "closed",
+  "cancelled",
+  "completed",
+  // 向后兼容旧 manifest 数据
+  "failed"
+  // 向后兼容旧 manifest 数据
+]);
+function isValidManifest(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return typeof v.id === "string" && typeof v.rootSessionId === "string" && typeof v.agentName === "string" && typeof v.createdAt === "number" && typeof v.status === "string" && VALID_MANIFEST_STATUSES.has(v.status);
+}
+var ManifestStore = class {
+  dir;
+  /** [perf] per-file 缓存：file → { stamp, record }。record=null 表示「已解析但非法」（缓存
+   *  负结果避免反复 parse 损坏文件）。stat 戳变化（writeManifest tmp→rename 后 mtime/size 变）
+   *  自动失效；删除的文件在下次扫描时修剪。 */
+  cache = /* @__PURE__ */ new Map();
+  constructor(dir) {
+    this.dir = dir;
+    if (!fs18.existsSync(dir)) {
+      fs18.mkdirSync(dir, { recursive: true });
+    }
+  }
+  /**
+   * 原子写：tmp → fsync → rename → fsync dir（shared/atomic-write 统一原语，
+   * U6b 迁移——原逐行实现与 writeAtomicFile 逐环等值）。真异步（fs.promises，
+   * 不阻塞 event loop）。
+   *
+   * 失败时原语尽力清理残留 tmp（debug 记录，不掩盖原错误）并原样上抛——
+   * 调用方（finalizeRecord）决定降级策略。
+   */
+  async writeManifest(record) {
+    const filePath = path13.join(this.dir, `${record.id}.json`);
+    const content = JSON.stringify(record, null, MANIFEST_INDENT_SPACES);
+    await writeAtomicFile(filePath, content, { ensureDir: false });
+  }
+  /**
+   * 按 id 读 manifest。文件不存在/JSON 损坏/schema 不合法均返回 null。
+   * 调用方需处理 null。
+   */
+  async readManifest(id) {
+    const filePath = path13.join(this.dir, `${id}.json`);
+    try {
+      const content = await fsPromises2.readFile(filePath, "utf-8");
+      const parsed = JSON.parse(content);
+      return isValidManifest(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  /**
+   * 同步读取所有 manifest 记录（best-effort，损坏/非法文件跳过）。
+   * 供 RecordStore.collectRecords 投影 orphan 记录使用——替代对私有 dir 的反射访问。
+   * 仅返回通过 isValidManifest 校验的记录。
+   *
+   * [perf] per-file 缓存 + stat 戳校验：collectRecords 每次渲染都调本方法，旧实现每次
+   * 全量 readFileSync + JSON.parse 千级 manifest（实测 ~300ms/次）。命中缓存的文件零读取。
+   */
+  listAllSync() {
+    let files;
+    try {
+      files = fs18.readdirSync(this.dir);
+    } catch {
+      return [];
+    }
+    const names = files.filter((f) => f.endsWith(".json") && !f.includes(".tmp."));
+    const disk = new Set(names);
+    for (const f of this.cache.keys()) {
+      if (!disk.has(f)) this.cache.delete(f);
+    }
+    const results = [];
+    for (const file of names) {
+      const filePath = path13.join(this.dir, file);
+      const stamp = statStamp(filePath);
+      if (!stamp) {
+        this.cache.delete(file);
+        continue;
+      }
+      const cached = this.cache.get(file);
+      if (cached && cached.stamp.mtimeMs === stamp.mtimeMs && cached.stamp.size === stamp.size) {
+        if (cached.record) results.push(cached.record);
+        continue;
+      }
+      try {
+        const content = fs18.readFileSync(filePath, "utf-8");
+        const parsed = JSON.parse(content);
+        const record = isValidManifest(parsed) ? parsed : null;
+        this.cache.set(file, { stamp, record });
+        if (record) results.push(record);
+      } catch (fileErr) {
+        this.cache.set(file, { stamp, record: null });
+        bestEffort(fileErr, `read manifest ${file} (listAllSync)`);
+      }
+    }
+    return results;
+  }
+  /**
+   * 启动时恢复 tmp 文件。
+   * 3 分支逻辑：
+   * 1. manifest 已存在 → 删 tmp（陈旧）
+   * 2. tmp 合法 + manifest 缺失 → rename tmp 为 manifest
+   * 3. tmp 非法 + manifest 缺失 → 删 tmp
+   */
+  async recoverTmpFiles() {
+    let deleted = 0;
+    let recovered = 0;
+    const files = fs18.readdirSync(this.dir);
+    const tmpFiles = files.filter((f) => f.includes(".json.tmp."));
+    for (const tmpFile of tmpFiles) {
+      const tmpPath = path13.join(this.dir, tmpFile);
+      const manifestId = tmpFile.split(".json.tmp.")[0];
+      const manifestPath = path13.join(this.dir, `${manifestId}.json`);
+      if (fs18.existsSync(manifestPath)) {
+        fs18.unlinkSync(tmpPath);
+        deleted++;
+      } else {
+        try {
+          const content = fs18.readFileSync(tmpPath, "utf-8");
+          const parsed = JSON.parse(content);
+          if (isValidManifest(parsed)) {
+            fs18.renameSync(tmpPath, manifestPath);
+            recovered++;
+          } else {
+            fs18.unlinkSync(tmpPath);
+            deleted++;
+          }
+        } catch {
+          fs18.unlinkSync(tmpPath);
+          deleted++;
+        }
+      }
+    }
+    return { deleted, recovered };
+  }
+};
+
+// src/execution/notify-ledger.ts
+var logger26 = getLogger("subagents");
+var NOTIFY_CUSTOM_TYPE = "subagent-bg-notify";
+var NOTIFY_LEDGER_SLOT_KEY = /* @__PURE__ */ Symbol.for("@zhushanwen/pi-subagents.notifyLedger");
+function getNotifyLedgerSlot() {
+  let slot = Reflect.get(globalThis, NOTIFY_LEDGER_SLOT_KEY);
+  if (!slot) {
+    slot = { current: void 0, listenerRegistered: false };
+    Reflect.set(globalThis, NOTIFY_LEDGER_SLOT_KEY, slot);
+  }
+  return slot;
+}
+function getBoundLedger() {
+  return getNotifyLedgerSlot().current;
+}
+function getBoundNotifyLedger() {
+  return getBoundLedger();
+}
+
+// src/execution/notifier.ts
+var notifyLogger = getLogger("subagents");
+function buildLlmContent(record) {
+  const agent = record.agent;
+  const id = record.id;
+  const transcriptPointer = record.sessionFile ? `
+
+Full transcript: ${record.sessionFile}` : "";
+  switch (record.status) {
+    case "closed": {
+      const outcome = record.outcome ?? deriveOutcome(record.closedReason, record.error);
+      if (outcome === "cancelled") {
+        return `Subagent "${agent}" (${id}) cancelled.`;
+      }
+      if (outcome === "failed") {
+        return `Subagent "${agent}" (${id}) failed: ${record.error}`;
+      }
+      const roundsSuffix = record.totalRounds != null && record.totalRounds > 0 ? ` after ${record.totalRounds} round${record.totalRounds === 1 ? "" : "s"}` : "";
+      const base = `Subagent "${agent}" (${id}) completed${roundsSuffix}. Result:
+${record.result ?? "(empty)"}`;
+      if (record.patchFile) {
+        const patchHint = `
+
+This subagent ran in an isolated worktree; its file changes were captured as a patch:
+  ${record.patchFile}
+To bring these changes into the current repo, run: \`git apply ${record.patchFile}\``;
+        return `${base}${patchHint}${transcriptPointer}`;
+      }
+      return `${base}${transcriptPointer}`;
+    }
+    case "running":
+      return `Subagent "${agent}" (${id}) finished a round. Reply:
+${record.result ?? "(empty)"}${transcriptPointer}`;
+  }
+}
+function createDirectSendHandle(port) {
+  return {
+    send: (msg) => {
+      void port.send(msg, "interrupt-at-turn-boundary");
+    },
+    flush: () => {
+    },
+    // 无队列（每条 send 即投），无待 flush 内容
+    dispose: () => {
+    }
+    // 无 timer / 订阅需清理
+  };
+}
+function createNotifier(host) {
+  let disposed = false;
+  const port = {
+    supportedPayloads: ["custom"],
+    isIdle: () => {
+      if (host.isIdle) {
+        return host.isIdle();
+      }
+      return true;
+    },
+    hasPendingMessages: () => false,
+    // notifier 不关心 hasPendingMessages
+    // D8（must-fix #4）：settled 边沿驱动装配——内核 busy 入队后由 settled 事件唤醒
+    // flush（watch-dog 兜底事件丢失），替代无订阅时的退避轮询。host 只注入原生订阅
+    // 能力；disposed 标志包装（兑现退订语义——pi.on 返回 void 且无 off）在此完成。
+    subscribeSettled: host.onAgentSettled === void 0 ? void 0 : (cb) => {
+      let disposed2 = false;
+      host.onAgentSettled?.(() => {
+        if (!disposed2) cb();
+      });
+      return () => {
+        disposed2 = true;
+      };
+    },
+    send: (msg, _intent) => {
+      host.sendMessage(
+        {
+          customType: NOTIFY_CUSTOM_TYPE,
+          content: msg.payload.content,
+          display: true,
+          details: msg.payload.kind === "custom" ? msg.payload.details : void 0
+        },
+        { triggerTurn: true }
+      );
+    }
+  };
+  let directFallbackWarned = false;
+  const createHandle = () => {
+    const factory = getNotifyDomainPorts().createDelivery;
+    if (factory === void 0) {
+      if (!directFallbackWarned) {
+        directFallbackWarned = true;
+        notifyLogger.warn(
+          "NotifyDomainPorts.createDelivery not configured - falling back to direct-send delivery (no idle gate / merge window / dedupe). Host must call configureNotifyDomain({ createDelivery }) during extension initialization (pi shell: createPiNotifyDomainPorts in src/host/pi-host.ts)."
+        );
+      }
+      return createDirectSendHandle(port);
+    }
+    return factory(port, {
+      intent: "interrupt-at-turn-boundary",
+      // D3：turn 边界抢占（F1 教训内化）
+      mergeWindowMs: 6e4,
+      // 滑动窗口合批（继承 MERGE_WINDOW_MS=60s）
+      mergeHoldActive: () => host.hasRunningBackground(),
+      // D4 must-fix #1：禁止用 isIdle 代替
+      busyPolicy: "retry-force",
+      // settled 边沿驱动 + 退避达上限强发
+      backoff: { ms: 100, max: 50 },
+      // 继承 FLUSH_BACKOFF_MS/MAX
+      // dedup LRU：语义与旧 DEDUP_TTL_MS=60s **不同**——按 key 永久去重（仅 LRU 逐出后
+      // 同 key 可再入）。当前 key 空间（id / id:round，id 每 spawn 唯一）无实际差异；
+      // 后续复用方勿按「60s 内不重复」假设接入（同 key 通知会被永久吞）。
+      dedupe: { maxKeys: 1e3 },
+      // U4 warn 出口参数化：内核投递失败警告接 core logger facade（pi 壳下经
+      // extension-logger appendEntry 落 session JSONL + XYZ_AGENT_DEBUG 落
+      // <dataDir>/logs/），不再走 console.warn（stderr tee 不到日志盘——排查无痕，
+      // 设计 §5 U4）。
+      warn: (msg, err) => notifyLogger.warn(msg, err)
+    });
+  };
+  let handle = createHandle();
+  return {
+    notify(record) {
+      if (disposed) return;
+      const notifyId = record.round != null ? `${record.id}:${record.round}` : record.id;
+      const payload = record.status === "closed" ? { ...record, outcome: record.outcome ?? deriveOutcome(record.closedReason, record.error), notifyId } : { ...record, notifyId };
+      const content = buildLlmContent(payload);
+      const ledger = getBoundNotifyLedger();
+      if (ledger) {
+        if (!ledger.record(notifyId, content, payload)) return;
+        ledger.attemptDeliver();
+        return;
+      }
+      notifyLogger.warn("notify ledger not bound, falling back to delivery kernel path (at-most-once)", {
+        notifyId
+      });
+      handle.send({
+        payload: {
+          kind: "custom",
+          customType: NOTIFY_CUSTOM_TYPE,
+          content,
+          display: true,
+          details: payload
+        },
+        dedupeKey: notifyId
+      });
+    },
+    flushPendingNotifications() {
+      const ledger = getBoundNotifyLedger();
+      if (ledger) {
+        ledger.attemptDeliver();
+        return;
+      }
+      handle.flush();
+    },
+    dispose() {
+      disposed = true;
+      handle.dispose();
+      getBoundNotifyLedger()?.dispose();
+    },
+    revive() {
+      disposed = false;
+      handle.dispose();
+      handle = createHandle();
+    }
+  };
+}
+
+// src/execution/record-store.ts
+var fs21 = __toESM(require("fs"), 1);
+var path15 = __toESM(require("path"), 1);
+
+// src/execution/record-entry.ts
+var SUBAGENT_RECORD_CUSTOM_TYPE = "subagent-record";
+function toSubagentRecordEntry(record) {
+  return {
+    v: 1,
+    id: record.id,
+    agent: record.agent,
+    task: record.task,
+    slug: record.slug,
+    status: record.status,
+    closedReason: record.closedReason,
+    mode: record.mode,
+    startedAt: record.startedAt,
+    rootSessionId: record.rootSessionId,
+    parentRecordId: record.parentRecordId,
+    depth: record.depth,
+    endedAt: record.endedAt,
+    turns: record.turns,
+    totalTokens: record.totalTokens,
+    model: record.model,
+    thinkingLevel: record.thinkingLevel,
+    eventLog: record.eventLog,
+    displayItems: record.displayItems,
+    result: record.result,
+    error: record.error,
+    sessionFile: record.sessionFile,
+    patchFile: record.patchFile,
+    worktree: record.worktree,
+    round: record.round,
+    chatMode: record.chatMode,
+    resumable: record.resumable,
+    engine: record.engine,
+    engineFallback: record.engineFallback,
+    engineHandle: record.engineHandle
+  };
+}
+
+// src/execution/sessions-index.ts
+var fs19 = __toESM(require("fs"), 1);
+var path14 = __toESM(require("path"), 1);
+var logger27 = getLogger("subagents");
+var INDEX_FILENAME = "sessions-index.json";
+var INDEX_VERSION = 1;
+var INDEX_WRITE_MIN_INTERVAL_MS = 6e4;
+function isPositiveIndexEntry(raw) {
+  if (typeof raw !== "object" || raw === null) return false;
+  const v = raw;
+  return typeof v.mtimeMs === "number" && typeof v.size === "number" && typeof v.id === "string" && typeof v.agent === "string" && // 宽容历史 "sync" 值（ExecutionMode 现值仅 "background"，"sync" 是旧数据合法值，放行不丢弃）
+  (v.mode === "sync" || v.mode === "background") && typeof v.task === "string" && typeof v.slug === "string" && typeof v.startedAt === "number" && (v.rootSessionId === void 0 || typeof v.rootSessionId === "string") && (v.parentRecordId === void 0 || typeof v.parentRecordId === "string") && typeof v.depth === "number" && typeof v.model === "string" && // 空串合法（DS4）
+  (v.thinkingLevel === void 0 || typeof v.thinkingLevel === "string");
+}
+function isNegativeIndexEntry(raw) {
+  if (typeof raw !== "object" || raw === null) return false;
+  const v = raw;
+  return v.negative === true && typeof v.mtimeMs === "number" && typeof v.size === "number";
+}
+function validateIndexEntry(raw) {
+  if (!isPositiveIndexEntry(raw) && !isNegativeIndexEntry(raw)) return void 0;
+  return raw;
+}
+function loadIndex(encDir) {
+  const empty = { entries: /* @__PURE__ */ new Map(), higherVersion: false };
+  const indexPath = path14.join(encDir, INDEX_FILENAME);
+  let raw;
+  try {
+    raw = fs19.readFileSync(indexPath, "utf-8");
+  } catch (err) {
+    const code = err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : void 0;
+    if (code !== "ENOENT") {
+      logger27.debug("[subagents] sessions-index read failed, fallback to empty", {
+        detail: { dir: encDir, code }
+      });
+    }
+    return empty;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    logger27.debug("[subagents] sessions-index corrupted JSON, fallback to empty", {
+      detail: { path: indexPath, error: err instanceof Error ? err.message : String(err) }
+    });
+    return empty;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    logger27.debug("[subagents] sessions-index invalid top-level shape, fallback to empty", {
+      detail: { path: indexPath }
+    });
+    return empty;
+  }
+  const top = parsed;
+  if (typeof top.version !== "number" || typeof top.entries !== "object" || top.entries === null || Array.isArray(top.entries)) {
+    logger27.debug("[subagents] sessions-index invalid header fields, fallback to empty", {
+      detail: { path: indexPath }
+    });
+    return empty;
+  }
+  if (top.version > INDEX_VERSION) {
+    return { entries: /* @__PURE__ */ new Map(), higherVersion: true };
+  }
+  if (top.version < INDEX_VERSION) {
+    logger27.debug("[subagents] sessions-index stale version, discarded", {
+      detail: { path: indexPath, version: top.version, expected: INDEX_VERSION }
+    });
+    return empty;
+  }
+  const entries = /* @__PURE__ */ new Map();
+  for (const [key, value] of Object.entries(top.entries)) {
+    const entry = validateIndexEntry(value);
+    if (entry !== void 0) entries.set(key, entry);
+  }
+  return { entries, higherVersion: false };
+}
+async function saveIndex(encDir, data) {
+  const filePath = path14.join(encDir, INDEX_FILENAME);
+  const file = {
+    version: INDEX_VERSION,
+    pid: process.pid,
+    entries: Object.fromEntries(data.entries)
+  };
+  await writeAtomicFile(filePath, JSON.stringify(file), { ensureDir: false });
+}
+
+// src/execution/session-reconstructor.ts
+var fs20 = __toESM(require("fs"), 1);
+var IDENTITY_CUSTOM_TYPE = "subagent-identity";
+var TURN_SUMMARY_MAX2 = 80;
+function deriveEventLog(turns, lastError, startedAt) {
+  const log = [];
+  for (const turn of turns) {
+    for (const tc of turn.toolCalls) {
+      const label = extractLabelFromArgs(tc.toolName, tc.args);
+      const ts = tc.startedTs;
+      log.push({ type: "tool_start", label, ts, status: "running" });
+      if (tc._status !== "running") {
+        log.push({ type: "tool_end", label, ts, status: tc._status });
+      }
+    }
+    if (turn.closed) {
+      const summary = turn.text.length > 0 ? turn.text.length > TURN_SUMMARY_MAX2 ? turn.text.slice(0, TURN_SUMMARY_MAX2) : turn.text : "turn";
+      log.push({ type: "turn_end", label: summary, ts: turn.closedTs ?? startedAt });
+    }
+  }
+  if (lastError) {
+    log.push({ type: "error", label: lastError, ts: Date.now() });
+  }
+  return log;
+}
+function emptyTurn2() {
+  return { text: "", thinking: "", toolCalls: [], usageDelta: void 0, closed: false };
+}
+function toAgentUsage(u) {
+  return {
+    input: u.input ?? 0,
+    output: u.output ?? 0,
+    cacheRead: u.cacheRead ?? 0,
+    cacheWrite: u.cacheWrite ?? 0,
+    cost: u.cost?.total
+  };
+}
+function addUsage2(prev, next) {
+  if (prev === void 0) return { ...next };
+  return {
+    input: prev.input + next.input,
+    output: prev.output + next.output,
+    cacheRead: prev.cacheRead + next.cacheRead,
+    cacheWrite: prev.cacheWrite + next.cacheWrite,
+    cost: (prev.cost ?? 0) + (next.cost ?? 0)
+  };
+}
+function isIdentityData(data) {
+  if (typeof data !== "object" || data === null) return false;
+  const d = data;
+  return typeof d.id === "string" && typeof d.agent === "string" && (d.mode === "sync" || d.mode === "background") && typeof d.task === "string" && typeof d.startedAt === "number";
+}
+function reconstructFromFile(sessionFile) {
+  let raw;
+  try {
+    raw = fs20.readFileSync(sessionFile, "utf-8");
+  } catch {
+    return void 0;
+  }
+  const entries = [];
+  const lines = raw.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    if (i === 0) {
+      try {
+        const head = JSON.parse(line);
+        if (head.type === "session") continue;
+      } catch (_e) {
+        void _e;
+        continue;
+      }
+    }
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.type === "string") {
+        entries.push(parsed);
+      }
+    } catch (_e) {
+      void _e;
+    }
+  }
+  if (entries.length === 0) return void 0;
+  let identity;
+  let model = "";
+  let thinkingLevel;
+  for (const entry of entries) {
+    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
+      if (isIdentityData(entry.data)) identity = entry.data;
+    } else if (entry.type === "model_change") {
+      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
+        model = `${entry.provider}/${entry.modelId}`;
+      }
+    } else if (entry.type === "thinking_level_change") {
+      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
+    }
+  }
+  if (!identity) return void 0;
+  const turns = [];
+  const pending = [];
+  let lastError;
+  let totalTokens = 0;
+  let lastEntryTsMs;
+  for (const entry of entries) {
+    if (typeof entry.timestamp === "string") {
+      const ms = Date.parse(entry.timestamp);
+      if (!Number.isNaN(ms)) lastEntryTsMs = ms;
+    }
+    if (entry.type !== "message") continue;
+    const msg = entry.message;
+    if (!msg) continue;
+    if (typeof msg.timestamp === "number") {
+      lastEntryTsMs = msg.timestamp;
+    }
+    if (msg.role === "assistant") {
+      const turn = emptyTurn2();
+      turns.push(turn);
+      if (!Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          turn.text += block.text;
+        } else if (block.type === "thinking") {
+          turn.thinking += block.thinking;
+        } else if (block.type === "toolCall") {
+          pending.push({
+            toolCallId: block.id,
+            toolName: block.name,
+            args: block.arguments,
+            turn,
+            startedTs: msg.timestamp
+          });
+        }
+      }
+      if (msg.usage) {
+        const u = toAgentUsage(msg.usage);
+        turn.usageDelta = addUsage2(turn.usageDelta, u);
+        totalTokens += u.input + u.output + u.cacheRead + u.cacheWrite;
+      }
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+        lastError = msg.errorMessage ?? msg.stopReason;
+      } else if (msg.stopReason === "stop") {
+        lastError = void 0;
+      }
+    } else if (msg.role === "toolResult") {
+      const idx = pending.findIndex((p) => p.toolCallId === msg.toolCallId);
+      if (idx >= 0) {
+        const p = pending[idx];
+        pending.splice(idx, 1);
+        const tc = {
+          toolName: p.toolName,
+          args: p.args,
+          result: { content: msg.content, details: msg.details },
+          isError: msg.isError ?? false,
+          _status: msg.isError ? "failed" : "done",
+          startedTs: p.startedTs
+        };
+        p.turn.toolCalls.push(tc);
+      }
+    }
+  }
+  if (turns.length === 0) return void 0;
+  for (const turn of turns) {
+    turn.closed = true;
+  }
+  const turnCount = turns.length;
+  const resultText = turns.map((t) => t.text).filter((t) => t.length > 0).join("\n\n");
+  const eventLog = deriveEventLog(turns, lastError, identity.startedAt);
+  const status = "closed";
+  const closedReason = "gc";
+  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
+  const slug = identity.slug ?? "";
+  return {
+    ...identity,
+    slug,
+    rootSessionId,
+    parentRecordId: identity.parentRecordId,
+    depth: identity.depth ?? 0,
+    forkDepth: identity.forkDepth,
+    sessionFile,
+    status,
+    closedReason,
+    turns,
+    turnCount,
+    totalTokens,
+    lastError,
+    model,
+    thinkingLevel,
+    endedAt: lastEntryTsMs,
+    result: resultText.length > 0 ? resultText : void 0,
+    error: lastError,
+    eventLog
+  };
+}
+var IDENTITY_HEAD_BYTES = 65536;
+function readIdentityHeader(sessionFile) {
+  let text;
+  try {
+    const fd = fs20.openSync(sessionFile, "r");
+    try {
+      const buf = Buffer.alloc(IDENTITY_HEAD_BYTES);
+      let total = 0;
+      while (total < buf.length) {
+        const n = fs20.readSync(fd, buf, total, buf.length - total, total);
+        if (n <= 0) break;
+        total += n;
+      }
+      text = buf.toString("utf-8", 0, total);
+    } finally {
+      fs20.closeSync(fd);
+    }
+  } catch {
+    return void 0;
+  }
+  return parseIdentityFromText(text, sessionFile);
+}
+function readIdentityAnywhere(sessionFile) {
+  let text;
+  try {
+    text = fs20.readFileSync(sessionFile, "utf-8");
+  } catch {
+    return void 0;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i];
+    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
+    const recon = parseIdentityFromText(s, sessionFile);
+    if (recon) return recon;
+  }
+  return void 0;
+}
+function readIdentityTail(sessionFile) {
+  let text;
+  try {
+    const { size } = fs20.statSync(sessionFile);
+    const start = Math.max(0, size - IDENTITY_HEAD_BYTES);
+    const fd = fs20.openSync(sessionFile, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      let total = 0;
+      while (total < buf.length) {
+        const n = fs20.readSync(fd, buf, total, buf.length - total, start + total);
+        if (n <= 0) break;
+        total += n;
+      }
+      text = buf.toString("utf-8", 0, total);
+    } finally {
+      fs20.closeSync(fd);
+    }
+  } catch {
+    return void 0;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i];
+    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
+    const recon = parseIdentityFromText(s, sessionFile);
+    if (recon) return recon;
+  }
+  return void 0;
+}
+function parseIdentityFromText(text, sessionFile) {
+  let identity;
+  let model = "";
+  let thinkingLevel;
+  for (const line of text.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    if (!s.includes(IDENTITY_CUSTOM_TYPE) && !s.includes('"model_change"') && !s.includes('"thinking_level_change"')) {
+      continue;
+    }
+    let entry;
+    try {
+      entry = JSON.parse(s);
+    } catch {
+      continue;
+    }
+    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
+      if (isIdentityData(entry.data)) {
+        identity = entry.data;
+        break;
+      }
+    } else if (entry.type === "model_change") {
+      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
+        model = `${entry.provider}/${entry.modelId}`;
+      }
+    } else if (entry.type === "thinking_level_change") {
+      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
+    }
+  }
+  if (!identity) return void 0;
+  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
+  return {
+    id: identity.id,
+    agent: identity.agent,
+    mode: identity.mode,
+    task: identity.task,
+    slug: identity.slug ?? "",
+    startedAt: identity.startedAt,
+    rootSessionId,
+    parentRecordId: identity.parentRecordId,
+    depth: identity.depth ?? 0,
+    forkDepth: identity.forkDepth,
+    chatMode: identity.chatMode,
+    worktree: identity.worktree,
+    model,
+    thinkingLevel,
+    sessionFile
+  };
+}
+
+// src/execution/record-store.ts
+var logger28 = getLogger("subagents");
+var STATUS_PRIORITY = {
+  running: 0,
+  closed: 3
+};
+function mapManifestStatus(s) {
+  if (s === "closed") return "closed";
+  if (s === "completed") return "closed";
+  if (s === "failed") return "closed";
+  if (s === "running") return "running";
+  if (s === "cancelled") return "closed";
+  return null;
+}
+var LAST_LINE_WINDOW_BYTES = 64 * 1024;
+var WINDOW_GROWTH_FACTOR = 4;
+var MIN_SEGMENTS_WITH_BOUNDARY = 2;
+function readLastJsonlLine(sessionFile) {
+  let fd;
+  try {
+    fd = fs21.openSync(sessionFile, "r");
+    const size = fs21.fstatSync(fd).size;
+    let windowBytes = LAST_LINE_WINDOW_BYTES;
+    let windowStart = Math.max(0, size - windowBytes);
+    let lines = [];
+    while (true) {
+      const buf = Buffer.alloc(size - windowStart);
+      fs21.readSync(fd, buf, 0, buf.length, windowStart);
+      lines = buf.toString("utf-8").split("\n").filter((l) => l.length > 0);
+      if (windowStart === 0 || lines.length >= MIN_SEGMENTS_WITH_BOUNDARY) break;
+      windowBytes *= WINDOW_GROWTH_FACTOR;
+      const nextStart = Math.max(0, size - windowBytes);
+      if (nextStart === windowStart) break;
+      windowStart = nextStart;
+    }
+    const candidates = windowStart > 0 && lines.length > 0 ? lines.slice(1) : lines;
+    const last = candidates.length > 0 ? candidates[candidates.length - 1] : lines[lines.length - 1];
+    if (last === void 0) return { ok: true, line: "" };
+    return { ok: true, line: last };
+  } catch {
+    return { ok: false };
+  } finally {
+    if (fd !== void 0) {
+      try {
+        fs21.closeSync(fd);
+      } catch (_e) {
+        void _e;
+      }
+    }
+  }
+}
+function asSubagentRecordEntry(o) {
+  if (typeof o !== "object" || o === null) return null;
+  const obj = o;
+  if (obj.type !== "custom" || obj.customType !== SUBAGENT_RECORD_CUSTOM_TYPE) return null;
+  if (typeof obj.data !== "object" || obj.data === null) return null;
+  const data = obj.data;
+  return typeof data.id === "string" ? { id: data.id, data } : null;
+}
+function collectLastRecordEntries(content) {
+  const lastById = /* @__PURE__ */ new Map();
+  for (const line of content.split("\n")) {
+    if (!line.includes(SUBAGENT_RECORD_CUSTOM_TYPE)) continue;
+    let entry = null;
+    try {
+      entry = asSubagentRecordEntry(JSON.parse(line));
+    } catch (err) {
+      logger28.debug("[subagents] entry-only orphan scan: skip unparsable line", {
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+    if (entry !== null) lastById.set(entry.id, entry.data);
+  }
+  return lastById;
+}
+function rebuildEntryRecord(id, d) {
+  const str = (k) => typeof d[k] === "string" ? d[k] : void 0;
+  const num = (k) => typeof d[k] === "number" ? d[k] : void 0;
+  const agent = str("agent");
+  const task = str("task");
+  const startedAt = num("startedAt");
+  if (agent === void 0 || task === void 0 || startedAt === void 0) return null;
+  return {
+    id,
+    agent,
+    task,
+    slug: str("slug") ?? "",
+    status: "running",
+    mode: "background",
+    startedAt,
+    rootSessionId: str("rootSessionId"),
+    parentRecordId: str("parentRecordId"),
+    depth: num("depth") ?? 0,
+    endedAt: void 0,
+    turns: num("turns") ?? 0,
+    totalTokens: num("totalTokens") ?? 0,
+    model: str("model") ?? "",
+    thinkingLevel: str("thinkingLevel"),
+    eventLog: [],
+    displayItems: [],
+    sessionFile: void 0,
+    chatMode: d.chatMode === true,
+    round: num("round"),
+    engine: str("engine"),
+    engineFallback: isEngineFallbackShape(d.engineFallback) ? d.engineFallback : void 0,
+    engineHandle: isEngineHandleShape(d.engineHandle) ? d.engineHandle : void 0
+  };
+}
+function isEngineFallbackShape(v) {
+  if (typeof v !== "object" || v === null) return false;
+  const r = v;
+  return typeof r.from === "string" && typeof r.reason === "string";
+}
+function isEngineHandleShape(v) {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const h = v;
+  if (typeof h.poolKey !== "string" || h.poolKey.length === 0) return false;
+  if (typeof h.sessionRef !== "object" || h.sessionRef === null || Array.isArray(h.sessionRef)) {
+    return false;
+  }
+  for (const value of Object.values(h.sessionRef)) {
+    if (typeof value !== "string") return false;
+  }
+  if (h.journalPath !== void 0 && typeof h.journalPath !== "string") return false;
+  return true;
+}
+function statStamp2(p) {
+  try {
+    const s = fs21.statSync(p);
+    return { mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+function sameStamp(a, b) {
+  return a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+var CLOSED_REASONS2 = new Set(CLOSED_REASONS);
+function isValidClosedReason(value) {
+  return value !== void 0 && CLOSED_REASONS2.has(value);
+}
+function sameNullableStamp(a, b) {
+  if (a === null || b === null) return a === b;
+  return sameStamp(a, b);
+}
+var RecordStore = class _RecordStore {
+  constructor(sessionsDir, manifestStore, pi) {
+    this.sessionsDir = sessionsDir;
+    this.manifestStore = manifestStore;
+    this.pi = pi ?? null;
+  }
+  sessionsDir;
+  manifestStore;
+  records = /* @__PURE__ */ new Map();
+  listeners = /* @__PURE__ */ new Set();
+  _disposed = false;
+  /** 孤儿终态恢复的已判定缓存（residual-fixes）：resumable 形态无 sidecar 锚，同进程重复调用跳过。 */
+  orphanJudged = /* @__PURE__ */ new Set();
+  /** Pi handle（用于 appendEntry 上报损坏 manifest）。构造时可空，setPi() 后续注入。
+   *  显式存为字段而非构造参数 readonly：setPi 需要写权限。 */
+  pi = null;
+  /** [perf] per-file 缓存（key = sessionFile 绝对路径）。不再整体失效——stat 戳精准校验。
+   *  值含负缓存（确认无 identity 的文件），防每轮全文 fallback 重读。 */
+  fileCache = /* @__PURE__ */ new Map();
+  /** record id → sessionFile 索引（getFullRecord 按 id 定位文件）。随 fileCache 同步维护。 */
+  idToFile = /* @__PURE__ */ new Map();
+  /** [perf] sessionsDir 最近一次全量扫描的 mtime（快路径判变，见 reconstructAll）。
+   *  null = 未扫过 / 已 dispose。 */
+  dirStamp = null;
+  /** [perf L-1] 首扫惰性装载的磁盘索引只读映像（key = jsonl basename）。
+   *  扫描尾（flushIndexAfterScan）与 readdir 失败路径释放——运行期索引不再被读（L1 接管）。 */
+  indexEntries = null;
+  /** [perf L-1] 本轮起未落盘的探测标志：scanFile 走过探测分支即置位。发起写时消费
+   *  （置 false）、写失败恢复；未写路径不清位——未落盘的探测成果跨轮携带直至真正写入。 */
+  indexDirty = false;
+  /** [perf L-1] 上次成功落盘墙钟（节流基准）。0 = 从未写过 → 首扫 dirty 必写；
+   *  仅成功分支推进（写失败不推进节流窗，下轮过窗重试）。 */
+  lastIndexWriteAt = 0;
+  /** [perf L-1] loadIndex 高版本标志的进程级持久态：true 时本进程所有后续扫描均不
+   *  落盘（防 v1/v2 last-writer-wins 覆盖振荡），直至下次 loadIndex 重新评估。 */
+  indexHigherVersion = false;
+  /** session_start 后由 SubagentService.initSession 调，注入真实 Pi handle。
+   *  设计为独立方法而非要求构造时必传——RecordStore 在 SubagentService 构造时即建
+   *  （与 sessionsDir/manifestStore 一同初始化），但 this.pi 此时尚未注入。
+   *  后续构造期外的 appendEntry 上报才有意义。 */
+  setPi(pi) {
+    this.pi = pi ?? null;
+  }
+  /** 注册新 record。触发 onChange。
+   *  W16 [D4]：record 诞生（→ running）即 append 自描述快照 entry——pi 文件是
+   *  扩展数据持久化权威，custom entry 不进 LLM context。 */
+  register(record) {
+    this.records.set(record.id, record);
+    this.pi?.appendEntry?.("subagent-record", toSubagentRecordEntry(_RecordStore.recordToSubagent(record)));
+    this.notifyChange();
+  }
+  /**
+   * 归档：record 已被 completeRecord 设置了终态 status。
+   * 立即从内存移除（终态 record 下次读时从 session.jsonl 重建）。
+   * cancelled record 由调用方先写 tombstone（cancel 路径），此处只负责移除。
+   *
+   * W16 [D4]：终态冻结字段（result/endedAt/closedReason）在 completeRecord 已就绪，
+   * 此处 append 的快照即完整终态记录（所有终态路径的必经锚点）。
+   */
+  archive(record) {
+    this.records.delete(record.id);
+    this.pi?.appendEntry?.("subagent-record", toSubagentRecordEntry(_RecordStore.recordToSubagent(record)));
+    this.notifyChange();
+  }
+  /**
+   * W16 [D4]：类外状态写点上报（record-store 内的迁移点 register/archive 已内置）。
+   *
+   * 供 service 层直接改 record.status 的恢复写点调用（chatMode 续轮 idle→running
+   * 冷路径 resumeRound、轮终 finalizeRoundToIdle 回 running-resumable）——这些
+   * 写点绕过 register/archive，若不显式上报，pi 文件缺失该次迁移、重建源滞后。
+   * pi 未注入（session_start 前）时可选链静默降级，不阻断主流程。
+   */
+  reportRecordTransition(record) {
+    this.pi?.appendEntry?.("subagent-record", toSubagentRecordEntry(_RecordStore.recordToSubagent(record)));
+  }
+  /** 按 id 查找。返回可变 record（仅 runtime 内部用）。 */
+  getMutable(id) {
+    return this.records.get(id);
+  }
+  /**
+   * abort 所有 running record 的 controller（background 子进程 SIGTERM）。
+   *
+   * 仅在 SubagentService.dispose（进程退出路径）调用。不做 CAS/tombstone——dispose
+   * 是终局，状态机收尾无意义；目的是让 background 子进程的 AbortSignal 触发 →
+   * runSpawn 的 signal listener → child.kill("SIGTERM")，防止主进程退出后子进程成孤儿。
+   *
+   * sync record 无 controller（undefined），跳过——sync 是阻塞调用，主进程不会先于
+   * sync subagent 退出（除非 SIGKILL/崩溃，此时任何清理都无效）。
+   *
+   * 返回被 abort 的 record 数（诊断用）。
+   */
+  abortRunningControllers() {
+    let n = 0;
+    for (const r of this.records.values()) {
+      if (r.status === "running" && r.controller) {
+        r.controller.abort();
+        n++;
+      }
+    }
+    return n;
+  }
+  /** 列出所有 running record 的只读快照（widget 计数、诊断用）。 */
+  listRunning() {
+    return [...this.records.values()].filter((r) => r.status === "running").map((r) => snapshot(r));
+  }
+  /** SP-4: 列出所有活跃 record（running + idle）的可变引用。
+   *  供 SubagentService.disposeAllRecords 做级联关闭。 */
+  listAllActive() {
+    return [...this.records.values()].filter((r) => r.status === "running");
+  }
+  /**
+   * 合并内存(running) + 磁盘(sessions/*.jsonl 重建) → SubagentRecord[]。
+   *
+   *   ╔══════════════════════════════════════════════════════════════════╗
+   *   ║  1. 磁盘源：扫 sessionsDir 的 .jsonl，逐个 scanFile（[perf] 头部    ║
+   *   ║     identity 轻量重建 + stat 戳缓存命中零读取）。cancelled          ║
+   *   ║     tombstone override status。详情字段（eventLog/result/turns）    ║
+   *   ║     缺省，由 getFullRecord(id) 懒加载                              ║
+   *   ║  2. 内存源覆盖（同 id 内存优先——running record 更新鲜）          ║
+   *   ║  3. session 过滤：只留 rootSessionId === rootSessionFilter 的       ║
+   *   ║     record。rootSessionId 缺失（旧文件）的 record 一律排除        ║
+   *   ║     （无法判定归属，隔离优先）。rootSessionFilter 为 undefined       ║
+   *   ║     时不过滤（向后兼容）。                                          ║
+   *   ║  4. statusFilter："running" → 只留 running（内存源）；            ║
+   *   ║                   "all"（默认）→ 内存 + 磁盘                       ║
+   *   ║  5. 排序：STATUS_PRIORITY + startedAt desc                        ║
+   *   ║  6. slice(limit)                                                  ║
+   *   ╚══════════════════════════════════════════════════════════════════╝
+   *
+   * statusFilter="running" 时仍先取够多再过滤（防 limit 截断把 running 滤没），
+   * 与旧 listHandler 的防截断逻辑一致，下沉到此。
+   *
+   * session 隔离：同一 cwd 下多个 Pi session 共享 sessionsDir，靠 rootSessionId
+   * 区分。内存与磁盘源都按 rootSessionFilter 过滤后再 merge/sort/slice。
+   */
+  collectRecords(limit, statusFilter = "all", rootSessionFilter) {
+    const byId = /* @__PURE__ */ new Map();
+    for (const rec of this.reconstructAll(rootSessionFilter)) {
+      byId.set(rec.id, rec);
+    }
+    if (this.manifestStore) {
+      for (const manifest of this.readManifestsSync()) {
+        if (byId.has(manifest.id)) continue;
+        if (rootSessionFilter !== void 0 && manifest.rootSessionId !== rootSessionFilter) continue;
+        const rec = _RecordStore.manifestToSubagent(manifest);
+        if (!rec) {
+          logger28.warn("[subagents] skip manifest with invalid status", {
+            detail: { id: manifest.id, status: manifest.status }
+          });
+          this.pi?.appendEntry?.("subagent:manifest-invalid-status", {
+            id: manifest.id,
+            status: manifest.status,
+            rootSessionId: manifest.rootSessionId,
+            agentName: manifest.agentName
+          });
+          continue;
+        }
+        byId.set(rec.id, rec);
+      }
+    }
+    for (const r of this.records.values()) {
+      if (rootSessionFilter !== void 0 && r.rootSessionId !== rootSessionFilter) continue;
+      byId.set(r.id, _RecordStore.recordToSubagent(r));
+    }
+    let result = [...byId.values()];
+    if (statusFilter === "running") {
+      result = result.filter((r) => r.status === "running");
+    }
+    return result.sort(_RecordStore.compareRecords).slice(0, limit);
+  }
+  // ── 孤儿终态恢复（residual-fixes 设计 §6.1.2）──────────────────
+  /**
+   * 重建 SubagentRecord 的自描述 entry 落盘入口（签名适配：reportRecordTransition 收
+   * ExecutionRecord，重建孤儿的数据源是 SubagentRecord——直接经 toSubagentRecordEntry
+   * 投影 appendEntry，绕过 recordToSubagent）。pi 未注入时可选链静默。
+   */
+  reportSubagentRecord(record) {
+    this.pi?.appendEntry?.("subagent-record", toSubagentRecordEntry(record));
+  }
+  /**
+   * 孤儿终态恢复：对重建矩阵分支 4 兜底（running 且无 externalInstance）的 record
+   * 判定真实终态并落 entry，消除「父扩展死后再无人写终态 → 侧栏永久 running」。
+   *
+   * 判定（residual-fixes §5.2 三判据 + chat 分流）：
+   * - chatMode = true → 不终态化（跨重启可续聊是产品语义，v4 B-1），落 resumable
+   *   entry 供侧栏 waiting 细分；
+   * - 子 JSONL 末行完整 JSON.parse → closed（closedReason=gc，与分支 2 重建映射一致；
+   *   done/failed 细分由 error 字段经 deriveClosedDisplay 派生）+ 写 .finalized sidecar
+   *   （防重锚——下次重建走分支 2 不再进判定）；
+   * - 末行截断 → closed + error（保守，错误方向安全）+ sidecar；
+   * - 文件不可读（IO 错误，可能暂时）→ 不判终态，落 resumable entry（防御性路径，
+   *   IO 恢复后重开可重判）。
+   *
+   * 防重：orphanJudged 实例级缓存（resumable 形态无 sidecar 锚，同进程重复调用跳过；
+   * 终态形态双重防护 = sidecar + 缓存）。调用方：index.ts session_start 恢复段（一次）。
+   */
+  recoverOrphanRecords(rootSessionFilter) {
+    for (const rec of this.reconstructAll(rootSessionFilter)) {
+      if (rec.status !== "running" || rec.externalInstance !== void 0) continue;
+      if (this.orphanJudged.has(rec.id)) continue;
+      this.orphanJudged.add(rec.id);
+      this.finalizeOrphanRecord(rec);
+    }
+  }
+  /**
+   * 单孤儿 record 的终态判定与落 entry（residual-fixes §5.2 三判据 + chat 分流）。
+   * 防重锚（orphanJudged 标记）已由调用方完成。
+   */
+  finalizeOrphanRecord(rec) {
+    if (rec.chatMode === true) {
+      this.reportSubagentRecord({ ...rec, resumable: true });
+      return;
+    }
+    const sessionFile = rec.sessionFile;
+    if (sessionFile === void 0) return;
+    const lastLine = readLastJsonlLine(sessionFile);
+    if (!lastLine.ok) {
+      this.reportSubagentRecord({ ...rec, resumable: true });
+      return;
+    }
+    let parseOk = false;
+    try {
+      JSON.parse(lastLine.line);
+      parseOk = true;
+    } catch {
+      parseOk = false;
+    }
+    writeFinalized(sessionFile, "gc");
+    this.reportSubagentRecord({
+      ...rec,
+      status: "closed",
+      closedReason: "gc",
+      endedAt: Date.now(),
+      ...parseOk ? {} : { error: "orphan recovery: subagent session ended abnormally (truncated last line)" }
+    });
+  }
+  /**
+   * [E2E 实测缺口] entry-born 孤儿恢复：register entry 已落主 session、但子 session 文件
+   * 从未创建（父进程死在 spawn 窗口期——register 写点与子进程首笔写入之间的窗口；外部
+   * 删除子文件的已知边界同形）。目录扫描（reconstructAll）看不见这类 record（无文件即
+   * 无扫描集），recoverOrphanRecords 判不到，侧栏（runtime entry 扫描源）永久 spinner。
+   *
+   * 判定：读主 session 的 subagent-record entry，取每 id 末条；末条 status=running 且
+   * 无子文件锚（不在 reconstructAll 结果中）且不在内存活 record（防误杀刚 register 的
+   * 在途 spawn）→ 按无文件判据收敛：chatMode=true → resumable（分流语义一致）；否则
+   * closed+gc+error（子文件由子进程创建，无文件 = 子进程从未开跑，error 方向安全）。
+   * 调用点：initSession 的 recoverOrphanRecords 之后（session_start，内存恒空）。
+   */
+  recoverEntryOnlyOrphans(mainSessionFile, rootSessionFilter) {
+    if (mainSessionFile === void 0) return;
+    let content;
+    try {
+      content = fs21.readFileSync(mainSessionFile, "utf-8");
+    } catch {
+      return;
+    }
+    const lastById = collectLastRecordEntries(content);
+    if (lastById.size === 0) return;
+    const anchoredIds = new Set(this.reconstructAll(rootSessionFilter).map((r) => r.id));
+    for (const [id, d] of lastById) {
+      if (!this.isEntryOrphanCandidate(id, d, rootSessionFilter, anchoredIds)) continue;
+      this.orphanJudged.add(id);
+      const rec = rebuildEntryRecord(id, d);
+      if (rec === null) continue;
+      this.finalizeEntryOnlyOrphan(rec, d.chatMode === true);
+    }
+  }
+  /**
+   * entry-born 孤儿候选判定（recoverEntryOnlyOrphans 的守卫链拆出）：末条 running、
+   * root session 匹配、无子文件锚、不在内存活 record（防误杀在途 spawn）、未判过。
+   */
+  isEntryOrphanCandidate(id, d, rootSessionFilter, anchoredIds) {
+    if (d.status !== "running") return false;
+    if (rootSessionFilter !== void 0 && d.rootSessionId !== rootSessionFilter) return false;
+    if (anchoredIds.has(id)) return false;
+    if (this.records.has(id)) return false;
+    return !this.orphanJudged.has(id);
+  }
+  /** entry-born 孤儿按无文件判据收敛落 entry：chatMode → resumable（分流语义一致）；
+   *  否则 closed+gc+error（子文件由子进程创建，无文件 = 子进程从未开跑，error 方向安全）。 */
+  finalizeEntryOnlyOrphan(rec, chatMode) {
+    this.reportSubagentRecord({
+      ...rec,
+      ...chatMode ? { resumable: true } : {
+        status: "closed",
+        closedReason: "gc",
+        endedAt: Date.now(),
+        error: "orphan recovery: no child session file (spawn interrupted or file removed externally)"
+      }
+    });
+  }
+  /** 订阅变更。返回取消订阅函数。 */
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  /** 触发所有监听器（TUI widget/list requestRender）。dispose 后短路。
+   *  [perf] 不清空磁盘缓存：per-file stat 戳自校验（任何磁盘写入改变戳 → 单文件重建），
+   *  内存事件（register/archive）不改变磁盘文件——旧实现整体失效是全量重扫的根因。 */
+  notifyChange() {
+    if (this._disposed) return;
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+  /** session 结束清理。 */
+  dispose() {
+    this._disposed = true;
+    this.listeners.clear();
+    this.fileCache.clear();
+    this.idToFile.clear();
+    this.dirStamp = null;
+    this.orphanJudged.clear();
+    this.indexEntries = null;
+    this.indexDirty = false;
+    this.lastIndexWriteAt = 0;
+    this.indexHigherVersion = false;
+  }
+  /** /resume /fork /new 后复活（dispose 的逆操作）。 */
+  revive() {
+    this._disposed = false;
+  }
+  // ── 内部 ──────────────────────────────────────────────────
+  /**
+   * 四分支 sidecar 矩阵重建（[perf] light 版）。
+   *
+   * 优先级：
+   *   1. .cancelled → closed（closedReason=cancelled）
+   *   2. .finalized → closed（closedReason=sidecar 内容 reason；空/旧格式 → disconnected）
+   *   3. .alive + pid 存活 + 未超软超时 → running, externalInstance=true
+   *   4. 兜底（无 marker、pid 死、超时）→ running（v4 B-1 可续聊语义）
+   *
+   * [perf]：逐文件 scanFile（stat 戳校验 + 头部 identity 轻量重建）。命中缓存的
+   * 文件零文件读取；变化的文件只重建自身，其余 N-1 个复用缓存。
+   *
+   * session 隔离：rootSessionFilter 非空时，只保留 rootSessionId 匹配的 record。
+   * rootSessionId 缺失（旧文件，未带身份字段）一律排除（无法判定归属）。
+   */
+  reconstructAll(rootSessionFilter) {
+    let dirMtimeMs;
+    try {
+      dirMtimeMs = fs21.statSync(this.sessionsDir).mtimeMs;
+    } catch {
+      return [];
+    }
+    if (this.dirStamp === null) {
+      const loaded = loadIndex(path15.dirname(this.sessionsDir));
+      this.indexEntries = loaded.entries;
+      this.indexHigherVersion = loaded.higherVersion;
+    }
+    if (this.dirStamp !== null && this.dirStamp.mtimeMs === dirMtimeMs) {
+      const now2 = Date.now();
+      const out2 = [];
+      for (const entry of this.fileCache.values()) {
+        if (entry.negative) continue;
+        _RecordStore.refreshAlive(entry, now2);
+        out2.push(entry.light);
+      }
+      return rootSessionFilter === void 0 ? out2 : out2.filter((r) => r.rootSessionId === rootSessionFilter);
+    }
+    let files;
+    try {
+      files = fs21.readdirSync(this.sessionsDir).filter((f) => f.endsWith(".jsonl")).map((f) => path15.join(this.sessionsDir, f));
+    } catch {
+      this.indexEntries = null;
+      return [];
+    }
+    const disk = new Set(files);
+    for (const [file, entry] of this.fileCache) {
+      if (!disk.has(file)) {
+        this.fileCache.delete(file);
+        if (!entry.negative) this.idToFile.delete(entry.light.id);
+        this.indexDirty = true;
+      }
+    }
+    const now = Date.now();
+    const out = [];
+    for (const file of files) {
+      const entry = this.scanFile(file, now);
+      if (entry) out.push(entry.light);
+    }
+    this.dirStamp = { mtimeMs: dirMtimeMs };
+    this.flushIndexAfterScan();
+    if (rootSessionFilter === void 0) return out;
+    return out.filter((r) => r.rootSessionId === rootSessionFilter);
+  }
+  /**
+   * 扫描单文件：stat 戳（jsonl + 3 sidecar）校验，全同 → 复用缓存（零文件读取，
+   * 含负缓存直接返回 null）；否则重建 light。
+   * identity 定位两级：头部 64KB（首轮会话）→ 全文 fallback（续聊场景 identity
+   * append 在尾部）；两级都找不到 → 写负缓存（防每轮全文重读）。
+   * 返回 null：文件消失/读失败/无 identity → 跳过。
+   */
+  scanFile(file, now) {
+    const jsonl = statStamp2(file);
+    if (!jsonl) {
+      this.fileCache.delete(file);
+      return null;
+    }
+    const cancelled = statStamp2(`${file}.cancelled`);
+    const finalized = statStamp2(`${file}.finalized`);
+    const alive = statStamp2(`${file}.alive`);
+    const cached = this.fileCache.get(file);
+    if (cached !== void 0 && sameStamp(cached.jsonl, jsonl) && sameNullableStamp(cached.cancelled, cancelled) && sameNullableStamp(cached.finalized, finalized) && sameNullableStamp(cached.alive, alive)) {
+      if (cached.negative) return null;
+      _RecordStore.refreshAlive(cached, now);
+      return cached;
+    }
+    if (this.indexEntries !== null) {
+      const hit = this.indexEntries.get(path15.basename(file));
+      if (hit !== void 0 && hit.mtimeMs === jsonl.mtimeMs && hit.size === jsonl.size) {
+        if (hit.negative === true) {
+          this.fileCache.set(file, { negative: true, jsonl, cancelled, finalized, alive });
+          return null;
+        }
+        const tomb2 = cancelled !== null ? readCancelledTombstone(file) : void 0;
+        const aliveData2 = alive !== null ? readAliveMarker(file) : void 0;
+        const finalReason2 = finalized !== null ? readFinalizedReason(file) : void 0;
+        const entry2 = {
+          light: _RecordStore.buildRecord(
+            { ...hit, forkDepth: void 0, sessionFile: file },
+            { tomb: tomb2, finalized: finalized !== null, finalizedReason: finalReason2, alive: aliveData2, jsonlMtimeMs: jsonl.mtimeMs, now }
+          ),
+          full: void 0,
+          jsonl,
+          cancelled,
+          finalized,
+          alive,
+          tomb: tomb2,
+          aliveData: aliveData2,
+          finalReason: finalReason2
+        };
+        this.fileCache.set(file, entry2);
+        this.idToFile.set(hit.id, file);
+        return entry2;
+      }
+    }
+    this.indexDirty = true;
+    const header = jsonl.size <= IDENTITY_HEAD_BYTES ? readIdentityHeader(file) : readIdentityHeader(file) ?? readIdentityTail(file) ?? readIdentityAnywhere(file);
+    if (!header) {
+      this.fileCache.set(file, { negative: true, jsonl, cancelled, finalized, alive });
+      return null;
+    }
+    const tomb = cancelled !== null ? readCancelledTombstone(file) : void 0;
+    const aliveData = alive !== null ? readAliveMarker(file) : void 0;
+    const finalReason = finalized !== null ? readFinalizedReason(file) : void 0;
+    const entry = {
+      light: _RecordStore.buildRecord(header, {
+        tomb,
+        finalized: finalized !== null,
+        finalizedReason: finalReason,
+        alive: aliveData,
+        jsonlMtimeMs: jsonl.mtimeMs,
+        now
+      }),
+      full: void 0,
+      jsonl,
+      cancelled,
+      finalized,
+      alive,
+      tomb,
+      aliveData,
+      finalReason
+    };
+    this.fileCache.set(file, entry);
+    this.idToFile.set(header.id, file);
+    return entry;
+  }
+  /**
+   * [perf L-1] 扫描尾索引落盘（节流）：释放映像 → dirty/高版本/60s 节流窗三重门 →
+   * fire-and-forget saveIndex（fileCache 全量投影）。写决策与发起在同步栈（collectRecords
+   * 返回后不会再有本轮写）；仅写完成的回调（推进节流窗）是异步的。所有 return 路径均
+   * 不清 dirty——未落盘的探测成果跨轮携带，直至真正写入。
+   *
+   * 并发安全：节流基准只在写成功后推进，W1 在途时新一轮过窗扫描可再 dispatch W2（不做
+   * 进程内排队——fire-and-forget 语义保持）。安全性由 saveIndex 的 tmp 唯一性
+   * （pid+单调序号）保证：交错 rename 的终态必为某一次的完整快照（last-writer-wins，
+   * 陈旧快照胜出时下轮戳不匹配自愈），不依赖本方法串行化。
+   */
+  flushIndexAfterScan() {
+    this.indexEntries = null;
+    if (!this.indexDirty) return;
+    if (this.indexHigherVersion) return;
+    if (Date.now() - this.lastIndexWriteAt < INDEX_WRITE_MIN_INTERVAL_MS) return;
+    const entries = this.projectIndexEntries();
+    this.indexDirty = false;
+    const encDir = path15.dirname(this.sessionsDir);
+    saveIndex(encDir, { entries }).then(() => {
+      this.lastIndexWriteAt = Date.now();
+    }).catch((err) => {
+      this.indexDirty = true;
+      logger28.debug("[subagents] sessions-index write failed", {
+        detail: { dir: encDir, error: err instanceof Error ? err.message : String(err) }
+      });
+    });
+  }
+  /**
+   * [perf L-1] fileCache 全量投影 → 索引快照（basename → 正/负条目）。
+   * 投影式单一 SSOT：不维护第二份可变索引映像（防双轨漂移）；fileCache 已被
+   * reconstructAll 修剪掉消失文件（修剪时置 indexDirty），下次过窗写时快照清除
+   * 磁盘上的陈旧条目。
+   */
+  projectIndexEntries() {
+    const entries = /* @__PURE__ */ new Map();
+    for (const [file, cached] of this.fileCache) {
+      const base = path15.basename(file);
+      if (cached.negative) {
+        entries.set(base, { negative: true, mtimeMs: cached.jsonl.mtimeMs, size: cached.jsonl.size });
+      } else {
+        entries.set(base, {
+          mtimeMs: cached.jsonl.mtimeMs,
+          size: cached.jsonl.size,
+          id: cached.light.id,
+          agent: cached.light.agent,
+          mode: cached.light.mode,
+          task: cached.light.task,
+          slug: cached.light.slug,
+          startedAt: cached.light.startedAt,
+          rootSessionId: cached.light.rootSessionId,
+          parentRecordId: cached.light.parentRecordId,
+          depth: cached.light.depth,
+          model: cached.light.model,
+          thinkingLevel: cached.light.thinkingLevel
+        });
+      }
+    }
+    return entries;
+  }
+  /**
+   * [perf] byId 索引直查 light record（单文件 stat 校验，不触发 getFullRecord 的
+   * 全量重建）。idToFile 未热（进程重启后尚未扫描过）时返回 undefined，调用方
+   * 自行兜底全目录扫描——用于把「跨重启后每条 message 一次 collectRecords 全扫」
+   * 降为 O(1) 索引命中。
+   */
+  findLightById(id) {
+    const file = this.idToFile.get(id);
+    if (!file) return void 0;
+    return this.scanFile(file, Date.now())?.light;
+  }
+  /**
+   * [perf] 单 record 详情懒加载：内存 running record 投影全量；磁盘 record 全量重建
+   * （reconstructFromFile）并套用同一 sidecar 状态矩阵。结果缓存在 FileCacheEntry.full，
+   * stat 戳变化时随 light 一起失效。列表 collectRecords 返回 light（无 eventLog/
+   * result/turns 等重数据），详情面板/工具 list 按需调本方法补齐。
+   *
+   * 返回 undefined：id 不存在（内存与磁盘均无）。reconstructFromFile 失败（无
+   * assistant message 等）→ 返回 light（无详情可补，缓存哨兵防重复全文重读）。
+   */
+  getFullRecord(id) {
+    const mem = this.records.get(id);
+    if (mem) return _RecordStore.recordToSubagent(mem);
+    const file = this.idToFile.get(id);
+    if (!file) return void 0;
+    const entry = this.scanFile(file, Date.now());
+    if (!entry) return void 0;
+    if (entry.full === void 0) {
+      const recon = reconstructFromFile(file);
+      if (recon) {
+        entry.full = _RecordStore.buildRecord(recon, {
+          tomb: entry.tomb,
+          finalized: entry.finalized !== null,
+          finalizedReason: entry.finalized !== null ? entry.finalReason ?? "" : void 0,
+          alive: entry.aliveData,
+          jsonlMtimeMs: entry.jsonl.mtimeMs,
+          fullEndedAt: recon.endedAt,
+          now: Date.now()
+        });
+      } else {
+        entry.full = entry.light;
+      }
+    }
+    return entry.full;
+  }
+  /** alive 探活刷新（scanFile 缓存命中与 reconstructAll 快路径共用）：
+   *  分支 3 的 running + alive 条目每扫重查 pid（结果不落盘，进程死亡无 IO），
+   *  保留旧实现「每次 collectRecords 重新 isProcessAlive」的语义。 */
+  static refreshAlive(entry, now) {
+    if (entry.alive === null || entry.light.status !== "running") return;
+    const marker = entry.aliveData;
+    if (!marker) return;
+    const live = isProcessAlive(marker.pid) && now - marker.startedAt < ALIVE_SOFT_TIMEOUT_MS;
+    entry.light.externalInstance = live ? marker : void 0;
+  }
+  /** identity 基底（头部 light 或全量 recon）+ 四分支 sidecar 状态矩阵 → SubagentRecord。 */
+  static buildRecord(base, m) {
+    let rec;
+    if ("turns" in base) {
+      rec = {
+        id: base.id,
+        agent: base.agent,
+        slug: base.slug,
+        status: "running",
+        // 占位，下方矩阵覆盖
+        mode: base.mode,
+        startedAt: base.startedAt,
+        rootSessionId: base.rootSessionId,
+        parentRecordId: base.parentRecordId,
+        depth: base.depth,
+        endedAt: void 0,
+        turns: base.turnCount,
+        totalTokens: base.totalTokens,
+        model: base.model,
+        thinkingLevel: base.thinkingLevel,
+        task: base.task,
+        currentActivity: void 0,
+        eventLog: base.eventLog,
+        displayItems: getDisplayItems(base),
+        result: base.result,
+        error: base.error,
+        sessionFile: base.sessionFile,
+        chatMode: base.chatMode,
+        worktree: base.worktree
+      };
+    } else {
+      rec = {
+        id: base.id,
+        agent: base.agent,
+        slug: base.slug,
+        status: "running",
+        // 占位，下方矩阵覆盖
+        mode: base.mode,
+        startedAt: base.startedAt,
+        rootSessionId: base.rootSessionId,
+        parentRecordId: base.parentRecordId,
+        depth: base.depth,
+        endedAt: void 0,
+        turns: 0,
+        totalTokens: 0,
+        model: base.model,
+        thinkingLevel: base.thinkingLevel,
+        task: base.task,
+        currentActivity: void 0,
+        eventLog: [],
+        displayItems: [],
+        result: void 0,
+        error: void 0,
+        sessionFile: base.sessionFile,
+        chatMode: base.chatMode,
+        worktree: base.worktree
+      };
+    }
+    if (m.tomb) {
+      markReconstructedStatus(rec, "closed");
+      rec.closedReason = "cancelled";
+      rec.error = "cancelled by user";
+      rec.endedAt = m.tomb.endedAt;
+    } else if (m.finalized) {
+      markReconstructedStatus(rec, "closed");
+      const reason = m.finalizedReason?.trim();
+      rec.closedReason = isValidClosedReason(reason) ? reason : "disconnected";
+      rec.endedAt = m.fullEndedAt ?? m.jsonlMtimeMs;
+    } else if (m.alive !== void 0 && isProcessAlive(m.alive.pid) && m.now - m.alive.startedAt < ALIVE_SOFT_TIMEOUT_MS) {
+      markReconstructedStatus(rec, "running");
+      rec.externalInstance = m.alive;
+    } else {
+      markReconstructedStatus(rec, "running");
+    }
+    return rec;
+  }
+  /** 从缓存与索引移除某文件（文件删除时；负缓存条目无 id，仅删缓存项）。 */
+  dropFileCache(file) {
+    const entry = this.fileCache.get(file);
+    if (entry) {
+      if (!entry.negative) this.idToFile.delete(entry.light.id);
+      this.fileCache.delete(file);
+    }
+  }
+  /** 排序比较器：status priority（running<failed<cancelled<done）+ startedAt desc。 */
+  static compareRecords(a, b) {
+    const pdiff = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
+    if (pdiff !== 0) return pdiff;
+    return b.startedAt - a.startedAt;
+  }
+  /** FR-8: 同步读取所有 manifest 记录（封装 ManifestStore.listAllSync，消除反射访问）。 */
+  readManifestsSync() {
+    return this.manifestStore?.listAllSync() ?? [];
+  }
+  /** FR-8: ManifestRecord → SubagentRecord（manifest 源投影）。
+   *  task/slug/model 从 manifest 真实值投影（配合 writeManifest 补字段），缺失兜底空串。
+   *  status 越界（mapManifestStatus 返回 null）时返回 null，由 collectRecords 跳过。 */
+  static manifestToSubagent(m) {
+    const status = mapManifestStatus(m.status);
+    if (status === null) return null;
+    return {
+      id: m.id,
+      agent: m.agentName,
+      task: m.task ?? "",
+      slug: m.slug ?? "",
+      status,
+      mode: "background",
+      startedAt: m.createdAt,
+      rootSessionId: m.rootSessionId || void 0,
+      parentRecordId: void 0,
+      depth: 0,
+      endedAt: m.completedAt,
+      turns: 0,
+      totalTokens: 0,
+      model: m.model ?? "",
+      thinkingLevel: void 0,
+      eventLog: [],
+      displayItems: [],
+      result: void 0,
+      error: void 0,
+      // closed 统一终态，不再按 status 区分 error 字段
+      sessionFile: m.sessionFile
+    };
+  }
+  /** ExecutionRecord → SubagentRecord（内存源投影）。 */
+  static recordToSubagent(r) {
+    return {
+      id: r.id,
+      agent: r.agent,
+      status: r.status,
+      closedReason: r.closedReason,
+      mode: r.mode,
+      slug: r.slug,
+      startedAt: r.startedAt,
+      rootSessionId: r.rootSessionId,
+      parentRecordId: r.parentRecordId,
+      depth: r.depth,
+      endedAt: r.endedAt,
+      turns: r.turnCount,
+      totalTokens: r.totalTokens,
+      model: r.model,
+      thinkingLevel: r.thinkingLevel,
+      task: r.task,
+      currentActivity: getCurrentActivity(r),
+      eventLog: getEventLog(r),
+      displayItems: getDisplayItems(r),
+      result: r.result,
+      error: r.error,
+      sessionFile: r.sessionFile,
+      round: r.round,
+      // [E2E 实测抓漏] 缺这两行时 chatMode/resumable 在 recordToSubagent 处被丢弃，
+      // entry 序列化后无此字段 → renderer isDone（需显式 chatMode===false）恒不成立，
+      // 完成态 one-shot 永远显示 waiting。单测 schema 断言曾因内存对象保留 undefined
+      // 键名而未拦截（真实 JSONL 丢 undefined 值），故 schema 测试改为序列化后断言。
+      chatMode: r.chatMode,
+      resumable: r.resumable,
+      // [review round2] worktree 隔离标志：内存源有 handle 或跨重启重建带 hadWorktree 均为 true。
+      worktree: r.worktreeHandle !== void 0 || r.hadWorktree === true,
+      engine: r.engine,
+      engineFallback: r.engineFallback,
+      // U2：engineHandle 经 entry 持久化（register/archive 双写点均经本投影），无则 undefined 自然省略
+      engineHandle: r.engineHandle
+    };
+  }
+};
+
+// src/execution/lifecycle-predicates.ts
+function hasLiveProcessHandle(recordId) {
+  const child = getChildByRecord(recordId);
+  return child !== void 0 && !child.killed;
+}
+function isIdle(record) {
+  return hasIdleTimer(record.id);
+}
+function isResumable(record) {
+  return record.status === "running" && !hasLiveProcessHandle(record.id);
+}
+
+// src/execution/idle-gc.ts
+var logger29 = getLogger("subagents");
+var GC_INTERVAL_MS = 60 * 60 * 1e3;
+var IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+function startIdleGc(store) {
+  const timer = setInterval(() => {
+    const now = Date.now();
+    for (const record of store.listAllActive()) {
+      if (isResumable(record) && record.idleSince) {
+        const age = now - record.idleSince;
+        if (age > IDLE_TTL_MS) {
+          logger29.warn(`[subagents] GC: archiving idle record ${record.id} (idle for ${Math.round(age / MS_PER_DAY)}d)`);
+          try {
+            store.archive(record);
+          } catch (err) {
+            bestEffort(err, `GC archive record ${record.id}`);
+          }
+        }
+      }
+    }
+  }, GC_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+// src/execution/worktree-manager.ts
+var import_node_child_process7 = require("child_process");
+var fs23 = __toESM(require("fs"), 1);
+var os3 = __toESM(require("os"), 1);
+var path17 = __toESM(require("path"), 1);
+
+// src/execution/worktree-registry.ts
+var fs22 = __toESM(require("fs"), 1);
+var path16 = __toESM(require("path"), 1);
+var import_proper_lockfile = __toESM(require_proper_lockfile(), 1);
+var logger30 = getLogger("subagents");
+var SPAWN_GRACE_MS = 6e4;
+var JSON_INDENT = 2;
+var LOCK_STALE_MS = 3e4;
+var LOCK_RETRIES = 10;
+function isRegistryData(value) {
+  return typeof value === "object" && value !== null && "entries" in value && Array.isArray(value.entries);
+}
+var WorktreeRegistry = class {
+  filePath;
+  constructor(agentDir) {
+    this.filePath = path16.join(agentDir, "subagents", "worktrees.json");
+  }
+  /**
+   * 新增条目（create 成功后调，pid=0 占位）。
+   * 同 branch 已存在则覆盖（防残留覆盖）。
+   * 跨进程锁内 RMW（D5a）；锁降级路径见 mutate。
+   */
+  async add(entry) {
+    await this.mutate((entries) => {
+      const idx = entries.findIndex((e) => e.branch === entry.branch);
+      if (idx >= 0) {
+        entries[idx] = entry;
+      } else {
+        entries.push(entry);
+      }
+    });
+  }
+  /**
+   * 更新 pid（runSpawn spawn() 返回后同步调）。
+   * branch 不存在则忽略（create 后崩溃 + reaper 已清的竞态）。
+   * sessionFile 可选补全：传入时填入 entry（reaper 据 pid 死活判孤儿，不读本字段）。
+   */
+  async updatePid(branch, pid, sessionFile) {
+    await this.mutate(
+      (entries) => {
+        const idx = entries.findIndex((e) => e.branch === branch);
+        if (idx >= 0) {
+          entries[idx] = {
+            ...entries[idx],
+            pid,
+            ...sessionFile !== void 0 ? { sessionFile } : {}
+          };
+        }
+      },
+      { branch, pid }
+    );
+  }
+  /**
+   * 移除条目（cleanup/reaper 清理后调）。
+   * branch 不存在则忽略（幂等）。
+   */
+  async remove(branch) {
+    await this.mutate(
+      (entries) => {
+        const filtered = entries.filter((e) => e.branch !== branch);
+        if (filtered.length !== entries.length) {
+          entries.length = 0;
+          entries.push(...filtered);
+        }
+      },
+      { branch }
+    );
+  }
+  /**
+   * 锁内 RMW 统一入口：withLock(load → mutate → save)。
+   *
+   * 降级语义（对齐本类既有 best-effort 约定——注册表写失败不阻断 create/cleanup
+   * 主流程）：锁获取失败（重试耗尽 ELOCKED 等）→ warn + 无锁执行同一段 RMW
+   * （= D5a 之前的 last-write-wins 行为，条目丢失由 reaper 对账兜底），
+   * 不抛错、永不 reject（调用方含 session-runner 的 fire-and-forget 回调）。
+   */
+  async mutate(mutate, context) {
+    const run = () => {
+      const entries = this.load();
+      mutate(entries);
+      this.save(entries, context);
+    };
+    try {
+      await this.withLock(() => {
+        run();
+      });
+    } catch (lockErr) {
+      logger30.warn("[worktree] registry lock unavailable, degraded to lock-free RMW", {
+        ...context ?? {},
+        err: lockErr instanceof Error ? lockErr.message : String(lockErr)
+      });
+      try {
+        run();
+      } catch (err) {
+        bestEffort(err, "worktree registry degraded RMW");
+      }
+    }
+  }
+  /**
+   * proper-lockfile 直用的跨进程锁（取代已删除的共享 file-lock 包装，抽包去依赖）。
+   * 锁协议逐项对齐 extensions/shared/file-lock/src/file-lock.ts 的 withFileLock：
+   *   - lockfile 路径 = <目标文件>.lock（proper-lockfile 默认，与包装/runtime 侧
+   *     同一路径才互斥）
+   *   - realpath:false —— 目标文件不存在也可锁（realpath 默认 true 时 ENOENT）
+   *   - stale 30s：持锁进程崩溃后锁可被夺取
+   *   - async retries 指数退避：10 次 / factor 2 / 100ms~10s / randomize，耗尽抛
+   *     ELOCKED（调用方 mutate 的 catch 决定降级路径）
+   *   - onCompromised：锁被 stale 夺取时标记，fn 执行前抛错——防止在失去互斥
+   *     保证的锁下写盘（对齐 pi throwIfCompromised 语义）
+   * 锁参数值由 LOCK_STALE_MS / LOCK_RETRIES 常量承载（防漂移说明见常量注释）。
+   */
+  async withLock(fn) {
+    const dir = path16.dirname(this.filePath);
+    if (!fs22.existsSync(dir)) fs22.mkdirSync(dir, { recursive: true });
+    let compromised;
+    const release = await import_proper_lockfile.default.lock(this.filePath, {
+      realpath: false,
+      stale: LOCK_STALE_MS,
+      retries: {
+        retries: LOCK_RETRIES,
+        factor: 2,
+        minTimeout: 100,
+        maxTimeout: 1e4,
+        randomize: true
+      },
+      onCompromised: (err) => {
+        compromised = err;
+      }
+    });
+    try {
+      if (compromised) throw compromised;
+      fn();
+    } finally {
+      try {
+        await release();
+      } catch (unlockErr) {
+        logger30.debug("unlock failed after compromise (ignorable)", {
+          detail: { err: unlockErr instanceof Error ? unlockErr.message : String(unlockErr) }
+        });
+      }
+    }
+  }
+  /**
+   * 加载全部条目（reaper 遍历用）。
+   * 文件不存在 / 解析失败 / IO 错误 → 返回空数组（视为无活 worktree）。
+   */
+  load() {
+    try {
+      const raw = fs22.readFileSync(this.filePath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (isRegistryData(parsed)) {
+        return parsed.entries;
+      }
+      return [];
+    } catch {
+      return [];
+    }
+  }
+  /**
+   * 原子写入全部条目（shared/atomic-write 统一原语，U6b 迁移——sync 档
+   * writeAtomicFileSync；写失败时原语清理残留 tmp，消除旧实现「write 成功但
+   * rename 失败漏清 tmp」缺陷）。
+   * best-effort：写入失败不阻断主流程（create/cleanup 的 git 操作已执行，
+   * 注册表与 git 状态的短暂不一致靠下次 reaper 对账收敛）。
+   * 写盘失败时 warn 日志（带 branch/pid 上下文，补全失败可观测闭环）。
+   */
+  save(entries, context) {
+    try {
+      writeAtomicFileSync(this.filePath, JSON.stringify({ entries }, null, JSON_INDENT));
+    } catch (err) {
+      bestEffort(err, "worktree registry save");
+      logger30.warn(
+        "[worktree] registry save failed; pid may stay 0 and be reaped by orphan reaper",
+        { ...context ?? {}, err: err instanceof Error ? err.message : String(err) }
+      );
+    }
+  }
+};
+
+// src/execution/worktree-manager.ts
+var logger31 = getLogger("subagents");
+var SAFE_ID_RE2 = /^[\w-]+$/;
+var GIT_TIMEOUT_MS2 = 3e4;
+var WORKTREE_TMP_ROOT = "pi-subagents";
+var BRANCH_PREFIX = "pi-sub-";
+var GitRunError2 = class extends Error {
+  exitCode;
+  stderr;
+  timedOut;
+  constructor(message, props) {
+    super(message);
+    this.name = "GitRunError";
+    this.exitCode = props.exitCode;
+    this.stderr = props.stderr;
+    this.timedOut = props.timedOut;
+  }
+};
+function isWriteCommand(args) {
+  if (args[0] === "worktree") return args[1] === "add" || args[1] === "remove" || args[1] === "prune";
+  if (args[0] === "branch") return args[1] === "-D";
+  return args[0] === "add";
+}
+function resolveRepoFromCheckout(checkout) {
+  try {
+    const raw = fs23.readFileSync(path17.join(checkout, ".git"), "utf-8").trim();
+    if (!raw.startsWith("gitdir:")) return void 0;
+    const gitdir = raw.slice("gitdir:".length).trim();
+    const worktreesDir = path17.dirname(gitdir);
+    if (path17.basename(worktreesDir) !== "worktrees") return void 0;
+    const gitRootDir = path17.dirname(worktreesDir);
+    return path17.dirname(gitRootDir);
+  } catch {
+    return void 0;
+  }
+}
+var WorktreeManager = class {
+  // 全局注册表：跨 repo 记录所有活 worktree，reaper 遍历此表判孤儿。
+  registry;
+  // agentDir（<agentDir>/subagents/<enc>/sessions 下扫 .alive 活信号，D5b 对账用）
+  agentDir;
+  // per-repo 写命令串行队列：value = 队尾（已吞 rejection 的）Promise。
+  // 入队形态 prev.catch(()=>{}).then(run)——后继只关心「自己已排队」，
+  // 不继承前驱错误（否则 1 个 worktree add 失败会传染同 repo 后续全部写命令，
+  // 替代旧同步版单线程天然全局串行的「各命令独立失败」语义）。
+  writeQueues = /* @__PURE__ */ new Map();
+  constructor(agentDir) {
+    this.agentDir = agentDir;
+    this.registry = new WorktreeRegistry(agentDir);
+  }
+  /**
+   * 为子 agent 创建隔离 worktree。
+   *
+   * @param mainCwd 主仓库根目录
+   * @param recordId 执行记录 ID（必须匹配 `^[\w-]+$`）
+   * @returns 冻结的 WorktreeHandle
+   */
+  async create(mainCwd, recordId) {
+    if (!SAFE_ID_RE2.test(recordId)) {
+      throw new DirtyWorktreeError(
+        `recordId contains unsafe characters: "${recordId}" (must match ^[\\w-]+$)`
+      );
+    }
+    const [statusR, revR] = await Promise.allSettled([
+      this.gitRunAsync(["status", "--porcelain"], { cwd: mainCwd }),
+      this.gitRunAsync(["rev-parse", "HEAD"], { cwd: mainCwd })
+    ]);
+    if (statusR.status === "rejected") throw statusR.reason;
+    const statusText = statusR.value.trim();
+    if (statusText.length > 0) {
+      throw new DirtyWorktreeError(
+        `Working tree is dirty in ${mainCwd}:
+${statusText}`
+      );
+    }
+    if (revR.status === "rejected") throw revR.reason;
+    const baseCommit = revR.value.trim();
+    const branch = `pi-sub-${recordId}`;
+    const worktreePath = path17.join(os3.tmpdir(), "pi-subagents", encodeCwd(mainCwd), branch);
+    if (fs23.existsSync(worktreePath)) {
+      try {
+        fs23.rmSync(worktreePath, { recursive: true, force: true });
+      } catch (cleanErr) {
+        bestEffort(cleanErr, "pre-create checkout cleanup");
+      }
+    }
+    await this.gitRunAsync(["worktree", "add", "-b", branch, worktreePath, "HEAD"], {
+      cwd: mainCwd
+    });
+    await this.registry.add({
+      repo: mainCwd,
+      branch,
+      checkout: worktreePath,
+      pid: 0,
+      createdAt: Date.now()
+    });
+    try {
+      const mainNodeModules = path17.join(mainCwd, "node_modules");
+      const worktreeNodeModules = path17.join(worktreePath, "node_modules");
+      if (fs23.existsSync(mainNodeModules) && !fs23.existsSync(worktreeNodeModules)) {
+        fs23.symlinkSync(mainNodeModules, worktreeNodeModules);
+      }
+      return Object.freeze({
+        path: worktreePath,
+        branch,
+        baseCommit,
+        mainCwd
+      });
+    } catch (err) {
+      try {
+        await this.gitRunAsync(["worktree", "remove", "--force", worktreePath], { cwd: mainCwd });
+      } catch (cleanErr) {
+        bestEffort(cleanErr, "worktree remove (create rollback MF#3)");
+      }
+      try {
+        await this.gitRunAsync(["branch", "-D", branch], { cwd: mainCwd });
+      } catch (cleanErr) {
+        bestEffort(cleanErr, "branch delete (create rollback MF#3)");
+      }
+      await this.registry.remove(branch);
+      throw err;
+    }
+  }
+  /**
+   * 注册子进程 pid（runSpawn spawn() 返回后调）。
+   * create 时 pid 未知写 0 占位，子进程 spawn 返回后（child.pid 同步可得）由此补全。
+   * reaper 据 pid 死活判孤儿，pid=0 条目用 SPAWN_GRACE 宽限。
+   * sessionFile 可选补全：传入时填入 registry entry（reaper 据 pid 死活判孤儿，不读本字段；保留供诊断）。
+   *
+   * [D5a] async 化：pid 补全走跨进程锁内 RMW（互斥窗口消除 updatePid 与并发 add/remove
+   * 的交错）。永不 reject（锁降级 + best-effort save 均内部兜底），调用方可安全
+   * fire-and-forget（session-runner 的 stdout data 回调上下文）。
+   */
+  async registerPid(branch, pid, sessionFile) {
+    await this.registry.updatePid(branch, pid, sessionFile);
+  }
+  /**
+   * 清理 worktree：git worktree remove --force + git branch -D + 注册表移除。
+   * 三步各自独立 try/catch——任一步失败不阻断其余（如 remove 失败仍尝试 branch -D + 注册表移除），
+   * 避免单步失败导致后续资源泄漏。
+   *
+   * @param handle 要清理的 worktree handle（含 mainCwd，不靠路径反推）
+   */
+  async cleanup(handle) {
+    try {
+      await this.gitRunAsync(["worktree", "remove", "--force", handle.path], {
+        cwd: handle.mainCwd
+      });
+    } catch (err) {
+      bestEffort(err, "worktree remove (cleanup)");
+    }
+    try {
+      await this.gitRunAsync(["branch", "-D", handle.branch], {
+        cwd: handle.mainCwd
+      });
+    } catch (err) {
+      bestEffort(err, "branch delete (cleanup)");
+    }
+    await this.registry.remove(handle.branch);
+  }
+  /**
+   * 收集 worktree 的改动为 patch。
+   *
+   * [MF#3] patchFile 由调用方指定（写在 worktree 之外，避免被 cleanup 删除）。
+   * [MF#2] 先 git add -A 暂存全部改动（含未跟踪新文件），再 git diff --cached baseCommit
+   * 对比暂存区与 base commit。旧实现 `git diff HEAD baseCommit` 是树 vs 树对比：
+   * worktree HEAD 初始即 baseCommit，子 agent 不提交时 HEAD 仍 == baseCommit → diff 恒空 → 改动丢失。
+   *
+   * @param handle worktree handle
+   * @param patchFile patch 输出路径（须在 worktree 之外）
+   * @returns patch 结果（patchFile 路径 + failed/written 标记）。
+   *   written=true 仅当 diff 非空且写盘成功；空 diff 或写失败均 written=false，
+   *   调用方据此回填 record.patchFile，避免悬空路径（`git apply` 不存在的文件）。
+   */
+  async collectPatch(handle, patchFile) {
+    try {
+      await this.gitRunAsync(["add", "-A"], { cwd: handle.path });
+    } catch (err) {
+      bestEffort(err, "git add -A (collectPatch)");
+    }
+    const diff = await this.gitRunAsync(
+      ["diff", "--cached", handle.baseCommit],
+      { cwd: handle.path }
+    );
+    if (diff.length === 0) {
+      return Object.freeze({ patchFile, failed: false, written: false });
+    }
+    try {
+      fs23.writeFileSync(patchFile, diff, "utf-8");
+      return Object.freeze({ patchFile, failed: false, written: true });
+    } catch {
+      return Object.freeze({ patchFile, failed: true, written: false });
+    }
+  }
+  /**
+   * 扫描并清理 pi-sub-* 孤儿 worktree + 物理面对账（D5b）。
+   *
+   * 阶段一（既有）：遍历全局注册表（<agentDir>/subagents/worktrees.json），
+   * 按 pid 死活判孤儿。不依赖当前 cwd 是否 git repo——注册表里记了 repo 路径，
+   * 直接 git -C <repo> 跨 repo 清理。
+   *
+   * 判据（唯一不删条件 = 进程还活着）：
+   *   pid > 0 且 isProcessAlive(pid)   → 跳过（活进程，绝不删）
+   *   pid > 0 且进程已死                → 孤儿（正常退出未 cleanup / 崩溃残留）
+   *   pid == 0 且超 SPAWN_GRACE_MS      → 孤儿（create 后崩溃，pid 永未补全）
+   *   pid == 0 且未超宽限               → 跳过（可能正在 spawn）
+   *
+   * 阶段二（D5b）：物理面（tmpdir checkout + 分支）与注册表双向 diff 收敛——
+   * 兑现 worktree-registry.ts 头注释声称的「tmpdir + 分支对账兜底」。全流程
+   * 幂等、失败仅日志（对账失败不阻断 session_start）。
+   */
+  async scan() {
+    const entries = this.registry.load();
+    const now = Date.now();
+    for (const entry of entries) {
+      if (!this.isOrphan(entry, now)) {
+        continue;
+      }
+      await this.cleanupOrphan(entry);
+    }
+    await this.reconcileWithPhysical();
+  }
+  /**
+   * D5b 双向 diff 对账：物理面（tmpdir checkout 目录 + git branch --list）与
+   * 注册表互查，收敛三类漂移（锁消灭交错主因后，本对账兜底条目丢失/文件损坏的长尾）。
+   * 方向一/方向二的完整判据见 {@link removePhantomRegistryEntries} /
+   * {@link reconcileUnregisteredWorktrees}。
+   */
+  async reconcileWithPhysical() {
+    const physical = await this.discoverPhysicalWorktrees();
+    const registered = this.registry.load();
+    const registeredBranches = new Set(registered.map((e) => e.branch));
+    const repos = new Set(registered.map((e) => e.repo));
+    for (const pt of physical) {
+      if (pt.repo) repos.add(pt.repo);
+    }
+    const branchesByRepo = await this.listPhysicalBranches(repos);
+    await this.removePhantomRegistryEntries(registered, branchesByRepo);
+    const orphans = physical.filter((pt) => !registeredBranches.has(pt.branch));
+    await this.reconcileUnregisteredWorktrees(orphans);
+  }
+  /** 对账方向一（注册有 → 物理无）：条目的分支与 checkout 目录都已不存在 → 条目指向
+   *  幻影资源 → 移除条目（纯清账，不删任何仍存在的资源，幂等安全）。 */
+  async removePhantomRegistryEntries(registered, branchesByRepo) {
+    for (const entry of registered) {
+      const branches = branchesByRepo.get(entry.repo);
+      if (branches === void 0) continue;
+      const branchGone = !branches.has(entry.branch);
+      const checkoutGone = !fs23.existsSync(entry.checkout);
+      if (branchGone && checkoutGone) {
+        logger31.warn("[worktree] reconcile: registry entry has no physical worktree/branch, removing entry", {
+          branch: entry.branch,
+          repo: entry.repo,
+          pid: entry.pid
+        });
+        await this.registry.remove(entry.branch);
+      }
+    }
+  }
+  /** 对账方向二（物理有 → 注册无）：按 enc 段（encodeCwd(mainCwd)）聚合，活信号 =
+   *  <agentDir>/subagents/<enc>/sessions/*.alive 中存活的 pid（session-runner
+   *  first header 时写入，崩溃残留不删）：
+   *    - 无活 pid：残留判死，checkout mtime 超 SPAWN_GRACE_MS 才清（防误清另一
+   *      进程 worktree add 完成到 registry.add 落盘之间的 create 窗口）；
+   *    - 恰好 1 个活 pid 且恰好 1 个残留：补写回注册表（自愈——最常见的双 session
+   *      并发覆盖丢条目场景，补写后回归标准 pid 判据路径）；
+   *    - 多活 pid 或多残留无法建立 branch↔pid 对应：跳过 + warn——宁延迟勿误删；
+   *      活体自身 cleanup 路径正常（registry.remove 幂等），死体等活 pid 全灭后
+   *      下一周期收敛。 */
+  async reconcileUnregisteredWorktrees(orphans) {
+    const orphansByEnc = /* @__PURE__ */ new Map();
+    for (const pt of orphans) {
+      const list = orphansByEnc.get(pt.enc) ?? [];
+      list.push(pt);
+      orphansByEnc.set(pt.enc, list);
+    }
+    for (const [enc, list] of orphansByEnc) {
+      await this.reconcileEncSegment(enc, list);
+    }
+  }
+  /** 单 enc 段的残留处置三分支：无活 pid 判死清理 / 唯一对应自愈补写 / 多对应保守跳过。 */
+  async reconcileEncSegment(enc, list) {
+    const alivePids = this.collectAlivePids(enc);
+    if (alivePids.length === 0) {
+      await this.cleanupDeadSegment(list);
+      return;
+    }
+    if (alivePids.length === 1 && list.length === 1) {
+      const pt = list[0];
+      logger31.warn("[worktree] reconcile: unregistered physical worktree with one alive pid, re-registering (self-heal)", {
+        branch: pt.branch,
+        checkout: pt.checkout,
+        repo: pt.repo,
+        pid: alivePids[0]
+      });
+      await this.registry.add({
+        repo: pt.repo ?? path17.dirname(pt.checkout),
+        branch: pt.branch,
+        checkout: pt.checkout,
+        pid: alivePids[0],
+        createdAt: pt.mtimeMs
+      });
+      return;
+    }
+    logger31.warn("[worktree] reconcile: unregistered physical worktrees present but alive-pid mapping ambiguous, skipping this cycle", {
+      enc,
+      orphans: list.length,
+      alivePids: alivePids.length
+    });
+  }
+  /** 无活 pid 段：残留判死清理——checkout mtime 超 SPAWN_GRACE_MS 才清（防误清另一
+   *  进程 worktree add 完成到 registry.add 落盘之间的 create 窗口）。 */
+  async cleanupDeadSegment(list) {
+    for (const pt of list) {
+      const age = Date.now() - pt.mtimeMs;
+      if (age <= SPAWN_GRACE_MS) continue;
+      logger31.warn("[worktree] reconcile: unregistered physical worktree with no alive pid, cleaning up", {
+        branch: pt.branch,
+        checkout: pt.checkout,
+        repo: pt.repo,
+        ageMs: age
+      });
+      await this.cleanupPhysical(pt);
+    }
+  }
+  /**
+    * 物理面发现：扫描 <tmpdir>/pi-subagents/<enc>/<pi-sub-*> checkout 目录。
+  * repo 从 checkout/.git 指针文件推导（`gitdir: <repo>/.git/worktrees/<branch>`，
+    * 普通 repo 与 bare+worktree（.bare/worktrees/...）统一取 worktrees 段上两级）；
+    * 推导失败（残缺 checkout）repo=undefined，由调用方按无主残留处置。
+    */
+  async discoverPhysicalWorktrees() {
+    const root = path17.join(os3.tmpdir(), WORKTREE_TMP_ROOT);
+    let encDirs;
+    try {
+      encDirs = fs23.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {
+      return [];
+    }
+    const result = [];
+    for (const enc of encDirs) {
+      let branchDirs;
+      try {
+        branchDirs = fs23.readdirSync(path17.join(root, enc), { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith(BRANCH_PREFIX)).map((d) => d.name);
+      } catch {
+        continue;
+      }
+      for (const branch of branchDirs) {
+        const checkout = path17.join(root, enc, branch);
+        try {
+          const mtimeMs = fs23.statSync(checkout).mtimeMs;
+          result.push({ enc, branch, checkout, repo: resolveRepoFromCheckout(checkout), mtimeMs });
+        } catch (err) {
+          bestEffort(err, "physical worktree stat (reconcile)");
+        }
+      }
+    }
+    return result;
+  }
+  /**
+   * per repo 查物理分支全集：`git -C <repo> branch --list 'pi-sub-*' --format=%(refname:short)`。
+   * 读类命令不加写锁；单 repo 失败 → map 不含该 repo（get 返回 undefined），
+   * 调用方据此保守跳过该 repo 的条目判定（防把「查询失败」误判成「分支不存在」）。
+   */
+  async listPhysicalBranches(repos) {
+    const map = /* @__PURE__ */ new Map();
+    for (const repo of repos) {
+      try {
+        const out = await this.gitRunAsync(
+          ["branch", "--list", `${BRANCH_PREFIX}*`, "--format=%(refname:short)"],
+          { cwd: repo }
+        );
+        const branches = new Set(
+          out.split("\n").map((l) => l.trim()).filter((l) => l.startsWith(BRANCH_PREFIX))
+        );
+        map.set(repo, branches);
+      } catch (err) {
+        bestEffort(err, `git branch --list (reconcile, repo=${repo})`);
+      }
+    }
+    return map;
+  }
+  /**
+   * 收集 enc 段的活 pid：<agentDir>/subagents/<enc>/sessions/*.alive 中
+   * readAliveMarker 解析成功且 isProcessAlive 的 pid（去重）。
+   * 崩溃残留的 .alive（pid 已死）天然过滤掉——这正是「死活判据」的物理面来源。
+   */
+  collectAlivePids(enc) {
+    const sessionsDir = path17.join(this.agentDir, "subagents", enc, "sessions");
+    let files;
+    try {
+      files = fs23.readdirSync(sessionsDir);
+    } catch {
+      return [];
+    }
+    const pids = /* @__PURE__ */ new Set();
+    for (const file of files) {
+      if (!file.endsWith(".alive")) continue;
+      const marker = readAliveMarker(path17.join(sessionsDir, file.slice(0, -".alive".length)));
+      if (marker && isProcessAlive(marker.pid)) {
+        pids.add(marker.pid);
+      }
+    }
+    return [...pids];
+  }
+  /**
+   * 清理物理残留（D5b 方向二的死体处置）：worktree remove → prune → branch -D
+   * → 目录 rm 兜底，四步各自 best-effort（幂等，失败仅日志）。
+   * prune 必要性：checkout 目录已不存在的 worktree，remove 会失败且 branch -D
+   * 被「used by worktree」拒绝——prune 清掉缺失目录的元数据后分支才可删。
+   */
+  async cleanupPhysical(pt) {
+    if (pt.repo) {
+      try {
+        await this.gitRunAsync(["worktree", "remove", "--force", pt.checkout], { cwd: pt.repo });
+      } catch (err) {
+        bestEffort(err, "worktree remove (reconcile)");
+      }
+      try {
+        await this.gitRunAsync(["worktree", "prune"], { cwd: pt.repo });
+      } catch (err) {
+        bestEffort(err, "worktree prune (reconcile)");
+      }
+      try {
+        await this.gitRunAsync(["branch", "-D", pt.branch], { cwd: pt.repo });
+      } catch (err) {
+        bestEffort(err, "branch delete (reconcile)");
+      }
+    }
+    try {
+      if (fs23.existsSync(pt.checkout)) {
+        fs23.rmSync(pt.checkout, { recursive: true, force: true });
+      }
+    } catch (err) {
+      bestEffort(err, "checkout dir rm (reconcile)");
+    }
+  }
+  /**
+   * 判孤儿：pid 死活为主判据。pid=0 走 SPAWN_GRACE 宽限（create→spawn 窗口）。
+   */
+  isOrphan(entry, now) {
+    if (entry.pid === 0) {
+      const expired = now - entry.createdAt > SPAWN_GRACE_MS;
+      if (expired) {
+        logger31.warn(
+          "[worktree] orphan reaper: pid=0 entry exceeded SPAWN_GRACE_MS, treating as orphan",
+          { branch: entry.branch, checkout: entry.checkout, createdAt: entry.createdAt, now }
+        );
+      }
+      return expired;
+    }
+    return !isProcessAlive(entry.pid);
+  }
+  /** 清理单个孤儿条目：worktree remove + branch -D + 注册表移除，三步各自 best-effort。 */
+  async cleanupOrphan(entry) {
+    try {
+      await this.gitRunAsync(["worktree", "remove", "--force", entry.checkout], { cwd: entry.repo });
+    } catch (err) {
+      bestEffort(err, "worktree remove (orphan reaper)");
+    }
+    try {
+      await this.gitRunAsync(["branch", "-D", entry.branch], { cwd: entry.repo });
+    } catch (err) {
+      bestEffort(err, "branch delete (orphan reaper)");
+    }
+    await this.registry.remove(entry.branch);
+  }
+  // ============================================================
+  // 内部工具
+  // ============================================================
+  /**
+   * git 命令异步执行器。与 gitRun 同一超时/错误包装约定（message 格式逐字一致），
+   * 差异仅在错误属性形态（GitRunError 挂 exitCode/stderr/timedOut）。
+   * 写类命令经 per-repo mutex 串行（不依赖 git 锁实现细节 + 并发限流 + 行为确定性）。
+   *
+   * stdout 保真返回（不 trim）：collectPatch 把 diff 输出原样落盘为 patch 文件，
+   * 裁掉尾换行会产出 `git apply` 拒绝的 corrupt patch（2026-08-16 门 4 实测）。
+   * 需要干净文本的消费点（baseCommit / 脏树 status 拼接）自行 trim。
+   */
+  async gitRunAsync(args, opts) {
+    const run = () => new Promise((resolve6, reject) => {
+      (0, import_node_child_process7.execFile)(
+        "git",
+        args,
+        { cwd: opts.cwd, timeout: opts.timeout ?? GIT_TIMEOUT_MS2, encoding: "utf-8" },
+        (err, stdout, stderr) => {
+          if (err) {
+            const execErr = err;
+            reject(
+              new GitRunError2(`git ${args[0]} failed: ${execErr.message}`, {
+                // P-errshape 实测：execFile 退出码在 err.code（数字时）；超时 killed+SIGTERM
+                exitCode: typeof execErr.code === "number" ? execErr.code : void 0,
+                stderr: typeof stderr === "string" ? stderr : void 0,
+                timedOut: execErr.killed === true && execErr.signal === "SIGTERM"
+              })
+            );
+            return;
+          }
+          resolve6(stdout);
+        }
+      );
+    });
+    if (!isWriteCommand(args)) return run();
+    const repo = opts.cwd;
+    const prev = this.writeQueues.get(repo) ?? Promise.resolve();
+    const next = prev.catch(() => {
+    }).then(run);
+    const tail = next.then(
+      () => void 0,
+      () => void 0
+    );
+    this.writeQueues.set(repo, tail);
+    void tail.finally(() => {
+      if (this.writeQueues.get(repo) === tail) this.writeQueues.delete(repo);
+    });
+    return next;
+  }
+};
+
+// src/execution/subagent-service.ts
+var logger32 = getLogger("subagents");
+var COLD_LOOKUP_SCAN_LIMIT = 1e3;
+var disposedUiRequestStub = () => Promise.resolve({ cancelled: true });
+function emitPendingRegister(pi, id, name) {
+  pi?.events.emit("pending:register", {
+    id,
+    type: "subagent",
+    name: name ? displayAgentName(name) : id
+  });
+}
+function emitPendingUnregister(pi, id, reason) {
+  pi?.events.emit("pending:unregister", {
+    id,
+    reason
+  });
+}
+var PRIORITY_BACKGROUND = 1e3;
+var ENV_ROOT_SESSION_ID = "PI_SUBAGENT_ROOT_SESSION_ID";
+var ENV_SELF_RECORD_ID = "PI_SUBAGENT_SELF_RECORD_ID";
+var ENV_DEPTH = "PI_SUBAGENT_DEPTH";
+var ENV_ROOT_CWD = "PI_SUBAGENT_ROOT_CWD";
+var SubagentService = class {
+  pool;
+  store;
+  modelService;
+  cwd;
+  worktreeManager;
+  getMainSessionFile;
+  /** UI 请求 handler（进程级，可被 setUiRequestHandler / initSession 覆盖）。 */
+  uiRequestHandler;
+  /** L2 dialog 串行队列（进程级）。SR-4：child close 时 session-runner 调 rejectChildDialogs 清理。 */
+  dialogQueue;
+  /** UI 请求可观测性（sessionMode + handler 缺失告警去重，提取自本类降低行数）。 */
+  uiObservability = new UiRequestObservability();
+  pi = null;
+  /** 当前 Pi session ID（本进程 pi session，事件路由等用；record 过滤不用它）。initSession 时注入。 */
+  sessionId = null;
+  /** 主 session 文件（initSession 按值直传——jiti 多实例下闭包缓存不可靠，见 SessionInit 注释）。 */
+  mainSessionFile;
+  /** 所属根 session ID（record 归属过滤用）。根进程 = sessionId（自己是 root）；
+   *  子进程 = env PI_SUBAGENT_ROOT_SESSION_ID 贯穿的真 ROOT（initSession 读取）。
+   *  与 sessionId 正交：sessionId 是本进程 pi session（事件路由等），sessionRootId 是所属根
+   *  （collectRecords filter 用，与 createRecordForMode 的 rootSessionId 盖章同源——子进程
+   *  因此看到整棵 ROOT 树）。设计见 recursive-subagent-visibility.md 决策 3。 */
+  sessionRootId = null;
+  /** 进程级执行上下文基线（不依赖 ALS 贯穿——pi RPC mode 的 stdin JSONL 是事件回调式
+   *  （attachJsonlLineReader stream.on("data")），每个命令是独立异步链，initSession 里
+   *  execCtxAls.enterWith 的 store 不会贯穿到后续 tool 调用事件（实测：递归第二层
+   *  parentRecordId/depth 丢失而 rootSessionId 正确——rootSessionId 是实例字段所以不受影响）。
+   *  基线 = 本进程自己的身份（initSession 从 env 读取，与 sessionRootId 同机制）：
+   *  读 ALS store 失败时兜底，保证「本进程派发的 subagent 都是本进程记录的孩子」
+   *  这一跨进程树形关系成立。
+   *  initSession 设置：有 env PI_SUBAGENT_SELF_RECORD_ID → {recordId: env 值, depth: env DEPTH}；
+   *  无 env（根进程）→ null（顶层）。 */
+  execCtxBaseline = null;
+  /** fork 深度基线（同 ALS 断裂问题：forkDepthAls.getStore() 兜底用）。根进程=0。 */
+  forkDepthBaseline = 0;
+  /** [MF-3] 所属根进程 cwd（sessions/records 落盘目录编码键）。
+   *  根进程=自身 cwd（构造时 init.cwd）；子进程=env PI_SUBAGENT_ROOT_CWD 贯穿的真 ROOT cwd。
+   *  worktree 模式下子进程 this.cwd 是 checkout 路径，若按它编码目录，深层 record 落到
+   *  enc(worktree) 段、ROOT 扫描不到 → 全树可见性深度 ≥ 2 断裂（与 sessionRootId 同构）。 */
+  rootCwd;
+  /** UI streaming sink（ctx.ui.setWidget）。workflow 域经 getStreamSink() 取用。 */
+  streamSink = null;
+  /** [竞态修复] 主 agent isIdle 查询（ctx.isIdle）。notifier flush gate 用。
+   *  initSession 注入，piAdapter 透传给 NotifierHost。 */
+  isIdleFn;
+  getStreamSink() {
+    return this.streamSink;
+  }
+  _disposed = false;
+  _seq = 0;
+  /** background 完成通知器（滑动窗口合并 + 去重）。session_start revive，shutdown dispose。 */
+  notifier;
+  /** [MF#4][MF#2] fork 深度按 async 调用链传递（AsyncLocalStorage），替代共享可变计数器。
+   *  主 session=0；fork 进入子 session 期间推进为子深度，供嵌套 fork 经 ALS 读到自身深度作为
+   *  parentForkDepth。并发 background fork 各自独立调用链，不再互相压低深度值。
+   *  [MF#2] 旧实现用单实例字段跨执行链共享 → 并发下 A 还原深度后 B 读到被压低值 → 护栏失效。 */
+  forkDepthAls = new import_node_async_hooks.AsyncLocalStorage();
+  /** subagent 执行上下文按 async 调用链传递（当前正在跑的 record 身份 + 递归深度）。
+   *  B run() 期间包此 ALS，B 内创建 C 时 createRecordForMode 读到 B 的 recordId/depth，
+   *  据此设 C.parentRecordId=B.id、C.depth=B.depth+1。主 session 链上无 store → 顶层。
+   *  与 forkDepthAls 独立：后者只数 fork 链（fork=true 才递增），本 ALS 数所有 subagent 嵌套。 */
+  execCtxAls = new import_node_async_hooks.AsyncLocalStorage();
+  /** [review MF1] record 级在途 resume 守卫。resumeRound 全部守卫通过后 add，
+   *  runAndFinalize 结束（finally，覆盖轮次完成 / MF-6 失败回退 / abort / 终态化所有分支）时
+   *  delete（幂等：execute() 新建 record 不在集合，no-op）。窗口 = resume 发起（含 pool.acquire
+   *  排队）→ 本轮 runAndFinalize 收尾。窗口内同 record 再次到达 resumeRound（冷路径重入 /
+   *  EPIPE 兜底）直接 throw——防两个 pi 子进程以 --session 同一 JSONL 双写 + 前一个脱离
+   *  kill 记账成孤儿（deliverMessage 冷路径的 acquireActivateLock 只覆盖 resumeRound 同步段，
+   *  锁释放在子进程注册（session-runner spawnedChildren.set）之前，锁空洞由此守卫兜住；
+   *  EPIPE 兜底不持锁，同样被覆盖）。child 注册完成后 deliverMessage 走热路径，不经此守卫。 */
+  resumesInFlight = /* @__PURE__ */ new Set();
+  manifestStore;
+  constructor(init) {
+    this.cwd = init.cwd;
+    this.modelService = init.modelService;
+    this.getMainSessionFile = init.getMainSessionFile;
+    this.uiRequestHandler = init.uiRequestHandler;
+    this.pool = new DefaultConcurrencyPool(this.modelService.getGlobalConfig().maxConcurrent);
+    this.worktreeManager = new WorktreeManager(this.modelService.getAgentDir());
+    const envRootCwd = process.env[ENV_ROOT_CWD];
+    this.rootCwd = envRootCwd && envRootCwd !== "" ? envRootCwd : init.cwd;
+    const sessionsDir = getSubagentSessionDir(this.modelService.getAgentDir(), this.rootCwd);
+    const recordsDir = getSubagentRecordsDir(this.modelService.getAgentDir(), this.rootCwd);
+    this.manifestStore = new ManifestStore(recordsDir);
+    this.store = new RecordStore(sessionsDir, this.manifestStore, this.pi ?? void 0);
+    this.notifier = createNotifier(this.piAdapter());
+    registerGlobalObservability(this.uiObservability);
+  }
+  // ── 生命周期（index.ts 调）──────────────────────────────
+  /** 覆盖 UI 请求 handler（W3: index.ts session_start 时按 mode 注入 handler 后调）。
+   *  委托 uiObservability 重置缺失告警去重——新 handler 就位后允许重新 warn。 */
+  setUiRequestHandler(handler) {
+    this.uiRequestHandler = handler;
+    this.uiObservability.resetMissingHandlerWarnings();
+  }
+  /** session-runner handleUiRequest 在 handler 缺失时调用（FR-9 可观测性）。
+   *  委托 uiObservability：按 session 去重，同一 session 的多次 UI 请求只 warn 一次。
+   *  W2: console.warn 兜底。W3 接入 pi.appendEntry("subagent:ui-request-missing-handler", ...)。 */
+  notifyMissingHandler(sessionId) {
+    this.uiObservability.notifyMissingHandler(sessionId);
+  }
+  /** session_start 注入 pi + revive（modelRegistry/entries 归 ModelConfigService.initModel）。 */
+  initSession(init) {
+    this.pi = init.pi;
+    this.store.setPi(this.pi);
+    this.sessionId = init.sessionId;
+    this.mainSessionFile = init.mainSessionFile;
+    this.streamSink = init.streamSink ?? null;
+    this.isIdleFn = init.isIdle;
+    this.uiObservability.setMode(init.mode);
+    if (init.uiRequestHandler !== void 0) {
+      this.uiRequestHandler = init.uiRequestHandler;
+      this.uiObservability.resetMissingHandlerWarnings();
+    }
+    if (init.dialogQueue !== void 0) {
+      this.dialogQueue = init.dialogQueue;
+    }
+    const envDepth = process.env.PI_SUBAGENT_FORK_DEPTH;
+    if (envDepth !== void 0 && envDepth !== "") {
+      const base = Number.parseInt(envDepth, 10);
+      if (!Number.isNaN(base) && base > 0) {
+        this.forkDepthAls.enterWith(base);
+        this.forkDepthBaseline = base;
+      }
+    }
+    const envRoot = process.env[ENV_ROOT_SESSION_ID];
+    this.sessionRootId = envRoot ?? init.sessionId;
+    const envSelfRecord = process.env[ENV_SELF_RECORD_ID];
+    if (envSelfRecord !== void 0 && envSelfRecord !== "") {
+      const envNestingDepth = Number.parseInt(process.env[ENV_DEPTH] ?? "0", 10);
+      const nestingDepth = Number.isNaN(envNestingDepth) ? 0 : envNestingDepth;
+      this.execCtxBaseline = { recordId: envSelfRecord, depth: nestingDepth };
+      this.execCtxAls.enterWith({ recordId: envSelfRecord, depth: nestingDepth });
+      if (process.env.XYZ_AGENT_DEBUG) {
+        logger32.debug(
+          `[subagents] execCtxAls initialized: recordId=${envSelfRecord} depth=${nestingDepth} rootSessionId=${envRoot ?? init.sessionId}`
+        );
+      }
+    }
+    this._disposed = false;
+    this.store.revive();
+    this.notifier.revive();
+    this.recoverOrphanRecords();
+  }
+  /** 孤儿终态恢复委托（RecordStore.recoverOrphanRecords 的唯一公开入口，维持 store
+   *  private 封装——与 recoverManifestTmpFiles 同模式）。判定语义见 store 侧注释。
+   *  随后跑 entry-born 孤儿恢复（无子文件锚的 register-only record，spawn 窗口期死亡，
+   *  E2E 实测缺口）——主 session 文件经 getMainSessionFile 注入（构造期可空）。 */
+  recoverOrphanRecords() {
+    try {
+      this.store.recoverOrphanRecords(this.sessionRootId ?? void 0);
+    } catch (err) {
+      logger32.warn("[subagents] orphan recovery failed", {
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+    try {
+      this.store.recoverEntryOnlyOrphans(this.mainSessionFile, this.sessionRootId ?? void 0);
+    } catch (err) {
+      logger32.warn("[subagents] entry-only orphan recovery failed", {
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  /** 启动恢复：扫描 manifest tmp 残留（崩溃打断的 writeManifest 留下的 *.json.tmp.<pid>），
+   *  3 分支判定（manifest已存在删tmp / tmp合法promote / tmp非法删）。幂等，不 throw。
+   *  ADR-035 启动恢复接线——session_start 每次都调（与 maybeCleanupExpiredSessionFiles 一致）。
+   *  manifestStore 保持 private 封装，本方法是唯一公开入口。 */
+  async recoverManifestTmpFiles() {
+    try {
+      return await this.manifestStore.recoverTmpFiles();
+    } catch (err) {
+      bestEffort(err, "recoverManifestTmpFiles", "error");
+      return { deleted: 0, recovered: 0 };
+    }
+  }
+  /** SP-4: 关闭所有活跃 record。
+   *
+   *  遍历 store 中所有 running record，逐个 CAS 转终态 + completeRecord + archive。
+   *  对有 worktreeHandle 的 record 触发 worktreeManager.cleanup（T3: worktree 绑定清理）。
+   *
+   *  [v4 A-6] 旧实现的 recentlyCascaded 收集（供已删除的 before_agent_start 注入告知）
+   *  与 drainCascaded 已一并移除——被关 record 的告知改由 list 的 closedReason 表达。
+   *
+   *  @param reason 关闭原因（parent-fork / parent-new / parent-shutdown）
+   *  @returns 被关闭的 record 数量
+   */
+  disposeAllRecords(reason) {
+    const activeRecords = this.store.listAllActive();
+    let count = 0;
+    for (const record of activeRecords) {
+      if (record.status === "running") {
+        if (!tryTransition(record, "closed", reason)) continue;
+      }
+      const result = {
+        text: "",
+        turns: record.turnCount,
+        durationMs: Date.now() - record.startedAt,
+        success: false,
+        error: `closed due to ${reason}`,
+        sessionId: record.id,
+        toolCalls: []
+      };
+      completeRecord(record, result, "closed", reason);
+      this.store.archive(record);
+      if (record.worktreeHandle) {
+        void this.worktreeManager.cleanup(record.worktreeHandle).catch((err) => {
+          bestEffort(err, `worktree cleanup (${reason})`);
+        });
+      }
+      emitPendingUnregister(this.pi, record.id, "closed");
+      count++;
+    }
+    return count;
+  }
+  /** SP-4: /fork 新 session 时清理旧 record。
+   *  调用 disposeAllRecords("parent-fork")。由 index.ts 的 session_before_fork handler 触发。 */
+  onParentFork() {
+    return this.disposeAllRecords("parent-fork");
+  }
+  /** SP-4: /new 创建全新 session 时清理旧 record。
+   *  调用 disposeAllRecords("parent-new")。由 index.ts 的 session_before_switch
+   *  （reason==="new"）handler 触发。 */
+  onParentNew() {
+    return this.disposeAllRecords("parent-new");
+  }
+  /** SP-4: idle record GC（30 天 TTL，实现抽至 idle-gc.ts）。stop 函数（dispose 调）。 */
+  stopIdleGc;
+  /** 启动 idle record GC 定时器（session_start 调用，幂等）。 */
+  startGcTimer() {
+    if (this.stopIdleGc) return;
+    this.stopIdleGc = startIdleGc(this.store);
+  }
+  /** 停止 idle record GC 定时器（dispose 调用）。 */
+  stopGcTimer() {
+    this.stopIdleGc?.();
+    this.stopIdleGc = void 0;
+  }
+  /** session 结束清理（清定时器，丢弃 pending 通知）。幂等。
+   *
+   * [M-7] dispose 顺序假设：pending:unregister emit 依赖 pending-notifications 扩展的
+   * listener 仍然存活。若 pending-notifications 先于本扩展执行 session_shutdown（后注册
+   * 先执行的语义下会如此），listener 已注销，unregister 事件被静默丢弃。这是可接受的
+   * 退化——进程退出后两侧状态本就不保证一致，下次 session_start 的 crash recovery 会修正。 */
+  dispose() {
+    if (this._disposed) return;
+    this._disposed = true;
+    this.stopGcTimer();
+    this.setUiRequestHandler(disposedUiRequestStub);
+    this.store.abortRunningControllers();
+    killAllSpawnedChildren();
+    this.disposeAllRecords("parent-shutdown");
+    resetAllEpipeFailures();
+    this.resumesInFlight.clear();
+    this.notifier.flushPendingNotifications();
+    this.notifier.dispose();
+    this.store.dispose();
+  }
+  // ── 执行（subagent-tool 调）────────────────────────────
+  /** background 完成回注（record → BgNotifyRecord 映射 + notifier.notify）。
+   *  正在执行（running + 活进程 + 非 timer-armed）静默跳过——notify 只对 closed（终态）、
+   *  isIdle（chatMode 轮次完成）或 isResumable（SP-5 one-shot 成功完成 / MF-6 失败轮回退）有意义。
+   *  SP-1: closed 统一终态（done/failed/crashed 合并），closedReason 携带 L2 原因。 */
+  notifyComplete(record) {
+    const notify = this.toNotifyRecord(record);
+    if (notify) this.notifier.notify(notify);
+  }
+  /** [C-1] chatMode close 终态通知（设计 D2：正文空/本轮增量 + sessionFile 指针行）。
+   *
+   *  与 notifyComplete 的差异只在 dedup 身份与轮次统计：终态通知必须与最后一轮的轮次通知
+   *  区分（轮次通知 key=`id:round`），否则同 key 被 60s dedup 吞——close 后父 agent 永远
+   *  收不到带指针行的终态通知（审查 C-1）。故 round 置 undefined（key 回退为裸 id），
+   *  轮数改经 totalRounds 进文案 "completed after N rounds."（C-2）。
+   *
+   *  仅 chatMode close 语义调用（closeChatIdle / closeAfterRoundSettled 终态化成功后）。
+   *  one-shot 显式拒绝（G4：one-shot close 路径现状无终态通知，字节不变）；cancel 走
+   *  cancelBackground 自己的 notifyComplete，不经本方法。幂等性：两条 close 路径均由
+   *  closeSubagent 的 status 分流守卫（closed 后幂等 no-op）/ CAS 抢锁保证只执行一次，
+   *  本方法自身不重复发送；迟到的 kickOffBackground.then 通知与轮次通知同 key=`id:round`，
+   *  60s 窗内仍被吞，不构成第三条。 */
+  /** @param emptyBody true = 终态通知正文置空串（D2 路径②）。W16 P-1 修复后
+   *  closeChatIdle 的 doneResult.text 改用 record.result 保真（close 终态
+   *  subagent-record entry 的 result 不抹空轮终真实值），「正文空」不再由合成空
+   *  text 的副作用承载，改为显式参数——持久化 result 与通知正文两个关注点解耦。 */
+  notifyClosed(record, emptyBody = false) {
+    if (!record.chatMode) return;
+    const notify = this.toNotifyRecord(record);
+    if (!notify) return;
+    notify.round = void 0;
+    if (emptyBody) notify.result = "";
+    if (record.round != null) notify.totalRounds = record.round;
+    this.notifier.notify(notify);
+  }
+  /** notifier 的 NotifierHost 适配器（绑定到 pi.sendMessage + store 查询）。 */
+  piAdapter() {
+    return {
+      sendMessage: (message, options) => {
+        this.pi?.sendMessage(message, options);
+      },
+      hasRunningBackground: () => {
+        return this.store.listRunning().some(
+          (r) => r.mode === "background" && hasLiveProcessHandle(r.id) && !hasIdleTimer(r.id)
+        );
+      },
+      isIdle: () => this.isIdleFn?.() ?? true,
+      // [must-fix #4 / D8] settled 边沿订阅，与 isIdle 同源（session_start 注入的 pi）。
+      // 只注入原生订阅能力；disposed 标志包装（退订语义）在 notifier 的 port 装配完成。
+      onAgentSettled: (handler) => {
+        this.pi?.on?.("agent_settled", handler);
+      }
+    };
+  }
+  /** record → BgNotifyRecord（notifier.notify 入参映射，内部不外露）。
+   *  v4 B-1：守卫放行 closed（终态，含 cancelled）、isIdle（对话模式轮次完成，notify 主 agent G1）
+   *  或 isResumable（running + 无活进程——SP-5 one-shot 成功完成 / MF-6 失败轮回退）。
+   *  正在执行（running + 活进程 + 非 timer-armed）返回 undefined（调用方 notifyComplete 跳过）。
+   *  SP-1: closed 统一终态，closedReason 由 BgNotifyRecord 携带。 */
+  toNotifyRecord(record) {
+    const snap = snapshot(record);
+    const s = snap.status;
+    if (s !== "closed" && !isIdle(record) && !isResumable(record)) return void 0;
+    const notifyStatus = s === "closed" || !record.chatMode ? "closed" : "running";
+    return {
+      id: snap.id,
+      status: notifyStatus,
+      agent: snap.agent,
+      model: snap.model,
+      result: snap.result,
+      error: snap.error,
+      startedAt: snap.startedAt,
+      endedAt: snap.endedAt,
+      patchFile: record.patchFile,
+      // round 透传给 notifier 的 dedup key（对话模式按轮次去重，G1 决策 9）。
+      round: record.round,
+      // SP-1: closedReason 透传给 notifier（L2 原因，供通知文案按需展示）。
+      closedReason: record.closedReason,
+      // [wave2] chatMode 条件透传 sessionFile：通知末尾追加 Full transcript 指针行
+      //（增量语义的全文恢复通道，见 notifier.buildLlmContent）。one-shot（chatMode
+      // falsy）不透传——通知输出逐字节不变（G4），该条件由 message-close 测试的
+      // 必选用例锁死（漏加条件时 notifier 单测不红——notifier 层只见最终字段）。
+      sessionFile: record.chatMode ? record.sessionFile : void 0
+    };
+  }
+  /**
+   * 预解析 model（renderCall 标题行用，同步）。代理 modelService.resolveModel。
+   * 仅解析 override/agentConfig 路径；ctxModel 缺失时拋错，调用方 catch 降级。
+   */
+  resolveModel(agent, override, ctxModel, agentConfig) {
+    return this.modelService.resolveModel(agent, override, ctxModel, agentConfig);
+  }
+  /**
+   * 统一执行入口。mode 固定 background（sync 已删除）。
+   * 内部完成：模型解析 → 执行 → 收尾。
+   *
+   * @param opts.ctxModel  主 agent 当前模型（模型解析第三层兼底）。undefined 时仅依赖 override/agentConfig。
+   */
+  async execute(opts) {
+    this.assertReady();
+    const parentNesting = this.execCtxAls.getStore() ?? this.execCtxBaseline;
+    const nestingDepth = parentNesting ? parentNesting.depth + 1 : 0;
+    if (nestingDepth > MAX_FORK_DEPTH) {
+      throw new ForkDepthExceededError(
+        `subagent nesting depth ${nestingDepth} > ${MAX_FORK_DEPTH} (max recursion), refusing to spawn deeper`
+      );
+    }
+    const mode = "background";
+    const ctx = this.buildSessionRunnerContext(opts.cwd);
+    const identity = await this.resolveIdentity(opts);
+    const routingInput = {
+      callEngine: opts.engine,
+      agentEngine: identity.agentConfig?.engine,
+      globalDefaultEngine: this.modelService.getGlobalConfig().defaultEngine
+    };
+    const routing = resolveEngineRouting(routingInput);
+    let route;
+    if (routing.engineId !== DEFAULT_ENGINE_ID) {
+      route = await routeEngine({
+        routing: routingInput,
+        // 守卫 c 判据只看调用方显式指定的 model（resolved model 含 ctxModel 兼底，
+        // 恒非空会把一切兜底误判为 model 绑定命中）
+        taskModel: opts.model,
+        strict: this.modelService.getGlobalConfig().engineRouting?.strict === true,
+        probe: (engineId) => getEngine(engineId).probe()
+      });
+      if (route.engineId !== DEFAULT_ENGINE_ID) {
+        return this.executeViaEngine(opts, identity, route);
+      }
+    }
+    const piOpts = route?.engineFallback !== void 0 ? { ...opts, engine: DEFAULT_ENGINE_ID, engineFallback: route.engineFallback } : opts.engine === void 0 ? opts : { ...opts, engine: void 0 };
+    const record = this.createRecordForMode(identity, piOpts, mode);
+    emitPendingRegister(this.pi, record.id, record.agent);
+    let worktreeHandle;
+    if (typeof opts.worktree === "object") {
+      worktreeHandle = opts.worktree;
+    } else if (opts.worktree === true) {
+      try {
+        worktreeHandle = await this.worktreeManager.create(this.cwd, record.id);
+        record.worktreeHandle = worktreeHandle;
+        if (record.status === "closed") {
+          await this.worktreeManager.cleanup(worktreeHandle);
+          return this.buildEarlyFailedHandle(record);
+        }
+      } catch (err) {
+        const _result = await this.finalizeFailed(record, err);
+        return this.buildEarlyFailedHandle(record);
+      }
+    }
+    const signal = record.controller.signal;
+    const priority = PRIORITY_BACKGROUND;
+    const bgDetails = project(record);
+    this.kickOffBackground(record, { ...piOpts, worktree: worktreeHandle }, ctx, identity, signal, priority);
+    return { mode: "background", subagentId: record.id, sessionFile: record.sessionFile, details: bgDetails };
+  }
+  /**
+   * 按 id 查内存 running record 的只读快照（G3-002 修复）。
+   * 不从 session.jsonl 重建（cancel/list 单点查询只关心内存 running record）。
+   * 供 tool 层 cancelHandler 翻译 throw 用（id 不存在 / mode / 终态三种错误）。
+   * 不存在返回 undefined。
+   */
+  findRecord(id) {
+    this.assertReady();
+    const record = this.store.getMutable(id);
+    return record ? snapshot(record) : void 0;
+  }
+  /** 取消 background record（tryTransition CAS 抢锁防重复副作用）。 */
+  cancel(id) {
+    this.assertReady();
+    const record = this.store.getMutable(id);
+    if (!record) return false;
+    return this.cancelBackground(record);
+  }
+  /**
+   * [v8.5 A1/B] 全态查找：任意状态（running/closed）× 任意归属（含异 root session）的
+   * record 快照。供 message 拒绝文案分流（A1）与 fork-from 源解析（B）共用。
+   *
+   * 与 getRecordForAction 的差异：不做归属/直接父校验、不重建可变 record 入内存，
+   * 只读快照（light 形态可能缺详情重数据，身份/sidecar 状态字段齐全）。查询顺序与
+   * getRecordForAction 冷路径同款（idToFile 索引直查 → collectRecords 全扫兑底），
+   * 不限 status——终态（sidecar closed）记录也能查到。
+   *
+   * 返回 undefined：id 在内存与磁盘均不存在。
+   */
+  lookupRecordAnyState(id) {
+    try {
+      this.assertReady();
+    } catch {
+      return void 0;
+    }
+    const direct = this.store.findLightById(id);
+    if (direct) return direct;
+    return this.store.collectRecords(COLD_LOOKUP_SCAN_LIMIT, "all", void 0).find((r) => r.id === id);
+  }
+  // ── 对话模式投递（M2-B3 message action 调用）──────────────
+  // [review 修复] 已删除 deliverToRunning（busy follow_up/steer 投递 + pendingMessages
+  // 消费确认制）：SP-5 upgrade 后所有 running record 走 chatMode 分支 → deliverMessage
+  // 统一投递（热路径 prompt+streamingBehavior / 冷路径 resume），该方法无生产调用方，
+  // 其配套三段消费链（push / message_start shift / redeliverPending 补投）全部不可达，
+  // 一并移除（详见各文件同步删除）。
+  /**
+   * idle 投递：resume spawn 开启新一轮对话（设计决策 6 idle 分支）。
+   *
+   * record 必须 idle（轮次完成、进程已回收、record 留内存）。手动把 status 设回 "running"
+   * （M2-A 边界：idle→running 是恢复非终态，绕过 tryTransition——tryTransition 要求当前态
+   * running 才 CAS，idle record 直接进 runAndFinalize 会被 tryTransition 拒绝转态）。
+   *
+   * resume 参数从 record identity 读（防多轮对话模型漂移，探针 P-10）：sessionFile、
+   * model、thinkingLevel 均为 record 身份字段（创建时确定、不可变）。maxTurns/schema 等
+   * 执行约束第一版不恢复（设计 §5 拆分 1 待验证检查点），agentConfig 用 undefined
+   * （pi --session 续写保留上下文，agent 行为由 session 内 messages 决定；M2-B3 messageHandler 可完善）。
+   *
+   * detached 编排（参照 kickOffBackground）：不 await，runAndFinalize 在 background 跑。
+   * chatMode + done 时 runAndFinalize 的 M2-A 分流自动把 record 重新置 idle。并发槽在
+   * runAndFinalize 内重新 acquire（轮次间 idle 已 release）；pool.acquire 是排队模型，
+   * 池满时排队等待槽位而非 throw（与 execute 一致）。
+   *
+   * @param record 目标 record（必须 idle）
+   * @param text 新一轮消息正文
+   * @throws Error record 非 idle / 无 sessionFile / 无 controller
+   */
+  resumeRound(record, text) {
+    this.assertReady();
+    if (record.status !== "running") {
+      throw new Error(
+        `subagent ${record.id} is not ready for a new message (current state: ${record.status}). Recovery: use action:'list' to confirm state; wait for the current round to finish, or send the message again once it is idle.`
+      );
+    }
+    if (this.resumesInFlight.has(record.id)) {
+      throw new Error(
+        `subagent ${record.id} is already starting a new round (a previous message is still resuming). Recovery: wait for the round to start (check with action:'list'), then send the message again; or use action:'close' if this subagent is no longer needed.`
+      );
+    }
+    if (!record.sessionFile) {
+      throw new Error(
+        `session unavailable for subagent ${record.id} (session file missing or unreadable). Recovery: use action:'close' to clean up, then action:'start' a new subagent.`
+      );
+    }
+    if (!record.controller) {
+      throw new Error(
+        `subagent ${record.id} is not ready for a new message (internal state error). Recovery: use action:'close' to clean up, then action:'start' a new subagent.`
+      );
+    }
+    if (record.hadWorktree === true && !record.worktreeHandle) {
+      throw new Error(
+        `subagent ${record.id} was created with worktree isolation, but that binding was lost when the parent process restarted; resuming it now would run in the main repository and bypass the isolation. Recovery: use action:'close' to release this subagent, then action:'start' a new one with worktree isolation.`
+      );
+    }
+    record.status = "running";
+    record.resumable = void 0;
+    record.result = void 0;
+    this.store.reportRecordTransition(record);
+    const resume = {
+      sessionFile: record.sessionFile,
+      model: record.model,
+      thinkingLevel: record.thinkingLevel
+    };
+    const slashIdx = record.model.indexOf("/");
+    const provider = slashIdx >= 0 ? record.model.slice(0, slashIdx) : "unknown";
+    const modelId = slashIdx >= 0 ? record.model.slice(slashIdx + 1) : record.model;
+    const identity = {
+      agent: record.agent,
+      agentConfig: void 0,
+      resolved: {
+        model: { id: modelId, name: record.model, provider, reasoning: false },
+        thinkingLevel: record.thinkingLevel
+      }
+    };
+    const opts = {
+      task: text,
+      slug: record.slug,
+      worktree: record.worktreeHandle
+    };
+    const ctx = this.buildSessionRunnerContext();
+    this.resumesInFlight.add(record.id);
+    this.kickOffBackground(record, opts, ctx, identity, record.controller.signal, PRIORITY_BACKGROUND, resume);
+  }
+  /**
+   * [V2 决策 3] chatMode 统一投递：按**进程死活**分流，不按 record.status。
+   *
+   * V2 进程长驻——chatMode record 首轮 agent_settled 后进轻量 idle（Step 4a：进程保活、
+   * idle timer armed），续聊时进程仍在内存，不该重开 session。故续聊投递不按 status
+   *（running/idle 都可能是热路径），而是判进程死活：
+   *
+   *   热路径（进程活）：prompt + streamingBehavior——pi 权威裁决 busy/idle（F3/F4）。
+   *     busy（isStreaming）时 followUp 入队/steer 抢占；idle 时 streamingBehavior 被忽略、
+   *     直接开新 turn。不用 steer/followUp 命令、不依赖 clearQueue（F8），结构上消除残留。
+   *   冷路径（进程死）：复用 resumeRound 重开 session + prompt（仅崩溃/timeout kill/跨重启命中）。
+   *
+   * disarm idle timer：新 turn 开始必须 disarm（V2 决策 4），防 turn 期间 idle timer 误杀活进程。
+   *
+   * status 处理：判活分流后**各自**设 running——热路径手动设 running（新 turn 开始）；
+   * 冷路径由 resumeRound 校验 idle 并自行设 running + spawn（故不在此预设 running，否则
+   * resumeRound 的 idle 检查会 throw）。resume spawn 后 session-runner 回填 record.pid，
+   * 热路径拿到 child 时也顺便刷新 pid（resume 重开进程后 pid 已变）。
+   *
+   * [review 修复] 曾对比的 deliverToRunning（非 chatMode busy 投递 + pendingMessages
+   * 消费确认制）已删除——SP-5 upgrade 后无生产调用方（V2 决策 3 已删消费确认制）。
+   *
+   * @param record 目标 record（chatMode，running 或 idle）
+   * @param text 消息正文
+   * @param interrupt true=steer（抢占）/ false=followUp（排队），仅热路径 prompt streamingBehavior 用
+   */
+  async deliverMessage(record, text, interrupt) {
+    this.assertReady();
+    disarmIdleTimer(record.id);
+    const child = getChildByRecord(record.id);
+    if (child && !child.killed) {
+      record.status = "running";
+      if (child.pid !== void 0) record.pid = child.pid;
+      try {
+        sendPromptCommand(child, text, { streamingBehavior: interrupt ? "steer" : "followUp" });
+        clearEpipeFailure(record.id);
+        if (child.exitCode !== null || child.signalCode !== null) {
+          logger32.warn(
+            `[subagents] deliverMessage: child ${record.id} died around stdin write, message may be lost`,
+            {
+              msgType: interrupt ? "steer" : "followUp",
+              exitCode: child.exitCode,
+              signalCode: child.signalCode
+            }
+          );
+        }
+        record.result = void 0;
+        record.resumable = void 0;
+        this.store.reportRecordTransition(record);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("EPIPE")) {
+          logger32.warn(`[subagents] EPIPE on hot path for ${record.id}, falling back to cold path resume`, {
+            detail: err.message
+          });
+          if (spawnedChildren.get(record.id) === child) {
+            spawnedChildren.delete(record.id);
+          }
+          const count = recordEpipeFailure(record.id);
+          if (count >= EPIPE_FAILURE_THRESHOLD) {
+            clearEpipeFailure(record.id);
+            throw new Error(
+              `[subagents] EPIPE fallback exhausted for ${record.id}: ${count} consecutive EPIPE failures. Recovery: use action:'close' to clean up, then action:'start' a new subagent.`
+            );
+          }
+          this.resumeRound(record, text);
+          return;
+        }
+        throw err;
+      }
+    } else {
+      const releaseLock = await acquireActivateLock(record.id);
+      try {
+        this.resumeRound(record, text);
+      } finally {
+        releaseLock();
+      }
+    }
+  }
+  // ── 对话模式 message/close action 支持（M2-B3）──────────────
+  /**
+   * 按 id 查 record 并做归属校验（message/close action 的统一入口）。
+   *
+   * 设计决策 3（归属守卫）：校验 record.rootSessionId 必须等于当前 session 的根 id
+   *（this.sessionRootId）。不匹配 / 不存在统一抛「not found or not owned」——不区分
+   * 两种失败，防信息泄露（无法通过错误消息探测其他 session 的 subagent id）。
+   *
+   * 同进程内 running + idle record 都在内存（getMutable）；终态 record 已 archive。
+   * 跨重启（SP-2）内存空时，从磁盘 collectRecords 重建 idle record 并 register 进内存。
+   * reconstructAll 已将跨重启 record（无 sidecar marker + pid 死）标记为 running（v4 B-1 跨重启可续聊语义，record-store buildRecord 分支 4），
+   * collectRecords 返回的 SubagentRecord 可直接转为可变 ExecutionRecord 供续操作。
+   *
+   * @param id subagent record id
+   * @param opts.allowReconnect [v8.5 D] message 专属：冷查额外接受「可重连」的 closed 记录
+   *   （死因∈ RECONNECTABLE_FINAL_REASONS，A 档真实死因 sidecar 是唯一准入门），经四重守卫后
+   *   resurrectClosed 回边为 running 并续写原 session 文件。仅 message 开启；close/cancel 维持单向终态语义。
+   * @returns 可变 ExecutionRecord（message/close handler 直接操作）
+   * @throws Error record 不存在 / 非本 session 所有（含恢复指引）
+   * @throws ResurrectDeniedError 命中可重连集但被 worktree/异进程活实例守卫拦截（自带完整行动语言）
+   */
+  getRecordForAction(id, opts) {
+    this.assertReady();
+    let record = this.store.getMutable(id);
+    if (!record) {
+      record = this.coldLookupForAction(id, opts?.allowReconnect === true);
+    }
+    if (!record || record.rootSessionId !== this.sessionRootId) {
+      throw new Error(
+        `subagent not found or not owned: ${id}. Recovery: use action:'list' to confirm the id; ended subagents cannot be messaged \u2014 start a new one; only subagents owned by the current session can be operated on.`
+      );
+    }
+    const baselineRecordId = this.execCtxBaseline?.recordId ?? void 0;
+    if (record.parentRecordId !== baselineRecordId) {
+      throw new Error(
+        `subagent ${id} is owned by its direct parent; message it through that parent (see /subagents list, parent=${record.parentRecordId ?? "(root layer)"}). [v4 A-5] cross-layer ownership guard: this process's baseline=${baselineRecordId ?? "(root)"} is not the direct parent of ${id}; operating here would race the owning child process's handle and double-write the session file.`
+      );
+    }
+    return record;
+  }
+  /** SP-2 冷路径（getRecordForAction 内存未命中分支的提取）：从磁盘重建可变 ExecutionRecord
+   *  并 register 进内存。[perf] 先走 idToFile 索引直查（单文件 stat 校验），未命中（进程重启后
+   *  尚未扫描、索引未热）才全目录 collectRecords 兜底建索引——跨重启后每条 message 从
+   *  「readdir + N×4 stat 全扫」降为单文件校验。
+   *  @returns 重建的 record；磁盘也无则 undefined
+   *  @throws ResurrectDeniedError 可重连候选被 worktree/异进程活实例守卫拦截 */
+  /** 冷查候选定位（coldLookupForAction 步骤 1）：idToFile 索引直查 running 命中，
+   *  未命中再全目录 collectRecords 兜底（running，或 allowReconnect 且可重连 closed）。 */
+  findColdLookupCandidate(id, allowReconnect) {
+    const direct = this.store.findLightById(id);
+    return (direct?.status === "running" ? direct : void 0) ?? this.store.collectRecords(COLD_LOOKUP_SCAN_LIMIT, "all", void 0).find((r) => r.id === id && (r.status === "running" || allowReconnect && this.isReconnectableClosed(r)));
+  }
+  /** 可重连守卫（coldLookupForAction 步骤 2，[v8.5 D]）：先于任何状态突变与注册。
+   *  worktree 绑定丢失 / 异进程活实例以 ResurrectDeniedError 抛出（endedMessageGuard
+   *  必须原样透传，不得改写为 fork-from 指引误导 agent 走已被判死的通道）；拒绝时
+   *  内存不得残留该记录（findRecord 契约）。 */
+  assertReconnectAllowed(found, id) {
+    if (found.status !== "closed") return;
+    if (found.worktree === true) {
+      throw new ResurrectDeniedError(
+        `subagent ${id} cannot be transparently resumed: it was created with worktree isolation, and its worktree checkout no longer exists after restart (resuming in place would make spawn cwd fall back to the main repo). Recovery: action:'start' a fresh subagent (with a new worktree if isolation is still needed); its conversation history remains intact at ${found.sessionFile}.`
+      );
+    }
+    const foreign = found.sessionFile ? findForeignLiveInstance(found.sessionFile) : void 0;
+    if (foreign) {
+      throw new ResurrectDeniedError(
+        `subagent ${id} is not transparently resumable: its previous instance still finishing in another process (pid ${foreign.pid}, startedAt=${new Date(foreign.startedAt).toISOString()}). Resuming in place would double-write ${found.sessionFile}. Recovery: retry once that process exits; if it never exits, action:'start' a fresh subagent and treat the history at ${found.sessionFile} as read-only reference.`
+      );
+    }
+  }
+  /** 磁盘候选重建为可变 record 并 register + 上报（coldLookupForAction 步骤 4）。 */
+  resurrectColdRecord(found, id) {
+    const record = createRecord(id, {
+      agent: found.agent,
+      model: found.model,
+      thinkingLevel: found.thinkingLevel,
+      mode: found.mode,
+      task: found.task,
+      slug: found.slug,
+      startedAt: found.startedAt,
+      rootSessionId: found.rootSessionId,
+      parentRecordId: found.parentRecordId,
+      depth: found.depth,
+      // [v4 A-3] 跨重启恢复入口——message 路径磁盘重建无条件置 chatMode=true（现状机制，
+      // V3 方案 A 方向兑现）。改动此处必须带 S3 回归场景（跨重启 message 续聊验证）。
+      // V3 SP-5 探针定案：机制已存在，本注释即定案，不再悬置。
+      chatMode: true,
+      controller: new AbortController()
+    });
+    record.sessionFile = found.sessionFile;
+    record.round = found.round;
+    record.hadWorktree = found.worktree === true;
+    if (found.status !== "running") {
+      if (record.sessionFile) {
+        try {
+          fs24.rmSync(`${record.sessionFile}.finalized`, { force: true });
+          writeAliveMarker(record.sessionFile, { pid: process.pid, id, startedAt: Date.now() });
+        } catch (_e) {
+          void _e;
+        }
+      }
+      resurrectClosed(record);
+    }
+    this.store.register(record);
+    if (found.status !== "running") {
+      this.store.reportRecordTransition(record);
+    }
+    return record;
+  }
+  coldLookupForAction(id, allowReconnect) {
+    const found = this.findColdLookupCandidate(id, allowReconnect);
+    if (!found) return void 0;
+    this.assertReconnectAllowed(found, id);
+    if (found.rootSessionId !== this.sessionRootId) {
+      return void 0;
+    }
+    const baselineRecordId = this.execCtxBaseline?.recordId ?? void 0;
+    if (found.parentRecordId !== baselineRecordId) {
+      throw new Error(
+        `subagent ${id} is owned by its direct parent; message it through that parent (see /subagents list, parent=${found.parentRecordId ?? "(root layer)"}). [v4 A-5] cross-layer ownership guard: this process's baseline=${baselineRecordId ?? "(root)"} is not the direct parent of ${id}; operating here would race the owning child process's handle and double-write the session file.`
+      );
+    }
+    return this.resurrectColdRecord(found, id);
+  }
+  /** [v8.5 D] 冷查候选过滤：closed 且死因落在可重连集。判定源 = closedReason（buildRecord
+   *  归一化后的对外字段：A 档真实死因直通、旧空 sidecar 兑底 disconnected——SubagentRecord
+   *  不暴露 raw finalizedReason）；cancelled/user-close/gc 等主动关闭与自然完成死因天然不在集合内。
+   *  防线在集合本身而非调用点。 */
+  isReconnectableClosed(r) {
+    return isReconnectableFinalReason(r.closedReason);
+  }
+  /**
+   * close action 的统一行为分流（running 子态 × force）。
+   *
+   *   running + force:true                → cancelBackground（显式 SIGTERM + closed+cancelled 终态）
+   *   running + force:false + 无在跑轮    → closeChatIdle（立即终态化 done + 回收保活进程 + disarm timer）
+   *     （isIdle timer armed 或 isResumable 无活进程）
+   *   running + force:false + 有活进程在跑轮 → 置 closeAfterRound=true（轮完成时终态化：
+   *     chatMode 消费点在 onRoundSettled，非 chatMode 在 runAndFinalize CAS 分支）
+   *   其他终态                            → 幂等 no-op（已结束）
+   *
+   * 与设计决策 5 一致：close = 正式终态（走 finalize），force 只影响 running 时机。
+   *
+   * @param record 目标 record（getRecordForAction 已校验归属）
+   * @param force true=立即终止（running 时 SIGTERM）/ false=优雅关闭（running 时等轮完）
+   */
+  async closeSubagent(record, force) {
+    this.assertReady();
+    if (record.status === "running") {
+      if (force) {
+        this.cancelBackground(record);
+      } else if (isIdle(record) || isResumable(record)) {
+        await this.closeChatIdle(record);
+      } else {
+        record.closeAfterRound = true;
+      }
+    }
+  }
+  /**
+   * 无在跑轮 record 的手动终态化为 done（close action 的 isIdle/isResumable 分支）。
+   *
+   * 无在途 AgentResult（轮次完成时 record 未冻结，turns[] 保留运行时状态），
+   * 构造合成 done result（对齐 cancelBackground 的 cancelledResult 模式）。
+   * 走 doFinalizeRecord 的完整终态化路径（completeRecord + archive + finalized + worktree
+   * cleanup + alive marker + manifest）。
+   *
+   * [M5] 覆盖两路：Path B（无活进程，同旧行为）与 Path A（idle timer armed、进程保活等待
+   * 续聊）。Path A 必须先显式回收进程 + disarm timer——否则 record 已终态化但保活进程
+   * 继续驻留（终态后无人再杀它：closeSubagent 不再来、idle timer 已 disarm、runSpawn
+   * promise 早已 resolve），直到宿主进程退出。
+   *
+   * 不走 tryTransition（v4 B-1 此态 status=running，但由 doFinalizeRecord 内部的
+   * completeRecord 直接覆盖 status，与 cancelBackground 对 record 的处理同构）。
+   */
+  async closeChatIdle(record) {
+    disarmIdleTimer(record.id);
+    const child = getChildByRecord(record.id);
+    if (child && !child.killed) child.kill("SIGTERM");
+    const doneResult = {
+      text: record.result ?? "",
+      turns: record.turnCount,
+      durationMs: Date.now() - record.startedAt,
+      success: true,
+      sessionId: record.id,
+      toolCalls: []
+    };
+    await doFinalizeRecord(
+      {
+        manifestStore: this.manifestStore,
+        worktreeManager: this.worktreeManager,
+        store: this.store,
+        modelService: this.modelService,
+        pi: this.pi,
+        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+      },
+      record,
+      doneResult,
+      "closed",
+      "user-close"
+      // close action 主动关闭
+    );
+    this.notifyClosed(record, true);
+  }
+  /**
+   * [M5] closeAfterRound 消费：chatMode 轮次完成时终态化 record（closed + user-close）。
+   *
+   * 由 onRoundSettled（agent_settled 回调）调用——chatMode 轮次完成的统一汇聚点（热路径轮
+   * 不经 runAndFinalize CAS 分支，旧消费点对 chatMode 不可达）。合成 result 沿用 record.result
+   *（= 本轮增量，设计 D2 路径①）：本轮增量已由调用方前置的轮次通知送达，终态通知正文因此
+   * 是同一段增量 + 轮次统计 + sessionFile 指针行（notifyClosed），不重发全历史。
+   *
+   * 时序：同步前缀（disarm + kill + CAS）在 session-runner 的 resolveRun(0) 之前执行完——
+   * 冷路径轮的 runAndFinalize 续体因 timer 已 disarm 跳过 early return，但其 tryTransition
+   * CAS 对已 closed 的 record 失败 → 跳过二次 finalize（无双收尾）；热路径轮无 runAndFinalize
+   * 续体，本方法是唯一收尾。冷路径续体 .then 的 notifyComplete 与轮次通知同 key=`id:round`，
+   * 60s dedup 吞（不与下方终态通知叠加成第三条——后者 key 是裸 id）。
+   */
+  async closeAfterRoundSettled(record) {
+    disarmIdleTimer(record.id);
+    const child = getChildByRecord(record.id);
+    if (child && !child.killed) child.kill("SIGTERM");
+    if (!tryTransition(record, "closed", "user-close")) {
+      return;
+    }
+    const doneResult = {
+      text: record.result ?? "",
+      turns: record.turnCount,
+      durationMs: Date.now() - record.startedAt,
+      success: true,
+      sessionId: record.id,
+      toolCalls: []
+    };
+    await this.finalizeRecord(record, doneResult, "closed", "user-close");
+    this.notifyClosed(record);
+  }
+  // ── 编排层专用接口（workflow 消费）──────────────────────
+  /**
+   * workflow 编排层专用：sync-await 接口，内部走 background 管道但返回 Promise<AgentResult>。
+   *
+   * 与 execute() 的区别（D-A1）：
+   *   1. 返回 workflow AgentResult（content 字段），非 ExecutionHandle
+   *   2. 不调 kickOffBackground → 不注入 followUp 完成通知（BC-11，结果直接返回 workflow）
+   *   3. T2 删 sync 时 executeAndAwait 不受牵连（独立方法）
+   *
+   * 共享：runSpawn + ConcurrencyPool + record + pending emit（D-A4）。
+   */
+  async executeAndAwait(opts, signal, onEvent, stream) {
+    this.assertReady();
+    const parentNesting = this.execCtxAls.getStore() ?? this.execCtxBaseline;
+    const nestingDepth = parentNesting ? parentNesting.depth + 1 : 0;
+    if (nestingDepth > MAX_FORK_DEPTH) {
+      throw new ForkDepthExceededError(
+        `subagent nesting depth ${nestingDepth} > ${MAX_FORK_DEPTH} (max recursion), refusing to spawn deeper`
+      );
+    }
+    const identity = await this.resolveIdentity(opts);
+    const record = this.createRecordForMode(identity, opts, "background");
+    emitPendingRegister(this.pi, record.id, record.agent);
+    let worktreeHandle;
+    if (opts.worktree === true) {
+      let cancelledDuringCreate = false;
+      try {
+        worktreeHandle = await this.worktreeManager.create(this.cwd, record.id);
+        record.worktreeHandle = worktreeHandle;
+        if (record.status === "closed") {
+          cancelledDuringCreate = true;
+        }
+      } catch (err) {
+        await this.finalizeFailed(record, err);
+        throw err;
+      }
+      if (cancelledDuringCreate) {
+        await this.worktreeManager.cleanup(worktreeHandle);
+        throw new Error(`subagent ${record.id} cancelled during worktree creation`);
+      }
+    }
+    const ctx = this.buildSessionRunnerContext(opts.cwd);
+    const effectiveSignal = signal ?? record.controller?.signal;
+    const result = await this.runAndFinalize(
+      record,
+      { ...opts, worktree: worktreeHandle },
+      ctx,
+      identity,
+      effectiveSignal,
+      PRIORITY_BACKGROUND,
+      onEvent,
+      stream
+    );
+    const wfResult = mapToWorkflowAgentResult(result);
+    wfResult.worktreePath = record.worktreeHandle?.path;
+    return wfResult;
+  }
+  // ── 状态查询（TUI 调）──────────────────────────────────
+  /** 订阅 store 变更（widget/list requestRender）。返回取消订阅。 */
+  onChange(listener) {
+    return this.store.onChange(listener);
+  }
+  /** 列出 running record 快照（widget 计数用）。 */
+  listRunning() {
+    return this.store.listRunning();
+  }
+  /** 合并内存(running) + 磁盘(session.jsonl 重建) record（/subagents list + tool list 消费）。
+   *  按 rootSessionId 过滤：根进程=本 session（sessionRootId===sessionId）；
+   *  子进程=env 贯穿的真 ROOT（sessionRootId≠sessionId）→ 看到整棵 ROOT 树（决策 3）。
+   *  [perf] 磁盘源为 light（头部 identity + 状态，无 eventLog/result/turns 等重数据）
+   *  ——列表/补全/hasRunning 够用；详情场景调 getFullRecord(id) 懒加载补齐。 */
+  collectRecords(limit, statusFilter = "all") {
+    return this.store.collectRecords(limit, statusFilter, this.sessionRootId ?? this.sessionId ?? void 0);
+  }
+  /** [perf] 单 record 详情懒加载（全量：eventLog/displayItems/result/turns/tokens）。
+   *  内存 running record 直接投影；磁盘 record 全量重建（per-file 缓存，stat 戳校验）。
+   *  返回 undefined：id 不存在于内存与磁盘。 */
+  getFullRecord(id) {
+    return this.store.getFullRecord(id);
+  }
+  // ── 执行内部：身份解析 + record 创建 ──────────
+  /** 步骤 1：身份解析。agentConfig → resolveModel（三层：override → agentConfig → 主 agent model）。 */
+  async resolveIdentity(opts) {
+    const agent = opts.agent ?? DEFAULT_AGENT_NAME;
+    const agentConfig = opts.agent ? this.modelService.getRequiredAgentConfig(opts.agent) : void 0;
+    const resolved = this.modelService.resolveModel(
+      opts.agent ?? "",
+      { model: opts.model, thinkingLevel: opts.thinkingLevel },
+      opts.ctxModel,
+      agentConfig
+    );
+    return { agent, agentConfig, resolved };
+  }
+  /** 步骤 2：按 mode 生成 id + controller，创建 record 并注册。
+   *  [L-1] ExecutionMode 类型固定 "background"（sync 已删除），id/controller 分支简化。 */
+  createRecordForMode(identity, opts, mode) {
+    const id = `sa-${crypto.randomUUID()}`;
+    const controller = new AbortController();
+    const parentCtx = this.execCtxAls.getStore() ?? this.execCtxBaseline;
+    const parentRecordId = parentCtx?.recordId;
+    const depth = parentCtx ? parentCtx.depth + 1 : 0;
+    const record = createRecord(id, {
+      agent: identity.agent,
+      model: `${identity.resolved.model.provider}/${identity.resolved.model.id}`,
+      thinkingLevel: identity.resolved.thinkingLevel,
+      mode,
+      task: opts.task,
+      slug: opts.slug,
+      startedAt: Date.now(),
+      rootSessionId: this.sessionRootId ?? void 0,
+      parentRecordId,
+      depth,
+      chatMode: opts.conversation === true,
+      idleTimeoutMs: opts.idleTimeoutMs,
+      // P4 引擎留痕（D9①）：opts.engine/engineFallback 由引擎适配层写入（PiEngine.run
+      // 从 RunContext 回填；缺省 = pi 投影，存量调用方零感知）
+      engine: opts.engine,
+      engineFallback: opts.engineFallback,
+      controller
+    });
+    this.store.register(record);
+    return record;
+  }
+  /** [MF#R4] worktree 前置失败的 early-return handle。
+   *  record 已被 finalizeFailed 收尾为 failed、detached promise 从未启动。 */
+  buildEarlyFailedHandle(record) {
+    const details = project(record);
+    return { mode: "background", subagentId: record.id, sessionFile: record.sessionFile, details };
+  }
+  // ── 引擎分支（D4/D10：非 pi 引擎的 chat 域执行骨架，U0）──────────
+  /**
+   * 路由到非 pi 引擎的执行入口：routeEngine（注册表校验 + probe/守卫）已由 execute
+   * 完成——这里只剩 unsupported 预检 → record 创建+盖章 → detached 引擎 run。
+   * 全部同步拒绝发生在 record 创建前（不产生孤儿 record）。
+   */
+  executeViaEngine(opts, identity, route) {
+    const engine = route.engine;
+    this.assertEngineParamSupport(engine, opts);
+    const record = this.createRecordForMode(
+      identity,
+      {
+        ...opts,
+        engine: route.engineId,
+        ...route.engineFallback !== void 0 ? { engineFallback: route.engineFallback } : {}
+      },
+      "background"
+    );
+    emitPendingRegister(this.pi, record.id, record.agent);
+    this.kickOffEngineRun(record, opts, engine);
+    return { mode: "background", subagentId: record.id, sessionFile: record.sessionFile, details: project(record) };
+  }
+  /**
+   * 非 pi 引擎的 unsupported 参数预检（D11 处置「调用前拒绝」的判据 = capabilities）。
+   * conversation / fork / worktree 三参数对首期接入的引擎（zcode）均不可用：
+   * conversation 依赖同进程 idle 复用、fork 依赖父 pi session 上下文继承、worktree 依赖
+   * 文件隔离（capabilities.sandbox='none'）。同步 throw，文案含 capabilities 依据与恢复指引。
+   */
+  assertEngineParamSupport(engine, opts) {
+    const caps = engine.capabilities();
+    if (opts.conversation === true && caps.conversation === "unsupported") {
+      throw new EngineError(
+        "engine_capability_unsupported",
+        `engine '${engine.id}' \u4E0D\u652F\u6301 conversation\uFF08capabilities.conversation = 'unsupported'\uFF0Cspawn \u5355\u8F6E\u6A21\u5F0F\u65E0\u540C\u8FDB\u7A0B idle \u590D\u7528\uFF0Cmessage/close \u4EA4\u4E92\u63A7\u5236\u9762\u4E0D\u53EF\u7528\uFF09`,
+        `\u6539\u7528 engine: pi\uFF08\u652F\u6301 conversation \u7EED\u804A\uFF09\uFF0C\u6216\u4E0D\u4F20\u8BE5\u53C2\u6570\uFF08\u4E00\u6B21\u6027\u4EFB\u52A1\u9ED8\u8BA4\u5F62\u6001\uFF09`
+      );
+    }
+    if (opts.fork === true || opts.forkFromSessionFile !== void 0) {
+      throw new EngineError(
+        "engine_capability_unsupported",
+        `engine '${engine.id}' \u4E0D\u652F\u6301 fork${opts.forkFromSessionFile !== void 0 ? "\uFF08fork-from \u540C\u4E3A\u7236 pi session \u4E0A\u4E0B\u6587\u7EE7\u627F\uFF09" : ""}\uFF08fork \u4F9D\u8D56\u7236 pi session \u4E0A\u4E0B\u6587\u7EE7\u627F\uFF0Ccapabilities.steer = '${caps.steer}'\u2014\u2014\u975E pi \u5F15\u64CE\u65E0\u7236 session \u5206\u53C9\u901A\u9053\uFF09`,
+        `\u628A\u6240\u9700\u7236\u4E0A\u4E0B\u6587\u5199\u8FDB task \u6B63\u6587\u540E\u4E0D\u4F20 fork\uFF0C\u6216\u6539\u7528 engine: pi`
+      );
+    }
+    if ((opts.worktree === true || typeof opts.worktree === "object") && caps.sandbox === "none") {
+      throw new EngineError(
+        "engine_capability_unsupported",
+        `engine '${engine.id}' \u4E0D\u652F\u6301 worktree \u9694\u79BB\uFF08capabilities.sandbox = 'none'\uFF0C\u5F15\u64CE\u672A\u63A5\u6587\u4EF6\u7CFB\u7EDF\u9694\u79BB\u5C42\uFF09`,
+        `\u6539\u7528 engine: pi\uFF08worktree \u9694\u79BB\u53EF\u7528\uFF09\uFF0C\u6216\u4E0D\u4F20\u8BE5\u53C2\u6570\uFF08\u5728 parent cwd \u6267\u884C\uFF09`
+      );
+    }
+  }
+  /**
+   * 非 pi 引擎的 detached 执行编排（与 kickOffBackground 同构的 background 语义）：
+   * pool 并发槽（maxConcurrent 对非 pi 引擎同样生效）→ journal 接线（D6 第②级：
+   * taskId=record.id，初始池 key 占位 'shared'，onPoolResolved retarget 到引擎实际
+   * 池 key——路径与 paths.ts 同源推导）→ engine.run（signal 接 record controller，
+   * kill-chain 两级生效）→ engineHandle 回填（终态迁移落 entry 前）→ 终态迁移 →
+   * bg notify（chat 域宿主职责，与 pi 完成通知同语义）。
+   */
+  kickOffEngineRun(record, opts, engine) {
+    const signal = record.controller?.signal;
+    void (async () => {
+      try {
+        await this.pool.acquire(PRIORITY_BACKGROUND, this.effectiveMaxConcurrentFor(record), signal);
+      } catch {
+        if (signal?.aborted) {
+          await this.finalizeAborted(record);
+        } else {
+          await this.finalizeFailed(record, new Error("aborted"));
+        }
+        return;
+      }
+      try {
+        await this.runEngineTask(record, opts, engine, signal);
+        if (record.closedReason !== "cancelled") {
+          this.notifyComplete(record);
+        }
+      } finally {
+        this.pool.release();
+      }
+    })();
+  }
+  /**
+   * kickOffEngineRun 的 acquire 后主体：journal 接线（D6 第②级：taskId=record.id，
+   * 初始池 key 占位 'shared'，onPoolResolved retarget 到引擎实际池 key）→ engine.run
+   * （signal 接 record controller，kill-chain 两级生效）→ engineHandle 回填（终态迁移
+   * 落 entry 前）→ 终态迁移。bg notify 归编排侧（与 kickOffBackground 收尾通知归编排对称）。
+   */
+  async runEngineTask(record, opts, engine, signal) {
+    const journal = new JournalWriter({
+      path: resolveJournalPath(getEngineDataDir(), engine.id, "shared", record.id),
+      taskId: record.id,
+      engineId: engine.id
+    });
+    const retargetJournal = (poolKey) => {
+      journal.retarget(resolveJournalPath(getEngineDataDir(), engine.id, poolKey, record.id));
+    };
+    const backfillEngineHandle = (partial) => {
+      if (record.engineHandle !== void 0 && record.engineHandle.sessionRef["sessionId"] !== void 0) {
+        return;
+      }
+      record.engineHandle = {
+        sessionRef: partial.sessionRef,
+        poolKey: partial.poolKey,
+        journalPath: journal.path
+      };
+      this.store.reportRecordTransition(record);
+    };
+    const runCtx = {
+      taskId: record.id,
+      poolKey: "shared",
+      signal,
+      ctxModel: opts.ctxModel,
+      onEvent: (event) => journal.append(event),
+      onPoolResolved: retargetJournal,
+      onHandleReady: backfillEngineHandle,
+      // D9①：路由层 fallback 留痕投影进 outcome（zcode 无独立 record 通路）
+      ...record.engineFallback !== void 0 ? { engineFallback: record.engineFallback } : {},
+      // D10 终止链：engine spawn 的子进程注册进 spawnedChildren 记账
+      //（cancelBackground SIGTERM / dispose killAll 收割对非 pi record 生效）
+      onChildSpawned: (child) => registerSpawnedChildForRecord(record.id, child)
+    };
+    try {
+      const { handle, outcome } = await engine.run(executeOptionsToEngineTaskSpec(opts), runCtx);
+      record.engineHandle = {
+        sessionRef: handle.data.sessionRef,
+        poolKey: handle.data.poolKey,
+        journalPath: journal.path
+      };
+      await journal.close();
+      await this.finalizeEngineOutcome(record, outcome);
+    } catch (err) {
+      await journal.close();
+      await this.finalizeFailed(record, err);
+    }
+  }
+  /**
+   * 分层并发配额：depth 越深可用配额越少（下限 1）。fork 深度护栏在池维度的投影，
+   * 公式约定以 concurrency-pool.ts 注释为登记处、此处为唯一代码锚点。
+   */
+  effectiveMaxConcurrentFor(record) {
+    return Math.max(1, this.pool.maxConcurrent - record.depth);
+  }
+  /**
+   * engine.run resolve 的终态迁移：outcome.error → failed（success=false + error 文案）；
+   * 否则 done（result=content）。CAS 抢锁（tryTransition）防与 cancelBackground 双收尾。
+   */
+  async finalizeEngineOutcome(record, outcome) {
+    if (outcome.sessionFile !== void 0) {
+      record.sessionFile = outcome.sessionFile;
+    }
+    const result = {
+      text: outcome.content,
+      turns: outcome.usage?.turns ?? 0,
+      durationMs: outcome.durationMs ?? Date.now() - record.startedAt,
+      success: outcome.error === void 0,
+      ...outcome.error !== void 0 ? { error: outcome.error } : {},
+      sessionId: outcome.sessionId ?? record.id,
+      toolCalls: [],
+      ...outcome.parsedOutput !== void 0 ? { parsedOutput: outcome.parsedOutput } : {}
+    };
+    if (tryTransition(record, "closed", "gc")) {
+      await this.finalizeRecord(record, result, "closed", "gc");
+    }
+  }
+  // ── 执行内部：run + finalize（sync/bg 共用）──────────────
+  /** 共享的"干活 + 收尾"——sync 直接 await，background 在 detached 里调。 */
+  async runAndFinalize(record, opts, ctx, identity, signal, priority, rawOnEvent, stream, resume) {
+    const pooled = record.mode === "background";
+    let acquired = false;
+    if (pooled) {
+      try {
+        await this.pool.acquire(priority, this.effectiveMaxConcurrentFor(record), signal);
+        acquired = true;
+      } catch {
+        if (signal?.aborted) return this.finalizeAborted(record);
+        return this.finalizeFailed(record, new Error("aborted"));
+      }
+    }
+    const onEvent = rawOnEvent;
+    let worktreeHandle;
+    if (typeof opts.worktree === "object") {
+      worktreeHandle = opts.worktree;
+    }
+    const parentDepth = this.forkDepthAls.getStore() ?? this.forkDepthBaseline;
+    const effectiveDepth = opts.fork ? parentDepth + 1 : parentDepth;
+    let result;
+    try {
+      result = await this.forkDepthAls.run(
+        effectiveDepth,
+        () => this.execCtxAls.run(
+          { recordId: record.id, depth: record.depth },
+          () => runSpawn(record, opts.task, {
+            resolved: identity.resolved,
+            agentConfig: identity.agentConfig,
+            appendSystemPrompt: opts.appendSystemPrompt,
+            skillPath: opts.skillPath,
+            schema: opts.schema,
+            schemaEnv: opts.schemaEnv,
+            // D-A6 bridge: workflow 编排层透传 schema 到 childEnv
+            maxTurns: opts.maxTurns,
+            graceTurns: opts.graceTurns,
+            signal,
+            onEvent,
+            stream,
+            // text_delta streaming（background 路径有值，workflow 路径 undefined）
+            fork: opts.fork,
+            // [v8.5 B] fork-from 显式源（ExecuteOptions.forkFromSessionFile）优先于
+            // opts.fork 推导的 mainSessionFile；undefined = 旧语义不变。
+            forkSource: opts.forkFromSessionFile,
+            worktree: worktreeHandle,
+            parentForkDepth: parentDepth
+            // [MF#4] 父链深度，不从 opts 读
+          }, ctx, resume)
+        )
+      );
+    } catch (err) {
+      if (record.chatMode) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const failedResult = {
+          text: "",
+          turns: record.turnCount,
+          durationMs: Date.now() - record.startedAt,
+          success: false,
+          error: errMsg,
+          sessionId: record.id,
+          toolCalls: []
+        };
+        if (tryTransition(record, "closed", "gc")) {
+          await this.finalizeRoundToIdle(record, failedResult);
+        }
+        return failedResult;
+      }
+      result = await this.finalizeFailed(record, err);
+      return result;
+    } finally {
+      if (pooled && acquired) this.pool.release();
+      stream?.dispose();
+      this.resumesInFlight.delete(record.id);
+    }
+    if (record.chatMode && isIdle(record)) {
+      return result;
+    }
+    const aborted = signal?.aborted === true;
+    const closedReason = aborted ? "cancelled" : result.success ? "user-close" : "gc";
+    if (tryTransition(record, "closed", closedReason)) {
+      if (record.chatMode && !aborted && result.success) {
+        if (record.closeAfterRound) {
+          record.closeAfterRound = void 0;
+          await this.finalizeRecord(record, result, "closed", "user-close");
+        } else {
+          await this.finalizeRoundToIdle(record, result);
+        }
+      } else if (record.chatMode && (!result.success || aborted)) {
+        if (record.closeAfterRound) {
+          record.closeAfterRound = void 0;
+          await this.finalizeRecord(record, result, "closed", closedReason);
+        } else {
+          await this.finalizeRoundToIdle(record, result);
+        }
+      } else if (!record.chatMode && !aborted && result.success) {
+        if (record.closeAfterRound) {
+          record.closeAfterRound = void 0;
+          await this.finalizeRecord(record, result, "closed", "user-close");
+        } else {
+          await this.finalizeRoundToIdle(record, result);
+        }
+      } else {
+        await this.finalizeRecord(record, result, "closed", closedReason);
+      }
+    }
+    return result;
+  }
+  /** background 的步骤 4-6：包进 detached promise（不 await），execute 立即返回。 */
+  kickOffBackground(record, opts, ctx, identity, signal, priority, resume) {
+    const stream = createBackgroundStream(record.id, this.streamSink, ctx.mode, process.env);
+    void this.runAndFinalize(
+      record,
+      opts,
+      ctx,
+      identity,
+      signal,
+      priority,
+      void 0,
+      stream,
+      resume
+    ).then(() => {
+      if (record.closedReason !== "cancelled") {
+        this.notifyComplete(record);
+      }
+    }).catch((err) => {
+      if (err instanceof Error) {
+        logger32.debug(`[subagent] background finalize error (record=${record.id}): ${err.message}`);
+      }
+    });
+  }
+  /** 取消 background record。CAS 抢锁——抢到则 notify + 写 tombstone。 */
+  cancelBackground(record) {
+    record.controller?.abort();
+    const child = getChildByRecord(record.id);
+    if (child && !child.killed) child.kill("SIGTERM");
+    disarmIdleTimer(record.id);
+    if (!tryTransition(record, "closed", "cancelled")) {
+      return false;
+    }
+    const cancelledResult = { text: "", turns: record.turnCount, durationMs: Date.now() - record.startedAt, success: false, error: "cancelled by user", sessionId: record.id, toolCalls: [] };
+    completeRecord(record, cancelledResult, "closed", "cancelled");
+    if (record.sessionFile) {
+      writeCancelledTombstone(record.sessionFile, {
+        id: record.id,
+        status: "cancelled",
+        agent: record.agent,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt ?? Date.now()
+      });
+    }
+    this.store.archive(record);
+    if (record.worktreeHandle) {
+      void this.worktreeManager.cleanup(record.worktreeHandle).catch((err) => {
+        bestEffort(err, "worktree cleanup (cancelBackground)");
+      });
+    }
+    if (record.sessionFile) {
+      try {
+        removeAliveMarker(record.sessionFile);
+      } catch (err) {
+        bestEffort(err, "removeAliveMarker (cancelBackground)");
+      }
+    }
+    emitPendingUnregister(this.pi, record.id, "closed");
+    this.notifyComplete(record);
+    return true;
+  }
+  /**
+   * D-017 时序收尾：委托 doFinalizeRecord（提取到 finalize-record.ts，降低本文件行数）。
+   * [Critical #1] cleanup 全部在 manifest 写之前，manifest best-effort 不阻断（详见 finalize-record.ts）。 */
+  async finalizeRecord(record, result, status, closedReason) {
+    await doFinalizeRecord(
+      {
+        manifestStore: this.manifestStore,
+        worktreeManager: this.worktreeManager,
+        store: this.store,
+        modelService: this.modelService,
+        pi: this.pi,
+        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+      },
+      record,
+      result,
+      status,
+      closedReason
+    );
+  }
+  /**
+   * 对话模式轮次完成收尾：委托 doFinalizeRoundToIdle（record 进 idle，保留内存 + worktree）。
+   * 与 finalizeRecord 对称的委托方法，deps 同源注入。chatMode + done/failed/cancelled 时由 runAndFinalize 调用
+   *（MF-6：chatMode 失败/取消也回退 idle 而非终态销毁）。 */
+  async finalizeRoundToIdle(record, result) {
+    await doFinalizeRoundToIdle(
+      {
+        manifestStore: this.manifestStore,
+        worktreeManager: this.worktreeManager,
+        store: this.store,
+        modelService: this.modelService,
+        pi: this.pi,
+        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+      },
+      record,
+      result
+    );
+  }
+  /** run() 创建期异常的收尾（H1 修复）：createAndConfigureSession 失败会抛，本方法合成 failed
+   *  AgentResult → CAS 抢锁 → finalizeRecord（与正常路径同形）。返回合成 result 供 runAndFinalize
+   *  继续返回（不 re-throw，swallow 策略）。 */
+  async finalizeFailed(record, err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const failedResult = { text: "", turns: record.turnCount, durationMs: Date.now() - record.startedAt, success: false, error: errMsg, sessionId: record.id, toolCalls: [] };
+    if (tryTransition(record, "closed", "gc")) {
+      await this.finalizeRecord(record, failedResult, "closed", "gc");
+    }
+    return failedResult;
+  }
+  /** S1: 排队中被 abort 走 cancelled 终态（对齐已运行被 abort 的 cancelBackground）。 */
+  async finalizeAborted(record) {
+    const cancelledResult = { text: "", turns: record.turnCount, durationMs: Date.now() - record.startedAt, success: false, error: "cancelled by user", sessionId: record.id, toolCalls: [] };
+    if (tryTransition(record, "closed", "cancelled")) {
+      await this.finalizeRecord(record, cancelledResult, "closed", "cancelled");
+    }
+    return cancelledResult;
+  }
+  // ── 内部 ────────────────────────────────────────────────
+  /**
+   * 校验 Service 就绪（pi 已注入 + 未 dispose）。
+   *
+   * dispose 后调用是异常路径：session_shutdown 已清资源，正常情况下紧接着
+   * session_start 会 initSession 复活。若走到这里说明 session_start 没跟上
+   * （RPC 边界 / reload 异常等），service 卡在 disposed 状态。
+   *
+   * 旧实现只抛 "hub disposed"——无信息，调用方和 AI 都看不懂，导致反复盲试。
+   * 现在给出原因 + 恢复指引（重启会话或 /new）。真实错误文本会经 renderResult
+   * 兜底透传到 AI（见 tool-render.ts extractResultError）。
+   */
+  assertReady() {
+    if (this.pi === null) {
+      throw new Error("pi not injected (initSession not called?)");
+    }
+    if (this._disposed) {
+      throw new Error(
+        "subagents service disposed (session ended). This happens after session shutdown when the follow-up session_start did not arrive. Recovery: start a new session or run /new to revive the subagents runtime."
+      );
+    }
+  }
+  /** 构造 SessionRunnerContext（spawn 模式：无需 SDK 实例）。 */
+  buildSessionRunnerContext(overrideCwd) {
+    return {
+      cwd: overrideCwd ?? this.cwd,
+      agentDir: this.modelService.getAgentDir(),
+      // ADR-031 废弃 discovery.json 后，skillDirs 为空。子 session 的 --skill
+      // 由 agent({skill}) 调用方显式传入（resolveSkillPath → opts.skillPath）。
+      skillDirs: [],
+      mainCwd: this.cwd,
+      // mainSessionFile: fork source 解析用，从 session_start 缓存获取。
+      mainSessionFile: this.getMainSessionFile?.() ?? void 0,
+      // worktree pid 回调：session-runner first header 时补全注册表 pid。
+      onWorktreePid: (branch, pid, sessionFile) => this.worktreeManager.registerPid(branch, pid, sessionFile),
+      uiRequestHandler: this.uiRequestHandler,
+      // SR-4：L2 dialog 队列透传——child close 时 session-runner 据此调 rejectChildDialogs
+      // 清理 L2 pending dialog，防全局死锁。undefined 时 session-runner 跳过 L2 清理。
+      dialogQueue: this.dialogQueue,
+      // 主进程运行模式：session-runner W4 守卫据此决定是否注入 ask_user RPC 提示词。
+      mode: this.uiObservability.getMode(),
+      // [递归可见性] 透传所属根 session（runSpawn 注入为子进程 env PI_SUBAGENT_ROOT_SESSION_ID）。
+      // sessionRootId 在 initSession 设定（根进程=sessionId，子进程=env 贯穿的真 ROOT）。
+      // execute/executeAndAwait 调本方法前必经 initSession，此时 sessionRootId 已非空；
+      // ?? 兑底防类型漂移（运行时不可达）。
+      sessionRootId: this.sessionRootId ?? this.sessionId ?? "",
+      // [MF-3] 透传 ROOT cwd（runSpawn 落盘目录编码键 + 注入子进程 env PI_SUBAGENT_ROOT_CWD）。
+      // worktree 模式下 mainCwd = 本进程 checkout 路径，rootCwd 才是真 ROOT——session 文件
+      // 落盘统一用 rootCwd 编码，ROOT 磁盘重建才扫得到深层 record（与 sessionRootId 同构）。
+      rootCwd: this.rootCwd,
+      // [V2 决策 2] chatMode 首轮闭环：agent_settled 时 session-runner 调本回调。
+      // 轻量 idle 化（选项 1）：设 record.status=idle + round+=1 让 notify 守卫放行 + notify
+      // 主 agent，但**不调 doFinalizeRoundToIdle**（不 emitUnregister /
+      // 不 redeliver——V2 要删的副作用都不做）。runAndFinalize 检测到 status=idle 后 early return，
+      // 不进现有 chatMode 分流。Step 5 删 idle 状态机时统一清理这个过渡 idle。
+      // 防箭头函数 this 丢失：用箭头函数捕获 SubagentService 实例 this。
+      onRoundSettled: (record) => {
+        record.round = (record.round ?? 0) + 1;
+        const roundText = getFullTextFrom(record, record.roundBaseTurnIndex ?? 0);
+        record.result = roundText || (record.lastError ? `round did not complete: ${record.lastError}` : "(no output this round)");
+        this.notifyComplete(record);
+        const lastTurn = record.turns[record.turns.length - 1];
+        if (lastTurn !== void 0 && !lastTurn.closed && lastTurn.text.length > 0) {
+          logger32.warn(
+            `[subagents] round settle with unclosed non-empty turn (record=${record.id}, turnIndex=${record.turns.length - 1}) \u2014 pi turn_end/agent_end ordering may have changed`
+          );
+        }
+        record.roundBaseTurnIndex = nextRoundBaseTurnIndex(record);
+        this.store.reportRecordTransition(record);
+        if (record.closeAfterRound) {
+          record.closeAfterRound = void 0;
+          void this.closeAfterRoundSettled(record);
+        }
+      }
+    };
+  }
+};
+function createSubagentService(init) {
+  return new SubagentService(init);
+}
+
+// src/execution/subagent-actions-core.ts
+var DEFAULT_LIST_LIMIT = 20;
+var MAX_LIST_LIMIT = 100;
+var BG_MESSAGE = "detached, will notify on completion (auto-injected message, do not poll)";
+var NOTIFY_CONTRACT = "ledger+at-least-once";
+var FORK_FROM_DEFAULT_PROMPT = "You are taking over work from a previous subagent whose full conversation history you inherited (--fork). First reconstruct state from that history: list what was already done, decided, and left unfinished (a few bullet lines). Then continue the remaining work to completion.";
+function wrapForkFromPrompt(prompt) {
+  return prompt.trim() + "\n\n(You are continuing a previous subagent's inherited conversation via --fork. Reconstruct state from that history first \u2014 what was done, decided, and remains \u2014 then execute the instruction above.)";
+}
+function endedMessageGuard(service, id, original) {
+  if (original instanceof ResurrectDeniedError) return original;
+  let snap;
+  try {
+    snap = service.lookupRecordAnyState(id);
+  } catch {
+    snap = void 0;
+  }
+  if (!snap) {
+    return original instanceof Error ? original : new Error(String(original));
+  }
+  if (snap.status === "closed") {
+    if (snap.closedReason === "cancelled" || snap.closedReason === "user-close") {
+      return new Error(
+        `subagent ${id} was deliberately closed by user (closedReason: ${snap.closedReason}) \u2014 it cannot be messaged or resumed; nothing can reattach to it. Recovery: start a new subagent (action:'start'); use action:'list' with includeFinished:true to review its final output.`
+      );
+    }
+    return new Error(
+      `subagent ${id} is ended but reconnectable (closedReason: ${snap.closedReason ?? "unknown"}${describeClosedContext(snap)}). Its conversation history is intact at ${snap.sessionFile ?? "(session file unavailable)"}. Recovery: resume from that history with {"action":"fork-from","forkFromParam":{"sourceSubagentId":"${id}"}}, or read key points directly from the session file.`
+    );
+  }
+  return new Error(
+    `subagent ${id} is alive but belongs to a different session tree than this one${describeClosedContext(snap)}. You cannot message it from here. Recovery: branch from its history with {"action":"fork-from","forkFromParam":{"sourceSubagentId":"${id}"}}${snap.sessionFile ? ` (source session: ${snap.sessionFile})` : ``}; otherwise start a new subagent.`
+  );
+}
+function describeClosedContext(r) {
+  switch (r.closedReason) {
+    case "parent-shutdown":
+      return " \u2014 it was disconnected when the previous parent session exited";
+    case "parent-fork":
+      return " \u2014 it was detached when the previous parent session forked";
+    case "parent-new":
+      return " \u2014 it was detached when the previous parent session switched";
+    case "disconnected":
+      return " \u2014 it ended in a previous session (exact cause unknown)";
+    default:
+      return "";
+  }
+}
+function assertNever(value) {
+  return String(value);
+}
+function mapExternalState(status) {
+  switch (status) {
+    case "running":
+      return "active";
+    case "closed":
+      return "ended";
+    default:
+      throw new Error(`mapExternalState: unhandled ExecutionStatus ${assertNever(status)}`);
+  }
+}
+function recordToListItem(r) {
+  return {
+    subagentId: r.id,
+    agent: displayAgentName(r.agent),
+    slug: r.slug,
+    state: mapExternalState(r.status),
+    status: r.status,
+    mode: r.mode,
+    duration: computeElapsedSeconds(r),
+    model: r.model,
+    totalTokens: r.totalTokens,
+    sessionFile: r.sessionFile,
+    parent: r.parentRecordId,
+    resumable: isResumable(r),
+    outcome: projectOutcome(r)
+  };
+}
+async function startHandler(service, input, signal, ctxModel) {
+  if (!input) throw new Error(
+    `action:'start' requires task and slug (top-level fields). Correct: {"action":"start","task":"<your task>","slug":"<kebab-case>"}`
+  );
+  const task = input.task?.trim();
+  if (!task) throw new Error(
+    `task is required for action:'start' (top-level field, must not be whitespace-only). Correct: {"action":"start","task":"...","slug":"..."}`
+  );
+  const slug = input.slug?.trim();
+  if (!slug) throw new Error(
+    `slug is required for action:'start' (top-level field, must not be whitespace-only). Correct: {"action":"start","task":"...","slug":"<kebab-case>"}`
+  );
+  if (slug.length > SLUG_MAX_LENGTH) throw new Error(`slug must be \u2264${SLUG_MAX_LENGTH} chars (got ${slug.length}). Shorten to a kebab-case label, e.g. "fix-login", "extract-urls".`);
+  const handle = await service.execute({
+    task,
+    slug,
+    agent: input.agent,
+    model: input.model,
+    thinkingLevel: input.thinkingLevel,
+    skillPath: input.skillPath,
+    appendSystemPrompt: input.appendSystemPrompt,
+    schema: input.schema,
+    maxTurns: input.maxTurns,
+    graceTurns: input.graceTurns,
+    fork: input.fork,
+    worktree: input.worktree,
+    cwd: input.cwd,
+    conversation: input.conversation,
+    idleTimeoutMs: input.idleTimeoutMs,
+    engine: input.engine,
+    ctxModel,
+    signal
+    // background detached 运行，完成由 notify 驱动新 turn。
+  });
+  return {
+    kind: "bg",
+    subagentId: handle.subagentId,
+    sessionFile: handle.sessionFile,
+    slug: handle.details.slug,
+    // registry 全等回显：record.model 由 resolved（裁决放行条目）拼接，原样透出。
+    model: handle.details.model,
+    response: {
+      status: "running",
+      mode: "background",
+      message: BG_MESSAGE,
+      notifyContract: NOTIFY_CONTRACT
+    }
+  };
+}
+function listHandler(service, input) {
+  const includeFinished = input?.includeFinished === true;
+  const rawLimit = input?.limit ?? DEFAULT_LIST_LIMIT;
+  const limit = Math.max(1, Math.min(rawLimit, MAX_LIST_LIMIT));
+  const filter = includeFinished ? "all" : "running";
+  const all = service.collectRecords(limit, filter);
+  const items = all.map(
+    (r) => recordToListItem(service.getFullRecord(r.id) ?? r)
+  );
+  const running = items.filter((i) => i.status === "running").length;
+  return { response: { running, items } };
+}
+async function cancelHandler(service, input) {
+  const id = input?.subagentId?.trim();
+  if (!id) throw new Error("cancelParam.subagentId is required for action:'cancel'");
+  const rec = service.findRecord(id);
+  if (!rec) {
+    const treeRec = service.collectRecords(DEFAULT_LIST_LIMIT, "all").find((r) => r.id === id);
+    if (treeRec && treeRec.status === "running") {
+      throw new Error(
+        `Subagent record "${id}" is running but owned by another process in the tree (it was spawned by a different subagent process) \u2014 this process cannot cancel it; cancel only works for subagents spawned by the current process.`
+      );
+    }
+    throw new Error(`No subagent record with id "${id}". It may have finished \u2014 use action:'list' with includeFinished:true to verify.`);
+  }
+  if (rec.mode !== "background") {
+    throw new Error(`Cannot cancel subagent ${id} (unsupported mode: ${rec.mode})`);
+  }
+  if (rec.chatMode) {
+    const chatRecord = service.getRecordForAction(id);
+    await service.closeSubagent(chatRecord, true);
+    return { subagentId: id, response: { cancelled: true } };
+  }
+  if (!service.cancel(id)) {
+    const now = service.findRecord(id);
+    const statusDesc = now ? now.status : "unknown (evicted from memory)";
+    throw new Error(`Subagent ${id} could not be cancelled (it likely just finished; status: ${statusDesc})`);
+  }
+  return { subagentId: id, response: { cancelled: true } };
+}
+async function messageHandler(service, input) {
+  const id = input?.subagentId?.trim();
+  if (!id) throw new Error("messageParam.subagentId is required for action:'message'");
+  const text = input?.text?.trim();
+  if (!text) throw new Error(
+    `messageParam.text is required for action:'message' (must not be whitespace-only). Correct: {"action":"message","messageParam":{"subagentId":"sa-...","text":"your follow-up"}}`
+  );
+  const interrupt = input?.interrupt === true;
+  let record;
+  try {
+    record = service.getRecordForAction(id, { allowReconnect: true });
+  } catch (err) {
+    throw endedMessageGuard(service, id, err);
+  }
+  if (!record.chatMode && record.status === "running") {
+    record.chatMode = true;
+  }
+  if (record.chatMode) {
+    await service.deliverMessage(record, text, interrupt);
+  } else {
+    throw new Error(
+      `subagent ${id} has ended (status: ${record.status}), cannot message. Recovery: use action:'close' to clean up, then action:'start' a new subagent.`
+    );
+  }
+  return { kind: "message", subagentId: id, slug: record.slug, response: { delivered: true } };
+}
+async function closeHandler(service, input) {
+  const id = input?.subagentId?.trim();
+  if (!id) throw new Error("closeParam.subagentId is required for action:'close'");
+  const force = input?.force === true;
+  const record = service.getRecordForAction(id);
+  await service.closeSubagent(record, force);
+  return { kind: "close", subagentId: id, response: { closed: true } };
+}
+async function forkFromHandler(service, input) {
+  const id = input?.sourceSubagentId?.trim();
+  if (!id) throw new Error("forkFromParam.sourceSubagentId is required for action:'fork-from'");
+  const prompt = input?.prompt?.trim() ?? "";
+  const task = prompt ? wrapForkFromPrompt(prompt) : FORK_FROM_DEFAULT_PROMPT;
+  const source = assertAndLookupForkFromSource(service, id);
+  const baseSlug = (source.slug || source.agent || "resumed").slice(0, SLUG_MAX_LENGTH - "-resumed".length);
+  const handle = await service.execute({
+    task,
+    slug: `${baseSlug}-resumed`,
+    forkFromSessionFile: source.sessionFile
+  });
+  return {
+    kind: "fork-from",
+    subagentId: handle.subagentId,
+    sourceSessionFile: source.sessionFile,
+    response: { newSubagentId: handle.subagentId, sourceSessionFile: source.sessionFile }
+  };
+}
+function assertAndLookupForkFromSource(service, id) {
+  if (service.findRecord(id)) {
+    throw new Error(
+      `subagent ${id} is still active in this process \u2014 use action:'message' to continue it directly. If you want a parallel branch from its history, close it first (action:'close'), then fork-from.`
+    );
+  }
+  const source = service.lookupRecordAnyState(id);
+  if (!source) {
+    throw new Error(
+      `No subagent record with id "${id}". It may never have existed or been garbage-collected \u2014 use action:'list' with includeFinished:true to verify the id.`
+    );
+  }
+  if (source.externalInstance !== void 0) {
+    throw new Error(
+      `subagent ${id} is still running in another process (alive pid marker present). Recovery: wait until it finishes, or operate it in its own session; then retry fork-from.`
+    );
+  }
+  if (source.status === "closed" && (source.closedReason === "cancelled" || source.closedReason === "user-close")) {
+    throw new Error(
+      `subagent ${id} was deliberately closed by user (closedReason: ${source.closedReason}) \u2014 deliberately-closed records cannot be resumed or branched from; nothing can reattach to them. Recovery: start a fresh subagent (action:'start'); use action:'list' with includeFinished:true to review its final output.`
+    );
+  }
+  if (source.worktree === true) {
+    throw new Error(
+      `subagent ${id} was created with worktree isolation; that binding was lost when its parent process ended. Resuming from its history would run outside the original worktree isolation. Recovery: start a new subagent with action:'start' and carry over key findings manually (read ${source.sessionFile ?? "its session file"} if needed).`
+    );
+  }
+  const sessionFile = source.sessionFile;
+  if (!sessionFile) {
+    throw new Error(
+      `subagent ${id} has no child session file to inherit from (it never started successfully). Recovery: start a fresh subagent (action:'start') describing the task again.`
+    );
+  }
+  return { ...source, sessionFile };
+}
+
+// src/shared/bounded-serialize.ts
+var JSON_INDENT2 = 2;
+function boundedPrettySerialize(value, budget) {
+  const ancestors = /* @__PURE__ */ new Set();
+  let out = "";
+  let exceeded = false;
+  function append(s) {
+    if (exceeded) return;
+    if (out.length + s.length <= budget) {
+      out += s;
+      return;
+    }
+    out += s.slice(0, budget - out.length);
+    exceeded = true;
+  }
+  function serialize(v, depth) {
+    if (exceeded) return;
+    const t = typeof v;
+    if (v === null || t === "string" || t === "number" || t === "boolean" || t === "bigint") {
+      append(JSON.stringify(v));
+      return;
+    }
+    if (t === "object" && v !== null) {
+      const obj = v;
+      if (ancestors.has(obj)) {
+        throw new TypeError("circular reference");
+      }
+      if (typeof Reflect.get(obj, "toJSON") === "function") {
+        append(JSON.stringify(obj));
+        return;
+      }
+      ancestors.add(obj);
+      const childIndent = " ".repeat(JSON_INDENT2 * (depth + 1));
+      const closeIndent = " ".repeat(JSON_INDENT2 * depth);
+      if (Array.isArray(obj)) {
+        const arr = obj;
+        if (arr.length === 0) {
+          append("[]");
+        } else {
+          append("[\n");
+          for (let i = 0; i < arr.length && !exceeded; i++) {
+            if (i > 0) append(",\n");
+            append(childIndent);
+            const el = arr[i];
+            if (el === void 0 || typeof el === "function" || typeof el === "symbol") {
+              append("null");
+            } else {
+              serialize(el, depth + 1);
+            }
+          }
+          append("\n" + closeIndent + "]");
+        }
+      } else {
+        const entries = Object.entries(obj).filter(
+          ([, val]) => val !== void 0 && typeof val !== "function" && typeof val !== "symbol"
+        );
+        if (entries.length === 0) {
+          append("{}");
+        } else {
+          append("{\n");
+          for (let i = 0; i < entries.length && !exceeded; i++) {
+            if (i > 0) append(",\n");
+            append(childIndent + JSON.stringify(entries[i][0]) + ": ");
+            serialize(entries[i][1], depth + 1);
+          }
+          append("\n" + closeIndent + "}");
+        }
+      }
+      ancestors.delete(obj);
+      return;
+    }
+    append(JSON.stringify(v) ?? "null");
+  }
+  try {
+    serialize(value, 0);
+    return exceeded ? out + "\n... (truncated)" : out;
+  } catch {
+    const fallback = String(value);
+    return fallback.length > budget ? fallback.slice(0, budget) + "\n... (truncated)" : fallback;
+  }
+}
+
+// src/execution/agents-assembly.ts
+var logger33 = getLogger("agents-assembly");
+async function discoverAgents(workspaceRoot, hostRoots) {
+  const resources = await discoverResources({
+    kind: "agents",
+    workspaceRoot,
+    hostRoots
+  });
+  const agentMap = /* @__PURE__ */ new Map();
+  for (const resource of resources) {
+    if (!resource.available) continue;
+    const content = getCachedFileContent(resource.path);
+    if (content === null) {
+      logger33.error(`[agents-assembly] skip unreadable agent file ${resource.path}`);
+      continue;
+    }
+    const profile = parseAgentProfile(content, resource.path);
+    if (profile.meta !== null) {
+      agentMap.set(profile.name, {
+        name: profile.name,
+        description: profile.description,
+        ...profile.when !== void 0 ? { when: profile.when } : {},
+        ...profile.examples !== void 0 ? { examples: profile.examples } : {},
+        path: resource.path
+      });
+    } else if (content.trimStart().startsWith("---")) {
+      logger33.warn(
+        `[agents-assembly] ${resource.path}: agent frontmatter \u89E3\u6790\u5931\u8D25\uFF08IF1 \u6821\u9A8C\u4E0D\u901A\u8FC7\uFF09\u2014\u2014agent \u672A\u8FDB\u6E05\u5355`
+      );
+    }
+  }
+  return sortByCodepoint([...agentMap.values()], (a) => a.name);
+}
+
+// src/orchestration/workflow-run-summary.ts
+function runSummary(run) {
+  return {
+    runId: run.runId,
+    name: run.spec.scriptName,
+    slug: run.spec.slug,
+    status: run.state.status,
+    reason: run.state.reason,
+    startedAt: run.meta.startedAt,
+    completedAt: run.meta.completedAt,
+    error: run.state.error
+  };
+}
+function isScriptRunning(runs, name) {
+  for (const run of runs.values()) {
+    if (run.spec.scriptName === name && run.state.status === "running") return true;
+  }
+  return false;
+}
+
+// src/orchestration/args-meta.ts
+var logger34 = getLogger("args-meta");
+var EMPTY_RESERVED_KEYS = /* @__PURE__ */ new Set();
+function argKeysFromMeta(meta, options) {
+  const reserved = options?.reservedKeys ?? EMPTY_RESERVED_KEYS;
+  const exact = /* @__PURE__ */ new Set();
+  const patterns = [];
+  if (meta === void 0 || meta === null || typeof meta !== "object") {
+    return { exact, patterns };
+  }
+  const schema = meta;
+  const props = schema.properties;
+  if (props !== null && typeof props === "object") {
+    for (const k of Object.keys(props)) {
+      if (!reserved.has(k)) exact.add(k);
+    }
+  }
+  const pp = schema.patternProperties;
+  if (pp !== null && typeof pp === "object") {
+    for (const p of Object.keys(pp)) {
+      try {
+        const re = new RegExp(p);
+        if ([...reserved].some((tk) => re.test(tk))) continue;
+        patterns.push(re);
+      } catch (err) {
+        logger34.warn(`[args-meta] patternProperties \u975E\u6CD5\u6B63\u5219\u8DF3\u8FC7: ${p}`, {
+          reason: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+  }
+  return { exact, patterns };
+}
+function filterFlattenedKeys(p, keys) {
+  const args = typeof p.args === "object" && p.args !== null ? p.args : void 0;
+  const isKnownKey = (k) => keys.exact.has(k) || keys.patterns.some((re) => re.test(k));
+  return Object.keys(p).filter(
+    (k) => isKnownKey(k) && !(args !== void 0 && Object.prototype.hasOwnProperty.call(args, k))
+  );
+}
+function findFlattenedArgKeys(params, meta, options) {
+  if (typeof params !== "object" || params === null) return [];
+  const keys = argKeysFromMeta(meta, options);
+  return filterFlattenedKeys(params, keys);
+}
+function normalizeArgsByMeta(params, meta, options) {
+  const keys = argKeysFromMeta(meta, options);
+  const warnings = [];
+  if (keys.exact.size === 0 && keys.patterns.length === 0) {
+    warnings.push({
+      code: "no_parameter_contract",
+      message: "\u672A\u58F0\u660E\u53C2\u6570\u5951\u7EA6\uFF08\u6216\u89E3\u6790\u4E3A\u7A7A\uFF09\u2014\u2014\u5E73\u94FA\u68C0\u6D4B\u8DF3\u8FC7\uFF0Cargs \u4E0D\u6821\u9A8C"
+    });
+  }
+  if (typeof params === "object" && params !== null) {
+    const p = params;
+    const flattened = filterFlattenedKeys(p, keys);
+    if (flattened.length > 0) {
+      warnings.push({
+        code: "flattened_args",
+        keys: flattened,
+        message: `Detected ${flattened.join(", ")} at top level \u2014 they belong inside 'args'.`
+      });
+    }
+    return { args: p.args ?? {}, warnings };
+  }
+  return { args: {}, warnings };
+}
 
 // src/index.ts
-var CORE_PACKAGE_VERSION = "0.2.0";
+var CORE_PACKAGE_VERSION = "0.3.0";
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  AGENT_REF_EXT,
+  AgentRegistry,
+  BG_MESSAGE,
   CORE_PACKAGE_VERSION,
   DEFAULT_DATA_ROOT,
+  DEFAULT_LIST_LIMIT,
+  DEFAULT_PROVIDER_ID,
   DEFAULT_WORKFLOW_SAVED_DIR,
   DEFAULT_WORKFLOW_TMP_DIR,
+  DirtyWorktreeError,
+  FORK_FROM_DEFAULT_PROMPT,
   FileRunStore,
+  ForkDepthExceededError,
+  GitRunError,
+  MAX_LIST_LIMIT,
   MAX_RETAINED_DONE_RUNS,
+  ModelConfigService,
+  NOTIFY_CONTRACT,
+  RecordStore,
+  ResurrectDeniedError,
+  SAFE_ID_RE,
+  SLUG_MAX_LENGTH,
+  SNAPSHOT_VERSION,
+  SUBAGENT_RECORD_CUSTOM_TYPE,
+  SubagentService,
+  WORKFLOW_REF_EXT,
+  WORKFLOW_REF_RESERVED_NAMES,
   WorkerHostImpl,
+  WorkflowRun,
+  WorkflowScript,
   WorkflowScriptRegistryImpl,
+  ZCODE_FALLBACK_DEFAULT_MODEL,
   abortRun,
+  argKeysFromMeta,
+  assertSafeId,
+  atomicTmpPathFor,
+  boundedPrettySerialize,
+  cancelHandler,
+  cleanupStaleTmpFiles,
+  cleanupWorktree,
+  closeHandler,
+  collectWorktreePatch,
   configureCore,
   configureNotifyDomain,
+  createConcurrencyPool,
+  createSubagentService,
   createZcodeEngine,
   deleteWorkflow,
+  discoverAgents,
   discoverResources,
   discoverWorkflows,
+  displayAgentName,
+  endedMessageGuard,
   escapeXml,
   evictDoneRunsBeyondCap,
   executeNestedWorkflow,
+  findFlattenedArgKeys,
   findWorkspaceRoot,
+  forkFromHandler,
   formatAgentList,
   formatModelList,
   formatWorkflowList,
+  fromRunSnapshot,
   generateWorkflowScript,
   getCachedFileContent,
   getCachedParsed,
   getLogger,
+  getModelConfigService,
   getWorkflow,
   getWorkflowByPath,
+  gitRun,
+  hasApiKey,
+  invalidAgentRefMessage,
   invalidateCache,
+  isProcessAlive,
+  isSafeId,
+  isScriptRunning,
+  isTreeDirty,
   killAllSpawnedChildren,
   lintScript,
+  listHandler,
+  listStaleTmpFiles,
+  listWorktreePorcelain,
+  loadWorkflowScriptByPath,
   loadWorkflows,
+  mapExternalState,
+  maxTurnsToWatchdogMs,
+  messageHandler,
+  normalizeArgsByMeta,
+  normalizeRef,
+  normalizeWorkflowRef,
+  parseAgentProfile,
+  parseAtomicTmpPath,
   parseResourceMeta,
+  recordToListItem,
+  recoverCrashedRuns,
   registerZcodeEngine,
   renderXmlSection,
   routeEngine,
   runAndWait,
+  runSummary,
   runWorkflow,
   saveWorkflow,
   scheduleTimeBudget,
   sortByCodepoint,
+  splitZcodeModelRef,
+  startHandler,
   summarizeDescription,
-  terminateRunningRuns
+  terminateRunningRuns,
+  toRunSnapshot,
+  toSubagentRecordEntry,
+  wrapForkFromPrompt,
+  writeAtomicFile,
+  writeAtomicFileSync
 });

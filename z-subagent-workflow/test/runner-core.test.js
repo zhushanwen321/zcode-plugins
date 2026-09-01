@@ -556,8 +556,12 @@ test('XYZ_ZCODE_MODE=appserver 定向分发：pre-abort 短路——不建连接
     },
   );
   // 定向 appserver 的 pre-abort 短路：合成中止终态，不触发 HOME 获取/连接/
-  // 进程——单测环境零真实进程即可验证定向分发命中 appserver 路径
+  // 进程——单测环境零真实进程即可验证定向分发命中 appserver 路径。
+  // pool:1（2026-09-01 vendored 刷新随 core f163497f5 更新）：pre-abort 分支
+  // 有意先回调 onPoolResolved 再合成中止终态——不变量 3 要求 pool 解析先于
+  // 首个事件 emit，否则中止终态 error 事件落 shared 占位池、与 handle.poolKey
+  // 漂移（core 侧缺陷修复，本断言随之从 pool:0 更新）
   assert.equal(outcome.exitCode, null);
   assert.match(outcome.error, /中止/);
-  assert.deepEqual(calls, { child: 0, handleReady: 0, pool: 0 });
+  assert.deepEqual(calls, { child: 0, handleReady: 0, pool: 1 });
 });
