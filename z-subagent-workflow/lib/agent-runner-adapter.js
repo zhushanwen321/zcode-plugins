@@ -37,11 +37,11 @@
  */
 
 const crypto = require('node:crypto');
+const coreRef = require('./core-ref');
+const { zswCliPath } = require('./config');
 const { buildPrompt } = require('./prompt-builder');
 const { extractJsonObject } = require('./jsonout');
-const {
-  normalizeAgentRef, invalidAgentRefMessage, agentFileNotFoundMessage,
-} = require('./agent-discovery');
+const { agentFileNotFoundMessage } = require('./agent-discovery');
 
 /** zsw usage（snake_case，zcode 引擎原生形态）→ core AgentUsage（camelCase）。 */
 function toCoreUsage(usage) {
@@ -118,8 +118,12 @@ function createAgentRunnerAdapter({ runner, resolver, fallbackCwd } = {}) {
       // agent .md 解析（D-4a 收紧 + D-4 缺省统一，W6b）：引用唯一形态 = .md
       // 绝对路径（~/ 展开同 core normalizeRef 口径）——名字/相对路径/非 .md 抛
       // invalidAgentRefMessage，路径合法但不可读抛 agentFileNotFoundMessage
-      // （两文案与 core agent-registry 同源，manager.start 同款——报错同源
-      // 基准，两消费方共用 agent-discovery 单点定义防漂移）。缺省（opts.agent
+      // （V2p C3：ref 归一化与报错文案改直调 vendored core，不再经
+      // agent-discovery 薄包装；invalidAgentRefMessage 仍注入 zsw 双出口
+      // howToList，错误消息契约与 V1a 后形态逐字一致——agent-discovery 与
+      // 本处的 howToList 同文，manager 面薄包装退役归 V3w）。非 string 防御
+      // 保留：core normalizeRef/工厂对非 string 抛 TypeError，插件契约回落
+      // 可操作报错（String() 化进工厂，旧 zsw 包装同款）。缺省（opts.agent
       // 未传）走 resolveDefault = general-purpose 内置角色（与 pi 侧
       // session-runner 的 DEFAULT_AGENT_NAME 语义对齐；遮蔽序胜者可覆写）。
       // resolver.resolve 是 async（W6a 起 core discoverResources）；sync 注入的
@@ -128,9 +132,14 @@ function createAgentRunnerAdapter({ runner, resolver, fallbackCwd } = {}) {
       let profile = null;
       const res = resolver || require('./agent-discovery');
       if (opts.agent != null && opts.agent !== '') {
-        const norm = normalizeAgentRef(opts.agent);
+        const core = coreRef.requireCore();
+        const norm = typeof opts.agent === 'string'
+          ? core.normalizeRef(opts.agent, core.AGENT_REF_EXT)
+          : null;
         if (norm === null) {
-          throw new Error(invalidAgentRefMessage(opts.agent));
+          throw new Error(core.invalidAgentRefMessage(String(opts.agent), {
+            howToList: `<available_subagents>, or run node "${zswCliPath()}" agents to list paths`,
+          }));
         }
         profile = await res.resolve(norm, cwdBase);
         if (!profile) {

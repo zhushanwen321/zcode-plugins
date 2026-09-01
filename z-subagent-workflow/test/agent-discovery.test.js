@@ -1,7 +1,8 @@
 'use strict';
 /**
- * lib/agent-discovery 单测（W6a：agent 发现切 vendored core discoverResources，
- * 旧自写四根递归 resolver 退役）。
+ * lib/agent-discovery 单测（W6a：agent 发现切 vendored core discoverResources；
+ * V2p C7/C8：装配循环退役改 core discoverAgents、解析族退役改 core
+ * parseAgentProfile + getCachedParsed）。
  *
  * 覆盖面（对应设计 D-2 与验收 A7/序位探针）：
  * - 根映射序位：user 级 < vendored 内置 < project 级（user 级同名被内置遮蔽、
@@ -16,7 +17,13 @@
  *   normalizeRef 单源薄委托）；`..` 段引用拒绝且报错带恢复指引（V1a C2
  *   行为变更：复刻版无 .. 闸）；resolveDefault = general-purpose（vendored
  *   兜底 + project 级遮蔽胜）
- * - parseAgentMd 解析语义（自旧 resolver 原样迁移的回归锁定）
+ * - 装配语义（V2p C7）：去重键 = frontmatter name（声明行为变更：异 stem
+ *   同 name 资产互遮蔽、后位根胜——旧 stem 键下两文件独立成条）；输出码点
+ *   序；IF1 装配闸（frontmatter 不通过的 .md 不进清单，执行面路径直达仍可
+ *   解析）
+ * - 解析语义（V2p C8，经 parseFile → core parseAgentProfile 宽松解析）：
+ *   全字段/缺省 stem/无 frontmatter/未闭合 legacy fallback/block-scalar
+ *   description 完整支持（fixture t-sink.md）
  *
  * 隔离：HOME env 指临时目录（core 硬编码 user-agents 槽与本文档模块的
  * homeDir 基准都在调用期读 $HOME，两侧同源）；vendored npm 槽是插件目录
@@ -30,7 +37,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const discovery = require('../lib/agent-discovery');
-const { parseAgentMd } = discovery;
+const { parseFile } = discovery;
 
 /** vendored 内置 10 名（= lib/vendor/subagent-core/agents/ 文件 stem）。 */
 const BUILTIN_NAMES = [
@@ -67,6 +74,17 @@ function mkAgent(dir, name, extra = '') {
   return file;
 }
 
+/**
+ * 自定义 frontmatter 行的 agent .md（extra 参数会产生重复 description 行，
+ * core IF1 校验拒重复 key——需要覆盖 description 等自定义字段时用本函数）。
+ */
+function mkAgentFm(dir, stem, fmLines) {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${stem}.md`);
+  fs.writeFileSync(file, `---\n${fmLines.join('\n')}\n---\n\nbody-${stem}\n`);
+  return file;
+}
+
 /** 用户根条目视图（剔除 vendored 内置，精确断言四根行为）。 */
 const userEntries = (list) => list.filter((p) => p.source !== 'npm');
 
@@ -74,7 +92,7 @@ const userEntries = (list) => list.filter((p) => p.source !== 'npm');
 
 test('序位：user 级同名被 vendored 内置遮蔽（user < 内置）', async (t) => {
   const { home, ws } = setupFixture(t);
-  mkAgent(path.join(home, '.zcode', 'agents'), 'reviewer', 'description: user-old\n');
+  mkAgentFm(path.join(home, '.zcode', 'agents'), 'reviewer', ['name: reviewer', 'description: user-old']);
   const list = await discovery.listAgents(ws, { homeDir: home });
   const reviewer = list.find((p) => p.name === 'reviewer');
   assert.ok(reviewer, 'reviewer 在场');
@@ -114,7 +132,7 @@ test('四根级联：ws/.agents > ws/.zcode > ~/.agents > ~/.zcode（非内置�
     path.join(home, '.zcode', 'agents'),
   ];
   roots.forEach((r, i) => {
-    mkAgent(r, 'cascade-probe', `description: from root ${i}\n`);
+    mkAgentFm(r, 'cascade-probe', ['name: cascade-probe', `description: from root ${i}`]);
   });
   // 逐级删除高优先级文件，验证胜出顺序逐级下移（D-4a 后引用仅路径形态，
   // 遮蔽序断言走 listAgents——resolveAgent 不再做名字四根查找）
@@ -211,7 +229,10 @@ test('文件级 symlink 指向根外文件可被发现；子目录内 .md 单层
   const linked = users.find((p) => p.filePath === path.join(root, 'linked.md'));
   assert.ok(linked, '文件级 symlink 被发现（core async 扫描 follow）');
   assert.equal(linked.name, 'coder-ext', 'name 来自目标文件 frontmatter');
-  assert.equal(linked.body.trim(), 'body-coder-ext');
+  // 清单条目是索引投影（V2p C7 起 AgentEntry 无 body）——正文断言走
+  // resolveAgent 执行面（同 parseFile 链）
+  const linkedProfile = await discovery.resolveAgent(linked.filePath, ws, { homeDir: home });
+  assert.equal(linkedProfile.body.trim(), 'body-coder-ext');
   assert.ok(users.some((p) => p.name === 'local'));
   assert.ok(!users.some((p) => p.name === 'nested'), '子目录 .md 单层不可见（迁移：平铺或目录 symlink）');
   assert.equal(users.filter((p) => p.name === 'coder-ext').length, 1,
@@ -288,8 +309,12 @@ test('resolveDefault：缺省 = general-purpose（vendored 兜底 + project 级�
   assert.equal(gp.name, 'general-purpose');
   assert.ok(gp.filePath.includes(path.join('vendor', 'subagent-core', 'agents', 'general-purpose.md')));
   assert.ok(gp.body.includes('通用兜底'), '正文可解析（prompt-builder 消费面）');
-  // project 级同名遮蔽（逃生门：缺省角色也可被用户覆写）
-  const projFile = mkAgent(path.join(ws, '.agents', 'agents'), 'general-purpose', 'description: my-gp\n');
+  // project 级同名遮蔽（逃生门：缺省角色也可被用户覆写；自定义 description
+  // 须写合法 frontmatter——IF1 拒重复 key，覆写不进清单会退 vendored 兜底）
+  const projFile = mkAgentFm(path.join(ws, '.agents', 'agents'), 'general-purpose', [
+    'name: general-purpose',
+    'description: my-gp',
+  ]);
   const gp2 = await discovery.resolveDefaultAgent(ws, { homeDir: home });
   assert.equal(gp2.filePath, projFile, 'project 级同名胜出');
   assert.equal(gp2.source, 'project-agents');
@@ -317,10 +342,95 @@ test('agentScanRoots：注入序 = 展开目标在前、本体在后（core last
   assert.equal(roots.workspaceRoot, ws);
 });
 
-// ------------------------------------------------- parseAgentMd（旧 resolver 迁移）
+// ------------------------------------------- 装配语义（V2p C7：discoverAgents）
 
-test('frontmatter: 正常全字段（行数组 + 行内数组 + maxTurns 数值化）', () => {
-  const md = [
+test('去重键变更（V2p 声明）：异 stem 同 frontmatter name 互遮蔽，后位根胜', async (t) => {
+  const { home, ws } = setupFixture(t);
+  // 同一 frontmatter name 挂在两个不同 stem 文件上（旧 stem 键语义 = 两条
+  // 独立条目；V2p 起 name 键 = 一条，discoverResources 槽序靠后者胜）
+  const userFile = mkAgentFm(path.join(home, '.zcode', 'agents'), 'stem-a', [
+    'name: dup-name', 'description: from user',
+  ]);
+  const projFile = mkAgentFm(path.join(ws, '.agents', 'agents'), 'stem-b', [
+    'name: dup-name', 'description: from project',
+  ]);
+
+  const list = userEntries(await discovery.listAgents(ws, { homeDir: home }));
+  const dup = list.filter((p) => p.name === 'dup-name');
+  assert.equal(dup.length, 1, 'frontmatter name 去重：异 stem 同 name 只剩一条');
+  assert.equal(dup[0].filePath, projFile, '后写胜：project-agents（core 槽序靠后）遮蔽 user-pi');
+  assert.equal(dup[0].source, 'project-agents');
+  assert.equal(dup[0].description, 'from project');
+  // 同 stem 撞名（frontmatter name = stem，既有合法集）不回归：仍是本体胜
+  const ownScout = mkAgent(path.join(ws, '.zcode', 'agents'), 'scout2');
+  const list2 = userEntries(await discovery.listAgents(ws, { homeDir: home }));
+  const scout = list2.filter((p) => p.name === 'scout2');
+  assert.equal(scout.length, 1, 'name=stem 的既有合法集不受去重键变更影响');
+  assert.equal(scout[0].filePath, ownScout);
+});
+
+test('装配输出按 name 码点序（discoverAgents sortByCodepoint，含 vendored 混排）', async (t) => {
+  const { home, ws } = setupFixture(t);
+  // 大写 < 小写 < 中文 的码点序（String 比较），与旧 profiles.sort 同序
+  mkAgent(path.join(ws, '.agents', 'agents'), 'zeta');
+  mkAgent(path.join(ws, '.agents', 'agents'), 'Alpha');
+  mkAgent(path.join(ws, '.agents', 'agents'), '中文角色');
+  mkAgent(path.join(ws, '.agents', 'agents'), 'beta');
+  const list = await discovery.listAgents(ws, { homeDir: home });
+  const names = list.map((p) => p.name);
+  assert.deepEqual(names, [...names].sort(), '全清单按 name 码点序（vendored 与用户条目混排）');
+  assert.deepEqual(names.filter((n) => ['Alpha', 'beta', 'zeta', '中文角色'].includes(n)),
+    ['Alpha', 'beta', 'zeta', '中文角色'], '大写 < 小写 < 中文的码点序抽检');
+});
+
+test('IF1 装配闸：frontmatter 不通过的 .md 不进清单；执行面路径直达仍可解析', async (t) => {
+  const { home, ws } = setupFixture(t);
+  const root = path.join(ws, '.agents', 'agents');
+  fs.mkdirSync(root, { recursive: true });
+  // 无 frontmatter
+  fs.writeFileSync(path.join(root, 'no-fm.md'), '# 只有正文\n');
+  // 缺 description（IF1 要求 name+description 齐备）
+  fs.writeFileSync(path.join(root, 'no-desc.md'), '---\nname: no-desc\n---\n\nb\n');
+  // 合法对照
+  mkAgent(root, 'valid');
+
+  const users = userEntries(await discovery.listAgents(ws, { homeDir: home }));
+  assert.equal(users.some((p) => p.name === 'no-fm'), false, '无 frontmatter 不进清单');
+  assert.equal(users.some((p) => p.name === 'no-desc'), false, '缺 description 不进清单');
+  assert.ok(users.some((p) => p.name === 'valid'), '合法条目不受影响');
+  // 执行面（resolveAgent → parseFile 宽松解析）路径直达不受装配闸影响
+  const noFm = await discovery.resolveAgent(path.join(root, 'no-fm.md'), ws, { homeDir: home });
+  assert.equal(noFm.name, 'no-fm', '宽松解析 name 缺省 stem');
+  const noDesc = await discovery.resolveAgent(path.join(root, 'no-desc.md'), ws, { homeDir: home });
+  assert.equal(noDesc.name, 'no-desc');
+  assert.equal(noDesc.description, '', 'IF1 未过的宽松 fallback 不保 description（core 语义）');
+});
+
+test('清单投影字段：source 按 path 前缀归属反查（含 core 硬编码槽根）', async (t) => {
+  const { home, ws } = setupFixture(t);
+  mkAgent(path.join(home, '.agents', 'agents'), 'in-user-agents');
+  mkAgent(path.join(ws, '.zcode', 'agents'), 'in-project-host');
+  mkAgent(path.join(ws, '.agents', 'agents'), 'in-project-agents');
+  const list = userEntries(await discovery.listAgents(ws, { homeDir: home }));
+  const byName = Object.fromEntries(list.map((p) => [p.name, p]));
+  assert.equal(byName['in-user-agents'].source, 'user-agents', 'core 硬编码槽根的条目标签不丢');
+  assert.equal(byName['in-project-host'].source, 'project-host');
+  assert.equal(byName['in-project-agents'].source, 'project-agents');
+});
+
+// ------------------------------------- 解析语义（V2p C8：core parseAgentProfile）
+
+/** 把 frontmatter 文本写成临时 agent .md，返回 parseFile 投影（不可读 null）。 */
+function parseMd(md, dir, stem = 'probe') {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${stem}.md`);
+  fs.writeFileSync(file, md);
+  return parseFile(file);
+}
+
+test('parseFile（core 宽松解析）：正常全字段（行数组 + 行内数组 + maxTurns 数值化）', (t) => {
+  const { tmp } = setupFixture(t);
+  const p = parseMd([
     '---',
     'name: reviewer',
     'description: "代码审查员"',
@@ -335,8 +445,7 @@ test('frontmatter: 正常全字段（行数组 + 行内数组 + maxTurns 数值�
     '---',
     '',
     '正文内容',
-  ].join('\n');
-  const p = parseAgentMd(md, '/x/reviewer.md');
+  ].join('\n'), path.join(tmp, 'parse-a'));
   assert.equal(p.name, 'reviewer');
   assert.equal(p.description, '代码审查员');
   assert.equal(p.model, 'glm-5.3');
@@ -344,42 +453,92 @@ test('frontmatter: 正常全字段（行数组 + 行内数组 + maxTurns 数值�
   assert.deepEqual(p.disallowedTools, ['web-search', 'mcp']);
   assert.deepEqual(p.skills, ['/path/to/skill/SKILL.md']);
   assert.equal(p.maxTurns, 25);
-  assert.equal(p.body, '\n正文内容');
-  assert.equal(p.filePath, '/x/reviewer.md');
+  assert.equal(p.body, '正文内容', 'core 口径 body trim（旧 mini parser 保留首空白）');
+  assert.equal(p.filePath, path.join(tmp, 'parse-a', 'probe.md'), 'zsw 消费契约投影字段');
 });
 
-test('frontmatter: 缺 name 取文件名；maxTurns 字符串数值化；engine 透传', () => {
-  const p = parseAgentMd('---\ndescription: d\nmaxTurns: "8"\nengine: zcode\n---\n\nb', '/x/impl-helper.md');
-  assert.equal(p.name, 'impl-helper');
-  assert.equal(p.maxTurns, 8);
+test('parseFile：block-scalar 多行 description 与多行 tools 完整解析（fixture t-sink.md）', () => {
+  const p = parseFile(path.join(__dirname, 'fixtures', 't-sink.md'));
+  assert.equal(p.name, 't-sink');
+  assert.ok(p.description.startsWith('V0d fixture：'),
+    `block-scalar 首行完整（旧 mini parser 产出脏值 '|'）: ${p.description.slice(0, 30)}`);
+  assert.ok(p.description.split('\n').length >= 5, '多行 description 全量保留');
+  assert.deepEqual(p.tools, ['read', 'bash'], '多行 - item 列表');
+  assert.equal(p.maxTurns, 2);
+});
+
+test('parseFile：frontmatter 合法（name 在场）时 engine/flow 序列透传', (t) => {
+  const { tmp } = setupFixture(t);
+  const p = parseMd('---\nname: n\ndescription: d\nengine: zcode\ntools: [read]\nskills:\n  - /s/SKILL.md\n---\n\nb', path.join(tmp, 'parse-b'), 'impl-helper');
+  assert.equal(p.name, 'n');
   assert.equal(p.engine, 'zcode');
-  assert.equal(p.tools, undefined);
+  assert.deepEqual(p.tools, ['read'], 'flow 序列经 core YAML 完整解析');
+  assert.deepEqual(p.skills, ['/s/SKILL.md']);
 });
 
-test('frontmatter: 无 frontmatter / 围栏未闭合 / maxTurns 非法值', () => {
-  const noFm = parseAgentMd('# hi\n\nbody', '/x/a.md');
+test('parseFile：缺 name 走 legacy fallback（stem 缺省；IF1 未过 description 不保）', (t) => {
+  const { tmp } = setupFixture(t);
+  const p = parseMd('---\ndescription: d\nmaxTurns: 4\n---\n\nb', path.join(tmp, 'parse-b2'), 'impl-helper');
+  assert.equal(p.name, 'impl-helper', 'name 缺省 stem（宽松不抛）');
+  assert.equal(p.maxTurns, 4, '执行字段经 fallback 保留');
+  assert.equal(p.description, '', 'fallback 不保 description（core IF1 语义，登记差异）');
+});
+
+test('parseFile：IF1 未过走 legacy fallback——maxTurns 带引号字符串时 description 丢失', (t) => {
+  const { tmp } = setupFixture(t);
+  // maxTurns: "8"（带引号字符串）不过 IF1 类型校验 → meta=null → fallback 只保
+  // 执行字段：maxTurns/engine 数值化透传，description 不保（core 语义，
+  // 登记差异：旧 mini parser 口径下 description 保留）
+  const p = parseMd('---\ndescription: d\nmaxTurns: "8"\nengine: zcode\n---\n\nb', path.join(tmp, 'parse-c'), 'impl-helper');
+  assert.equal(p.name, 'impl-helper', 'fallback name 缺省 stem');
+  assert.equal(p.maxTurns, 8, '字符串数值化经 fallback 保留');
+  assert.equal(p.engine, 'zcode');
+  assert.equal(p.description, '', 'fallback 不保 description（core IF1 语义）');
+});
+
+test('parseFile：无 frontmatter / 围栏未闭合 / maxTurns 非法值（宽松不抛）', (t) => {
+  const { tmp } = setupFixture(t);
+  const dir = path.join(tmp, 'parse-d');
+  const noFm = parseMd('# hi\n\nbody', dir, 'a');
   assert.equal(noFm.name, 'a');
   assert.equal(noFm.description, '');
   assert.equal(noFm.body, '# hi\n\nbody');
 
-  const unclosed = parseAgentMd('---\nname: x\n没有闭合行', '/x/b.md');
-  assert.equal(unclosed.name, 'b');
-  assert.ok(unclosed.body.includes('name: x'));
+  // 未闭合：core legacy fallback 从块内单行 key:value 提取 name（行为变更：
+  // 旧 mini parser 整体放弃取 stem——core 口径更完整，按其更新断言）
+  const unclosed = parseMd('---\nname: x\n没有闭合行', dir, 'b');
+  assert.equal(unclosed.name, 'x', 'fallback 从未闭合块提取 name');
+  assert.ok(unclosed.body.includes('name: x'), '全文作 body');
 
-  const badTurns = parseAgentMd('---\nname: c\nmaxTurns: abc\n---\nb', '/x/c.md');
-  assert.equal(badTurns.maxTurns, undefined, '非法 maxTurns 丢弃');
+  const badTurns = parseMd('---\nname: c\nmaxTurns: abc\n---\nb', dir, 'c');
+  assert.equal(badTurns.maxTurns, undefined, '非法 maxTurns 丢弃（fallback 数值化失败）');
 });
 
-test('frontmatter: when 字段可选透出', () => {
-  const withWhen = parseAgentMd(
+test('parseFile：when 字段可选透出（列表形态不过 IF1，core 与旧口径同为 undefined）', (t) => {
+  const { tmp } = setupFixture(t);
+  const dir = path.join(tmp, 'parse-e');
+  const withWhen = parseMd(
     '---\nname: reviewer\ndescription: d\nwhen: 代码审查、修复方案验证\n---\n\nb',
-    '/x/reviewer.md',
+    dir, 'reviewer',
   );
   assert.equal(withWhen.when, '代码审查、修复方案验证');
-  const noWhen = parseAgentMd('---\nname: a\ndescription: d\n---\n\nb', '/x/a.md');
+  const noWhen = parseMd('---\nname: a\ndescription: d\n---\n\nb', dir, 'a');
   assert.equal(noWhen.when, undefined);
-  const arrWhen = parseAgentMd('---\nname: b\nwhen:\n  - x\n---\nb', '/x/b.md');
-  assert.equal(arrWhen.when, undefined);
+  const arrWhen = parseMd('---\nname: b\nwhen:\n  - x\n---\nb', dir, 'b');
+  assert.equal(arrWhen.when, undefined, 'when 列表（非标量）不透出');
+});
+
+test('parseFile：不可读/目录返回 null；缓存 mtime 失效后重解析（getCachedParsed）', (t) => {
+  const { tmp } = setupFixture(t);
+  const dir = path.join(tmp, 'parse-f');
+  const file = path.join(dir, 'cache-probe.md');
+  fs.mkdirSync(dir, { recursive: true });
+  assert.equal(parseFile(path.join(dir, 'missing.md')), null, '文件不存在 null');
+  assert.equal(parseFile(dir), null, '目录 null（core 缓存读失败统一 null）');
+  fs.writeFileSync(file, '---\nname: v1\ndescription: first\n---\n\nb1\n');
+  assert.equal(parseFile(file).description, 'first');
+  fs.writeFileSync(file, '---\nname: v1\ndescription: second\n---\n\nb2\n');
+  assert.equal(parseFile(file).description, 'second', 'mtime 变化后缓存失效重解析');
 });
 
 // ------------------------------------------------------------- 工厂注入形态

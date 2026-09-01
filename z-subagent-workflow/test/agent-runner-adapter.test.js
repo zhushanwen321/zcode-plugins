@@ -184,6 +184,18 @@ test('opts.agent → resolver.resolve（prompt 拼角色段）；非法引用/�
     (e) => e.message.startsWith('Invalid agent ref: nope. Agent refs must be absolute paths to .md files')
       && e.message.includes(`node "${process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js')}" agents`),
   );
+  // ref 校验等值回归（V2p C3 直调 core 后三分支不变）：`..` 段拒（V1a C2
+  // 行为变更——core normalizeRef 内建闸）+ 相对路径拒，报错同 core 工厂 +
+  // zsw 恢复指引尾巴
+  await assert.rejects(
+    adapter.run({ prompt: 'p', agent: '/x/../evil.md' }, undefined),
+    (e) => e.message.startsWith('Invalid agent ref: /x/../evil.md.')
+      && e.message.includes('without ".." path segments'),
+  );
+  await assert.rejects(
+    adapter.run({ prompt: 'p', agent: './x.md' }, undefined),
+    (e) => e.message.startsWith('Invalid agent ref: ./x.md.'),
+  );
   // 路径合法但不可读：Agent file not found 同款
   await assert.rejects(
     adapter.run({ prompt: 'p', agent: '/a/missing.md' }, undefined),

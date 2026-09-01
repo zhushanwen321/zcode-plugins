@@ -42,8 +42,26 @@
  *   预处理保整库一链形态不断档）；
  * - node_modules 风险随单层自然消解（目录永不进入单层清单）；
  * - core isTargetFile 额外排除 `_` 前缀草稿与 `.chain.md`（pi 生态约定）；
- * - 合并键从 frontmatter name 改为文件名 stem（core 语义；名字与 stem 不一致
- *   的跨根遮蔽不再发生，两文件按各自 stem 独立成条）。
+ * - 去重两层（V2p C7 起）：discoverResources 资源层按文件名 stem 后写胜，
+ *   discoverAgents 装配层按 frontmatter name 后写胜（声明行为变更：名字与
+ *   stem 不一致的异 stem 资产现在互为遮蔽，后位根胜——测试钉住）；
+ * - 装配清单只收 frontmatter 通过 core IF1 校验的条目（yaml 可解析且
+ *   name/description 齐备，discoverAgents 内建闸）：无 frontmatter / 缺
+ *   name/description / 字段类型不过的 .md 不进清单（`---` 开头时 core warn），
+ *   但执行面 parseFile（core parseAgentProfile 宽松解析，legacy fallback 只保
+ *   执行字段）按路径直达仍可用——清单收窄不影响显式引用解析。
+ *
+ * 解析消费（V2p C8：zsw 手写解析族 parseAgentMd/parseFrontmatter/scalar/
+ * toProfile 退役）：parseFile 改 core parseAgentProfile（宽松：name 缺省
+ * stem、body/执行字段全量、warnings[] 不抛；执行字段 model/tools/engine/
+ * thinkingLevel/defaultBackground/maxTurns/disallowedTools/skills 直接取，
+ * block-scalar description 等真 YAML 形态从「mini parser 脏值」修正为完整
+ * 支持）+ getCachedParsed 获 mtime 缓存；filePath 是 zsw 消费契约投影字段
+ * （core 以入参传递不落产物）。清单装配（V2p C7）改 core discoverAgents
+ * （发现→解析→frontmatter name 去重后写胜→码点序），AgentEntry 无执行
+ * 字段与 source/filePath——执行字段场景（resolveDefaultAgent）按 path
+ * 二次 parseFile 全量取；source 按条目 path 前缀归属反查（zsw 层薄投影，
+ * 标签映射仍归 dist/mcp/server.js agentSourceLabel 消费）。
  *
  * 引用契约（W6b：D-4a 收紧，与 pi 侧对齐）：agent 引用唯一形态 = .md 绝对
  * 路径（支持 ~/ 展开）；名字形态的「四根查找」已删除，传名由消费方经
@@ -155,41 +173,100 @@ function agentScanRoots({ cwd, homeDir, workspaceRoot } = {}) {
   return { hostRoots, workspaceRoot: wsRoot, home: homeDir || os.homedir() };
 }
 
-/** 读单个文件并解析；不可读/不是文件返回 null。 */
+/**
+ * 稳定 parse 闭包池：core getCachedParsed 以 parse 函数引用为缓存桶键，
+ * 同一 filePath 必须恒定同一闭包引用缓存才可命中（每次新建闭包 → 桶查不到
+ * → 每次全量重 parse 且 parsedCache 无限增长）。池随 uniq filePath 增长，
+ * 量级 = 磁盘上 agent .md 数；闭包无可变状态（filePath 常量），core
+ * invalidateCache 清内层条目后闭包可继续复用。
+ */
+const parseFnPool = new Map();
+
+/**
+ * 读单个文件并解析（V2p C8：core getCachedParsed（mtime 缓存）+
+ * parseAgentProfile 宽松解析）；不可读/目录/已删除返回 null——core 缓存对
+ * statSync/readFileSync 失败（目录 readFileSync 抛 EISDIR 同样失败）统一回
+ * null，与旧 statSync().isFile() 预检等值。
+ */
 function parseFile(absPath) {
-  let text;
-  try {
-    if (!fs.statSync(absPath).isFile()) return null; // symlink 由 stat 跟随，目录不是 agent
-    text = fs.readFileSync(absPath, 'utf8');
-  } catch {
-    return null;
+  const core = coreRef.requireCore();
+  let fn = parseFnPool.get(absPath);
+  if (!fn) {
+    fn = (content) => {
+      const profile = core.parseAgentProfile(content, absPath);
+      // zsw 消费契约投影：core AgentProfile 的 filePath 以入参传递不落产物，
+      // 而 hook-inject/server 清单投影与 resolve 链按 profile.filePath 消费
+      profile.filePath = absPath;
+      return profile;
+    };
+    parseFnPool.set(absPath, fn);
   }
-  return parseAgentMd(text, absPath);
+  return core.getCachedParsed(absPath, fn);
 }
 
 /**
- * core discoverResources → AgentProfile[]（按 name 码点序，输出稳定）。
+ * path → 来源槽位标签的候选根索引（C7 装配改 core discoverAgents 后的 zsw
+ * 薄投影：AgentEntry 不含 source，按条目 path 前缀归属反查）。候选根两股：
+ * zsw 注入面（agentScanRoots 产物 hostRoots：user-pi / project-host 本体与
+ * symlink 展开目标、npm vendored、user-agents / project-agents 展开目标）+
+ * core 硬编码面（buildScanTargets 自建根：user-agents / project-agents 本体、
+ * project-pi、XYZ_EXTENSION_PATHS——与 core 同式构造，防标签透传断链；
+ * 须与 buildScanTargets 的槽位/展开式保持同步，漂移时清单 source 标签会错）。
+ */
+function buildSourceIndex({ hostRoots, home, workspaceRoot }) {
+  const roots = hostRoots.map((r) => ({ dir: r.dir, source: r.source }));
+  roots.push({ dir: path.join(home, '.agents', 'agents'), source: 'user-agents' });
+  roots.push({ dir: path.join(workspaceRoot, '.pi', 'agents'), source: 'project-pi' });
+  roots.push({ dir: path.join(workspaceRoot, '.agents', 'agents'), source: 'project-agents' });
+  const raw = process.env.XYZ_EXTENSION_PATHS;
+  if (raw) {
+    for (const p of raw.split(path.delimiter).map((s) => s.trim()).filter((s) => s !== '')) {
+      // ~ 前缀展开与 core readExtensionPaths 同式（slice(1) 拼 home）
+      roots.push({ dir: p.startsWith('~') ? path.join(home, p.slice(1)) : p, source: 'user-extension-paths' });
+    }
+  }
+  return roots;
+}
+
+/** 条目 path 的来源标签：最长前缀归属（根互不嵌套时唯一），无命中回空串。 */
+function agentSourceForPath(filePath, roots) {
+  let source = '';
+  let bestLen = -1;
+  for (const r of roots) {
+    if ((filePath === r.dir || filePath.startsWith(r.dir + path.sep)) && r.dir.length > bestLen) {
+      source = r.source;
+      bestLen = r.dir.length;
+    }
+  }
+  return source;
+}
+
+/**
+ * core discoverAgents → 清单条目[]（frontmatter name 去重后写胜 + 码点序，
+ * 输出稳定）。装配循环（发现→逐个 parseFile→去重→排序）随 C7 退役改调
+ * core 单点；本层只做 AgentEntry → zsw 清单投影：filePath（消费契约字段）、
+ * source（path 前缀归属反查，server agentSourceLabel 的槽位标签源）、
+ * name/description/when 索引字段透传——执行字段（body/model 等）不投影，
+ * 需要处（resolveDefaultAgent）按 path 二次 parseFile 全量取。
  * @param {string} cwd 项目目录（workspaceRoot 推导基准）
  * @param {object} [opts] { homeDir?, workspaceRoot? }（测试注入）
  */
 async function listAgents(cwd, opts = {}) {
   const core = coreRef.requireCore();
-  const { hostRoots, workspaceRoot } = agentScanRoots({
+  const { hostRoots, workspaceRoot, home } = agentScanRoots({
     cwd,
     homeDir: opts.homeDir,
     workspaceRoot: opts.workspaceRoot,
   });
-  const resources = await core.discoverResources({ kind: 'agents', workspaceRoot, hostRoots });
-  const profiles = [];
-  for (const r of resources) {
-    if (r.available === false) continue; // npm manifest 失败占位不进清单
-    const profile = parseFile(r.path);
-    if (!profile) continue;
-    profile.source = r.source; // 来源根标签（core 槽位语义，agents 清单消费）
-    profiles.push(profile);
-  }
-  profiles.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return profiles;
+  const entries = await core.discoverAgents(workspaceRoot, hostRoots);
+  const sourceIndex = buildSourceIndex({ hostRoots, home, workspaceRoot });
+  return entries.map((e) => ({
+    name: e.name,
+    description: e.description,
+    ...(e.when !== undefined ? { when: e.when } : {}),
+    filePath: e.path,
+    source: agentSourceForPath(e.path, sourceIndex),
+  }));
 }
 
 /**
@@ -238,14 +315,20 @@ async function resolveAgent(ref, cwd, opts = {}) {
 /**
  * 缺省角色解析（D-4 缺省段：agent 参数缺省 → general-purpose 内置角色）。
  * 经发现清单取遮蔽序胜者（project 级同名 .md 遮蔽 vendored 内置——逃生门
- * 与 pi 同向）；清单异常 miss 时直读 vendored 资产兜底（插件残缺读不到则
- * null，调用方退化为无角色裸跑并如实留 record.agent=null）。
+ * 与 pi 同向）；清单条目是索引投影（AgentEntry 无执行字段），命中后按
+ * path 二次 parseFile 全量取（getCachedParsed 缓存命中，无二次 IO），
+ * source 随条目透传（执行面不消费，保持与旧 listAgents 产物字段等值）；
+ * 清单异常/miss（含 IF1 闸把覆写挡在清单外）时直读 vendored 资产兜底
+ * （插件残缺读不到则 null，调用方退化为无角色裸跑并如实留 record.agent=null）。
  */
 async function resolveDefaultAgent(cwd, opts = {}) {
   try {
     const list = await listAgents(cwd, opts);
     const hit = list.find((p) => p.name === DEFAULT_AGENT_NAME);
-    if (hit) return hit;
+    if (hit) {
+      const profile = parseFile(hit.filePath);
+      if (profile) return { ...profile, source: hit.source };
+    }
   } catch { /* 发现面异常（根不可读等）：走 vendored 直读兜底 */ }
   return parseFile(path.join(coreRef.vendorDir(), 'agents', `${DEFAULT_AGENT_NAME}.md`));
 }
@@ -276,121 +359,6 @@ function invalidAgentRefMessage(ref) {
 function agentFileNotFoundMessage(filePath) {
   return `Agent file not found or unreadable: ${filePath}.`
     + ` Use an absolute path from <available_subagents> <location>, or run node "${zswCliPath()}" agents to list paths.`;
-}
-
-/**
- * 解析 agent .md：frontmatter 围栏提取 + 白名单字段规范化。
- * 无 frontmatter / 围栏未闭合：整个文本当 body，name 取文件名（宽容，不抛错）。
- * （解析函数自旧 resolver 原样迁移——解析语义不随发现切换变化。）
- */
-function parseAgentMd(text, filePath) {
-  let fm = {};
-  let body = text;
-  const lines = text.split(/\r?\n/);
-  if (lines[0] !== undefined && lines[0].trim() === '---') {
-    let end = -1;
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i].trim() === '---') { end = i; break; }
-    }
-    if (end > 0) {
-      fm = parseFrontmatter(lines.slice(1, end));
-      body = lines.slice(end + 1).join('\n');
-    }
-  }
-  return toProfile(fm, filePath, body);
-}
-
-/**
- * 手写 frontmatter mini 解析（不引依赖）：
- *   key: value           标量（去首尾引号）
- *   key: [a, b]          行内数组
- *   key:                 后跟缩进块
- *   - item               上一个 key 的行数组元素
- * 不支持嵌套对象——消费字段全部是标量/字符串数组，够用。
- */
-function parseFrontmatter(lines) {
-  const fm = Object.create(null);
-  let lastKey = null;
-  for (const raw of lines) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue; // 空行与 # 注释
-    const listItem = line.match(/^-\s+(.*)$/);
-    if (listItem && lastKey) {
-      if (!Array.isArray(fm[lastKey])) fm[lastKey] = [];
-      fm[lastKey].push(scalar(listItem[1]));
-      continue;
-    }
-    const kv = line.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
-    if (!kv) continue; // 无法识别的行忽略（如嵌套对象，白名单外本就不消费）
-    const key = kv[1];
-    const val = kv[2].trim();
-    lastKey = key;
-    fm[key] = val === '' ? [] : scalar(val); // 空值占位空数组，等待后续 - item 行填充
-  }
-  return fm;
-}
-
-/** 标量解析：行内数组 → string[]，其余去引号字符串。 */
-function scalar(v) {
-  const t = v.trim();
-  if (t.startsWith('[') && t.endsWith(']')) {
-    const inner = t.slice(1, -1).trim();
-    if (!inner) return [];
-    return inner.split(',').map((s) => stripQuotes(s.trim())).filter((s) => s !== '');
-  }
-  return stripQuotes(t);
-}
-
-function stripQuotes(s) {
-  if (s.length >= 2
-    && ((s[0] === '"' && s.endsWith('"')) || (s[0] === "'" && s.endsWith("'")))) {
-    return s.slice(1, -1);
-  }
-  return s;
-}
-
-/** frontmatter 原始值 → AgentProfile 消费字段（类型不匹配的字段丢弃，不抛错）。 */
-function toProfile(fm, filePath, body) {
-  const fileName = path.basename(filePath, '.md');
-  const profile = {
-    name: pickStr(fm.name) || fileName, // name/description 缺失时 name 取文件名
-    description: pickStr(fm.description) || '',
-    filePath,
-    body,
-  };
-  const model = pickStr(fm.model);
-  if (model) profile.model = model;
-  // engine（回接 2c）：core 路由三层优先级的 frontmatter 层——runner-core 经
-  // taskCtx.agentEngine 透传给 routeEngine；未注册 id 在路由期报 engine_not_found
-  //（含已注册清单与来源定位），解析期不做注册表校验（发现层不感知引擎表）
-  const engine = pickStr(fm.engine);
-  if (engine) profile.engine = engine;
-  // when（何时用我）：索引提示字段，pi 的 available_subagents 索引含此字段——
-  // 主 agent 挑 agent 时比 description 更直接命中场景
-  const when = pickStr(fm.when);
-  if (when) profile.when = when;
-  for (const key of ['tools', 'disallowedTools', 'skills']) {
-    const arr = pickStrArr(fm[key]);
-    if (arr) profile[key] = arr;
-  }
-  const maxTurns = pickInt(fm.maxTurns); // 数值化：'25' / 25 → 25，非法丢弃
-  if (maxTurns !== null) profile.maxTurns = maxTurns;
-  return profile;
-}
-
-function pickStr(v) {
-  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
-}
-
-function pickStrArr(v) {
-  if (!Array.isArray(v)) return null;
-  const arr = v.filter((x) => typeof x === 'string' && x.trim() !== '').map((x) => x.trim());
-  return arr.length ? arr : null;
-}
-
-function pickInt(v) {
-  const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
 /**
@@ -427,7 +395,7 @@ module.exports = {
   resolveAgent,
   resolveDefaultAgent,
   agentScanRoots,
-  parseAgentMd, // 导出供单测直接验证解析逻辑
+  parseFile, // 导出供单测直接验证解析逻辑（V2p C8 起 = core 缓存 + 宽松解析薄投影）
   normalizeAgentRef,
   invalidAgentRefMessage,
   agentFileNotFoundMessage,
