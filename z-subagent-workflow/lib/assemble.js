@@ -40,6 +40,64 @@ function log(msg) {
 /** ZSW_RUNNER=spawn 兼容告警的一次性标记（daemon 常驻进程内不刷屏）。 */
 let warnedSpawnNoop = false;
 
+/** workflow-state 保留上限缺省值（C13；core pruneStateFilesBeyondCap 无缺省
+ *  上限，1000 为本设计口径——目录收敛到该值内，无声累积修复的默认开）。 */
+const STATE_KEEP_DEFAULT = 1000;
+
+/**
+ * ZSW_STATE_KEEP 解析（C13 上限透传；惯例对齐 config.resolveMaxConcurrent）：
+ * 正整数生效；未设/空回落缺省 1000；非法值 stderr 警告一次并回落缺省。
+ * @param {object} [env] 缺省 process.env（测试注入）
+ * @returns {number}
+ */
+function resolveStateKeep(env = process.env) {
+  const raw = env.ZSW_STATE_KEEP;
+  if (raw === undefined || raw === '') return STATE_KEEP_DEFAULT;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  process.stderr.write(
+    `[zsw] ZSW_STATE_KEEP=${JSON.stringify(raw)} 非法（需正整数），已忽略，回落缺省 ${STATE_KEEP_DEFAULT}。`
+    + '恢复指引：设为正整数，如 ZSW_STATE_KEEP=200，然后重启进程生效。\n',
+  );
+  return STATE_KEEP_DEFAULT;
+}
+
+/**
+ * workflow-state 磁盘裁剪接线（C13，无声恶化项修复）：把
+ * <zswRoot>/workflow-state/ 收敛到上限个最新 .jsonl（mtime 升序删最旧，语义
+ * 由 core FileRunStore.pruneStateFilesBeyondCap 承担）。设计 V7 后半的装配点
+ * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——MCP server（daemon
+ * 启动面 dist/mcp/server.js main → createManager）、CLI 入口都经 assembleManager，
+ * 单点同时覆盖 daemon 启动与 session-start 两语义；server.js 不设第二调用点
+ * （同一次启动会双跑 prune，且状态目录与 wfHost.store 同源）。
+ *
+ * env 通道裁决：不传 core 的 envName 参数——该通道是 opt-in 语义（env 未设即
+ * no-op），会让「无声累积修复」退化为默认关；zsw 侧自行解析 ZSW_STATE_KEEP
+ * （resolveStateKeep），缺省即启用，上限经参数传入（core 契约：envName 缺省
+ * → 直接按 max 裁剪，调用方自管启用时机）。
+ *
+ * 清理是旁路维护：任何失败只走 stderr warn（daemon 侧经 assemble log 可见），
+ * 不阻断装配/启动。
+ * @param {object} [p]
+ * @param {object} [p.store] FileRunStore 注入（缺省 new core.FileRunStore()，测试可换）
+ * @param {number} [p.cap]   上限注入（缺省经 resolveStateKeep 读 env）
+ * @param {object} [p.env]   env 注入（透传 resolveStateKeep）
+ * @returns {Promise<{ok: boolean, cap?: number}>} 永不 reject
+ */
+async function pruneWorkflowState({ store, cap, env } = {}) {
+  try {
+    const core = require('./core-ref').requireCore();
+    const runStore = store || new core.FileRunStore();
+    const limit = cap === undefined ? resolveStateKeep(env) : cap;
+    await runStore.pruneStateFilesBeyondCap(limit);
+    return { ok: true, cap: limit };
+  } catch (err) {
+    log(`workflow-state 裁剪失败（不影响服务）: ${err && err.message || err}`
+      + '。恢复指引：检查 <ZSW_ROOT>/workflow-state/ 可写性；可用 ZSW_STATE_KEEP=<正整数> 调整保留上限（缺省 1000）');
+    return { ok: false };
+  }
+}
+
 /**
  * ZSW_RUNNER env 校验（2c break 后的唯一语义）。
  * @returns {void} 合法值（未设置 / 'spawn'）静默或告警通过
@@ -123,7 +181,12 @@ async function assembleManager(opts = {}) {
       }
     },
   };
+  // C13 workflow-state 磁盘裁剪（无声恶化项修复）：fire-and-forget——清理是
+  // 旁路维护，不阻断装配（失败语义见 pruneWorkflowState 头注）。位置在 wfHost
+  // 组装之后：生产路径此时 orchestration-host.ensureConfigured 已 configureCore
+  // （dataRoot 就绪，FileRunStore.stateDir 可解析）
+  pruneWorkflowState();
   return { manager, wfHost, notifier };
 }
 
-module.exports = { assembleManager, assertRunnerEnv };
+module.exports = { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT };

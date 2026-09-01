@@ -170,6 +170,29 @@ test('sweepStaleTmp 只删符合己方模式的 .tmp，不动 .json 与无关 .t
   assert.strictEqual(n2.sweepStaleTmp(), 0);
 });
 
+test('sweepStaleTmp 识别 core atomic-write tmp 形态（C15）：现行与历史残留都清', async (t) => {
+  const root = useTempMailbox(t);
+  const n = new MailboxNotifier();
+  const record = { subagentId: 'sa-core', targetSessionId: HOST_SESSION };
+  const res = await n.notifyCompletion(record, 'real delivery first');
+  assert.strictEqual(res.delivered, true);
+  const unread = path.dirname(res.filePath);
+
+  // 现行形态：core writeAtomicFileSync tmp = <final>.tmp.<pid>.<seq>-<rand>
+  const coreForm = `${path.basename(res.filePath)}.tmp.424242.7-k3x9z2`;
+  // 历史形态：升级前旧进程的 `<final>.json.tmp` 后缀残留（升级后仍要能清）
+  const legacyForm = '1700000000009-000009-sa-old.json.tmp';
+  const keepJson = '1700000000010-000010-sa-keep.json';
+  fs.writeFileSync(path.join(unread, coreForm), 'residue', 'utf8');
+  fs.writeFileSync(path.join(unread, legacyForm), 'residue', 'utf8');
+  fs.writeFileSync(path.join(unread, keepJson), 'ok', 'utf8');
+
+  const removed = n.sweepStaleTmp();
+  assert.strictEqual(removed, 2, 'core 形态 + 历史形态各清 1 个');
+  assert.deepStrictEqual(fs.readdirSync(unread).sort(), [keepJson, path.basename(res.filePath)].sort(),
+    '只残留正常 .json（core 形态 tmp 不被误当终名消息）');
+});
+
 test('PollingNotifier：不产生任何文件，返回 polling 兜底语义', async (t) => {
   const root = useTempMailbox(t);
   const p = new PollingNotifier();

@@ -324,3 +324,28 @@ test('output-store: tmp+rename 原子写不留残渣', (t) => {
   assert.equal(entries.length, 6, '只有最终文件');
   assert.ok(entries.every((f) => !f.includes('.tmp')), '无 tmp 残留');
 });
+
+test('output-store: 幂等覆盖——同路径重复写以最后一次为准且零残留（C15）', (t) => {
+  const root = setupRoot(t);
+  outputStore.writeResult('sa-idem', 'first');
+  outputStore.writeResult('sa-idem', 'second');
+  outputStore.writeResult('sa-idem', 'final');
+  assert.equal(fs.readFileSync(outputStore.pathFor('sa-idem'), 'utf8'), 'final', '内容 = 最后一次写入');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'outputs')), ['sa-idem.md'], '只有最终文件（无 tmp 残留）');
+});
+
+test('output-store: rename 注入失败 → 报错透传且 core 清理残留 tmp（崩溃残留面，进程级不可模拟故注入）', (t) => {
+  const root = setupRoot(t);
+  const origRename = fs.renameSync;
+  fs.renameSync = () => { throw new Error('injected rename failure'); };
+  try {
+    assert.throws(() => outputStore.writeResult('sa-crash', 'partial'), /injected rename failure/);
+  } finally {
+    fs.renameSync = origRename;
+  }
+  // write 与 rename 之间崩溃的核心风险是残留 tmp 无限累积：core 原语必须在
+  // 失败路径自清（writeAtomicFileSync 失败分支 unlink tmp）
+  const entries = fs.readdirSync(path.join(root, 'outputs'));
+  assert.ok(entries.every((f) => !f.includes('.tmp')), `无 tmp 残留，实际: ${entries.join(', ')}`);
+  assert.ok(!entries.includes('sa-crash.md'), '失败写不产出半截终名文件');
+});

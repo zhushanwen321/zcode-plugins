@@ -18,7 +18,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test, after } = require('node:test');
+const { test, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-asm-'));
@@ -27,7 +27,10 @@ process.env.HOME = path.join(TMP, 'home');
 fs.mkdirSync(process.env.HOME, { recursive: true });
 delete process.env.ZSW_RUNNER;
 
-const { assembleManager, assertRunnerEnv } = require('../lib/assemble');
+const { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT } = require('../lib/assemble');
+const { ensureConfigured } = require('../lib/orchestration-host');
+const coreRef = require('../lib/core-ref');
+const config = require('../lib/config');
 const CoreRunner = require('../lib/runner-core');
 
 after(() => {
@@ -149,4 +152,85 @@ test('退出链组合：注入 fake wfHost 不包装——shutdown 语义保持�
   assert.equal(a.wfHost, fakeWf, '注入 wfHost 原样透传（不包装）');
   await a.wfHost.shutdown();
   assert.deepEqual(calls, ['wf'], '注入面不串接 runner.shutdown（组合仅作用于真实组装）');
+});
+
+// ------------------------------- C13：workflow-state prune 接线（V7i）
+
+/** 造 wf-<i>.jsonl 并错开 mtime（core prune 按 mtime 升序删最旧）。 */
+function makeStateFiles(stateDir, n) {
+  fs.mkdirSync(stateDir, { recursive: true });
+  const names = [];
+  for (let i = 0; i < n; i++) {
+    const name = `wf-20260101-${String(i).padStart(4, '0')}.jsonl`;
+    fs.writeFileSync(path.join(stateDir, name), '{"v":1}\n', 'utf8');
+    fs.utimesSync(path.join(stateDir, name), new Date(Date.now() - (n - i) * 10_000), new Date(Date.now() - (n - i) * 10_000));
+    names.push(name);
+  }
+  return names;
+}
+
+test('resolveStateKeep：缺省 1000；正整数生效；非法值警告一次回落缺省', (t) => {
+  assert.equal(STATE_KEEP_DEFAULT, 1000, '设计口径缺省 1000');
+  assert.equal(resolveStateKeep({}), 1000, '未设 → 缺省');
+  assert.equal(resolveStateKeep({ ZSW_STATE_KEEP: '' }), 1000, '空串 → 缺省');
+  assert.equal(resolveStateKeep({ ZSW_STATE_KEEP: '200' }), 200, '正整数透传');
+  assert.equal(resolveStateKeep({ ZSW_STATE_KEEP: '5' }), 5);
+
+  let stderr = '';
+  const origWrite = process.stderr.write;
+  process.stderr.write = (s) => { stderr += String(s); return true; };
+  try {
+    for (const bad of ['abc', '0', '-3', '1.5', '10e2']) {
+      assert.equal(resolveStateKeep({ ZSW_STATE_KEEP: bad }), 1000, `非法值 ${JSON.stringify(bad)} 回落缺省`);
+    }
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  assert.ok(stderr.includes('ZSW_STATE_KEEP'), '非法值有可操作警告（点名 env 与回落值）');
+  assert.ok(stderr.includes('恢复指引'), '警告带恢复指引');
+});
+
+test('pruneWorkflowState：超限目录收敛到 cap，最旧被删，最新保留', async (t) => {
+  ensureConfigured(); // dataRoot = config.zswRoot()（本文件头部 ZSW_ROOT 临时目录）
+  const stateDir = path.join(config.zswRoot(), 'workflow-state');
+  const names = makeStateFiles(stateDir, 5);
+
+  const res = await pruneWorkflowState({ cap: 3 });
+  assert.deepEqual(res, { ok: true, cap: 3 });
+  const remaining = fs.readdirSync(stateDir).sort();
+  assert.equal(remaining.length, 3, '收敛到上限 3');
+  assert.deepEqual(remaining, names.slice(2), '最旧 2 个被删，最新 3 个保留（mtime 升序）');
+});
+
+test('pruneWorkflowState：上限内不动磁盘；目录缺失不抛；env 缺省透传 1000', async (t) => {
+  ensureConfigured();
+  const stateDir = path.join(config.zswRoot(), 'workflow-state');
+  makeStateFiles(stateDir, 2);
+  const before = fs.readdirSync(stateDir).sort();
+  const res = await pruneWorkflowState({ cap: 1000 });
+  assert.deepEqual(res, { ok: true, cap: 1000 });
+  assert.deepEqual(fs.readdirSync(stateDir).sort(), before, '上限内零删除');
+
+  const resMissing = await pruneWorkflowState({ store: new (coreRef.requireCore().FileRunStore)() });
+  assert.deepEqual(resMissing, { ok: true, cap: 1000 }, 'workflow-state 从未落盘（ENOENT）也是成功态');
+});
+
+test('启动路径冒烟（C13）：assembleManager（daemon/CLI 共用装配面）prune 恰好一次且带 env 缺省上限', async () => {
+  ensureConfigured();
+  const original = coreRef.requireCore().FileRunStore.prototype.pruneStateFilesBeyondCap;
+  let calls = 0;
+  let seenCap = null;
+  const spy = mock.method(coreRef.requireCore().FileRunStore.prototype, 'pruneStateFilesBeyondCap', function (cap) {
+    calls += 1;
+    seenCap = cap;
+    return original.call(this, cap);
+  });
+  try {
+    await assembleManager();
+    await new Promise((r) => setImmediate(r)); // 冲刷 fire-and-forget 链路
+    assert.equal(calls, 1, '一次装配恰好一次 prune（daemon 启动与 session-start 单点接线，不双跑）');
+    assert.equal(seenCap, resolveStateKeep(), '上限经 resolveStateKeep 透传（缺省 1000）');
+  } finally {
+    spy.mock.restore();
+  }
 });

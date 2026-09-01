@@ -2,22 +2,23 @@
 /**
  * 输出落盘：outputs/<subagentId>.md（结果全文）与 <id>.patch（worktree 改动）。
  *
- * 为什么 tmp+rename 原子写：结果文件被通知文案/record/后续查询引用，读者
- * 在写入中途读到半截文件会拿到损坏内容且无自愈手段；rename(2) 在同目录内
- * 原子替换，读者要么看到旧版要么看到完整新版。tmp 名带 pid+时间戳，
- * 避免并发任务写同名 tmp 互相踩踏。
+ * 为什么原子写：结果文件被通知文案/record/后续查询引用，读者在写入中途读到
+ * 半截文件会拿到损坏内容且无自愈手段；tmp+rename 在同目录内原子替换，读者
+ * 要么看到旧版要么看到完整新版。
+ *
+ * C15 收敛：tmp+rename 手写实现退役，改调 core writeAtomicFileSync（write
+ * 失败由 core 清理残留 tmp、ensureDir 内建）。tmp 名随 core atomic-write 约定
+ * 为 `<final>.tmp.<pid>.<seq>-<rand>`——不以 .md/.patch 结尾，reaper
+ * sweepStaleOutputs 的孤儿识别（/\.(md|patch)$/）天然排除，排除约定不破
+ * （worktree.js 同目录自写的 `.tmp` 后缀形态同理仍被排除）。
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 const { outputsDir } = require('./config');
+const { requireCore } = require('./core-ref');
 
 function atomicWrite(file, text) {
-  const dir = path.dirname(file);
-  fs.mkdirSync(dir, { recursive: true }); // outputs/ 可能尚未存在（首启/新 ZSW_ROOT）
-  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(tmp, text);
-  fs.renameSync(tmp, file);
+  requireCore().writeAtomicFileSync(file, text); // ensureDir 内建：outputs/ 首启/新 ZSW_ROOT 可能尚未存在
 }
 
 /** @returns {string} 实际写入路径（进 record 与通知文案） */
