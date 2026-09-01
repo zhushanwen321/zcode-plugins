@@ -66,10 +66,13 @@ function resolveStateKeep(env = process.env) {
  * workflow-state 磁盘裁剪接线（C13，无声恶化项修复）：把
  * <zswRoot>/workflow-state/ 收敛到上限个最新 .jsonl（mtime 升序删最旧，语义
  * 由 core FileRunStore.pruneStateFilesBeyondCap 承担）。设计 V7 后半的装配点
- * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——MCP server（daemon
- * 启动面 dist/mcp/server.js main → createManager）、CLI 入口都经 assembleManager，
- * 单点同时覆盖 daemon 启动与 session-start 两语义；server.js 不设第二调用点
- * （同一次启动会双跑 prune，且状态目录与 wfHost.store 同源）。
+ * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——经组装面的只有
+ * daemon 启动（dist/mcp/server.js main → createManager）与 CLI 本地组装路径
+ * （bin/zsw.js `--local` / workflow 子命令；hook 子命令与 daemon thin-client
+ * 默认路径在组装前分流，不经 assembleManager），单点同时覆盖 daemon 启动与
+ * session-start 两语义；workflow-state 只产生于经组装面的路径，hook/thin-client
+ * 不落状态、无需 prune。server.js 不设第二调用点（同一次启动会双跑 prune，
+ * 且状态目录与 wfHost.store 同源）。
  *
  * env 通道裁决：不传 core 的 envName 参数——该通道是 opt-in 语义（env 未设即
  * no-op），会让「无声累积修复」退化为默认关；zsw 侧自行解析 ZSW_STATE_KEEP

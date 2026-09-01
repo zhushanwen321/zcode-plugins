@@ -23,9 +23,11 @@ const config = require('./config');
 
 // vendored core 单一解析点（V5e 收口）：模型切分原语 splitZcodeModelRef、凭据
 // 谓词 hasApiKey、缺省常量 DEFAULT_PROVIDER_ID / ZCODE_FALLBACK_DEFAULT_MODEL
-// 全部消费 core 单一源，退役本模块自算副本。顶层 requireCore 一次（barrel 约
-// 27ms，进程级一次；PROVIDER_ID 是导出值、hook-inject / dist/mcp/server.js 顶层
-// 解构消费，无法惰性求值——hook 链路 +27ms/进程为已备案的取舍）
+// 全部消费 core 单一源，退役本模块自算副本。顶层 requireCore 非性能取舍，
+// 动机有二：① PROVIDER_ID = core.DEFAULT_PROVIDER_ID 是值导出，hook-inject /
+// dist/mcp/server.js 顶层解构消费，惰性求值不可行；② 顶层装载促成常量/切分/
+// 凭据三面运行时单一源。hook 链路（hook-inject）本就经 core-ref 装载 core
+// barrel，模块缓存下本模块顶层 require 的边际成本≈0
 const core = require('./core-ref').requireCore();
 
 /** 默认 provider（短名解析与默认清单视图的锚点）：core 常量单一源（值与
@@ -165,6 +167,11 @@ function trimToNull(v) {
  *
  * 容忍该 provider 无 models 的条目形态（返回空数组）——hook 侧多 provider
  * 迭代需要跳过空清单，执行侧调用方仍负责前置验非空（listModels / allProviders）。
+ * 前置条件：v2 非 null 且 v2.provider 键存在——否则 `v2.provider[provider]`
+ * 抛 TypeError（旧 modelEntries 对畸形入参返回 []，本单一实现不设防御）。
+ * 现有调用方均已守卫：listModels（空清单先抛可操作错误）、allProviders
+ * （`if (!v2) throw` + qualifiedProviders 只出有键 provider）、hook-inject
+ * （本地包装 `!v2 || !v2.provider` 先拦截）。
  * @returns {Array<object>}
  */
 function toModelEntries(v2, provider, opts = {}) {

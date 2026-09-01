@@ -121,7 +121,8 @@ function createAgentRunnerAdapter({ runner, resolver, fallbackCwd } = {}) {
       // （V2p C3：ref 归一化与报错文案改直调 vendored core，不再经
       // agent-discovery 薄包装；invalidAgentRefMessage 仍注入 zsw 双出口
       // howToList，错误消息契约与 V1a 后形态逐字一致——agent-discovery 与
-      // 本处的 howToList 同文，manager 面薄包装退役归 V3w）。非 string 防御
+      // 本处的 howToList 同文；其 normalizeAgentRef 薄包装为终态常驻的
+      // manager 面契约适配（消费方 = manager.js），非待退役临时物）。非 string 防御
       // 保留：core normalizeRef/工厂对非 string 抛 TypeError，插件契约回落
       // 可操作报错（String() 化进工厂，旧 zsw 包装同款）。缺省（opts.agent
       // 未传）走 resolveDefault = general-purpose 内置角色（与 pi 侧

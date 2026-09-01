@@ -271,8 +271,11 @@ async function listAgents(cwd, opts = {}) {
 
 /**
  * agent 引用归一化（D-4a：仅绝对路径）——core normalizeRef 单源薄委托（V1a
- * C1/C2：旧「core 口径复刻」退役；领地外 agent-runner-adapter 仍按本签名
- * 消费，包装登记待 V3w 随该面收口退役）。语义：trim → `~/` 前缀展开 →
+ * C1/C2：旧「core 口径复刻」退役）。薄包装为终态常驻的 manager 面契约适配
+ * （V2p 后 agent-runner-adapter 已直调 core.normalizeRef，消费方收敛为
+ * manager.js）：承担非 string 防御（core 版抛 TypeError，manager 契约要
+ * null → 可操作报错）与 homeDir 测试注入缝，非待退役临时物。语义：trim →
+ * `~/` 前缀展开 →
  * 绝对路径校验 → `.md` 后缀校验 + `..` 段拒绝（C2 安全收紧，行为变更：复刻
  * 版无此闸，绝对路径含 `..` 曾放行）。相对路径 / 名字 / `..` / 非 .md 一律 null。
  * @param {string} ref 原始引用（注入段 location / 工具参数值）
