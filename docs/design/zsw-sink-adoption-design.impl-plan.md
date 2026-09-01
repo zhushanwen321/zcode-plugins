@@ -102,7 +102,7 @@ graph TD
 | V4o | committed | 2 | 3e74ab3 + 693d3ef（bin runningScriptPredicate 改调 core isScriptRunning：raw _runs Map、防御回退保留、无 per-session 差异；65+374 绿。C12/C14/C16 全闭环） |
 | V5e | committed | 1 | 5ad5773（alive/probeLockHolder 逐分支等值改调 + splitModelRef 薄包装短名策略留包装层 + 常量对齐 + hasApiKey 裁决；46+69 绿） |
 | V6w | committed | 1 | 252288e（⛔A 等值主断言 PASS + 三降级分支钉死 + 三铁律核对；289→271 行，残余为声明保留的布局/孤儿层；上报两项：core gitRun maxBuffer 缺口已派 B3 修、patchIncomplete 进 manager outcome 并入 V4o） |
-| V7i | blocked（V4o、V0a） | - | - |
+| V7i | committed | 1 | 644bc8d（⛔B FIFO 锚 + S-2 哨兵（slots 原无专测，新建 7 条）；atomicWrite 两点改调 + sweep 形态核验；prune 单点接线 ZSW_STATE_KEEP 缺省 1000（拒用 core opt-in envName 通道防默认失效）；log 桥确认已接线；45+388 绿。领地外发现两项留一致性审查：worktree.js:160 过时注释、core-ref 守卫缺 pruneStateFilesBeyondCap 方法项） |
 | V8n | blocked（G-npm） | - | - |
 | V9s | blocked（V8n） | - | - |
 
