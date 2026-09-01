@@ -50,8 +50,9 @@
  *   由 daemon 侧 runs 真实状态裁决（runningScriptPredicate(wfHost)）。
  * - 校验/组参权威在 host 的 normalizeRunParams + registry（task/workdir/
  *   workflow 名/脚本发现/$ARGS 映射均它管），server 不重复解析——两处各
- *   解析一份会漂移。workflow 引用契约（D-4：script:/裸名拒收）在入口面校验
- *   （bin/zsw.js 的 validateWorkflowRef，CLI 与 socket 面单一来源）。旧
+ *   解析一份会漂移。workflow 引用契约（D-4/D-E3：script: 拒收；knownNames =
+ *   内置 5 + cwd 发现面 saved 名，saved 裸名放行）在入口面校验（bin/zsw.js
+ *   的 validateWorkflowRef，CLI 与 socket 面单一来源）。旧
  *   reviewers sugar 在 host 层显式报错（core 契约批次值 = agent .md 路径）；
  *   maxConcurrent/timeoutMsPerPhase 无 core 对应面，以 warnings 显式说明不静默。
  * - run 状态面 = 内存 runs Map（done 保留 MAX_RETAINED_DONE_RUNS 条）+
@@ -274,10 +275,16 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
           // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
           // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
           // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）。
-          // D-4 引用契约入口收紧（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
-          // 防两入口漂移）：script:/裸名在此拒收
+          // D-4/D-E3 引用契约入口（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
+          // 防两入口漂移）：script: 拒收；knownNames = 内置 5 + cwd 发现面
+          // saved 名（buildKnownWorkflowNames 单一构建函数，cwd 与 ctx.cwd
+          // 同源——三入口同一目录集产出同一集，⛔D），saved 裸名放行（D-E3
+          // 裁决）。validateWorkflowRef 的单参缺省（内置 5 名）保留为防御性
+          // 兜底，正常路径恒传全量 knownNames。
           const { validateWorkflowRef } = require('../../bin/zsw.js');
-          validateWorkflowRef(runArgs.workflow);
+          const { buildKnownWorkflowNames } = require('../../lib/orchestration-host');
+          const core = require('../../lib/core-ref').requireCore();
+          validateWorkflowRef(runArgs.workflow, await buildKnownWorkflowNames(core, ctx.cwd));
           if (args.wait === true) {
             return okContent(await wfHost.runAndWait(runArgs, ctx, { signal: env.signal }));
           }

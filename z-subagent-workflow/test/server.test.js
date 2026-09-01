@@ -709,7 +709,7 @@ async function waitForAsync(fn, timeoutMs = 5000, stepMs = 20) {
   }
 }
 
-test('zflow run：校验权威在 orchestration-host + 入口契约（D-4：script:/裸名拒收；缺 task / reviewers 废弃 → isError 可操作）', async () => {
+test('zflow run：校验权威在 orchestration-host + 入口契约（D-4/D-E3：script:/未知裸名拒收；缺 task / reviewers 废弃 → isError 可操作）', async () => {
   const wfm = buildRealWfHost({ async run() { return { content: '', parsedOutput: { ok: 1 } }; } });
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
   const call = (args) => callHandler(srv, 'zflow', { action: 'run', ...args });
@@ -731,6 +731,37 @@ test('zflow run：校验权威在 orchestration-host + 入口契约（D-4：scri
   const rev = await call({ workflow: 'review-fix-loop', task: 't', workdir: TMP, reviewers: ['correctness'] });
   assert.equal(rev.isError, true);
   assert.match(rev.content[0].text, /不再支持 --reviewers/);
+});
+
+test('zflow run（D-E3 socket 面）：saved 裸名按名 run 成功（knownNames 全量传入）；未知裸名仍拒收', async () => {
+  // HOME saved 根 fixture（~/.zsw/workflows = script-save 落盘目录；文件头
+  // env.HOME 已隔离）：socket 面 handler 经 buildKnownWorkflowNames(core,
+  // ctx.cwd) 传全量 knownNames，saved 名命中放行。零引擎形态（agent() 挂
+  // $ARGS.callAgent 条件不触发，fake runner 全程零调用）。
+  const savedDir = path.join(process.env.HOME, '.zsw', 'workflows');
+  fs.mkdirSync(savedDir, { recursive: true });
+  fs.writeFileSync(path.join(savedDir, 'srv-saved-probe.js'),
+    '/* @pi-meta\nname: srv-saved-probe\ndescription: socket saved probe\nphases: [run]\n*/\n'
+    + 'if ($ARGS.callAgent === true) {\n  await agent({ prompt: "x" });\n}\n'
+    + 'return { status: "ok", params: $ARGS };\n');
+
+  const wfm = buildRealWfHost({ async run() { return { content: '', parsedOutput: { ok: true } }; } });
+  const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
+  const call = (args, env) => callHandler(srv, 'zflow', { action: 'run', ...args }, env);
+
+  // cwd 口径 = handler ctx.cwd（此处显式给空目录：knownNames = 内置 5 + HOME saved 根，
+  // 与 CLI 入口 buildWorkflowRunParams 的 cwd 同源，⛔D 断言在 orchestration-host.test.js）
+  const fin = await call({ workflow: 'srv-saved-probe', task: '探针', workdir: TMP, wait: true }, { cwd: TMP });
+  assert.equal(fin.isError, undefined, `content: ${fin.content[0].text}`);
+  const h = JSON.parse(fin.content[0].text);
+  assert.equal(h.reason, 'completed');
+  assert.equal(h.scriptResult.params.task, '探针');
+
+  // 反向：未知裸名（knownNames 不含）仍拒收，isError 可操作文案
+  const unknown = await call({ workflow: 'no-such-wf-name', task: 't', workdir: TMP }, { cwd: TMP });
+  assert.equal(unknown.isError, true);
+  assert.match(unknown.content[0].text, /Invalid workflow ref/);
+  assert.match(unknown.content[0].text, /不是内置名或已保存脚本名/);
 });
 
 test('zflow 后台冒烟（真实 orchestration-host + fake runner）：run 立即返句柄 → status 轮询至 done → scriptResult 可查 → list 可见', async () => {
