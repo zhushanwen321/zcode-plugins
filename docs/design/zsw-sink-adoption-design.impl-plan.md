@@ -99,7 +99,7 @@ graph TD
 | V1a | committed | 1 | 78b55e6（`..` 拒绝走 core 工厂含恢复指引、字符串级拼接避开 path.join 规范化逃逸；slug 闸；MS_PER_TURN 退役 floor 恢复；normalizeAgentRef 薄包装留待 V2p 消化 agent-runner-adapter 调用方；63+102 绿） |
 | V2p | committed | 1 | 53990ba（解析族退役 + getCachedParsed 稳定闭包池 + discoverAgents 装配退役 + 去重键声明变更钉住 + 薄包装退役；34/34；getCachedParsed 已导出核实；core 清单 IF1 语义固有差异登记于单元汇报） |
 | V3w | committed | 2 | 6875827 + 671face（MCP 尾巴：socket 面 saved 放行经 await buildKnownWorkflowNames，三入口 ⛔D 完全闭环，360/360） |
-| V4o | committed | 1 | 3e74ab3（recoverCrashedRuns/runSummary/meta 驱动 + 13 键 reservedKeys 信封 + ⛔C 18 组零 warning + 平铺拦截 + patchIncomplete 投影；种子夹具 25 文件恢复实测；6 条边缘对齐登记；73+388 绿。遗留微尾：bin runningScriptPredicate 改调交 V3w agent 进行中） |
+| V4o | committed | 2 | 3e74ab3 + 693d3ef（bin runningScriptPredicate 改调 core isScriptRunning：raw _runs Map、防御回退保留、无 per-session 差异；65+374 绿。C12/C14/C16 全闭环） |
 | V5e | committed | 1 | 5ad5773（alive/probeLockHolder 逐分支等值改调 + splitModelRef 薄包装短名策略留包装层 + 常量对齐 + hasApiKey 裁决；46+69 绿） |
 | V6w | committed | 1 | 252288e（⛔A 等值主断言 PASS + 三降级分支钉死 + 三铁律核对；289→271 行，残余为声明保留的布局/孤儿层；上报两项：core gitRun maxBuffer 缺口已派 B3 修、patchIncomplete 进 manager outcome 并入 V4o） |
 | V7i | blocked（V4o、V0a） | - | - |
