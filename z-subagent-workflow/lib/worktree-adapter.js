@@ -38,7 +38,7 @@ function resolveGitRoot(cwd) {
  * 创建适配 manager 端口契约的 worktree 实例。
  * 方法签名（manager 消费）：
  *   prepare({slug, subagentId, cwd}) -> {dir, branch, mainRepo}
- *   collectPatch({dir, subagentId})  -> patchFile 路径 | null（无改动）
+ *   collectPatch({dir, subagentId})  -> {patchFile: string|null, patchIncomplete?: true}（降级留痕透传，manager 投影）
  *   cleanup({dir, subagentId, meta}) -> {removed:true}（meta=record.worktreeMeta）
  */
 function createWorktreeAdapter() {
@@ -52,10 +52,10 @@ function createWorktreeAdapter() {
     },
 
     async collectPatch({ dir, subagentId }) {
-      // worktree 层结构化结果（含降级留痕 patchIncomplete）在此收敛为
-      // string|null：manager 契约（ports.js，typeof p === 'string'）不变。
-      const res = await worktree.collectPatch({ worktreeDir: dir, subagentId });
-      return res.patchFile;
+      // worktree 层结构化结果（含降级留痕 patchIncomplete）原样透传（V4o
+      // 微调：此前在此收敛为 string|null，manager 拿不到降级信号）。manager
+      // 侧兼容 string 旧形态（ports.js 契约口径 + 测试 fake 直返 string）。
+      return worktree.collectPatch({ worktreeDir: dir, subagentId });
     },
 
     async cleanup({ dir, subagentId, meta }) {

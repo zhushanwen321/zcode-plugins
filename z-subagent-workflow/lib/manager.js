@@ -267,6 +267,9 @@ class SubagentManager {
         result: fin.result && typeof fin.result.response === 'string' ? fin.result.response : '',
         outputFile: fin.outputFile,
         patchFile: fin.patchFile,
+        // V4o 降级留痕投影（与 record.patchIncomplete 同源）：core worktree
+        // 降级裸 diff 时为 true，正常路径 undefined（不携带键）
+        patchIncomplete: finRec && finRec.patchIncomplete === true ? true : undefined,
         error: finRec ? finRec.error : null,
         usage: fin.result ? fin.result.usage : null,
         // rounds 完成计数（E3）：wait=true 面与 record 同读——conversation 首轮
@@ -591,13 +594,29 @@ class SubagentManager {
     );
 
     // worktree patch 收集：失败不阻断终态（任务结果已到手），错误显式进 record。
-    // collectPatch 由适配层直接落盘 outputs/<id>.patch 并返回路径（产出方唯一）
+    // collectPatch 由适配层落盘 outputs/<id>.patch；V4o 起透传结构化结果
+    // {patchFile, patchIncomplete?}（worktree-adapter 对 worktree.js 真实现
+    // 的透传形态），string 旧形态（ports.js 契约口径/测试 fake）兼容保留。
+    // patchIncomplete = core 已降级裸 diff（锚点缺失/损坏/add 失败，已提交
+    // 增量丢失）：投影为可断言的降级信号——record/outcome 同名布尔字段
+    // （仅在 true 时携带键，与 thinking/toolsNote 的「仅在应标注时携带键」
+    // 纪律一致）+ stderr warn。
     const before = this.records.get(id);
     let patchFile = before.patchFile === undefined ? null : before.patchFile;
+    let patchIncomplete = false;
     if (before.worktree) {
       try {
         const p = await this.worktree.collectPatch({ dir: before.worktree, subagentId: id });
-        if (typeof p === 'string') patchFile = p;
+        const structured = p !== null && typeof p === 'object';
+        const patch = structured ? p.patchFile : p;
+        if (typeof patch === 'string') patchFile = patch;
+        if (structured && p.patchIncomplete === true) {
+          patchIncomplete = true;
+          process.stderr.write(
+            `[zsw] worktree patch 不完整（core 降级裸 diff，已提交增量可能缺失）：subagentId=${id}`
+            + ` patchFile=${patchFile || '(无改动未落盘)'}\n`,
+          );
+        }
       } catch (e) {
         this.records.update(id, { patchError: String(e && e.message || e) });
       }
@@ -651,6 +670,9 @@ class SubagentManager {
       exec: before.exec,
       outputFile,
       patchFile,
+      // 降级留痕原子落盘（仅 true 携带键）：status 可断言的 worktree patch
+      // 完整性信号，restart 后 rebuild 仍可读
+      patchIncomplete: patchIncomplete ? true : undefined,
       structured: structured !== null ? structured : undefined,
       schemaParseFailed: schemaParseFailed ? true : undefined,
     };
@@ -727,6 +749,11 @@ class SubagentManager {
       if (patchFile) {
         s += `\n改动 patch: ${patchFile}`;
         s += `\n应用指引: 在主仓库根目录执行 git apply ${patchFile}（先 review 再应用）`;
+        // 降级留痕投影（V4o）：mailbox 面主 agent 只看通知——patch 不完整
+        // 不提示会直接 apply 出残缺改动
+        if (record.patchIncomplete === true) {
+          s += `\n注意: patch 不完整（worktree 降级裸 diff，已提交增量缺失），应用前务必人工核对`;
+        }
       }
       return s;
     }

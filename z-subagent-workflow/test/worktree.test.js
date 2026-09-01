@@ -483,9 +483,11 @@ test('adapter 桥接：prepare 透传 mainRepo，cleanup 可凭 meta 独立完�
   // macOS 上 git 返回 realpath 化路径（/var → /private/var），对比也用 realpath
   assert.equal(wt.mainRepo, fs.realpathSync(repo), 'mainRepo 必须随句柄透传（cleanup 的执行仓库）');
   fs.writeFileSync(path.join(wt.dir, 'new.txt'), 'x\n');
-  const patchFile = await adapter.collectPatch({ dir: wt.dir, subagentId: id });
-  assert.ok(patchFile && fs.existsSync(patchFile));
-  assert.ok(fs.readFileSync(patchFile, 'utf8').includes('new.txt'));
+  // V4o：adapter collectPatch 结构化透传（{patchFile, patchIncomplete?}），
+  // 断言解构适配（意图不变：端到端 patch 落盘闭环）
+  const res = await adapter.collectPatch({ dir: wt.dir, subagentId: id });
+  assert.ok(res.patchFile && fs.existsSync(res.patchFile));
+  assert.ok(fs.readFileSync(res.patchFile, 'utf8').includes('new.txt'));
   await adapter.cleanup({ dir: wt.dir, subagentId: id, meta: wt }); // resolve 不抛即清理成功（物理面下方断言）
   const wts = (await git(repo, ['worktree', 'list', '--porcelain'])).split('\n')
     .filter((l) => l.startsWith('worktree '));

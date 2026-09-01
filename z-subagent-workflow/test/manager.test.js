@@ -287,6 +287,69 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
   assert.ok(env1.content.includes('git apply'));   // apply 指引行
 });
 
+test('V4o 降级留痕投影：collectPatch 结构化 patchIncomplete → record/outcome 可断言 + stderr warn + 通知提示', async () => {
+  const c = ctx();
+  const stderrLines = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => { stderrLines.push(String(chunk)); return true; };
+  const fakeWorktree = {
+    async prepare({ slug, subagentId }) {
+      return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
+    },
+    // worktree-adapter V4o 透传形态：结构化 {patchFile, patchIncomplete:true}
+    async collectPatch({ subagentId }) {
+      return {
+        patchFile: outputs.writePatch(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n'),
+        patchIncomplete: true,
+      };
+    },
+    async cleanup() {},
+  };
+  try {
+    const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
+    // 既有 start(wait=true) 用例同款：先注册终态注入（runner.start 后 20ms
+    // finishAll），再同步等 start 返回
+    setTimeout(() => runner.finishAll({ status: 'closed', response: '降级场景完成', sessionId: 'sess-wt-incomplete' }), 20);
+    const h = await manager.start(
+      { task: '降级场景任务书', slug: 'wt-incomplete', worktree: true, wait: true }, c,
+    );
+    assert.equal(h.status, 'closed');
+    assert.equal(h.patchIncomplete, true, 'outcome 必须携带可断言降级信号');
+    const rec = records.get(h.subagentId);
+    assert.equal(rec.patchIncomplete, true, 'record 必须原子落盘降级留痕');
+    assert.ok(rec.patchFile && rec.patchFile.endsWith('.patch'), '降级时 patchFile 仍正常回填');
+    assert.ok(
+      stderrLines.some((l) => l.includes('patch 不完整') && l.includes(h.subagentId)),
+      `stderr warn 期望含 subagentId，实得: ${JSON.stringify(stderrLines)}`,
+    );
+    // mailbox 面主 agent 只看通知：降级必须可感知
+    const envelopes = readEnvelopes(c.targetSessionId);
+    assert.ok(envelopes.some((e) => e.content.includes('patch 不完整')), '通知应含 patch 不完整提示');
+    assert.ok(envelopes.some((e) => e.content.includes('git apply')), '通知仍含 git apply 指引');
+  } finally {
+    process.stderr.write = origWrite;
+  }
+});
+
+test('V4o 降级留痕投影：正常 patch（string 旧形态）不带 patchIncomplete 键', async () => {
+  const c = ctx();
+  const fakeWorktree = {
+    async prepare({ slug, subagentId }) {
+      return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
+    },
+    // string 旧形态（ports.js 契约口径）：健康路径无降级信号
+    async collectPatch({ subagentId }) { return outputs.writePatch(subagentId, 'diff --git a/g b/g\n'); },
+    async cleanup() {},
+  };
+  const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '健康场景完成', sessionId: 'sess-wt-healthy' }), 20);
+  const h = await manager.start({ task: '健康场景任务书', slug: 'wt-healthy', worktree: true, wait: true }, c);
+  assert.equal(h.status, 'closed');
+  assert.equal(h.patchIncomplete, undefined, '健康路径 outcome 不携带降级键');
+  assert.equal(records.get(h.subagentId).patchIncomplete, undefined, '健康路径 record 不携带降级键');
+  assert.ok(h.patchFile && h.patchFile.endsWith('.patch'));
+});
+
 test('start(wait=true)：同步等待，返回终态与结果全文（不截断）', async () => {
   const { manager, runner } = buildManager();
   const full = '长结果行'.repeat(300); // 1200 字符，验证全文而非 500 截断

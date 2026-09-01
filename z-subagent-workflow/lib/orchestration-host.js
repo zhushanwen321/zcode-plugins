@@ -22,6 +22,12 @@
  *    script-* 三 action 创作闭环由 bin/zsw.js 实现经 server handler 消费）
  *    + daemon 生命周期钩子（recoverOrphans / shutdown）。
  *
+ * V4o 消费收口（设计 C12/C14/C16）：崩溃恢复线改调 core recoverCrashedRuns
+ * （reason 传 zsw 接管文案，hooks 计数）；status/list 投影改调 core
+ * runSummary + 宿主扩展字段叠加；run 参数白名单改 core args-meta 三件套
+ * meta 驱动（RUN_ENVELOPE_KEYS 信封保留键注入，直参组装 + args 对象基座 +
+ * 平铺拦截），每资产手写 known 键集（review-fix-loop 17 键）退役。
+ *
  * 与旧 WorkflowManager 的行为差异（README 回接说明登记）：
  * - run 状态不再写 zsw record 事件流（recordType:'workflow' 线退役）；新
  *   状态面 = 内存 runs Map（done 保留 MAX_RETAINED_DONE_RUNS 条）+
@@ -48,10 +54,23 @@ const BUILTIN_WORKFLOW_NAMES = [
   'review-fix-loop',
 ];
 
-/** zflow run 参数中不进 $ARGS 的保留键（RunSpec/宿主消费或已废弃映射位）。 */
-const RESERVED_PARAM_KEYS = new Set([
-  'workflow', 'task', 'workdir', 'model', 'timeoutMs', 'maxConcurrent',
-  'timeoutMsPerPhase', 'subtaskCount', 'wait', 'reviewers', 'reviewTarget',
+/**
+ * run 调用信封顶层保留键（C16 reservedKeys，消费方契约——pi 先例 77a600d3d
+ * 的 zsw 对应物）：这些键属 zsw run 信封/宿主消费面，永不进 $ARGS，也不参与
+ * 平铺判定（meta 参数键与信封键撞名时以信封为准）。清单从现调用构造点 grep
+ * 收口（原 11 键逐一保留语义，仅 +args/+action）：
+ * - bin/zsw.js buildWorkflowRunParams 的 params 字面量组（workflow/task/
+ *   workdir/model/timeoutMs 固定面 + maxConcurrent/timeoutMsPerPhase 废弃位）
+ * - dist/mcp/server.js run 分支（action 剥离 + wait 同步/异步分流）
+ * - 本文件 resolveRun（workdir）与 normalizeRunParams（reviewers 报错、
+ *   reviewTarget/target 的 sugar、subtaskCount 废弃 warning）
+ * - args：pi 宿主语法的 args 对象信封键（C16 新兼容面，作 $ARGS 基座）
+ */
+const RUN_ENVELOPE_KEYS = new Set([
+  'workflow', 'task', 'workdir', 'model', 'timeoutMs', 'wait',
+  'args', 'action',
+  'maxConcurrent', 'timeoutMsPerPhase', 'subtaskCount',
+  'reviewers', 'reviewTarget',
 ]);
 
 /** stderr + 文件双通道的 core 日志桥。debug 不刷 stderr（daemon 常驻防刷屏）。 */
@@ -218,24 +237,45 @@ function createRegistry(core) {
 }
 
 /**
+ * workflow 引用缺失的统一报错（resolveRun 前置校验与本函数内校验共用，防
+ * 两处文案漂移）。
+ */
+function workflowRequiredError() {
+  return new Error('run 需要 workflow（内置名或 .js 绝对路径，后者可经 script-generate 创作）。恢复指引：先经 scripts action 查可用清单。');
+}
+
+/**
  * zflow run params → { scriptRef, args($ARGS), model, budgetTimeMs, warnings }。
  *
- * 内置 5 严格按 vendored 资产实际消费的 $ARGS 键组装（多余键不进 $ARGS 并出
- * warning——review-fix-loop 有运行时白名单，错键会被资产报「未知参数」，
- * 这里前置拦截给出更可操作的提示）；用户脚本（.js 绝对路径）白名单外全透传
- * （脚本自己的 parameters schema 是唯一权威）。无法映射的旧 flag 显式报错
- * （reviewers——语义已从自由文本维度变为 agent ref 批次）或降级 warning
- * （maxConcurrent / timeoutMsPerPhase / subtaskCount——core RunSpec 无对应面）。
+ * C16：参数白名单段退役，改 core args-meta 三件套 meta 驱动——meta = 脚本
+ * @pi-meta parameters（core WorkflowScript 已携带，resolveRun 加载脚本后传
+ * 入）。键集（哪些参数被消费）、消费键清单文案、batchN 动态键全部来自 meta
+ * 的 properties/patternProperties，不再手写每资产 known 数组（review-fix-loop
+ * 17 键硬编码随之退役）；值的类型归一（bool/num/csv）同样从 meta 类型驱动。
+ * 契约缺失（meta 无 parameters，如旧用户脚本）= 不校验全透传，由资产侧运行
+ * 时白名单 fail-fast 兜底（review-fix-loop 的 VALID_ARG_KEYS 即此形态）。
+ *
+ * zsw 宿主直参形态（CLI/MCP 现行面）：per-workflow 参数平铺在信封顶层，由
+ * 本函数组装进 args——信封键（RUN_ENVELOPE_KEYS）永不参与组装与平铺判定。
+ * pi 宿主 args 对象形态同步兼容：params.args 为对象时作 $ARGS 基座，此时
+ * 顶层再出现 meta 参数键（且 args 无同名）= 平铺错误，经 core
+ * findFlattenedArgKeys 检测（normalizeArgsByMeta 的 flattened_args warning）
+ * 升级为拦截 + 「子字段请放 args 对象」恢复指引（错误规格表口径）；无 args
+ * 对象的直参调用恒不触发该检测。
+ *
+ * zsw 特有 sugar/required 校验（特制文案，键集无关）保留：reviewers 显式
+ * 报错（语义已变）、废弃 flag warning（maxConcurrent/timeoutMsPerPhase/
+ * subtaskCount）、target 的 reviewTarget/task 兜底、task 并入。
  */
-function normalizeRunParams(params) {
+function normalizeRunParams(params, meta) {
   const warnings = [];
   const workflow = typeof params.workflow === 'string' ? params.workflow : '';
-  if (workflow === '') {
-    throw new Error('run 需要 workflow（内置名或 .js 绝对路径，后者可经 script-generate 创作）。恢复指引：先经 scripts action 查可用清单。');
-  }
+  if (workflow === '') throw workflowRequiredError();
   const name = workflow.replace(/^script:/, '');
   const isBuiltin = BUILTIN_WORKFLOW_NAMES.includes(name);
   const task = typeof params.task === 'string' ? params.task : '';
+  const model = typeof params.model === 'string' && params.model !== '' ? params.model : undefined;
+  const budgetTimeMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0 ? params.timeoutMs : undefined;
 
   // review-fix-loop 旧 sugar：无法映射的显式报错（新契约批次值 = agent .md
   // 路径，旧自由文本维度没有等价物，静默映射会跑错对象）
@@ -256,100 +296,145 @@ function normalizeRunParams(params) {
     warnings.push('--subtask-count 已不再支持（scatter-gather 资产自适应拆分），已忽略。');
   }
 
-  const args = {};
-  const model = typeof params.model === 'string' && params.model !== '' ? params.model : undefined;
-  const budgetTimeMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0 ? params.timeoutMs : undefined;
+  // ── C16 meta 驱动面（core args-meta 单源）────────────────────────
+  const core = coreRef.requireCore();
+  const effectiveMeta = meta && typeof meta === 'object' ? meta : undefined;
+  const { exact, patterns } = core.argKeysFromMeta(effectiveMeta, { reservedKeys: RUN_ENVELOPE_KEYS });
+  const isKnownArg = (key) => exact.has(key) || patterns.some((re) => re.test(key));
+  // 参数 schema 查找：properties 精确命中优先，patternProperties 兜底
+  // （batchN 动态键的类型归一依据；非法正则 core argKeysFromMeta 已 warn 跳过）
+  const propSchemaFor = (key) => {
+    if (!effectiveMeta) return undefined;
+    const props = effectiveMeta.properties;
+    if (props && Object.prototype.hasOwnProperty.call(props, key)) return props[key];
+    const pp = effectiveMeta.patternProperties;
+    if (pp && typeof pp === 'object') {
+      for (const [pat, schema] of Object.entries(pp)) {
+        try { if (new RegExp(pat).test(key)) return schema; } catch { /* 非法正则 */ }
+      }
+    }
+    return undefined;
+  };
 
+  // args 对象基座（pi 宿主语法）+ 平铺拦截：仅 params.args 为对象时走此分支。
+  // flat 拦截升级为 throw（错误规格表口径）；no_parameter_contract 不透出
+  // （契约缺失 = 不校验，与直参形态同口径，否则旧脚本全量 warning）
+  let args;
+  if (params.args !== null && typeof params.args === 'object' && !Array.isArray(params.args)) {
+    const { args: base, warnings: metaWarnings } = core.normalizeArgsByMeta(
+      params, effectiveMeta, { reservedKeys: RUN_ENVELOPE_KEYS },
+    );
+    const flat = metaWarnings.find((w) => w && w.code === 'flattened_args');
+    if (flat) {
+      throw new Error(
+        `参数 ${(flat.keys || []).map((k) => `"${k}"`).join('、')} 与 args 对象同时给出且被平铺在调用顶层。`
+        + '子字段请放 args 对象：{"workflow": "...", "args": {"<参数名>": "<值>"}}；'
+        + '或去掉 args 对象改用 zsw 直参形态（--参数名 值），两种形态不混用。',
+      );
+    }
+    args = { ...base };
+  } else {
+    args = {};
+  }
+
+  // ── sugar/required 层（特制文案原样保留；取值统一直参优先、args 基座兜底）──
+  const arg0 = (key) => (params[key] !== undefined ? params[key] : args[key]);
+  const handled = new Set();
+  const setArg = (key, value) => { args[key] = value; handled.add(key); };
   const num = (v) => (v !== undefined ? Number(v) : undefined);
   const bool = (v) => (v === true || v === 'true' ? true : v === false || v === 'false' ? false : undefined);
-  const csvJoin = (v) => (Array.isArray(v) ? v.join(',') : v);
+  // 内置参数的类型归一（meta 类型驱动）：boolean/integer 收 CLI 字符串形态；
+  // 数组值按参数类型分流——string 型收数组 = csv 串（CLI csv() 同构），
+  // string[] 型数组 = 元素字符串化（items 旧行为）
+  const coerce = (key, value) => {
+    const prop = propSchemaFor(key);
+    const t = prop && prop.type;
+    if (t === 'boolean') return bool(value);
+    if (t === 'integer' || t === 'number') return num(value);
+    if (Array.isArray(value)) {
+      if (t === 'array' && prop.items && prop.items.type === 'string') return value.map(String);
+      return value.join(',');
+    }
+    return value;
+  };
 
   if (isBuiltin) {
     if (name === 'chain' || name === 'scatter-gather') {
-      if (!task) throw new Error(`${name} 需要 task（自包含任务书）。恢复指引：--task "<描述>"。`);
-      args.task = task;
-      if (params.agents !== undefined) args.agents = csvJoin(params.agents);
+      const taskArg = typeof arg0('task') === 'string' ? arg0('task') : '';
+      if (!taskArg) throw new Error(`${name} 需要 task（自包含任务书）。恢复指引：--task "<描述>"。`);
+      setArg('task', taskArg);
     } else if (name === 'parallel') {
-      const target = params.target !== undefined ? params.target : task;
+      const target = arg0('target') !== undefined ? arg0('target') : task;
       if (!target) throw new Error('parallel 需要 target（分析目标；--target 或 --task 均可作为来源）。');
-      args.target = target;
-      if (Array.isArray(params.perspectives)) args.perspectives = params.perspectives;
-      if (params.agents !== undefined) args.agents = csvJoin(params.agents);
+      setArg('target', coerce('target', target));
     } else if (name === 'map-reduce') {
-      if (!params.operation) throw new Error('map-reduce 需要 operation（对每个 item 做什么）。');
-      args.operation = params.operation;
-      if (Array.isArray(params.items)) args.items = params.items.map(String);
-      else if (typeof params.itemsJson === 'string') args.itemsJson = params.itemsJson;
+      if (!arg0('operation')) throw new Error('map-reduce 需要 operation（对每个 item 做什么）。');
+      setArg('operation', coerce('operation', arg0('operation')));
+      const items = arg0('items');
+      const itemsJson = arg0('itemsJson');
+      if (Array.isArray(items)) setArg('items', items.map(String));
+      else if (typeof itemsJson === 'string') setArg('itemsJson', itemsJson);
       else throw new Error('map-reduce 需要 items（字符串数组）。恢复指引：--items \'["a","b"]\' 或 a,b。');
-      if (params.agents !== undefined) args.agents = csvJoin(params.agents);
     } else if (name === 'review-fix-loop') {
-      const target = params.target !== undefined ? params.target
-        : params.reviewTarget !== undefined ? params.reviewTarget
+      const target = arg0('target') !== undefined ? arg0('target')
+        : arg0('reviewTarget') !== undefined ? arg0('reviewTarget')
           : task;
       if (!target) {
         throw new Error(
           'review-fix-loop 需要 target（审查目标）。恢复指引：--target <目标>（配 --target-type git-diff 时传 base ref 如 main）。'
         );
       }
-      args.targetType = params.targetType !== undefined ? params.targetType : 'text';
-      args.target = target;
-      // batchN 动态键：值统一逗号分隔串（core parameters patternProperties type string）
-      for (const [key, value] of Object.entries(params)) {
-        if (/^batch([1-9]\d*)$/.test(key)) args[key] = csvJoin(value);
+      setArg('targetType', arg0('targetType') !== undefined ? arg0('targetType') : 'text');
+      setArg('target', coerce('target', target));
+    }
+  } else if (task) {
+    // 用户脚本：task 并入（脚本侧 $ARGS.task 直接可用）
+    args.task = task;
+  }
+
+  // ── 通用组装层（meta 驱动白名单）─────────────────────────────────
+  for (const [key, value] of Object.entries(params)) {
+    if (RUN_ENVELOPE_KEYS.has(key) || handled.has(key) || value === undefined) continue;
+    if (!isKnownArg(key)) {
+      if (isBuiltin && effectiveMeta) {
+        // 内置 + 有契约：未知键前置拦截，消费键清单从 meta 生成（比资产白名单
+        // 报错更可操作）
+        const knownList = [...exact].join('/')
+          + (patterns.length > 0 ? ` 及 ${patterns.map((p) => p.source).join('/')}` : '');
+        warnings.push(`参数 "${key}" 不被内置 workflow "${name}" 消费（消费键：${knownList} 或见 scripts action 的 meta），已忽略。`);
+        continue;
       }
-      if (params.agents !== undefined) args.agents = csvJoin(params.agents);
-      if (params.batchNames !== undefined) args.batchNames = csvJoin(params.batchNames);
-      if (params.reviewPrompt !== undefined) args.reviewPrompt = params.reviewPrompt;
-      if (params.fixPrompt !== undefined) args.fixPrompt = params.fixPrompt;
-      if (params.autoCommit !== undefined) args.autoCommit = bool(params.autoCommit);
-      if (params.maxRounds !== undefined) args.maxRounds = num(params.maxRounds);
-      if (params.stuckThreshold !== undefined) args.stuckThreshold = num(params.stuckThreshold);
-      if (params.skipCleanAgents !== undefined) args.skipCleanAgents = bool(params.skipCleanAgents);
-      if (params.recheckAfterFix !== undefined) args.recheckAfterFix = bool(params.recheckAfterFix);
-      if (params.fallowScan !== undefined) args.fallowScan = bool(params.fallowScan);
-      if (params.fixAgent !== undefined) args.fixAgent = params.fixAgent;
-      if (params.maxFixAttempts !== undefined) args.maxFixAttempts = num(params.maxFixAttempts);
-      if (params.convergeNewIssues !== undefined) args.convergeNewIssues = num(params.convergeNewIssues);
-      if (params.convergeRounds !== undefined) args.convergeRounds = num(params.convergeRounds);
-      if (params.aggregatorModel !== undefined) args.aggregatorModel = params.aggregatorModel;
-    }
-    // 内置形态的未知键前置拦截（比资产白名单报错更可操作）
-    for (const key of Object.keys(params)) {
-      if (RESERVED_PARAM_KEYS.has(key) || /^(batch([1-9]\d*))$/.test(key)) continue;
-      const known = name === 'review-fix-loop'
-        ? ['targetType', 'target', 'batchNames', 'agents', 'reviewPrompt', 'fixPrompt', 'autoCommit', 'maxRounds',
-          'stuckThreshold', 'skipCleanAgents', 'recheckAfterFix', 'fallowScan', 'fixAgent', 'maxFixAttempts',
-          'convergeNewIssues', 'convergeRounds', 'aggregatorModel']
-        : name === 'parallel' ? ['perspectives', 'agents']
-          : name === 'map-reduce' ? ['items', 'itemsJson', 'agents']
-            : ['agents'];
-      if (!known.includes(key)) warnings.push(`参数 "${key}" 不被内置 workflow "${name}" 消费（消费键：${known.join('/')} 或见 scripts action 的 meta），已忽略。`);
-    }
-  } else {
-    // 用户脚本：白名单外全透传 + task 并入（脚本侧 $ARGS.task 直接可用）
-    if (task) args.task = task;
-    for (const [key, value] of Object.entries(params)) {
-      if (RESERVED_PARAM_KEYS.has(key) || value === undefined) continue;
+      // 无契约（用户脚本/内置资产缺 parameters 声明）：透传，资产侧运行时
+      // 白名单兜底——契约缺失不校验（现状等值：用户脚本白名单外全透传）
       args[key] = value;
+      continue;
     }
+    args[key] = isBuiltin ? coerce(key, value) : value;
   }
 
   return { scriptRef: workflow, args, model, budgetTimeMs, warnings };
 }
 
-/** WorkflowRun → zflow status/list 视图（CLI/MCP 两面共用的单一映射）。 */
+/**
+ * WorkflowRun → zflow status/list 视图（CLI/MCP 两面共用的单一映射）。
+ *
+ * C14：核心投影单源 core.runSummary（runId/name/slug/status/reason/startedAt/
+ * completedAt/error），zsw 扩展字段在 core 投影上叠加——workflow（scriptName
+ * 别名，bin 谓词与 CLI summary 的消费面，等值保留）、model、stateFile；null
+ * 归一（zsw 面 reason/error/completedAt 恒 null 非 undefined，JSON 序列化
+ * 面等值）也在此层做。core 投影新增 name（= scriptName，与 workflow 同值）
+ * 与 slug（zsw spec 无此字段，序列化缺席）随叠加透出。
+ */
 function runSummary(run, store) {
+  const base = coreRef.requireCore().runSummary(run);
   const spec = run.spec || {};
-  const state = run.state || {};
   return {
-    runId: run.runId,
+    ...base,
     workflow: spec.scriptName,
-    status: state.status,
-    reason: state.reason === undefined ? null : state.reason,
-    error: state.error === undefined ? null : state.error,
+    reason: base.reason === undefined ? null : base.reason,
+    error: base.error === undefined ? null : base.error,
+    completedAt: base.completedAt === undefined ? null : base.completedAt,
     model: spec.model || null,
-    startedAt: run.meta && run.meta.startedAt,
-    completedAt: run.meta && run.meta.completedAt ? run.meta.completedAt : null,
     stateFile: store ? store.stateFilePath(run.runId) : undefined,
   };
 }
@@ -428,18 +513,27 @@ function createOrchestrationHost(opts = {}) {
     } catch { /* 发现面不可用不阻断 run */ }
   }
 
-  /** run 参数公共前置：normalize + 脚本解析 → { spec 组装原料, script, warnings }。 */
+  /**
+   * run 参数公共前置：脚本解析 → normalize（meta 驱动）→ { spec 组装原料, script, warnings }。
+   *
+   * C16 起 get 先于 normalize：meta = 脚本 @pi-meta parameters（core
+   * WorkflowScript 携带，60s TTL mtime 缓存，单次解析）。workflow 必填校验
+   * 前置（文案单源 workflowRequiredError——registry.get('') 的「未找到」
+   * 文案不可操作）。行为差异（V4o 登记）：「引用未找到 + reviewers 非法」
+   * 组合非法输入的报错优先级从 reviewers 变为未找到。
+   */
   async function resolveRun(params, cwd) {
-    const norm = normalizeRunParams(params);
+    if (typeof params.workflow !== 'string' || params.workflow === '') throw workflowRequiredError();
     const workdir = typeof params.workdir === 'string' && params.workdir !== ''
       ? path.resolve(params.workdir)
       : (cwd || process.env.ZCODE_PROJECT_DIR || process.cwd());
-    const script = await registry.get(norm.scriptRef, cwd || workdir);
+    const script = await registry.get(params.workflow, cwd || workdir);
     if (!script) {
       throw new Error(
-        `workflow "${norm.scriptRef}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')}、已保存脚本名或自定义脚本 .js 绝对路径，后者可经 script-generate 创作；可用清单经 scripts action 查询）。`
+        `workflow "${params.workflow}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')}、已保存脚本名或自定义脚本 .js 绝对路径，后者可经 script-generate 创作；可用清单经 scripts action 查询）。`
       );
     }
+    const norm = normalizeRunParams(params, script.meta && script.meta.parameters);
     await warnShadowedBuiltin(norm.scriptRef, cwd || workdir);
     if (!script.available) {
       throw new Error(
@@ -574,22 +668,20 @@ function createOrchestrationHost(opts = {}) {
     },
 
     /**
-     * daemon 接管/启动恢复：FileRunStore.loadAll 重水合上一代遗留快照，running
-     * 标终态 failed（worker 随旧进程死亡，无进程可探活），全部进内存后按 cap 裁剪。
+     * daemon 接管/启动恢复（C12）：恢复线单源 core.recoverCrashedRuns——
+     * loadAll 重水合 + running 标终态 failed（worker 随旧进程死亡）+ 落盘 +
+     * 按 cap 裁剪，全部由 core 承担；zsw 的接管文案经 reason 传入（error
+     * 字段值与手写线逐字节一致），hooks.onRunRecovered 接 orphaned 计数。
+     * recovered 契约（dist/mcp/server.js 启动日志）= 重水合条数，core 恢复
+     * 线无返回值，这里预读一次 store.loadAll 只取条数（幂等只读；fromSnapshot
+     * 的畸形行 warn 会双份，为已知代价）。
      */
     async recoverOrphans() {
       const loaded = await store.loadAll();
       let orphaned = 0;
-      for (const run of loaded) {
-        if (run.state.status === 'running') {
-          run.state.error = 'daemon takeover: worker died with previous process';
-          run.transition('done', 'failed');
-          await store.save(run);
-          orphaned++;
-        }
-        runs.set(run.runId, run);
-      }
-      core.evictDoneRunsBeyondCap(runs, core.MAX_RETAINED_DONE_RUNS);
+      await core.recoverCrashedRuns(store, runs, 'daemon takeover: worker died with previous process', {
+        onRunRecovered: () => { orphaned++; },
+      });
       return { recovered: loaded.length, orphaned };
     },
 
