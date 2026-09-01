@@ -95,7 +95,7 @@ graph TD
 | V0b | committed | 1 | d86f7b2（toModelEntries 单实现；三公开面改造前后逐字节 diff 空；已知边缘差异登记：非字符串 label 统一为 trimToNull 口径） |
 | V0c | committed | 1 | 4aabf8c（`docs/design/zsw-manager-convergence.md` 立案锚点） |
 | V0d | committed | 1 | e45f998（t-sink.md + make-legacy-state-files.js；主 agent 复跑验收：25 文件 = 10 无 v + 15 wf-run-v2，现状 reader loadAll 25/25 = done 19 + running 6；产物头登记快照真实结构与两处事实纠偏） |
-| V8g | committed | 1 | e6a057a（守卫先行拦到陈旧 bundle 后刷新；29 符号守卫 11/11；负面验证过；manifest source=local + sha256 19 文件 0 错配；随刷更新一条过时断言 runner-core pool:0→1，core f163497f5 pre-abort 不变量） |
+| V8g | committed | 2 | e6a057a + 5659be3（二次刷新随 core 8ddd0029 maxBuffer 面；zsw collectWorktreePatch 透传 32MB 恢复旧 GIT_MAX_BUFFER 语义；29 守卫+worktree 绿） |
 | V1a | committed | 1 | 78b55e6（`..` 拒绝走 core 工厂含恢复指引、字符串级拼接避开 path.join 规范化逃逸；slug 闸；MS_PER_TURN 退役 floor 恢复；normalizeAgentRef 薄包装留待 V2p 消化 agent-runner-adapter 调用方；63+102 绿） |
 | V2p | blocked（V1a） | - | - |
 | V3w | committed | 2 | 6875827 + 671face（MCP 尾巴：socket 面 saved 放行经 await buildKnownWorkflowNames，三入口 ⛔D 完全闭环，360/360） |
