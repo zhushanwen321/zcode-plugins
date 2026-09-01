@@ -420,14 +420,22 @@ function scriptDeleteAction(name, isRunning) {
   return { name: n, message };
 }
 
-/** 「某脚本名是否正在运行」谓词工厂：消费 host 公开 list()（runSummary 的 workflow = scriptName）。 */
+/**
+ * 「某脚本名是否正在运行」谓词工厂（V4o）：判定改调 core isScriptRunning——
+ * 吃原始 runs Map（run.spec.scriptName + run.state.status 原始字段），不再经
+ * host.list() 的 runSummary 投影（投影字段 workflow/status 与原始 spec/state
+ * 等值已由 V4o 核对）。数据源 = host._runs（orchestration-host 公开测试/内部
+ * 面，daemon 与 CLI --local 各自进程的真实 runs Map；core 谓词是纯函数，无
+ * per-session 隔离口径）。host 无 _runs（测试 fake）或 core 调用异常时防御性
+ * 回退 false（对齐旧 list() 容错语义：拿不到 runs 视图 = 不拒绝删除）。
+ */
 function runningScriptPredicate(wfHost) {
   return (name) => {
-    let runs = [];
     try {
-      runs = wfHost && typeof wfHost.list === 'function' ? wfHost.list() : [];
-    } catch { runs = []; }
-    return runs.some((r) => r && r.status === 'running' && r.workflow === name);
+      const runs = wfHost && wfHost._runs;
+      if (!(runs instanceof Map)) return false;
+      return coreRef.requireCore().isScriptRunning(runs, name);
+    } catch { return false; }
   };
 }
 
@@ -715,7 +723,7 @@ async function runWorkflowCommand(rest) {
       break;
     }
     case 'script-delete': {
-      // --local 一次性进程无 runs 视图：runningScriptPredicate 对空 list 恒
+      // --local 一次性进程无 runs 视图：runningScriptPredicate 对空 runs Map 恒
       // false（如实声明——「运行中拒绝」的真实裁决只在 daemon 面）
       process.stdout.write(`${JSON.stringify(scriptDeleteAction(args.name, runningScriptPredicate(wfHost)), null, 2)}\n`);
       break;

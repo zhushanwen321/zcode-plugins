@@ -638,8 +638,11 @@ test('zflow script-generate/save/delete：handler 分发 + core 管线真跑 + d
   assert.ok(fs.existsSync(savedPath));
   assert.equal(fs.existsSync(tmpPath), false);
 
-  // delete 运行中拒绝：fake host 的 list 报 running w8-srv（runningScriptPredicate 消费 wfHost.list）
-  const fakeRunning = { list: () => [{ runId: 'wf-r1', workflow: 'w8-srv', status: 'running' }] };
+  // delete 运行中拒绝：fake host 的 _runs 报 running w8-srv（runningScriptPredicate
+  // 改调 core isScriptRunning——吃原始 runs Map 的 spec/state 字段，非 list 投影）
+  const fakeRunning = {
+    _runs: new Map([['wf-r1', { spec: { scriptName: 'w8-srv' }, state: { status: 'running' } }]]),
+  };
   const srvRunning = server.createServer({ manager: makeFakeManager(), wfHost: fakeRunning, nested: false });
   const refused = await callHandler(srvRunning, 'zflow', { action: 'script-delete', name: 'w8-srv' });
   assert.equal(refused.isError, true);
