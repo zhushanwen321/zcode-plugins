@@ -65,7 +65,7 @@ z-sw（`z-subagent-workflow/`）是 zcode 平台的子代理编排插件：CLI�
 | C12 | 崩溃恢复 | `recoverCrashedRuns` | `recoverOrphans` 改调 core（错误文案参数传入） |
 | C13 | prune | `FileRunStore.pruneStateFilesBeyondCap` | daemon 启动/session start 接线 + env 上限透传（**无声恶化项修复**） |
 | C14 | runSummary/isScriptRunning | barrel 导出 | `runSummary` 投影改 core 单源 + 宿主扩展字段（model）；`runningScriptPredicate` 改调 |
-| C15 | 原子写 | `shared/atomic-write.ts` | `output-store.atomicWrite` 与 `notifier-mailbox` tmp+rename 改调 |
+| C15 | 原子写 | `shared/atomic-write.ts`（实名 `writeAtomicFileSync`） | `output-store.atomicWrite` 与 `notifier-mailbox` tmp+rename 改调 |
 | C16 | schema 助手 | `normalizeArgsByMeta/argKeysFromMeta/findFlattenedArgKeys` | `normalizeRunParams` 白名单段（:326-334 + review-fix-loop 17 键）退役改喂 meta；CLI `buildWorkflowRunParams` consumedArgs 同步 meta 驱动；组 args 前接平铺检测 |
 | C17 | workflow ref | `normalizeWorkflowRef(ref, {knownNames})` | `validateWorkflowRef` 三处口径（bin 入口/orchestration-host/daemon-MCP）统一改调，knownNames 策略注入（见 D-E3 裁决） |
 
@@ -87,7 +87,9 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 
 ### 3.0 依赖契约（core 新导出面，转载自姊妹文档 §3.3/§5.2，已按其 R1 修订版对齐）
 
-消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝——**对两宿主均为行为变更**，现状两宿主均放行）、`normalizeWorkflowRef(ref, {knownNames})`（名/路径二分 + 保留字裁决 + 内置名优先策略）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`discoverAgents(workspaceRoot, hostRoots): Promise<AgentEntry[]>`（发现→解析→去重→码点序装配）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`createConcurrencyPool({ maxConcurrent, queuePolicy })`（工厂形态，queuePolicy: 'priority' | 'strict-fifo'）、worktree-git-ops 函数族（`collectWorktreePatch(anchor): Promise<{ patchFile, written, patchIncomplete?: boolean }>` 等返回结构即留痕载体，anchor 为基线锚点抽象；锚点缺失/损坏或 add 步骤失败 → warn + 降级裸 diff + `patchIncomplete: true`）、`recoverCrashedRuns(store, runs, reason, hooks?)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`atomicWriteFileSync(file, text)`、`normalizeArgsByMeta(params, meta): {args, warnings}`、`findFlattenedArgKeys(params, meta)`、`loadWorkflowScriptByPath(path)` + WorkflowScript 类、模型切分原语四件（splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey）、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
+消费面签名（本插件视角）：`normalizeRef(ref, ext)`（含 `..` 拒绝——**对两宿主均为行为变更**，现状两宿主均放行）、`normalizeWorkflowRef(ref, {knownNames})`（名/路径二分 + 保留字裁决 + knownNames 注入——内置名优先由宿主清单构造顺序体现，core 名命中即返回，冲突 warning 属宿主层）、`parseAgentProfile(text, filePath): AgentProfile`（宽松：name 缺省 stem、body/执行字段全量）、`discoverAgents(workspaceRoot, hostRoots): Promise<AgentEntry[]>`（hostRoots 为 `DiscoveryRoot[]` 含 source 标签；发现→解析→按 frontmatter name 去重后写胜→码点序装配）、`maxTurnsToWatchdogMs(maxTurns)`（floor=30min 内聚）、`createConcurrencyPool({ maxConcurrent, queuePolicy })`（工厂形态，queuePolicy: 'priority' | 'strict-fifo'，缺省 priority）、worktree-git-ops 函数族（`collectWorktreePatch({ worktreePath, patchFile, anchor, timeout? }): Promise<{ patchFile, written, patchIncomplete?: boolean }>`，anchor 为基线锚点抽象（`{kind:'commit', ref}` 内存基线或 `{kind:'anchor-file', path}` 宿主持久锚点文件，**二者均须位于 worktree 之外**，否则 `git add -A` 会把锚点内容暂存进 patch）；锚点缺失/损坏或 add 步骤失败 → warn + 降级裸 diff + `patchIncomplete: true`，`written:false` 不可独立解读为「无降级」）、`recoverCrashedRuns(store, runs, reason, hooks?)`、`pruneStateFilesBeyondCap`（FileRunStore 方法）、`runSummary(run)`/`isScriptRunning(runs, name)`、`writeAtomicFileSync(filePath, content, options?)`、`normalizeArgsByMeta(params, meta): {args, warnings}` / `findFlattenedArgKeys(params, meta)` / `argKeysFromMeta`（三者均有可选第三参 reservedKeys）、`loadWorkflowScriptByPath(path): Promise<WorkflowScript | undefined>` + WorkflowScript 类、模型切分原语四件（splitZcodeModelRef/DEFAULT_PROVIDER_ID/ZCODE_FALLBACK_DEFAULT_MODEL/hasApiKey——hasApiKey 入参为 ZcodeProviderEntry 结构）、`isProcessAlive(pid)`、`SLUG_MAX_LENGTH`。
+
+> 勘误记录（2026-09-01 三路交付审查）：本节初版将原子写函数误写为 `atomicWriteFileSync(file, text)`（core 实名 `writeAtomicFileSync`）、将 `collectWorktreePatch` 误写为单参 `(anchor)` 形态（实为 opts 对象）；均系转载失真，core 导出面无违约。快照版本常量 core 实名为 `SNAPSHOT_VERSION`（值 `"wf-run-v2"`）。
 
 ### 3.1 终态（使用者视角）
 
@@ -184,6 +186,8 @@ core 0.4.0 dist ──vendor --npm──▶ lib/vendor/subagent-core（barrel �
 | saved 名与内置名冲突 | 跑内置 + 遮蔽 warning 列出双路径 | 按路径消歧或改名 saved 脚本 |
 | vendored 缺新符号（半刷新） | core-ref 守卫抛错 | 开发者/CI：`node scripts/vendor-subagent-core.js --npm 0.4.0`；npm/marketplace 用户：升级插件包版本（守卫措辞按形态分流） |
 | 平铺 args（zflow run） | 平铺检测拦截 + 「子字段请放 args 对象」 | 按 @pi-meta parameters 结构传参 |
+
+> 文案口径（2026-09-01 审查后补）：凡经 core 错误文案工厂产出的消息（`..` 拒绝、slug 上限等），**以 core 实际文案为准**（英文，经 `invalidAgentRefMessage(ref, {howToList})` 注入恢复指引）；本表中文为意译示意。S2②/S1 验收断言「消息含恢复指引与拒绝语义」，不做中文字面匹配。core 的 warn 通道需宿主 `configureCore({ log })` 接线方落盘（缺省 console），V8g/接线单元须含此项。
 
 ## 4 验收
 
