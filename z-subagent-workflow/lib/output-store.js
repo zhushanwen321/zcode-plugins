@@ -1,6 +1,7 @@
 'use strict';
 /**
- * 输出落盘：outputs/<subagentId>.md（结果全文）与 <id>.patch（worktree 改动）。
+ * 输出落盘：outputs/<subagentId>.md（结果全文）。patch 文件（<id>.patch）由
+ * worktree.js collectPatch 单点产出，不经本模块。
  *
  * 为什么原子写：结果文件被通知文案/record/后续查询引用，读者在写入中途读到
  * 半截文件会拿到损坏内容且无自愈手段；tmp+rename 在同目录内原子替换，读者
@@ -28,16 +29,9 @@ function writeResult(id, text) {
   return file;
 }
 
-/** @returns {string} patch 路径（进 record.patchFile，通知文案附 git apply 指引） */
-function writePatch(id, diffText) {
-  const file = path.join(outputsDir(), `${id}.patch`);
-  atomicWrite(file, diffText);
-  return file;
-}
-
 /** 结果文件路径（写前预知，便于失败清理与文案生成）。 */
 function pathFor(id) {
   return path.join(outputsDir(), `${id}.md`);
 }
 
-module.exports = { writeResult, writePatch, pathFor };
+module.exports = { writeResult, pathFor };

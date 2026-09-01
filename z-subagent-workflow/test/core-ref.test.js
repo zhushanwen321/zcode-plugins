@@ -13,9 +13,9 @@
  *   3. 消费符号在场——各执行线实际消费的 core 导出必须可从 vendored 主入口取到：
  *      2b/2c 基线（registerZcodeEngine / createZcodeEngine / routeEngine /
  *      WorkerHostImpl / FileRunStore / runWorkflow / configureCore）、sink 扩面
- *      （V8g 清单）、下沉消费收口（worktree-git-ops 函数族 / getCachedParsed /
- *      evictDoneRunsBeyondCap / MAX_RETAINED_DONE_RUNS / FileRunStore 方法本体，
- *      见「下沉消费收口符号在场」用例）。
+ *      （V8g 清单）、下沉消费收口（worktree-git-ops 函数族 / findWorkspaceRoot /
+ *      getCachedParsed / evictDoneRunsBeyondCap / MAX_RETAINED_DONE_RUNS /
+ *      FileRunStore 方法本体，见「下沉消费收口符号在场」用例）。
  *
  * 错误路径隔离：core-ref 的 VENDOR_DIR 绑定其自身 __dirname，无 env 注入点；
  * 但模块零依赖（仅 node:fs / node:path）——复制进临时目录、旁边构造假 vendor
@@ -126,6 +126,9 @@ test('下沉消费收口符号在场（Wave 1 守卫，worktree/发现/编排三
   for (const k of ['gitRun', 'isSafeId', 'isTreeDirty', 'cleanupWorktree', 'listWorktreePorcelain']) {
     assert.equal(typeof core[k], 'function', `worktree-git-ops 消费符号 ${k} 缺失${REFRESH}`);
   }
+  // 发现线：lib/agent-discovery.js agentScanRoots 的 workspace 根解析
+  // （core.findWorkspaceRoot，workspaceRoot 未显式给出时的回退原语）
+  assert.equal(typeof core.findWorkspaceRoot, 'function', `findWorkspaceRoot 缺失${REFRESH}`);
   // 发现线：lib/agent-discovery.js parseFnPool 缓存读（parseAgentProfile 同源缓存原语）
   assert.equal(typeof core.getCachedParsed, 'function', `getCachedParsed 缺失${REFRESH}`);
   // 编排线：lib/orchestration-host.js onRunDone 内存淘汰（done run 超上限即逐出）

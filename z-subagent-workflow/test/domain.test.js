@@ -302,26 +302,21 @@ test('record-store: 构造路径参数化——显式 filePath 注入落指定�
 // output-store
 // ---------------------------------------------------------------------------
 
-test('output-store: writeResult/writePatch 落盘正确、目录自动创建、pathFor 一致', (t) => {
+test('output-store: writeResult 落盘正确、目录自动创建、pathFor 一致', (t) => {
   const root = setupRoot(t);
   const file = outputStore.writeResult('sa-1', '# 结果全文\n\n内容');
   assert.equal(file, outputStore.pathFor('sa-1'));
   assert.equal(file, path.join(root, 'outputs', 'sa-1.md'));
   assert.equal(fs.readFileSync(file, 'utf8'), '# 结果全文\n\n内容');
-
-  const patch = outputStore.writePatch('sa-1', 'diff --git a/x b/x\n');
-  assert.equal(patch, path.join(root, 'outputs', 'sa-1.patch'));
-  assert.equal(fs.readFileSync(patch, 'utf8'), 'diff --git a/x b/x\n');
 });
 
 test('output-store: tmp+rename 原子写不留残渣', (t) => {
   const root = setupRoot(t);
   for (let i = 0; i < 3; i++) {
     outputStore.writeResult(`sa-${i}`, `body-${i}`);
-    outputStore.writePatch(`sa-${i}`, `diff-${i}`);
   }
   const entries = fs.readdirSync(path.join(root, 'outputs'));
-  assert.equal(entries.length, 6, '只有最终文件');
+  assert.equal(entries.length, 3, '只有最终文件');
   assert.ok(entries.every((f) => !f.includes('.tmp')), '无 tmp 残留');
 });
 

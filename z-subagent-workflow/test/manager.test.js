@@ -194,6 +194,16 @@ function envelopeCount(sessionId) {
   }
 }
 
+/** 替代退役的 output-store.writePatch 作夹具：直接落一个 .patch 文件到本测试
+ *  临时目录（manager 只消费 collectPatch 返回的路径与文件内容，不依赖 outputs
+ *  目录位置约定，故写到独立 fixtures 目录即可）。 */
+function writePatchFixture(id, diffText) {
+  const file = path.join(TMP, 'patch-fixtures', `${id}.patch`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, diffText);
+  return file;
+}
+
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
@@ -261,8 +271,7 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
     },
     async collectPatch({ dir, subagentId }) {
       wtCalls.patched.push({ dir, subagentId });
-      const { writePatch } = require('../lib/output-store');
-      return writePatch(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n');
+      return writePatchFixture(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n');
     },
     async cleanup({ dir, subagentId, meta }) { wtCalls.cleaned.push({ dir, subagentId, meta }); },
   };
@@ -299,7 +308,7 @@ test('V4o 降级留痕投影：collectPatch 结构化 patchIncomplete → record
     // worktree-adapter V4o 透传形态：结构化 {patchFile, patchIncomplete:true}
     async collectPatch({ subagentId }) {
       return {
-        patchFile: outputs.writePatch(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n'),
+        patchFile: writePatchFixture(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n'),
         patchIncomplete: true,
       };
     },
@@ -338,7 +347,7 @@ test('V4o 降级留痕投影：正常 patch（string 旧形态）不带 patchInc
       return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
     },
     // string 旧形态（ports.js 契约口径）：健康路径无降级信号
-    async collectPatch({ subagentId }) { return outputs.writePatch(subagentId, 'diff --git a/g b/g\n'); },
+    async collectPatch({ subagentId }) { return writePatchFixture(subagentId, 'diff --git a/g b/g\n'); },
     async cleanup() {},
   };
   const { manager, runner, records } = buildManager({ worktree: fakeWorktree });

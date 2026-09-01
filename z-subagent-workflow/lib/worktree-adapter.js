@@ -10,7 +10,7 @@
  *
  * 职责拆分（谁写 patch 文件）：S5 的 collectPatch 直接落盘 outputs/<id>.patch
  * 并返回路径（含基线 commit 语义，覆盖已提交+未提交+新增三类改动）；
- * manager 侧因此不再自己 writePatch——patch 的产出方只有一处。
+ * manager 侧不自写 patch 文件——patch 的产出方只有一处。
  */
 
 const { execFile } = require('node:child_process');
