@@ -10,9 +10,12 @@
  *      失败路径都指向恢复动作 `node scripts/vendor-subagent-core.js`；
  *   2. 当前 vendored 形态断言——capabilities.selfContainedIndex === true，
  *      vendor 回非自包含 bundle 形态时该断言变红，这正是守卫目的；
- *   3. 消费符号在场——2b/2c 两条执行线实际消费的 core 导出（registerZcodeEngine
- *      / createZcodeEngine / routeEngine / WorkerHostImpl / FileRunStore /
- *      runWorkflow / configureCore）必须可从 vendored 主入口取到。
+ *   3. 消费符号在场——各执行线实际消费的 core 导出必须可从 vendored 主入口取到：
+ *      2b/2c 基线（registerZcodeEngine / createZcodeEngine / routeEngine /
+ *      WorkerHostImpl / FileRunStore / runWorkflow / configureCore）、sink 扩面
+ *      （V8g 清单）、下沉消费收口（worktree-git-ops 函数族 / getCachedParsed /
+ *      evictDoneRunsBeyondCap / MAX_RETAINED_DONE_RUNS / FileRunStore 方法本体，
+ *      见「下沉消费收口符号在场」用例）。
  *
  * 错误路径隔离：core-ref 的 VENDOR_DIR 绑定其自身 __dirname，无 env 注入点；
  * 但模块零依赖（仅 node:fs / node:path）——复制进临时目录、旁边构造假 vendor
@@ -110,6 +113,31 @@ test('sink 扩面新导出面全符号在场（V8g 守卫，拦陈旧 vendored b
   // 快照版本值断言：落盘快照兼容性锚点（版本漂移 = 存量快照不可读）
   assert.equal(core.SNAPSHOT_VERSION, 'wf-run-v2',
     'SNAPSHOT_VERSION 值漂移——存量 workflow-state 快照按 "wf-run-v2" 落盘，刷新后版本不符须先核实快照兼容性');
+});
+
+test('下沉消费收口符号在场（Wave 1 守卫，worktree/发现/编排三线实际消费面）', () => {
+  // 逐一核实过 vendored dist 真实可达形态（函数 / number / prototype 方法）后
+  // 固化。符号缺失 = vendored bundle 落后于源（vendor 脚本忘跑 / 刷新中断），
+  // 消费单元运行时才会炸的布局漂移在此提前变红。
+  const core = coreRef.requireCore();
+  const REFRESH = '——vendored bundle 落后于源，重跑 node scripts/vendor-subagent-core.js --local <core-checkout> 刷新';
+  // worktree-git-ops 函数族：lib/worktree.js git 执行面全量消费
+  // （prepare→gitRun/isSafeId/isTreeDirty；cleanup→cleanupWorktree；listOrphans→listWorktreePorcelain/isSafeId）
+  for (const k of ['gitRun', 'isSafeId', 'isTreeDirty', 'cleanupWorktree', 'listWorktreePorcelain']) {
+    assert.equal(typeof core[k], 'function', `worktree-git-ops 消费符号 ${k} 缺失${REFRESH}`);
+  }
+  // 发现线：lib/agent-discovery.js parseFnPool 缓存读（parseAgentProfile 同源缓存原语）
+  assert.equal(typeof core.getCachedParsed, 'function', `getCachedParsed 缺失${REFRESH}`);
+  // 编排线：lib/orchestration-host.js onRunDone 内存淘汰（done run 超上限即逐出）
+  assert.equal(typeof core.evictDoneRunsBeyondCap, 'function', `evictDoneRunsBeyondCap 缺失${REFRESH}`);
+  // 上限常量按值形态断言（数值随 core 演进合法，只锚存在与类型）
+  assert.equal(typeof core.MAX_RETAINED_DONE_RUNS, 'number', `MAX_RETAINED_DONE_RUNS 缺失或非 number${REFRESH}`);
+  // FileRunStore 方法本体：record 修剪消费面（prototype 链上的真实方法——
+  // 类在场 ≠ 方法在场，桶内改名/挪方法时类守卫不红，此断言补上该盲区）
+  assert.equal(
+    typeof core.FileRunStore?.prototype?.pruneStateFilesBeyondCap, 'function',
+    `FileRunStore.prototype.pruneStateFilesBeyondCap 缺失${REFRESH}`,
+  );
 });
 
 test('错误路径：主入口缺失 → 报错含刷新命令与具体版本号', () => {

@@ -20,6 +20,7 @@ process.env.ZSW_ROOT = path.join(TMP, 'zsub-root');
 const worktree = require('../lib/worktree');
 const { reapWorktrees, sweepStaleOutputs } = require('../lib/reaper');
 const { outputsDir } = require('../lib/config');
+const { requireCore } = require('../lib/core-ref');
 
 /** worktree gitdir 下的基线锚点文件名（与 lib/worktree.js BASE_MARKER 同源）。 */
 const BASE_MARKER = 'zsub-base-commit';
@@ -285,6 +286,34 @@ test('sweepStaleOutputs：报告孤儿结果文件但绝不删除（用户资产
 // ------------------------------------------------- ⛔A 等值对照与降级分支
 
 /**
+ * ⛔A warn 捕获桥：经 configureCore({ log }) 注入收集 core logger.warn——降级
+ * 路径（锚点缺失/被拒/add 失败）的「warn 发出」是三要素之首，不可静默。
+ * restore 用 configureCore(undefined) 复原未配置态（core.configureCore 是对
+ * configuredHost 的直接赋值；本文件此前无任何 configure 调用，复原即精确还原
+ * NULL_HOST 缺省），防捕获桥泄入其他用例。
+ */
+function captureCoreWarns() {
+  const warns = [];
+  requireCore().configureCore({
+    log(level, component, message, data) {
+      if (level === 'warn') warns.push({ component, message, data });
+    },
+  });
+  return { warns, restore: () => requireCore().configureCore(undefined) };
+}
+
+/** 降级 warn 共性断言：恰一条、出自 worktree git 执行面、降级与留痕关键字在场。 */
+function assertDegradeWarn(warns, branchKeyword, dir) {
+  assert.equal(warns.length, 1,
+    `降级路径须恰好一条 warn，实际 ${warns.length} 条: ${JSON.stringify(warns)}`);
+  assert.match(warns[0].message, /\[worktree-git-ops\]/, 'warn 须来自 worktree git 执行面');
+  assert.match(warns[0].message, branchKeyword, '降级分支关键字须在场');
+  assert.match(warns[0].message, /bare diff/, '降级裸 diff 必须随 warn 可观测');
+  assert.match(warns[0].message, /patch marked incomplete/, 'patchIncomplete 语义必须随 warn 留痕');
+  assert.equal(warns[0].data.worktreePath, dir, 'warn 须定位到具体 worktree');
+}
+
+/**
  * 改造前机制（HEAD 版 lib/worktree.js）的等价参照实现：intent-to-add
  * （`add -A -N`）+ 基线裸 diff，base 从 gitdir sidecar 读取（RE 校验，失败
  * 则裸 diff）。内联而非 `git show HEAD` 取旧文件：测试不得随分支历史漂移
@@ -379,7 +408,14 @@ test('⛔A 降级①：锚点文件缺失 → core 降级裸 diff + patchIncompl
 
   fs.rmSync(path.join(await gitDirOf(dir), BASE_MARKER));
 
-  const res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  const { warns, restore } = captureCoreWarns();
+  let res;
+  try {
+    res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  } finally {
+    restore(); // 捕获桥即拆，不泄入其他用例
+  }
+  assertDegradeWarn(warns, /anchor file missing or unreadable/, dir);
   assert.ok(res.patchFile, '降级后仍有未提交改动，patch 必须产出');
   assert.equal(res.patchIncomplete, true, '降级必须以 patchIncomplete 留痕（宿主 outcome 口径）');
   const text = fs.readFileSync(res.patchFile, 'utf8');
@@ -400,7 +436,15 @@ test('⛔A 降级①b：锚点内容损坏（非 sha）→ core 基线被 git �
 
   fs.writeFileSync(path.join(await gitDirOf(dir), BASE_MARKER), 'not-a-sha\n');
 
-  const res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  const { warns, restore } = captureCoreWarns();
+  let res;
+  try {
+    res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  } finally {
+    restore();
+  }
+  assertDegradeWarn(warns, /anchor rejected by git/, dir);
+  assert.equal(warns[0].data.baseline, 'not-a-sha', '被拒基线值必须随 warn 留痕（诊断锚点）');
   assert.ok(res.patchFile, '降级后仍有未提交改动，patch 必须产出');
   assert.equal(res.patchIncomplete, true, '锚点被 git 拒绝必须留痕');
   const text = fs.readFileSync(res.patchFile, 'utf8');
@@ -419,7 +463,15 @@ test('⛔A 降级②：git add 失败（index.lock 预置）→ patchIncomplete 
   const lock = path.join(await gitDirOf(dir), 'index.lock');
   fs.writeFileSync(lock, 'stale lock');
 
-  const res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  const { warns, restore } = captureCoreWarns();
+  let res;
+  try {
+    res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  } finally {
+    restore();
+  }
+  assertDegradeWarn(warns, /git add -A failed/, dir);
+  assert.match(warns[0].data.detail, /index\.lock/, '底层 git 失败原因（index.lock）必须随 warn 留痕');
   assert.equal(res.patchIncomplete, true, 'add 失败必须留痕（不致命，pi 同款语义）');
   assert.ok(res.patchFile, 'add 失败不致命：patch 仍须产出');
   const text = fs.readFileSync(res.patchFile, 'utf8');
@@ -436,7 +488,15 @@ test('⛔A 降级③：锚点缺失且无改动 → patchFile:null 与 patchInco
 
   fs.rmSync(path.join(await gitDirOf(dir), BASE_MARKER));
 
-  const res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  const { warns, restore } = captureCoreWarns();
+  let res;
+  try {
+    res = await worktree.collectPatch({ worktreeDir: dir, subagentId: id });
+  } finally {
+    restore();
+  }
+  // 无改动也不例外：降级 warn 照发——written:false 不可独立解读为无降级的观测面
+  assertDegradeWarn(warns, /anchor file missing or unreadable/, dir);
   assert.deepEqual(res, { patchFile: null, patchIncomplete: true },
     '降级 + 无改动时 written:false 与 patchIncomplete 必须同时留痕');
   assert.ok(!fs.existsSync(path.join(outputsDir(), `${id}.patch`)), '未落盘不得留下 patch 文件');
