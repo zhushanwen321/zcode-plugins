@@ -28,7 +28,21 @@ const TRANSITIONS = {
 };
 
 class RecordStore {
-  constructor() {
+  /**
+   * @param {object} [options]
+   * @param {string} [options.filePath] 台账事件流文件显式注入（设计 E4 路径
+   *   参数化：测试隔离 / record 归属另立项 zsw-manager-convergence 消费）。
+   *   缺省回落 config.recordsPath()（ZSW_ROOT env → ~/.zcode/zsw/records.jsonl），
+   *   解析逻辑与参数化前完全一致。
+   */
+  constructor(options = {}) {
+    /**
+     * 事件流文件路径（构造期解析一次。参数化前是 write/rebuild 调用时点解析，
+     * 二者仅在「构造后运行中改 ZSW_ROOT」才分叉——全部既有调用点 env 均在
+     * 构造前定死且生命周期内不变，实际行为等值）。
+     * @type {string}
+     */
+    this.filePath = options.filePath || recordsPath();
     /** @type {Map<string, object>} subagentId -> record（内存索引） */
     this.records = new Map();
   }
@@ -114,7 +128,7 @@ class RecordStore {
     let skipped = 0;
     let content = '';
     try {
-      content = fs.readFileSync(recordsPath(), 'utf8');
+      content = fs.readFileSync(this.filePath, 'utf8');
     } catch {
       return { applied: 0, skipped: 0, records: 0 }; // 无日志 = 首启空库
     }
@@ -185,9 +199,9 @@ class RecordStore {
     }
   }
 
-  /** 事件追加落盘。先建目录再 append：首启时 zsub 根还不存在。 */
+  /** 事件追加落盘。先建目录再 append：首启时 zsub 根（或注入路径父目录）还不存在。 */
   writeEvent(event) {
-    const file = recordsPath();
+    const file = this.filePath;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.appendFileSync(file, `${JSON.stringify(event)}\n`);
   }

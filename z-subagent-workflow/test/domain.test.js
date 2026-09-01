@@ -270,6 +270,34 @@ test('record-store: 无日志文件时 rebuild 返回空库', (t) => {
   assert.equal(store.list().length, 0);
 });
 
+test('record-store: 构造路径参数化——显式 filePath 注入落指定文件（E4/V0a）', (t) => {
+  const root = setupRoot(t); // ZSW_ROOT 指临时目录：即便误回缺省路径也不会触碰真实 HOME
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-record-explicit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'nested', 'ledger.jsonl'); // 父目录不存在，验证建目录时机跟随注入路径
+
+  const store = new RecordStore({ filePath: file });
+  store.create({ subagentId: 'sa-1', slug: 'rev' });
+  store.transition('sa-1', 'created', 'running');
+
+  // 写入落到注入文件（含父目录自动创建），缺省路径零残留
+  assert.equal(fs.existsSync(file), true, '事件流写入注入 filePath');
+  assert.equal(fs.existsSync(require('../lib/config').recordsPath()), false, '缺省 recordsPath 不被触碰');
+
+  // 事件形态与缺省路径一致：{ts, type, ...} jsonl，每行一事件
+  const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[0]).type, 'created');
+  assert.equal(JSON.parse(lines[1]).type, 'transition');
+  assert.ok(JSON.parse(lines[0]).ts && JSON.parse(lines[0]).subagentId === 'sa-1');
+
+  // 读路径同样走注入文件：新实例从注入 ledger 重建（running 非终态 → lost）
+  const store2 = new RecordStore({ filePath: file });
+  const stat = store2.rebuildFromLog();
+  assert.deepEqual(stat, { applied: 2, skipped: 0, records: 1 });
+  assert.equal(store2.get('sa-1').status, 'lost');
+});
+
 // ---------------------------------------------------------------------------
 // output-store
 // ---------------------------------------------------------------------------
