@@ -13,7 +13,8 @@
  * - 文件级 symlink 可发现（core async 扫描 follow）；broken link 跳过
  * - 引用契约（W6b，D-4a 收紧 + D-4 缺省统一）：resolve 仅路径形态
  *   （~/ 展开）；名字/相对路径/非 .md 拒（normalizeAgentRef = core
- *   normalizeRef 口径复刻）；resolveDefault = general-purpose（vendored
+ *   normalizeRef 单源薄委托）；`..` 段引用拒绝且报错带恢复指引（V1a C2
+ *   行为变更：复刻版无 .. 闸）；resolveDefault = general-purpose（vendored
  *   兜底 + project 级遮蔽胜）
  * - parseAgentMd 解析语义（自旧 resolver 原样迁移的回归锁定）
  *
@@ -233,9 +234,11 @@ test('resolve（D-4a 收紧）：绝对路径成；名字/相对路径/非 .md �
   assert.equal(await discovery.resolveAgent('./.agents/agents/custom-agent.md', ws, { homeDir: home }), null);
   assert.equal(await discovery.resolveAgent('/abs/custom-agent.txt', ws, { homeDir: home }), null);
   assert.equal(await discovery.resolveAgent(path.join(ws, 'nope.md'), ws, { homeDir: home }), null);
+  // `..` 段引用拒（V1a C2 行为变更：即使路径写法上能命中真实文件也不解析）
+  assert.equal(await discovery.resolveAgent('/abs/../evil.md', ws, { homeDir: home }), null, '.. 段引用拒');
 });
 
-test('normalizeAgentRef：core normalizeRef 口径复刻（trim/~/展开/绝对路径/.md 后缀）', () => {
+test('normalizeAgentRef：core normalizeRef 单源（trim/~/展开/绝对路径/.md 后缀/.. 拒绝）', () => {
   const N = discovery.normalizeAgentRef;
   assert.equal(N('/a/b/c.md'), '/a/b/c.md');
   assert.equal(N('  /a/b/c.md  '), '/a/b/c.md', '首尾空白 trim');
@@ -250,6 +253,32 @@ test('normalizeAgentRef：core normalizeRef 口径复刻（trim/~/展开/绝对�
   assert.equal(N(''), null, '空串');
   assert.equal(N(null), null, '非字符串');
   assert.equal(N(undefined), null, 'undefined');
+  // `..` 段拒绝（V1a C2 行为变更：复刻版对绝对路径放行，core normalizeRef 内建拒绝）
+  assert.equal(N('/x/../evil.md'), null, '绝对路径含 .. 段');
+  assert.equal(N('/a/b/../../etc/passwd.md'), null, '连续 .. 段');
+  assert.equal(N('/ok/../x.md'), null, '.. 居中段');
+  assert.equal(N('/x/../evil.md', { homeDir: '/H' }), null, 'homeDir 注入路径同样拒');
+  assert.equal(N('~/.zcode/../evil.md', { homeDir: '/H' }), null, '~/ 注入展开产物含 .. 段同样拒');
+  // 不误伤：段内含点点但非独立 .. 段的合法路径（旧复刻口径等值保留）
+  assert.equal(N('/abs/x..md'), '/abs/x..md', '段内点点非独立 .. 段');
+  assert.equal(N('/a...b/c.md'), '/a...b/c.md', '三点段名');
+});
+
+test('.. 引用拒绝消息：core 工厂分支 + zsw 恢复指引（可从哪里查可用 agent）', () => {
+  const msg = discovery.invalidAgentRefMessage('/x/../evil.md');
+  assert.ok(msg.includes('without ".." path segments'), `含 .. 拒绝语义主句: ${msg}`);
+  assert.ok(msg.startsWith('Invalid agent ref: /x/../evil.md.'), `主句携带原始引用: ${msg}`);
+  assert.ok(msg.includes('use <location> from <available_subagents>'), `含注入段出口: ${msg}`);
+  assert.ok(msg.includes(`node "${process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js')}" agents`),
+    `含清单查询出口（完整可执行 CLI 形态）: ${msg}`);
+  // 普通非法引用走非 .. 分支：主句与旧宿主复刻逐字同源（非声明行为等值）
+  const plain = discovery.invalidAgentRefMessage('reviewer');
+  assert.equal(
+    plain,
+    `Invalid agent ref: reviewer. Agent refs must be absolute paths to .md files`
+      + ` (use <location> from <available_subagents>, or run node "${process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js')}" agents to list paths).`,
+    '非 .. 分支整句 = 旧复刻文案（core 工厂 + howToList 注入后逐字一致）',
+  );
 });
 
 test('resolveDefault：缺省 = general-purpose（vendored 兜底 + project 级遮蔽胜）', async (t) => {

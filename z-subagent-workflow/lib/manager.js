@@ -43,19 +43,13 @@ const config = require('./config');
 const { buildPrompt, toolList } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
 const { extractJsonObject } = require('./jsonout');
+const coreRef = require('./core-ref');
 const {
   normalizeAgentRef, invalidAgentRefMessage, agentFileNotFoundMessage,
 } = require('./agent-discovery');
 
 /** 通知文案里 response 的截断长度：mailbox 消息进上下文，500 字符够判断去向。 */
 const SUMMARY_HEAD_CHARS = 500;
-
-/**
- * maxTurns → timeoutMs 换算系数（MUST_FIX-3）：对齐 pi watchdog 语义
- * （每 turn 预算 5 分钟）。zcode 无头 CLI 无 turn 计数通道（--max-turns 拒收），
- * 只能以总时长近似「轮数上限」——maxTurns × 5min 作为该任务的超时预算。
- */
-const MS_PER_TURN = 300_000;
 
 /**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
@@ -121,6 +115,7 @@ class SubagentManager {
    * @param {object} ctx    {targetSessionId?, cwd} 由入口层传入（MCP：_meta + env）
    */
   async start(params = {}, ctx = {}) {
+    const core = coreRef.requireCore();
     const { task, slug } = params;
     if (typeof task !== 'string' || task.trim() === '') {
       throw new Error(
@@ -131,6 +126,14 @@ class SubagentManager {
     if (typeof slug !== 'string' || slug.trim() === '') {
       throw new Error('start 需要 slug（任务短名，用于通知文案与 worktree 分支命名）。');
     }
+    // slug 长度闸（V1a C11，行为变更：超长从放行改拒绝）：slug 进 mailbox
+    // 通知文案与 worktree 分支命名（zsub/<slug>），超长撞分支名约束且通知
+    // 不可读——上限单源 core SLUG_MAX_LENGTH，与 core 引擎侧同闸同值
+    if (slug.length > core.SLUG_MAX_LENGTH) {
+      throw new Error(
+        `task-slug 超过 ${core.SLUG_MAX_LENGTH} 字符上限（SLUG_MAX_LENGTH）——请缩短后重试`
+      );
+    }
     if (typeof ctx.cwd !== 'string' || ctx.cwd.trim() === '') {
       throw new Error(
         'start 需要 ctx.cwd（任务运行目录）。'
@@ -139,11 +142,11 @@ class SubagentManager {
     }
 
     // ② agent 解析（D-4a 收紧 + D-4 缺省统一，W6b）：
-    //    - 引用唯一形态 = .md 绝对路径（~/ 展开同 core normalizeRef 口径）。
-    //      名字/相对路径/非 .md → invalidAgentRefMessage（与 core agent-registry
-    //      的 Invalid agent ref 文案同源——报错同源基准）；路径合法但不可读 →
-    //      agentFileNotFoundMessage（core 同款）。找不到立刻报错比带着空角色
-    //      跑完再发现用错 agent 便宜。
+    //    - 引用唯一形态 = .md 绝对路径（~/ 展开与 .. 段拒绝同 core normalizeRef
+    //      单源，V1a C2：含 .. 的绝对路径从放行改拒绝）。名字/相对路径/非 .md →
+    //      invalidAgentRefMessage（core 工厂单源，报错同源基准）；路径合法但
+    //      不可读 → agentFileNotFoundMessage（core 同款）。找不到立刻报错比
+    //      带着空角色跑完再发现用错 agent 便宜。
     //    - 缺省不再无角色裸跑：resolveDefault 解析 general-purpose 内置角色
     //      （遮蔽序胜者，project 级可覆写）；解析面异常退化 null = 诚实裸跑
     //      （record.agent 如实 null）。不想要角色的用户显式传自定义 .md 路径。
@@ -200,12 +203,14 @@ class SubagentManager {
     }
     const conversation = params.conversation === true;
     // timeoutMs 决策链（MUST_FIX-3）：显式 params.timeoutMs > profile.maxTurns
-    // 换算（×5min，对齐 pi watchdog，见 MS_PER_TURN 注释）> 全局默认。
+    // 经 core maxTurnsToWatchdogMs 换算（×5min/turn + floor=30min 下限，
+    // V1a C4/S2① 漂移修复——行为变更：旧 MS_PER_TURN 纯线性自算在 maxTurns
+    // 小时 watchdog 短于 30 分钟，floor 恢复后不再低于）> 全局默认。
     // 显式值优先于 agent 约定——调用方带 timeoutMs 即表示覆盖 agent .md。
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
       : (profile && Number.isFinite(profile.maxTurns) && profile.maxTurns > 0
-        ? profile.maxTurns * MS_PER_TURN
+        ? core.maxTurnsToWatchdogMs(profile.maxTurns)
         : config.DEFAULTS.timeoutMs);
     const createInit = {
       subagentId,

@@ -46,10 +46,12 @@
  *   的跨根遮蔽不再发生，两文件按各自 stem 独立成条）。
  *
  * 引用契约（W6b：D-4a 收紧，与 pi 侧对齐）：agent 引用唯一形态 = .md 绝对
- * 路径（支持 ~/ 展开——core normalizeRef 口径，见 normalizeAgentRef）；名字
- * 形态的「四根查找」已删除，传名由消费方经 invalidAgentRefMessage 拒绝（文案
- * 与 core agent-registry 同源）。agent 参数缺省 = general-purpose 内置角色
- * （D-4 缺省段，resolveDefaultAgent——遮蔽序胜者，project 级可覆写）。
+ * 路径（支持 ~/ 展开）；名字形态的「四根查找」已删除，传名由消费方经
+ * invalidAgentRefMessage 拒绝。归一化与报错文案均消费 vendored core（V1a
+ * C1/C2 收口：normalizeRef 内建 `..` 段拒绝——安全收紧，绝对路径含 `..` 从
+ * 放行改拒绝；文案经 core invalidAgentRefMessage 工厂注入 zsw 恢复指引）。
+ * agent 参数缺省 = general-purpose 内置角色（D-4 缺省段，resolveDefaultAgent
+ * ——遮蔽序胜者，project 级可覆写）。
  */
 
 const fs = require('node:fs');
@@ -191,30 +193,39 @@ async function listAgents(cwd, opts = {}) {
 }
 
 /**
- * agent 引用归一化（D-4a：仅绝对路径）——core normalizeRef 口径复刻
- * （vendored barrel 未导出 agent-ref 面，文案与语义在此单点对齐 core
- * `src/shared/agent-ref.ts`）：trim → `~/` 前缀展开（homeDir）→ 绝对路径
- * 校验 → `.md` 后缀校验。相对路径 / 名字 / 非 .md 一律 null。
+ * agent 引用归一化（D-4a：仅绝对路径）——core normalizeRef 单源薄委托（V1a
+ * C1/C2：旧「core 口径复刻」退役；领地外 agent-runner-adapter 仍按本签名
+ * 消费，包装登记待 V3w 随该面收口退役）。语义：trim → `~/` 前缀展开 →
+ * 绝对路径校验 → `.md` 后缀校验 + `..` 段拒绝（C2 安全收紧，行为变更：复刻
+ * 版无此闸，绝对路径含 `..` 曾放行）。相对路径 / 名字 / `..` / 非 .md 一律 null。
  * @param {string} ref 原始引用（注入段 location / 工具参数值）
- * @param {object} [opts] { homeDir? }（`~/` 展开基准，缺省 os.homedir()——
- *        与 core homedir() 同为进程 HOME 读取；测试经注入隔离）
+ * @param {object} [opts] { homeDir? }（`~/` 展开基准，缺省进程 HOME——core
+ *        展开固定读 os.homedir()；homeDir 显式注入（测试隔离面）时在此预展开，
+ *        展开产物交 core 只做 `..` 段/绝对路径/后缀校验）
  */
 function normalizeAgentRef(ref, opts = {}) {
+  // core 对非 string 抛 TypeError（ref.trim）；插件契约非 string → null，
+  // 消费方落 invalidAgentRefMessage 可操作报错（既有行为等值）
   if (typeof ref !== 'string') return null;
-  const trimmed = ref.trim();
-  if (!trimmed) return null;
-  const expanded = trimmed.startsWith('~/')
-    ? path.join(opts.homeDir || os.homedir(), trimmed.slice('~/'.length))
-    : trimmed;
-  if (!path.isAbsolute(expanded)) return null; // 相对路径无基准（注入段给绝对路径）
-  if (!expanded.endsWith('.md')) return null;
-  return expanded;
+  const core = coreRef.requireCore();
+  let candidate = ref;
+  if (opts.homeDir !== undefined) {
+    const trimmed = candidate.trim();
+    if (trimmed.startsWith('~/')) {
+      // 字符串级拼接而非 path.join：join 会规范化消解 `..` 段，令注入路径
+      // 逃过 core 的 `..` 闸（core 对进程 HOME 的 `~/../x` 同样拒——检查在
+      // 展开前，两侧必须同拒）
+      const base = opts.homeDir.endsWith(path.sep) ? opts.homeDir : opts.homeDir + path.sep;
+      candidate = base + trimmed.slice('~/'.length);
+    }
+  }
+  return core.normalizeRef(candidate, core.AGENT_REF_EXT);
 }
 
 /**
  * 按路径解析单个 agent（D-4a 收紧后唯一解析形态）。
- * 非法引用（名字/相对路径/非 .md）与文件不可读统一返回 null——两类失败的
- * 报错文案由消费方（manager.start / agent-runner-adapter）经
+ * 非法引用（名字/相对路径/`..` 段/非 .md）与文件不可读统一返回 null——两类
+ * 失败的报错文案由消费方（manager.start / agent-runner-adapter）经
  * invalidAgentRefMessage / agentFileNotFoundMessage 区分给出（core 同源）。
  */
 async function resolveAgent(ref, cwd, opts = {}) {
@@ -240,15 +251,22 @@ async function resolveDefaultAgent(cwd, opts = {}) {
 }
 
 /**
- * 非法 agent 引用报错（与 core agent-registry `loadByPath(ref, true)` 的
- * Invalid agent ref 文案同源——主句逐字一致，括号内恢复指引按 zsw 双出口
- * 适配：注入段 location（W7 起注入块为 <available_subagents> 三段 XML 形态，
- * 条目带 <location>）或 zsw agents 查路径清单；查询命令给完整可执行形态
- * （F12：marketplace/inline 形态下裸 `zsw` 不在 PATH，路径单源 config.zswCliPath）。
+ * 非法 agent 引用报错——core invalidAgentRefMessage 工厂单源（V1a C1：旧
+ * 「主句逐字复刻」退役改委托；`..` 段引用由工厂内建 without ".." path
+ * segments 拒绝分支承接，C2 行为变更的报错面）。howToList 注入 zsw 双出口
+ * 恢复指引（与 SessionStart 注入段出口同源：注入段 <available_subagents>
+ * 条目的 <location>，或 zsw agents 查路径清单；查询命令给完整可执行形态
+ * ——F12：marketplace/inline 形态下裸 `zsw` 不在 PATH，路径单源
+ * config.zswCliPath）。howToList 取值使非 `..` 分支整句与旧复刻文案逐字一致。
  */
 function invalidAgentRefMessage(ref) {
-  return `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`
-    + ` (use <location> from <available_subagents>, or run node "${zswCliPath()}" agents to list paths).`;
+  const core = coreRef.requireCore();
+  // String() 防御：core 工厂对非 string 抛 TypeError（hasParentSegment 调
+  // ref.split），旧宿主模板串任意类型安全——保持等值（非 string 参数同样
+  // 落可操作报错而非 TypeError）
+  return core.invalidAgentRefMessage(String(ref), {
+    howToList: `<available_subagents>, or run node "${zswCliPath()}" agents to list paths`,
+  });
 }
 
 /**

@@ -541,6 +541,28 @@ test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中�
     (e) => e.message.startsWith('Agent file not found or unreadable: /fake/missing.md.')
       && e.message.includes(`node "${ZSW_CLI}" agents`),
   );
+  // `..` 段引用拒（V1a C2 行为变更：复刻版放行，core normalizeRef 拒）——
+  // 消息走 core 工厂 without ".." 分支且带 zsw 恢复指引
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/x/../evil.md' }, c),
+    (e) => e.message.includes('without ".." path segments')
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
+  );
+});
+
+test('slug 长度闸（V1a C11）：超过 SLUG_MAX_LENGTH=35 拒绝且消息含上限与恢复指引；35 字符边界放行', async () => {
+  const { manager, runner, records } = buildManager();
+  const c = ctx();
+  // 消息含上限值（35 字符上限）+ 常量标识 + 恢复指引（缩短后重试）
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x'.repeat(36) }, c),
+    /task-slug 超过 35 字符上限（SLUG_MAX_LENGTH）——请缩短后重试/,
+  );
+  // 边界等值：35 字符（上限内）不被长度闸拒——正常起任务
+  const h = await manager.start({ task: '任务书', slug: 'b'.repeat(35) }, c);
+  assert.match(h.subagentId, /^sa-/);
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-slug-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'closed');
 });
 
 test('start agent 缺省：resolveDefault 加载 general-purpose 角色（record.agent 同名 + prompt 含角色正文）', async () => {
@@ -656,7 +678,7 @@ test('close：运行中任务先取消再终态化；worktree 清理被调用', 
 
 // -------------------------------------------- MUST_FIX-3 / SUGGESTION-4
 
-test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > 全局默认（MUST_FIX-3）', async () => {
+test('timeoutMs 决策链：显式 params.timeoutMs > core maxTurnsToWatchdogMs（floor=30min）> 全局默认（MUST_FIX-3 + V1a C4）', async () => {
   const capped = {
     name: 'capped', description: '限轮任务', filePath: '/fake/capped.md', body: '正文',
     maxTurns: 4, disallowedTools: ['web-search', 'mcp__demo__x'],
@@ -674,15 +696,38 @@ test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > �
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-1' });
     await settle(records, h.subagentId);
   }
-  // ② 无显式 → maxTurns × 300_000（对齐 pi watchdog：每 turn 预算 5 分钟）
+  // ② 无显式 → core maxTurnsToWatchdogMs（×5min/turn + floor=30min——V1a C4
+  // 行为变更：旧 MS_PER_TURN 纯线性 4×5min=20min，floor 恢复后抬到 30min）
   {
     const { manager, runner, records } = buildManager({ resolver: cappedResolver });
     const h = await manager.start({ task: '任务书', slug: 'turns', agent: '/fake/capped.md' }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
-    assert.equal(runner.startCalls[0].timeoutMs, 4 * 300_000);
-    assert.equal(records.get(h.subagentId).timeoutMs, 4 * 300_000); // record 持久化同值
+    assert.equal(runner.startCalls[0].timeoutMs, 1_800_000); // max(30min, 4×5min) = floor 生效
+    assert.equal(records.get(h.subagentId).timeoutMs, 1_800_000); // record 持久化同值
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-2' });
     await settle(records, h.subagentId);
+  }
+  // ②b S2① 函数级口径落 manager 挂载面：maxTurns=2（旧口径 2×5min=10min）
+  // 挂载时长 ≥ 30min floor；大 maxTurns 保持线性（floor 不压低大预算）
+  {
+    const profileOf = (maxTurns) => ({ ...capped, maxTurns, filePath: `/fake/turns-${maxTurns}.md` });
+    const resolver = {
+      resolve: (n) => (n === '/fake/turns-2.md' ? profileOf(2) : n === '/fake/turns-8.md' ? profileOf(8) : null),
+      resolveDefault: () => null,
+    };
+    const { manager, runner, records } = buildManager({ resolver });
+    const hMin = await manager.start({ task: '任务书', slug: 'floor-min', agent: '/fake/turns-2.md' }, ctx());
+    await waitFor(() => runner.startCalls.length === 1);
+    assert.ok(runner.startCalls[0].timeoutMs >= 1_800_000,
+      `maxTurns=2 挂载时长不低于 30min floor（实际 ${runner.startCalls[0].timeoutMs}）`);
+    assert.equal(runner.startCalls[0].timeoutMs, 1_800_000); // 2×5min=10min < floor → 抬到 30min
+    assert.equal(records.get(hMin.subagentId).timeoutMs, 1_800_000);
+    const hBig = await manager.start({ task: '任务书', slug: 'floor-linear', agent: '/fake/turns-8.md' }, ctx());
+    await waitFor(() => runner.startCalls.length === 2);
+    assert.equal(runner.startCalls[1].timeoutMs, 8 * 300_000, 'maxTurns=8 → 40min > floor，线性段保持');
+    runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-2b' });
+    await settle(records, hMin.subagentId);
+    await settle(records, hBig.subagentId);
   }
   // ③ 无 profile → 全局默认（config.DEFAULTS.timeoutMs）
   {
