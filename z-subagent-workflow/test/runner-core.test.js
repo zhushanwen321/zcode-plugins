@@ -348,6 +348,8 @@ test('resume：显式报可操作错误（core EnginePort 面无 resume 入口�
 
 test('alive：pid 信号 0 探测（活进程 true / 死 pid false / 非法句柄 false）', () => {
   const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
+  // V5e 收口：spawn 分支改调 core isProcessAlive（kill 0 成功→true / EPERM→true /
+  // 其余→false，与退役自研逐分支等值）——本用例活/死 pid 两态即改调等值回归锚
   assert.equal(runner.alive({ kind: 'spawn', pid: process.pid }), true);
   // PID 上限内大概率不存在（macOS pid_max 默认 99999；取 99998 避开自身）
   assert.equal(runner.alive({ kind: 'spawn', pid: 99998 }), false);

@@ -449,6 +449,9 @@ test('看门狗接管成为 daemon 时触发 onTakeover；首竞选不触发', a
 });
 
 // ------------------------------------------------- R1：接管前持有者探活重验
+// V5e 收口：probeLockHolder 的 pid 探测改调 core isProcessAlive（kill 0 成功→
+// 'alive' / EPERM→'alive' / 其余→'dead'，与退役自研逐分支等值）；本组用例的
+// 活 holder（sleep 子进程）/ 死 holder（SIGKILL）两分支即改调等值回归锚
 
 test('R1：看门狗触发时锁持有者 pid 存活 → 不 sweep 残留（防多 standby 竞态双 daemon）', async (t) => {
   const { sockPath, lockPath } = tmpSock(t);

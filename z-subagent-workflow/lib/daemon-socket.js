@@ -50,6 +50,10 @@
 const fs = require('node:fs');
 const net = require('node:net');
 
+// 探活原语单一源（V5e 收口）：core-ref 模块本身轻量（fs/path），barrel 在
+// requireCore() 调用时才加载——probeLockHolder 是看门狗触发路径的低频探测
+const coreRef = require('./core-ref');
+
 const WATCHDOG_BACKOFF_MS = 200;
 const WATCHDOG_RETRIES = 3;
 const SOCKET_MODE = 0o600; // D2 安全边界：仅本用户可 connect
@@ -183,7 +187,8 @@ function startDaemon(opts) {
     }
   }
 
-  /** 接管前探活锁持有者（R1）：读 lock 内 pid 做 kill(pid,0)。
+  /** 接管前探活锁持有者（R1）：读 lock 内 pid 做信号 0 探测（原语消费 core
+   *  isProcessAlive，V5e 收口；EPERM = 进程存在但属他人，core 按存在算）。
    *  返回 'alive'（持有者进程在世，新 daemon 已上位）/ 'dead'（pid 已死，残留可清）
    *  / 'gone'（lock 已不存在，他人已 sweep+重竞选）/ 'unreadable'（按残留处理）。 */
   function probeLockHolder() {
@@ -194,13 +199,7 @@ function startDaemon(opts) {
       return e.code === 'ENOENT' ? 'gone' : 'unreadable';
     }
     if (!/^\d+$/.test(pidStr)) return 'unreadable';
-    try {
-      process.kill(Number(pidStr), 0);
-      return 'alive';
-    } catch (e) {
-      // EPERM = 进程存在但属他人（同机跨用户），按存活处理，宁可不接管
-      return e.code === 'EPERM' ? 'alive' : 'dead';
-    }
+    return coreRef.requireCore().isProcessAlive(Number(pidStr)) ? 'alive' : 'dead';
   }
 
   /** 原子拿锁：成功（已写入 pid）返回 true；他人持有返回 false；其余错误抛出。 */
@@ -299,7 +298,7 @@ function startDaemon(opts) {
         : `daemon socket ${WATCHDOG_RETRIES} 次退避后仍不可达，判定持有者死亡或未完成启动`;
       // 接管前重验当前持有者（R1）：多 standby 同时被同一 daemon 死亡唤醒时，
       // 后到者的无凭据 sweep 会删掉先到者刚上位的新 lock+sock，O_EXCL 裁决被
-      // 击穿成双 daemon。死锁 pid 探活通过（kill(pid,0)）= 新持有者已就位，
+      // 击穿成双 daemon。死锁 pid 探活通过（core isProcessAlive）= 新持有者已就位，
       // 绝不 sweep，直接回 elect（O_EXCL 必 EEXIST → 重新 standby）。
       const holder = probeLockHolder();
       if (holder !== 'alive' && holder !== 'gone') {

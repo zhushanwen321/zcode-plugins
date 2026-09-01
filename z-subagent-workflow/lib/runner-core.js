@@ -392,7 +392,8 @@ class CoreRunner {
   /**
    * 探活：按 exec 形态分支（崩溃恢复依据，唯一消费面 manager.recover——
    * 只对非终态 record 调用）。
-   * - spawn：pid 信号 0 探测（ESRCH → 不存在；EPERM → 存在但属主不同，按存在算）；
+   * - spawn：pid 信号 0 探测，原语消费 core isProcessAlive（V5e 收口，语义
+   *   等值：信号 0 成功 → 存在；EPERM → 存在但属主不同，按存在算；其余 → 不存在）；
    * - appserver：保守视为存活。core 未暴露任务级探活面——常驻进程 pidfile/
    *   activeSessions/连接状态全是引擎内部实现（barrel 未导出探活原语，深路径
    *   require 禁止），且「常驻进程活着」也不等于「本任务 turn 仍在推进」；
@@ -403,12 +404,7 @@ class CoreRunner {
     if (!exec) return false;
     if (exec.kind === 'appserver') return true;
     if (exec.kind !== 'spawn' || !Number.isInteger(exec.pid)) return false;
-    try {
-      process.kill(exec.pid, 0);
-      return true;
-    } catch (err) {
-      return err.code === 'EPERM';
-    }
+    return coreRef.requireCore().isProcessAlive(exec.pid);
   }
 
   /**

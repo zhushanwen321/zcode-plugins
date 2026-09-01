@@ -21,18 +21,27 @@
 const fs = require('node:fs');
 const config = require('./config');
 
-/** 默认 provider（短名解析与默认清单视图的锚点）。 */
-const PROVIDER_ID = 'builtin:bigmodel-coding-plan';
-const FALLBACK_DEFAULT_MODEL = `${PROVIDER_ID}/GLM-5.3`;
+// vendored core 单一解析点（V5e 收口）：模型切分原语 splitZcodeModelRef、凭据
+// 谓词 hasApiKey、缺省常量 DEFAULT_PROVIDER_ID / ZCODE_FALLBACK_DEFAULT_MODEL
+// 全部消费 core 单一源，退役本模块自算副本。顶层 requireCore 一次（barrel 约
+// 27ms，进程级一次；PROVIDER_ID 是导出值、hook-inject / dist/mcp/server.js 顶层
+// 解构消费，无法惰性求值——hook 链路 +27ms/进程为已备案的取舍）
+const core = require('./core-ref').requireCore();
+
+/** 默认 provider（短名解析与默认清单视图的锚点）：core 常量单一源（值与
+ *  退役字面量 'builtin:bigmodel-coding-plan' 逐字一致）。 */
+const PROVIDER_ID = core.DEFAULT_PROVIDER_ID;
+const FALLBACK_DEFAULT_MODEL = core.ZCODE_FALLBACK_DEFAULT_MODEL;
 
 /**
- * provider 条目凭据判定（原 lib/driver.js 权威谓词随 driver 删除内联至此——
- * 语义源自「清单视图只列真正跑得起来的 provider」，单一实现防各处复刻漂移；
- * 引擎 preparer 的凭据判定是 core 自有实现（更严格：非空 string），两处语义
- * 分立：本谓词只服务清单/展示面）。
+ * provider 条目凭据判定：core hasApiKey 单一源（V5e 收口，原 Boolean 宽松版
+ * 退役）——语义统一为「options.apiKey 是非空 string」。行为差异仅在畸形形态
+ * （非 string truthy 如数字/对象：旧版误判有凭据，现按 core 裁决 false）。
+ * null 条目容忍为无凭据（core 版对 null 直接 throw；v2 config 是外部文件，
+ * 防御面保留）。
  */
 function hasProviderCredentials(entry) {
-  return Boolean(entry && entry.options && entry.options.apiKey);
+  return Boolean(entry) && core.hasApiKey(entry);
 }
 
 /** 每次调用都重读源文件：apiKey/模型清单会随桌面端操作变化，不能缓存。 */
@@ -71,15 +80,19 @@ function qualifiedProviders(v2) {
 }
 
 /**
- * 引用切分（唯一实现）：含 "/" 按 lastIndexOf 切出 provider（provider id 本身
+ * 引用切分（唯一实现）：含 "/" 按最后一段 "/" 切出 provider（provider id 本身
  * 可含 ":"，如 builtin:*），否则短名归默认 provider。
+ * 含 "/" 分支委托 core splitZcodeModelRef 纯切分原语（V5e 收口；lastIndexOf
+ * 切分与退役自算逐字等值）。短名归默认 provider 是本包装层决策、不进 core——
+ * core 原语对无 "/" 输入按 lastIndexOf=-1 切出畸形 provider 段（如 'GLM-5.'），
+ * 纯切分不承担缺省归位。
  * @returns {{provider: string, short: string}}
  */
 function splitModelRef(ref) {
   const s = String(ref);
-  return s.includes('/')
-    ? { provider: s.slice(0, s.lastIndexOf('/')), short: s.slice(s.lastIndexOf('/') + 1) }
-    : { provider: PROVIDER_ID, short: s };
+  if (!s.includes('/')) return { provider: PROVIDER_ID, short: s };
+  const { providerId, modelId } = core.splitZcodeModelRef(s);
+  return { provider: providerId, short: modelId };
 }
 
 /** 引用能否被 v2 清单解析：全名查对应 provider、短名查默认 provider，模型须在清单内。 */
@@ -260,3 +273,6 @@ module.exports.toModelEntries = toModelEntries;
 // 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
 // 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻
 module.exports.qualifiedProviders = qualifiedProviders;
+// 引用切分（core splitZcodeModelRef 薄包装 + 短名缺省归位）：纯函数导出供测试
+// 锚等值与诊断面复用，禁复刻自算防两套口径漂移
+module.exports.splitModelRef = splitModelRef;
