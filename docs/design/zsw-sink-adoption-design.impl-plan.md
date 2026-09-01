@@ -81,7 +81,11 @@ graph TD
 
 ## 5 合理偏差登记表
 
-（空——执行期登记）
+| # | 偏差 | 理由 | 登记 |
+|---|------|------|------|
+| 1 | MS_PER_TURN 退役从 V5e 并入 V1a | 符号实际位于 `lib/manager.js`（V1a 领地），按文件现实重划避免两单元同文件冲突；V5e 保留 runner-core 自身的 watchdog 决策（如有） | 2026-09-01 Wave 1 派发时 |
+| 2 | orchestration-host 内 agent-ref 复刻（:107-112 一带）归 V3w 顺带退役 | 与 C3 鸭子实体同文件，V1a 领地只含 agent-discovery.js/manager.js；V1a 若发现领地外调用方保留薄包装并登记，V3w 消化 | 同上 |
+| 3 | V3w 领地显式排除 `lib/daemon-socket.js`（V5e 独占） | daemon/MCP workflow ref 口径点若落在该文件，V3w 停下上报、主 agent 在 V5e 后串行安排 | 同上 |
 
 ## 6 状态表
 
@@ -91,7 +95,7 @@ graph TD
 | V0b | committed | 1 | d86f7b2（toModelEntries 单实现；三公开面改造前后逐字节 diff 空；已知边缘差异登记：非字符串 label 统一为 trimToNull 口径） |
 | V0c | committed | 1 | 4aabf8c（`docs/design/zsw-manager-convergence.md` 立案锚点） |
 | V0d | committed | 1 | e45f998（t-sink.md + make-legacy-state-files.js；主 agent 复跑验收：25 文件 = 10 无 v + 15 wf-run-v2，现状 reader loadAll 25/25 = done 19 + running 6；产物头登记快照真实结构与两处事实纠偏） |
-| V8g | blocked（G-core） | - | - |
+| V8g | committed | 1 | e6a057a（守卫先行拦到陈旧 bundle 后刷新；29 符号守卫 11/11；负面验证过；manifest source=local + sha256 19 文件 0 错配；随刷更新一条过时断言 runner-core pool:0→1，core f163497f5 pre-abort 不变量） |
 | V1a | blocked（G-core） | - | - |
 | V2p | blocked（V1a） | - | - |
 | V3w | blocked（G-core） | - | - |
@@ -116,3 +120,4 @@ graph TD
 - 2026-08-31：V0c（4aabf8c）、V0d（e45f998）committed。V0d 执行事实纠偏两项登记：① core 状态机无独立 error 态，错误终态真实形态 = done + reason:'failed' + state.error 非空；② HEAD reader 不检查 v 字段，带 v 行同目录混排可读，无需独立子目录降级。Wave 0 剩余 V0a/V0b 仍 blocked（G-user：并行清理批次未落库）。
 - 2026-09-01：xyz 交付三路对抗审查完成，用户裁决「都修复」。据此修订本计划与设计 §3.0：① 契约勘误（`writeAtomicFileSync` 实名、`collectWorktreePatch` opts 形态、内置名优先归宿主、hostRoots/hasApiKey/loadWorkflowScriptByPath undefined/reservedKeys 等消费要点入 §3.0）；② V8g 执行序改写（守卫先行 → bundle 重建 → 刷新 → 验证，bundle 为唯一可 vendor 源）；③ V7i 增分层配额不穿透断言。G-user 门解除（清理批 f739ce4/b9ae43f 落库）。审查遗留消费要点（派发时写入各单元任务书）：去重键 stem→frontmatter name 为 V2 已声明行为变更须验收覆盖；AgentEntry 不含执行字段需 parseAgentProfile 二次取；args-meta 第三参 reservedKeys 防平铺误判；`written:false` 不可独立解读为无降级；快照版本常量实名 `SNAPSHOT_VERSION`。
 - 2026-09-01：「都修复」执行完毕——xyz 侧 B1（cf00983eb + 57eaf065b 注释结构修复：MF-4 barrel 导出 ModelConfigService、S-3 hooks 围栏、S-5 可操作 warn、S-1/S-4/S-6 jsdoc 如实化；**S-2 裁决为「分层配额仅 acquire 时点强制」契约登记，不改 pi 锚定行为**）、B2（77a600d3d D9 闭环：reservedKeys=TOOL_TOP_LEVEL 注入）、文档收口（5f3e52cb8 + 655c67228）；dist.bundle 重建后 21/21 契约符号命中。zsw 侧 V0a（10baf33）/V0b（d86f7b2）committed。V4o 补 reservedKeys 契约、V7i 按 S-2 裁决改写。
+- 2026-09-01：V8g committed（e6a057a）——G-core 门兑现，Wave 1 四链（V1a/V3w/V5e/V6w）并行派发；三条合理偏差入登记表（MS_PER_TURN 归 V1a、orchestration-host agent-ref 复刻归 V3w、daemon-socket 归 V5e 独占）。
