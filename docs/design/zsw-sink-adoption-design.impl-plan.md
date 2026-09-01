@@ -100,7 +100,7 @@ graph TD
 | V2p | blocked（V1a） | - | - |
 | V3w | blocked（G-core） | - | - |
 | V4o | blocked（V3w） | - | - |
-| V5e | blocked（G-core） | - | - |
+| V5e | committed | 1 | 5ad5773（alive/probeLockHolder 逐分支等值改调 + splitModelRef 薄包装短名策略留包装层 + 常量对齐 + hasApiKey 裁决；46+69 绿） |
 | V6w | blocked（G-core） | - | - |
 | V7i | blocked（V4o、V0a） | - | - |
 | V8n | blocked（G-npm） | - | - |
