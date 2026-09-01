@@ -91,12 +91,7 @@ function ensureConfigured() {
   coreConfigured = true;
 }
 
-/** 文件名 stem（无目录无扩展名）——meta 提取失败时的 name 回退。 */
-function stem(filePath) {
-  return path.basename(filePath, path.extname(filePath));
-}
-
-/** 展开 ~/ 前缀（getWorkflowByPath 的 normalizeRef 认这个形态）。 */
+/** 展开 ~/ 前缀（lint 入口的路径形态归一；ref 校验/加载面由 core normalizeRef 承担）。 */
 function expandHome(ref) {
   if (typeof ref === 'string' && ref.startsWith('~/')) {
     return path.join(os.homedir(), ref.slice(2));
@@ -105,34 +100,37 @@ function expandHome(ref) {
 }
 
 /**
- * 绝对路径 → 鸭子 WorkflowScript（core 未导出 WorkflowScript 类；port 契约
- * 只需要 name/path/sourceCode/meta/available/validate()/toExecutable()）。
- * meta 经 core.getWorkflowByPath 解析（@pi-meta 块，任意绝对路径可载）；
- * 读取/解析失败退化为 stem 名 + available=false（loader never-throws 同语义）。
+ * 路径 → core WorkflowScript 实体（C3：手工拼鸭子实体已退役——core 已导出
+ * WorkflowScript 类与 loadWorkflowScriptByPath，构造/加载/meta 全走 core）。
+ * meta 解析（@pi-meta 块，任意绝对路径可载）与读取失败退化（stem 名 +
+ * available=false）都是 core loader 语义。
+ *
+ * 返回 undefined = 引用非法（core normalizeRef：非绝对路径 / 非 .js 后缀 /
+ * 含 ".." 段），调用方必须显式处理。兼容性注记：lib/hook-source.js（注入段
+ * 组装）消费本函数的 name/meta/path/available 面，其输入恒为绝对 .js 路径，
+ * 不会触达 undefined 分支。签名 (file, core) 保持——hook-source 按位传参。
  */
 async function loadScriptFromPath(file, core) {
-  let meta;
-  try {
-    meta = await core.getWorkflowByPath(file);
-  } catch { meta = undefined; }
-  let sourceCode = '';
-  try {
-    sourceCode = fs.readFileSync(file, 'utf8');
-  } catch { /* 文件不可读：available=false */ }
-  const available = Boolean(meta && meta.available) && sourceCode !== '';
-  const name = (meta && meta.name) || stem(file);
-  return {
-    name,
-    source: 'saved',
-    path: file,
-    sourceCode,
-    meta: meta || { kind: 'workflow', name, description: '', phases: [], path: file, available: false, source: 'saved' },
-    available,
-    // core.lintScript 吃源码字符串，同步返回 {valid, findings}
-    validate: () => core.lintScript(sourceCode),
-    // @pi-meta 是块注释（合法 JS），可执行源 = 原文（core WorkflowScript.toExecutable 同语义）
-    toExecutable: () => sourceCode,
-  };
+  return core.loadWorkflowScriptByPath(file);
+}
+
+/**
+ * knownNames 构建（C17/D-E3 单一权威）：内置 5 名在前（同名冲突时 core
+ * normalizeWorkflowRef 的 knownNames 遍历先命中内置 = 内置优先序）+ 发现面
+ * saved 名（保序去重）。CLI 入口（bin/zsw.js）与 host registry 的
+ * resolveScriptPath 都经本函数构建——同一目录集三入口产出同一 knownNames 集
+ * （⛔D 一致性断言落点）。saved 裸名放行（D-E3 裁决）由消费方判 known 命中
+ * 体现，本函数只负责集合。
+ */
+async function buildKnownWorkflowNames(core, cwd, registry) {
+  const users = registry
+    ? await registry.listUserScripts(cwd)
+    : await createRegistry(core).listUserScripts(cwd);
+  const names = [...BUILTIN_WORKFLOW_NAMES];
+  for (const u of users) {
+    if (!names.includes(u.name)) names.push(u.name);
+  }
+  return names;
 }
 
 /**
@@ -147,8 +145,14 @@ async function loadScriptFromPath(file, core) {
  *    ~/.agents/workflows > <wsRoot>/.pi/workflows（+tmp）>
  *    <wsRoot>/.agents/workflows；
  * 3. <cwd>/.zsw/workflows 手工根（zsw workspace 级特有根，core 扫描布局无
- *    此槽位；byName 兜底末位，不覆盖前两层已有名；meta 退化走
- *    getWorkflowByPath 的 stem fallback）。
+ *    此槽位；byName 兜底末位，不覆盖前两层已有名）。
+ *
+ * 引用解析口径（C17）：统一走 core normalizeWorkflowRef——路径分支（含
+ * / \ 或 ~ 前缀）零发现面扫描纯同步判定（~/ 展开 + ".." 拒收 + .js 严格
+ * 后缀）；裸名分支按 knownNames（buildKnownWorkflowNames，内置优先 + saved
+ * 名放行）判定后按名单落路径。旧「script: 前缀剥壳放行」退役：入口三面
+ * （CLI/daemon-MCP 壳）已拒收，host 层收紧为 unknown（嵌套 workflow() 调用
+ * 传 script: 同拒）。
  */
 function createRegistry(core) {
   const zswWsRoot = (cwd) => path.join(cwd, '.zsw', 'workflows');
@@ -179,21 +183,29 @@ function createRegistry(core) {
   }
 
   async function resolveScriptPath(ref, cwd) {
-    const expanded = expandHome(ref);
-    // 绝对路径原样（含 vendored 资产路径与用户任意位置脚本）
-    if (typeof expanded === 'string' && path.isAbsolute(expanded)) return expanded;
-    const name = typeof ref === 'string' ? ref.replace(/^script:/, '') : ref;
-    if (BUILTIN_WORKFLOW_NAMES.includes(name)) return coreRef.workflowAssetPath(`${name}.js`);
-    // 用户脚本：core 面优先，再 .zsw 手工根（与 listUserScripts 同优先级序）
+    const raw = typeof ref === 'string' ? ref.trim() : ref;
+    // 路径形态：normalizeWorkflowRef 路径分支（knownNames 不参与，零扫描）
+    if (typeof raw === 'string' && (raw.includes('/') || raw.includes('\\') || raw.startsWith('~'))) {
+      const verdict = core.normalizeWorkflowRef(raw);
+      return verdict.kind === 'path' ? verdict.path : undefined;
+    }
+    // 裸名：knownNames = 内置 5 + 发现面 saved 名（与 CLI 入口同一构建函数，
+    // cwd 口径一致——⛔D）
+    const knownNames = await buildKnownWorkflowNames(core, cwd, api);
+    const verdict = core.normalizeWorkflowRef(String(raw), { knownNames });
+    if (verdict.kind !== 'name') return undefined;
+    // 内置优先：命中内置名落 vendored 资产路径（saved 同名被遮蔽，warning 在 resolveRun）
+    if (BUILTIN_WORKFLOW_NAMES.includes(verdict.name)) return coreRef.workflowAssetPath(`${verdict.name}.js`);
     const users = await listUserScripts(cwd);
-    const hit = users.find((s) => s.name === name);
-    if (hit) return hit.path;
-    return undefined;
+    const hit = users.find((s) => s.name === verdict.name);
+    return hit ? hit.path : undefined;
   }
 
-  return {
+  const api = {
     async get(name, cwd) {
       const p = await resolveScriptPath(name, cwd);
+      // undefined = 引用非法或发现面无此名（normalizeWorkflowRef invalid /
+      // known 未命中），调用方（resolveRun）出可操作报错
       return p ? loadScriptFromPath(p, core) : undefined;
     },
     async getPath(ref, cwd) {
@@ -202,6 +214,7 @@ function createRegistry(core) {
     listUserScripts,
     resolveScriptPath,
   };
+  return api;
 }
 
 /**
@@ -394,6 +407,27 @@ function createOrchestrationHost(opts = {}) {
     return deps;
   }
 
+  /**
+   * 遮蔽 warning（C17/D-E3）：saved 与内置同名时内置优先（registry 内置名
+   * 短路在前，core 名命中即返回），宿主层显式列出双路径（warning 属 zsw 侧，
+   * core 无此面）。仅裸名命中内置时触发；发现面异常不阻断 run。
+   */
+  async function warnShadowedBuiltin(scriptRef, cwd) {
+    const bare = typeof scriptRef === 'string' ? scriptRef.trim() : '';
+    if (!BUILTIN_WORKFLOW_NAMES.includes(bare)) return;
+    if (!registry || typeof registry.listUserScripts !== 'function') return;
+    let builtinPath;
+    try {
+      builtinPath = coreRef.workflowAssetPath(`${bare}.js`);
+    } catch { return; }
+    try {
+      const shadow = (await registry.listUserScripts(cwd)).find((s) => s.name === bare);
+      if (shadow) {
+        log(`workflow 名遮蔽："${bare}" 同时命中内置资产（${builtinPath}，优先生效）与已保存脚本（${shadow.path}，被遮蔽不执行）。恢复指引：给 saved 脚本换名，或显式传内置资产路径（scripts action 可查）。`);
+      }
+    } catch { /* 发现面不可用不阻断 run */ }
+  }
+
   /** run 参数公共前置：normalize + 脚本解析 → { spec 组装原料, script, warnings }。 */
   async function resolveRun(params, cwd) {
     const norm = normalizeRunParams(params);
@@ -403,9 +437,10 @@ function createOrchestrationHost(opts = {}) {
     const script = await registry.get(norm.scriptRef, cwd || workdir);
     if (!script) {
       throw new Error(
-        `workflow "${norm.scriptRef}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')} 或自定义脚本 .js 绝对路径，后者可经 script-generate 创作；可用清单经 scripts action 查询）。`
+        `workflow "${norm.scriptRef}" 未找到（内置 ${BUILTIN_WORKFLOW_NAMES.join('/')}、已保存脚本名或自定义脚本 .js 绝对路径，后者可经 script-generate 创作；可用清单经 scripts action 查询）。`
       );
     }
+    await warnShadowedBuiltin(norm.scriptRef, cwd || workdir);
     if (!script.available) {
       throw new Error(
         `workflow 脚本不可用（meta 解析失败或文件不可读）: ${script.path}。`
@@ -511,6 +546,7 @@ function createOrchestrationHost(opts = {}) {
       const builtin = [];
       for (const name of BUILTIN_WORKFLOW_NAMES) {
         const script = await loadScriptFromPath(coreRef.workflowAssetPath(`${name}.js`), core);
+        if (!script) continue; // 引用非法防御：workflowAssetPath 恒为绝对 .js，实际不触达
         builtin.push({
           name,
           description: (script.meta && script.meta.description) || '',
@@ -572,6 +608,7 @@ module.exports = {
   createRegistry,
   normalizeRunParams,
   loadScriptFromPath,
+  buildKnownWorkflowNames,
   ensureConfigured,
   BUILTIN_WORKFLOW_NAMES,
 };

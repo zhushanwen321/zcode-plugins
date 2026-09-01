@@ -43,8 +43,9 @@
  *   node bin/zsw.js close --id <subagentId>
  *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint|script-generate|script-save|script-delete>]
  *        --workflow <内置名|.js绝对路径（~/ 可展开）> --task "<任务/目标>" --workdir <绝对路径>
- *        [options]（--action 缺省 = run；workflow 引用契约（D-4）：script:<名> 与
- *        裸名已废弃拒收，自定义脚本只收绝对路径——报错自带恢复指引）
+ *        [options]（--action 缺省 = run；workflow 引用契约（D-4/D-E3）：script:<名>
+ *        拒收；内置名 / 已保存脚本名（scripts 清单，D-E3 裸名放行）/ .js 绝对
+ *        路径合法——报错自带恢复指引）
  *        abort/status/list/scripts/script-save/script-delete 管理面默认经 daemon
  *        （zflow 同源，MF1）；run/lint/script-generate 恒本地（run 执行体 = CLI
  *        进程，bg 包裹即原生通知——设计 v5 决策；lint/generate 纯文件操作无
@@ -82,7 +83,7 @@ const { assembleManager } = require('../lib/assemble');
 const { callDaemon } = require('../lib/cli-client');
 const { TERMINAL_STATUSES } = require('../lib/record-store');
 const coreRef = require('../lib/core-ref');
-const { BUILTIN_WORKFLOW_NAMES } = require('../lib/orchestration-host');
+const { BUILTIN_WORKFLOW_NAMES, buildKnownWorkflowNames } = require('../lib/orchestration-host');
 
 function usage(exitCode = 1) {
   process.stderr.write(
@@ -186,9 +187,9 @@ function workflowUsage(exitCode = 1) {
     + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
     + '  异步 runId 走 socket 面后用 status 查询）:\n'
     + '  --workflow <ref>           内置名（chain / parallel / map-reduce /\n'
-    + '                            scatter-gather / review-fix-loop）或 .js 绝对路径\n'
-    + '                            （~/ 前缀可展开）。script:<名> 与裸名（非内置）\n'
-    + '                            已废弃拒收——路径取 scripts 清单的 path 字段\n'
+    + '                            scatter-gather / review-fix-loop）、已保存脚本名\n'
+    + '                            （scripts 清单，D-E3 裸名放行）或 .js 绝对路径\n'
+    + '                            （~/ 前缀可展开）。script:<名> 已废弃拒收\n'
     + '  --task <text>             任务描述（必填；parallel 场景作为 target 回退，\n'
     + '                            review-fix-loop 场景作为 target 回退）\n'
     + '  --workdir <path>          工作目录（必填，绝对路径——agent() 调用的 cwd）\n'
@@ -303,29 +304,42 @@ function workflowScriptDirs() {
 }
 
 /**
- * workflow 引用契约（D-4a，与 pi 平台统一）：合法 = 内置 5 名 或 .js 绝对路径
- * （~/ 前缀可展开）。script:<名> 与裸名在入口面拒绝——文案与设计 §3.1 失败
- * 路径同源、带恢复指引。路径分支严格 .js 后缀（与 agent 线 normalizeAgentRef
- * 的 .md 严格校验对称——非 .js 绝对路径（/tmp/notes.txt、目录）在此拦下，
- * 不放行到 host 层报「脚本不可用」）。host 层（resolveScriptPath）保留按名
- * 宽松解析供脚本内嵌套 workflow() 调用，收紧只拦 CLI/daemon 两消费面
- * （run 的 ref 来自用户输入）。
+ * 判定原语统一（C17）：ref 合法性全部经 core normalizeWorkflowRef（同步）——
+ * 路径分支（~/ 展开 + ".." 拒收 + .js 严格后缀）与裸名分支（knownNames 命中）
+ * 都是 core 口径，本函数只做 script: 前缀前置拦截（D-4 既有裁决，错误消息
+ * 现契约逐字保留）与 reason → 文案映射。
+ *
+ * knownNames 参数（可选）：内置 5 名 + 发现面 saved 名，由 lib/orchestration-host
+ * 的 buildKnownWorkflowNames 异步构建（CLI 入口 await 后传入，cwd 口径与 host
+ * 的 ctx.cwd 同源——⛔D：同一目录集三入口产出同一集）。saved 裸名放行 =
+ * D-E3 裁决（known 命中即合法）。daemon socket 面（dist/mcp/server.js）以
+ * 单参同步形态消费本函数：knownNames 缺省时回落内置 5 名（= D-4 现契约：
+ * 内置名与 .js 绝对路径放行，saved 裸名拒收），socket 面零改动零回归（同步
+ * 签名是硬约束：async 化会让 socket 面未 await 的调用把非法 ref 变 unhandled
+ * rejection 崩 daemon）；socket 面接全量 knownNames 属后续单元上报项。
  */
-function validateWorkflowRef(workflow) {
+function validateWorkflowRef(workflow, knownNames) {
   const w = typeof workflow === 'string' ? workflow.trim() : '';
   if (w === '') {
-    throw new Error('run 需要 workflow（内置名或 .js 绝对路径，~/ 前缀可展开）。恢复指引：可用清单先经 scripts action 查询。');
+    throw new Error('run 需要 workflow（内置名、已保存脚本名或 .js 绝对路径，~/ 前缀可展开）。恢复指引：可用清单先经 scripts action 查询。');
   }
-  if (BUILTIN_WORKFLOW_NAMES.includes(w)) return w;
-  if ((w.startsWith('/') || w.startsWith('~/')) && w.endsWith('.js')) return w;
-  const why = w.startsWith('script:')
-    ? `"${w}" 带已废弃的 script: 前缀`
-    : /^([~/])/.test(w) ? `"${w}" 不是 .js 脚本路径` : `"${w}" 不是内置名`;
-  throw new Error(
-    `Invalid workflow ref：${why}。workflow 引用仅接受内置名（${BUILTIN_WORKFLOW_NAMES.join(' / ')}）`
-    + '或 .js 绝对路径（支持 ~/ 前缀展开）。恢复指引：自定义脚本路径见 scripts action 清单的 path 字段，'
-    + '或注入段 <available_workflows> 的 <location>。',
-  );
+  if (w.startsWith('script:')) {
+    throw new Error(invalidWorkflowRefMessage(w, `"${w}" 带已废弃的 script: 前缀`));
+  }
+  const verdict = coreRef.requireCore().normalizeWorkflowRef(w, { knownNames: knownNames || BUILTIN_WORKFLOW_NAMES });
+  if (verdict.kind === 'path') return w;
+  if (verdict.kind === 'name') return verdict.name;
+  const why = verdict.reason === 'bad_ext' || verdict.reason === 'not_absolute' || verdict.reason === 'parent_segment'
+    ? `"${w}" 不是 .js 脚本路径`
+    : `"${w}" 不是内置名或已保存脚本名`;
+  throw new Error(invalidWorkflowRefMessage(w, why));
+}
+
+/** Invalid workflow ref 报错总文案（why 插值；cli/server 两面用例锁定的 token：Invalid workflow ref / script: 前缀 / 绝对路径 / 恢复指引）。 */
+function invalidWorkflowRefMessage(w, why) {
+  return `Invalid workflow ref：${why}。workflow 引用仅接受内置名（${BUILTIN_WORKFLOW_NAMES.join(' / ')}）、`
+    + '已保存脚本名（scripts 清单）或 .js 绝对路径（支持 ~/ 前缀展开）。恢复指引：自定义脚本路径见 '
+    + 'scripts action 清单的 path 字段，或注入段 <available_workflows> 的 <location>。';
 }
 
 /** script-* action 的 name 参数校验（core 直接拼 `${name}.js` 落盘——含分隔符会写目录之外，入口拦下）。 */
@@ -429,10 +443,15 @@ function requireWorkflowRunArgs(args) {
  * 字符串→数字/布尔），$ARGS 映射 / sugar 裁决 / 废弃 flag 拦截统一在
  * lib/orchestration-host.js 的 normalizeRunParams（单一权威，CLI 不重复实现
  * 映射，防两处漂移）。CLI 只做形态转换与已消费键标记。
+ *
+ * 异步化（C17/D-E3）：knownNames 构建（发现面扫描）是异步——cwd 口径与
+ * runWorkflowCommand 传给 host 的 ctx.cwd 同源（ZCODE_PROJECT_DIR || cwd），
+ * 同一目录集两入口产出同一 knownNames 集（⛔D）。
  */
-function buildWorkflowRunParams(args) {
-  // D-4 引用契约入口收紧（CLI 面）：script:/裸名在此拒收，非法 ref 不进 host
-  validateWorkflowRef(args.workflow);
+async function buildWorkflowRunParams(args, cwd) {
+  // D-4/D-E3 引用契约入口（CLI 面）：script: 前缀拒收、saved 裸名放行
+  // （knownNames = 内置 + 发现面 saved 名）、非法 ref 在此拦下不进 host
+  validateWorkflowRef(args.workflow, await buildKnownWorkflowNames(coreRef.requireCore(), cwd));
   const params = {
     workflow: args.workflow, // 内置名 / .js 绝对路径（合法性已在入口校验）
     task: args.task,
@@ -579,7 +598,7 @@ function exitAfterEngineShutdown(wfHost) {
 /** run action：组参 → host.runAndWait 同步等终态 → 报告 + 摘要（exit 按终态）。 */
 async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
-  const params = buildWorkflowRunParams(args);
+  const params = await buildWorkflowRunParams(args, cwd);
   // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
   // start 的 CLI 语义对齐；异步启动走 socket 面（zflow run 不带 wait）
   const fin = await wfHost.runAndWait(params, { cwd });
@@ -1048,6 +1067,13 @@ async function main() {
   await exitAfterEngineShutdown(wfHost);
 }
 
+/** CLI 入口的 knownNames 产出面（C17/D-E3）：内置 5 名 + cwd 发现面 saved 名，
+ * 与 orchestration-host registry 的 resolveScriptPath 消费同一构建函数——
+ * ⛔D knownNames 一致性断言（orchestration-host.test.js）经此对照两入口。 */
+function knownWorkflowNames(cwd) {
+  return buildKnownWorkflowNames(coreRef.requireCore(), cwd);
+}
+
 // require.main 守卫：test/cli.test.js 与 dist/mcp/server.js（daemon socket 面
 // script-* action 的同源实现消费方）经 require 复用导出函数（bin 直接执行时
 // 行为不变）。模块加载零副作用；副作用只发生在显式调用的 script-* action
@@ -1055,12 +1081,14 @@ async function main() {
 module.exports = {
   parseArgs,
   csv,
-  // W8 创作闭环（D-6）+ workflow 引用契约（D-4）：validateWorkflowRef、
+  // W8 创作闭环（D-6）+ workflow 引用契约（D-4/D-E3）：validateWorkflowRef、
   // script-* 三 action、runningScriptPredicate 供 daemon socket 面
   // （dist/mcp/server.js 的 zflow handler）经 require 消费，CLI 与 socket
-  // 两入口单一来源防漂移；workflowScriptDirs/requireScriptActionName 仅被
+  // 两入口单一来源防漂移；knownWorkflowNames 是 CLI 入口的 knownNames 产出面
+  // （⛔D 一致性断言消费）；workflowScriptDirs/requireScriptActionName 仅被
   // 上述 action 与本文件组帧逻辑内部消费，属实现细节，不外导
   validateWorkflowRef,
+  knownWorkflowNames,
   scriptGenerateAction,
   scriptSaveAction,
   scriptDeleteAction,

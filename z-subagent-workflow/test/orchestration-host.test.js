@@ -24,13 +24,33 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { createOrchestrationHost, normalizeRunParams } = require('../lib/orchestration-host');
+const {
+  createOrchestrationHost,
+  createRegistry,
+  normalizeRunParams,
+  loadScriptFromPath,
+  buildKnownWorkflowNames,
+} = require('../lib/orchestration-host');
+const coreRef = require('../lib/core-ref');
+const zswBin = require('../bin/zsw.js');
 
 /** 每 test 独立 ZSW_ROOT（dataRoot 现取 env，无需 reset configureCore）。 */
 function freshRoot() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-wfhost-'));
   process.env.ZSW_ROOT = dir;
   return dir;
+}
+
+/** HOME 切换守卫（遮蔽/knownNames 用例注入 discoveryRoots 的 ~/.zsw/workflows 根）。 */
+function withHome(home, fn) {
+  const prev = process.env.HOME;
+  process.env.HOME = home;
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      if (prev === undefined) delete process.env.HOME;
+      else process.env.HOME = prev;
+    });
 }
 
 function freshScriptDir() {
@@ -308,6 +328,94 @@ test('scripts action：内置 vendored 5 + 用户脚本发现面', async () => {
   const mine = out.scripts.find((s) => s.name === 'mine');
   assert.ok(mine, `user script discovered: ${JSON.stringify(out.scripts)}`);
   assert.equal(mine.source, 'workspace-zsw');
+});
+
+// --------------------------------- C3/D-E3：core 实体 + knownNames 口径（V3w）
+
+/** 最小 @pi-meta 脚本文本（零引擎形态：agent() 挂 $ARGS 条件不触发）。 */
+function probeSource(name) {
+  return `/* @pi-meta\nname: ${name}\ndescription: ${name} probe\nphases: [run]\n*/\n`
+    + 'if ($ARGS.callAgent === true) {\n  await agent({ prompt: "x" });\n}\nreturn { status: "ok" };\n';
+}
+
+test('C3：loadScriptFromPath 返回 core WorkflowScript 实体（鸭子拼装退役）+ 非法引用 undefined', async () => {
+  freshRoot();
+  const core = coreRef.requireCore();
+  const dir = freshScriptDir();
+  const file = path.join(dir, 'duck.js');
+  fs.writeFileSync(file, probeSource('duck'));
+  const s = await loadScriptFromPath(file, core);
+  // 实体 = core 类实例（构造/meta/加载全走 core，非手工拼鸭子）
+  assert.ok(s instanceof core.WorkflowScript, `expect core WorkflowScript instance, got: ${typeof s}`);
+  assert.equal(s.name, 'duck');
+  assert.equal(s.available, true);
+  assert.equal(s.path, file);
+  assert.equal(s.toExecutable(), fs.readFileSync(file, 'utf8'));
+  assert.equal(s.validate().valid, true);
+  // meta 提取失败退化为 available=false + stem 名（core loader fallback 语义）
+  const bare = path.join(dir, 'nometa.js');
+  fs.writeFileSync(bare, 'const x = 1;\n');
+  const s2 = await loadScriptFromPath(bare, core);
+  assert.ok(s2 instanceof core.WorkflowScript);
+  assert.equal(s2.available, false);
+  assert.equal(s2.name, 'nometa');
+  // 引用非法（非 .js）显式 undefined——调用方（registry.get）按未找到处理
+  assert.equal(await loadScriptFromPath(path.join(dir, 'notes.txt'), core), undefined);
+});
+
+test('D-E3 同名遮蔽：saved 与内置同名 → 内置优先生效 + warning 列出双路径', async () => {
+  const home = freshScriptDir();
+  const savedDir = path.join(home, '.zsw', 'workflows');
+  fs.mkdirSync(savedDir, { recursive: true });
+  const savedChain = path.join(savedDir, 'chain.js');
+  fs.writeFileSync(savedChain, probeSource('chain'));
+  await withHome(home, async () => {
+    freshRoot();
+    const runner = makeFakeAgentRunner();
+    const logs = [];
+    const host = createOrchestrationHost({ agentRunner: runner, log: (m) => logs.push(m) });
+    const cwd = process.cwd();
+    // run "chain"：内置名短路命中 vendored 资产（saved chain.js 不执行）
+    const result = await host.runAndWait({ workflow: 'chain', task: 'demo task', workdir: cwd }, { cwd });
+    assert.equal(result.reason, 'completed', JSON.stringify(result));
+    assert.deepEqual(runnerCallsDescs(runner), ['chain-analyze', 'chain-transform', 'chain-synthesize'],
+      '内置 chain 三段生效（saved 同名脚本被遮蔽）');
+    // warning 属 zsw 侧（core 名命中即返回），双路径都列出
+    const warn = logs.find((m) => m.includes('遮蔽'));
+    assert.ok(warn, `shadow warning expected, logs: ${JSON.stringify(logs)}`);
+    assert.ok(warn.includes(coreRef.workflowAssetPath('chain.js')), `builtin path missing: ${warn}`);
+    assert.ok(warn.includes(savedChain), `saved path missing: ${warn}`);
+  });
+});
+
+test('⛔D knownNames 一致性：CLI 入口与 orchestration-host registry 同目录集产出 deepEqual', async () => {
+  const home = freshScriptDir();
+  const savedDir = path.join(home, '.zsw', 'workflows');
+  fs.mkdirSync(savedDir, { recursive: true });
+  fs.writeFileSync(path.join(savedDir, 'alpha.js'), probeSource('alpha'));
+  const ws = freshScriptDir();
+  fs.mkdirSync(path.join(ws, '.agents', 'workflows'), { recursive: true });
+  fs.writeFileSync(path.join(ws, '.agents', 'workflows', 'beta.js'), probeSource('beta'));
+  await withHome(home, async () => {
+    freshRoot();
+    const core = coreRef.requireCore();
+    // CLI 入口产出：bin/zsw.js knownWorkflowNames（buildWorkflowRunParams 同源）
+    const viaCli = await zswBin.knownWorkflowNames(ws);
+    // host 入口产出：registry 内部 resolveScriptPath 消费的同一构建函数
+    const reg = createRegistry(core);
+    const viaHost = await buildKnownWorkflowNames(core, ws, reg);
+    assert.deepEqual(viaCli, viaHost);
+    // 集内容：内置 5 在前（内置优先序）+ 两发现根 saved 名
+    assert.deepEqual(viaCli.slice(0, 5),
+      ['chain', 'parallel', 'map-reduce', 'scatter-gather', 'review-fix-loop']);
+    for (const n of ['alpha', 'beta']) {
+      assert.ok(viaCli.includes(n), `saved name "${n}" expected in: ${JSON.stringify(viaCli)}`);
+    }
+    // registry 按同一集解析：saved 名落实际路径、未知名 undefined
+    assert.equal(await reg.resolveScriptPath('alpha', ws), path.join(savedDir, 'alpha.js'));
+    assert.equal(await reg.resolveScriptPath('beta', ws), path.join(ws, '.agents', 'workflows', 'beta.js'));
+    assert.equal(await reg.resolveScriptPath('no-such-name', ws), undefined);
+  });
 });
 
 // ------------------------------------------------------ helpers

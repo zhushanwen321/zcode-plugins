@@ -322,8 +322,24 @@ function probeParams(stdout) {
   return JSON.parse(fenced[1]).params;
 }
 
-/** 用户脚本的路径引用形态（D-4：script:/裸名已废弃拒收，统一 .js 绝对路径）。 */
+/** 用户脚本的路径引用形态（D-4：script: 拒收；D-E3 起内置名/saved 裸名/.js 绝对路径合法）。 */
 const PROBE_JS = path.join(WF_DIR, 'params-probe.js');
+
+// HOME saved 根 fixture（~/.zsw/workflows = script-save 落盘目录；run() 的 env
+// HOME 指向 TMP/home）：D-E3 saved 裸名放行的第二发现根（discoveryRoots 注入
+// 槽）断言面。零引擎形态同 params-probe。
+const SAVED_DIR = path.join(TMP, 'home', '.zsw', 'workflows');
+fs.mkdirSync(SAVED_DIR, { recursive: true });
+fs.writeFileSync(path.join(SAVED_DIR, 'saved-probe.js'), `/* @pi-meta
+name: saved-probe
+description: HOME saved 根按名引用探针
+phases: [run]
+*/
+if ($ARGS.callAgent === true) {
+  await agent({ prompt: 'probe' });
+}
+return { status: 'ok', params: $ARGS };
+`);
 
 test('冒烟：batchN csv 转数组抵达 $ARGS（防透传覆写回归）', async () => {
   const r = await run(['workflow', '--workflow', PROBE_JS, '--task', '探针',
@@ -344,7 +360,7 @@ test('冒烟：未映射 flag 原样透传抵达 $ARGS（用户脚本形态无�
   assert.equal(params.totallyUnknownFlag, 'x'); // parseArgs camelCase 化后透传
 });
 
-test('workflow 引用契约（D-4）：script: 前缀与裸名拒收，报错含恢复指引（路径引用回归见上方两冒烟）', async () => {
+test('workflow 引用契约（D-4/D-E3）：script: 前缀拒收；saved 裸名放行（workspace 根 + HOME saved 根）；未知裸名仍拒', async () => {
   // script: 前缀（旧形态）：拒绝且指路（内置名/绝对路径/scripts 清单）
   const prefixed = await run(['workflow', '--workflow', 'script:params-probe', '--task', 't', '--workdir', TMP]);
   assert.equal(prefixed.code, 1);
@@ -352,11 +368,20 @@ test('workflow 引用契约（D-4）：script: 前缀与裸名拒收，报错含
   assert.match(prefixed.stderr, /script: 前缀/);
   assert.match(prefixed.stderr, /绝对路径/);
   assert.match(prefixed.stderr, /恢复指引/);
-  // 裸名（非内置）：同拒（多源同名遮蔽下按名引用有歧义）
-  const bare = await run(['workflow', '--workflow', 'params-probe', '--task', 't', '--workdir', TMP]);
-  assert.equal(bare.code, 1);
-  assert.match(bare.stderr, /Invalid workflow ref/);
-  assert.match(bare.stderr, /不是内置名/);
+  // D-E3 裁决：saved 裸名放行（knownNames = 内置 5 + 发现面 saved 名；旧
+  // 「多源同名遮蔽下按名引用有歧义」的拒收线撤销）。workspace 根按名 run 成功
+  const bare = await run(['workflow', '--workflow', 'params-probe', '--task', '探针', '--workdir', TMP]);
+  assert.equal(bare.code, 0, `stderr: ${bare.stderr}`);
+  assert.equal(probeParams(bare.stdout).task, '探针');
+  // HOME saved 根（~/.zsw/workflows = script-save 落盘目录）按名 run 成功
+  const saved = await run(['workflow', '--workflow', 'saved-probe', '--task', '探针', '--workdir', TMP]);
+  assert.equal(saved.code, 0, `stderr: ${saved.stderr}`);
+  assert.equal(probeParams(saved.stdout).task, '探针');
+  // 未知裸名（knownNames = 内置 + 发现面 saved 名，不含 no-such-wf-name）仍拒
+  const unknown = await run(['workflow', '--workflow', 'no-such-wf-name', '--task', 't', '--workdir', TMP]);
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /Invalid workflow ref/);
+  assert.match(unknown.stderr, /不是内置名或已保存脚本名/);
   // 非 .js 绝对路径（R2 修复：入口拦截而非放行到 host 层报「脚本不可用」——
   // 与 agent 线 normalizeAgentRef 的 .md 严格校验对称）
   const notJs = await run(['workflow', '--workflow', '/tmp/notes.txt', '--task', 't', '--workdir', TMP]);
