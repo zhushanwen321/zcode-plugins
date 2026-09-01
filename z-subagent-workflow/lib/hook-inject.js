@@ -25,13 +25,14 @@
  * 标记机制随旧两层渲染退役）。
  *
  * 本模块仍零 fs/网络（数据组装在 lib/hook-source.js）：v2 config 对象经
- * model-router 纯谓词消费（availableModels/qualifiedProviders，provider 范围
- * 与旧块两层口径等价——默认 provider 不筛凭据、其余筛「带凭据且清单非空」）；
- * 渲染函数经 lib/core-ref requireCore 消费（禁深路径，vendor 布局调整单点吸收）。
- * cliModelMain 由调用方传 defaultModelRef(v2) 回退链产物，本模块不触 fs。
+ * model-router 消费（qualifiedProviders 谓词 + toModelEntries 字段提取单一
+ * 实现，provider 范围与旧块两层口径等价——默认 provider 不筛凭据、其余筛
+ * 「带凭据且清单非空」）；渲染函数经 lib/core-ref requireCore 消费（禁深路径，
+ * vendor 布局调整单点吸收）。cliModelMain 由调用方传 defaultModelRef(v2) 回退链
+ * 产物，本模块不触 fs。
  */
 
-const { PROVIDER_ID, availableModels, qualifiedProviders } = require('./model-router');
+const { PROVIDER_ID, qualifiedProviders, toModelEntries: projectModelEntries } = require('./model-router');
 const { zswCliPath } = require('./config');
 const coreRef = require('./core-ref');
 
@@ -156,8 +157,9 @@ function toWorkflowEntries(workflows) {
  * provider 范围 = 旧块两层口径等价：默认 provider 全列（不筛凭据——凭据缺失
  * 属快照过期，报错兜底覆盖）+ 其余 qualifiedProviders（带凭据且清单非空，
  * model-router 单一实现）。字段提取（label/limit.context/reasoning.variants）
- * 与 model-router.modelEntries 同构——该函数内嵌 defaultModelRef 的 fs 回退
- * 链（本模块零 fs 契约不可消费），故在此投影、谓词仍单源。
+ * 消费 model-router.toModelEntries 单一实现（设计 V8 消重；withProvider 升格
+ * ModelEntry 形态，defShort 不传 → 零 fs 且无默认标记——当前默认由 models
+ * guide 文案承载，本模块只做 provider 范围迭代）。
  */
 function toModelEntries(v2) {
   if (!v2 || !v2.provider) return [];
@@ -165,23 +167,8 @@ function toModelEntries(v2) {
   const out = [];
   for (const id of ids) {
     const models = v2.provider[id] && v2.provider[id].models;
-    if (!models) continue;
-    for (const name of availableModels(v2, id)) {
-      const def = models[name] || {};
-      const entry = { provider: id, id: name, name };
-      const label = typeof def.label === 'string' && def.label.trim() ? def.label.trim() : null;
-      if (label) entry.label = label; // 进 ModelEntry 并集（core 渲染面暂不消费，透传不丢）
-      const ctx = def.limit && def.limit.context;
-      if (Number.isFinite(ctx) && ctx > 0) entry.contextWindow = ctx;
-      const r = def.reasoning;
-      if (r && Array.isArray(r.variants) && r.variants.length > 0) {
-        entry.reasoning = { variants: r.variants }; // truthy 对象 → caps "reasoning"
-        if (typeof r.defaultVariant === 'string' && r.defaultVariant) {
-          entry.reasoning.defaultVariant = r.defaultVariant;
-        }
-      }
-      out.push(entry);
-    }
+    if (!models) continue; // 无清单 provider 跳过（原语义）
+    out.push(...projectModelEntries(v2, id, { withProvider: true }));
   }
   return out;
 }

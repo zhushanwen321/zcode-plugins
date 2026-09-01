@@ -12,7 +12,7 @@
  *                                           回退链（record.model 展示值；执行
  *                                           校验归 engine preparer）
  * - defaultModelRef / availableModels / qualifiedProviders / providersUsable /
- *   PROVIDER_ID                              hook-source / hook-inject 单源导出
+ *   toModelEntries                           hook-source / hook-inject 单源导出
  *
  * 数据源不变：~/.zcode/v2/config.json（桌面登录态，每次调用重读——apiKey/
  * 模型清单随桌面端操作变化，不缓存）。
@@ -136,16 +136,30 @@ function trimToNull(v) {
 }
 
 /**
- * v2 条目 → 结构化模型条目（listModels 的映射体，allProviders() 复用同一实现
- * 防两份字段提取漂移）。字段全部可选透出：config 里没有的维度不造默认值，
- * 避免误导路由。默认标记走单一谓词（provider 感知）。前置条件：该 provider
- * 清单已验非空（调用方负责，listModels / allProviders 均如此）。
+ * v2 条目 → 结构化模型条目（字段提取单一实现，设计 V8 前半消重：ModelRouter
+ * 清单视图与 hook-inject SessionStart 的 ModelEntry 投影共同消费，禁复刻防
+ * 字段口径漂移）。字段全部可选透出：config 里没有的维度不造默认值，避免
+ * 误导路由。
+ *
+ * 原双份实现的差异点参数化：
+ * - opts.defShort     默认模型短名，命中条目加 `default: true`（省略 model 时
+ *   即用它；档位轻重随环境配置，重任务应显式指定）。fs 触碰面分离：缺省标记
+ *   谓词 defaultModelFor 内嵌 defaultModelRef 回退链要读 cli config，hook-inject
+ *   零 fs 契约不可消费——执行侧消费点（modelEntries 包装）预算传入，hook 侧
+ *   不传即不标（hook 视图无默认标记语义，当前默认由 models guide 文案承载）。
+ * - opts.withProvider 条目升格 core ModelEntry 形态：前置 provider/id 字段
+ *   （provider 段渲染为全名 <provider>/<model> 的数据源），name 保持短名。
+ *
+ * 容忍该 provider 无 models 的条目形态（返回空数组）——hook 侧多 provider
+ * 迭代需要跳过空清单，执行侧调用方仍负责前置验非空（listModels / allProviders）。
+ * @returns {Array<object>}
  */
-function modelEntries(v2, provider) {
-  const defShort = defaultModelFor(v2, provider);
+function toModelEntries(v2, provider, opts = {}) {
+  const defShort = opts.defShort || null;
+  const models = (v2.provider[provider] && v2.provider[provider].models) || {};
   return availableModels(v2, provider).map((name) => {
-    const def = v2.provider[provider].models[name] || {};
-    const entry = { name };
+    const def = models[name] || {};
+    const entry = opts.withProvider ? { provider, id: name, name } : { name };
     const label = trimToNull(def.label);
     if (label) entry.label = label;
     const ctx = def.limit && def.limit.context;
@@ -157,9 +171,18 @@ function modelEntries(v2, provider) {
         entry.reasoning.defaultVariant = r.defaultVariant;
       }
     }
-    if (name === defShort) entry.default = true; // 默认标记：省略 model 时即用它；档位轻重随环境配置，重任务应显式指定
+    if (name === defShort) entry.default = true;
     return entry;
   });
+}
+
+/**
+ * 执行侧清单视图入口：默认标记走单一谓词（provider 感知——main 指向非目标
+ * provider 时不误标）后委托 toModelEntries。listModels / allProviders 共用
+ * 本包装，fs 回退链只在此层出现。
+ */
+function modelEntries(v2, provider) {
+  return toModelEntries(v2, provider, { defShort: defaultModelFor(v2, provider) });
 }
 
 class ModelRouter {
@@ -231,6 +254,9 @@ module.exports.availableModels = availableModels;
 // 「带非空模型清单的 provider」枚举单一实现：本模块错误提示与 hook-source
 // 诊断行共同消费，禁复刻
 module.exports.providersUsable = providersUsable;
+// 模型条目字段提取单一实现（零 fs；默认标记经 opts.defShort 注入）：hook-inject
+// 的 ModelEntry 投影共同消费，禁复刻
+module.exports.toModelEntries = toModelEntries;
 // 「合格 provider」判定（带凭据且模型清单非空）的单一实现：models --all 视图
 // 与 SessionStart 注入块「其他可运行 provider」段共同消费，禁复刻
 module.exports.qualifiedProviders = qualifiedProviders;
