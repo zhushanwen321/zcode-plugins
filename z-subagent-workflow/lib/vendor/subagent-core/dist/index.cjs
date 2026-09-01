@@ -18411,10 +18411,12 @@ function evictDoneRunsBeyondCap(runs, keepDone) {
 }
 async function recoverCrashedRuns(store, runs, reason, hooks) {
   const loaded = await store.loadAll();
+  let recovered = 0;
   for (const run of loaded) {
     if (run.state.status === "running") {
       run.state.error = reason;
       run.transition("done", "failed");
+      recovered += 1;
       try {
         hooks?.onRunRecovered?.({ id: run.runId, reason: "failed" });
       } catch (err) {
@@ -18440,6 +18442,7 @@ async function recoverCrashedRuns(store, runs, reason, hooks) {
       `[workflow] recoverCrashedRuns evicted ${evicted} done runs beyond cap (keep=${MAX_RETAINED_DONE_RUNS})`
     );
   }
+  return { loaded: loaded.length, recovered };
 }
 
 // src/orchestration/launcher.ts
@@ -18497,7 +18500,7 @@ async function pollRunToResult(runId, deps, signal, timeoutMs, abortReason) {
     runId
   };
 }
-async function runAndWait(name, args, deps, signal, timeoutMs) {
+async function runAndWait(name, args, deps, signal, timeoutMs, model) {
   const script = await deps.registry.getPath(name);
   if (!script) {
     return {
@@ -18516,6 +18519,7 @@ async function runAndWait(name, args, deps, signal, timeoutMs) {
     scriptSource: script.toExecutable(),
     args,
     budgetTokens: void 0,
+    model,
     scriptName: script.name,
     scriptPath: script.path,
     description: script.meta.description,

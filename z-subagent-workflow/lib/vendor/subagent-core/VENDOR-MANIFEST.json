@@ -1,10 +1,13 @@
 {
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
-  "fetchedAt": "2026-09-01T01:15:51.249Z",
+  "sourceRev": "699a94afc32321022baa8a0c8e99c7d0fae1f783",
+  "sourceDirty": false,
+  "fetchedAt": "2026-09-01T04:20:09.416Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
   },
+  "distMappedFrom": "dist.bundle/",
   "files": [
     {
       "path": "agents/analyst.md",
@@ -48,7 +51,7 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "f6f1bcce814459b38c9033cc19eb3d729dcd141b56ad065d87e9e70da0d1c22c"
+      "sha256": "98f443cb79332d85d76d2b5df26f85930ba60078d7cae896385cdab3b5b0cb42"
     },
     {
       "path": "package.json",

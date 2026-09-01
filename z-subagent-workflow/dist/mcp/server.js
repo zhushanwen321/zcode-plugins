@@ -590,7 +590,7 @@ async function main() {
       // workflow-state 快照，running 标 done,failed 落盘（worker 线程随旧进程
       // 死亡，无进程可探活）——与 subagent recover 并存安全（两池存储面已分离）
       const rec = await wfHost.recoverOrphans();
-      log(`workflow 孤儿恢复：重水合 ${rec.recovered} 条，running 遗留 ${rec.orphaned} 条标 failed`);
+      log(`workflow 孤儿恢复：重水合 ${rec.rehydrated} 条，running 遗留 ${rec.orphaned} 条标 failed`);
     } catch (e) {
       log(`wfHost recoverOrphans 失败（继续启动，workflow 管理面可能受限）: ${e && e.message || e}`);
     }
@@ -660,7 +660,7 @@ async function main() {
           }
           try {
             const rec = await wfHost.recoverOrphans();
-            log(`接管后 workflow 孤儿恢复：重水合 ${rec.recovered} 条，running 遗留 ${rec.orphaned} 条标 failed（执行体随旧 daemon 消亡）`);
+            log(`接管后 workflow 孤儿恢复：重水合 ${rec.rehydrated} 条，running 遗留 ${rec.orphaned} 条标 failed（执行体随旧 daemon 消亡）`);
           } catch (e) {
             log(`接管后 wfHost recoverOrphans 失败: ${e && e.message || e}`);
           }

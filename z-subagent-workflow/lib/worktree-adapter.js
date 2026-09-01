@@ -13,25 +13,26 @@
  * manager 侧不自写 patch 文件——patch 的产出方只有一处。
  */
 
-const { execFile } = require('node:child_process');
 const worktree = require('./worktree');
+const { requireCore } = require('./core-ref');
 // 分支命名空间从 worktree.js 单源引用：错误文案不再字面量镜像 'zsub/'
 const { BRANCH_NS } = worktree;
 
-/** cwd → git 顶层目录。非 git 目录/无 git 时抛可操作错误。 */
-function resolveGitRoot(cwd) {
-  return new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        reject(new Error(
-          `worktree 任务需要 cwd 位于 git 仓库内（"${cwd}" 不是 git 工作树）。`
-          + '恢复指引：在 git 仓库内使用 worktree:true，或不传 worktree。'
-        ));
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
+/** cwd → git 顶层目录。非 git 目录/无 git 时抛可操作错误。
+ * git 执行统一走 core.gitRun（超时 30s 缺省 + GitRunError 包装单源；本函数
+ * 原是 A 侧唯一绕开 core 的 git 子进程调用点，私有 5s 超时无注释说明）。
+ * core stdout 保真返回，toplevel 单行输出 trim 取净。 */
+async function resolveGitRoot(cwd) {
+  const core = requireCore();
+  try {
+    const out = await core.gitRun(['-C', cwd, 'rev-parse', '--show-toplevel'], { cwd });
+    return out.trim();
+  } catch (err) {
+    throw new Error(
+      `worktree 任务需要 cwd 位于 git 仓库内（"${cwd}" 不是 git 工作树；git: ${err && err.message ? err.message : err}）。`
+      + '恢复指引：在 git 仓库内使用 worktree:true，或不传 worktree。'
+    );
+  }
 }
 
 /**

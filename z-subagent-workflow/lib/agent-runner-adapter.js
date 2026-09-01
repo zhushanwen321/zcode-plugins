@@ -67,9 +67,12 @@ function toAgentResult(result, { schema }) {
   };
   if (ok && schema) {
     // zsw 无 structured-output 工具通道：schema 经 prompt MANDATORY 段约束 +
-    // jsonout 容错提取（与 manager 首轮收尾同款两级防线）
+    // jsonout 容错提取（与 manager 首轮收尾同款两级防线）。extractJsonObject
+    // 只返回 object | null（永不 undefined）——判 null 才是有效守卫：提取失败时
+    // parsedOutput 保持缺席（core 语义：schema 提供且输出可解析才有），worker
+    // 侧 parsedOutput ?? content 回落原文。
     const parsed = extractJsonObject(content);
-    if (parsed !== undefined) agentResult.parsedOutput = parsed;
+    if (parsed !== null) agentResult.parsedOutput = parsed;
   }
   if (!ok) {
     agentResult.error = (result && result.error) || `阶段执行失败（status=${result ? result.status : 'unknown'}）`;

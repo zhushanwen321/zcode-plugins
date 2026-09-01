@@ -514,7 +514,7 @@ function makeFakeWfHost() {
       };
     },
     async lint(file) { calls.push({ action: 'lint', file }); return { valid: true, findings: [] }; },
-    async recoverOrphans() { calls.push({ action: 'recoverOrphans' }); return { recovered: 0, orphaned: 0 }; },
+    async recoverOrphans() { calls.push({ action: 'recoverOrphans' }); return { rehydrated: 0, orphaned: 0 }; },
     async shutdown() { calls.push({ action: 'shutdown' }); },
   };
 }

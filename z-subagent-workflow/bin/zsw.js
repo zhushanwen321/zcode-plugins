@@ -620,7 +620,10 @@ async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
   const params = await buildWorkflowRunParams(args, cwd);
   // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
-  // start 的 CLI 语义对齐；异步启动走 socket 面（zflow run 不带 wait）
+  // start 的 CLI 语义对齐。异步需求走 Bash run_in_background 包裹本命令（引擎
+  // 原生 task-notification 唤醒）；daemon 的 zflow run 分支（server.js，wait
+  // 缺省 false）是已接线保留面，但 workflowDaemonParams 对 run 返回 null——
+  // 当前无 CLI 构帧方，勿据此推断存在「CLI 异步启动」入口。
   const fin = await wfHost.runAndWait(params, { cwd });
   renderWorkflowRunOutput(fin, args);
   // appserver 常驻引擎的 pipe stdio 挂事件循环（见 exitAfterEngineShutdown 头注）

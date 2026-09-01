@@ -138,6 +138,53 @@ test('scriptPath 注入语义 + runAndWait 完成（fake runner + 真实 WorkerH
     `agent() prompt should carry dep value loaded via scriptPath anchor: ${JSON.stringify(runner.__calls.map((c) => c.prompt))}`);
 });
 
+// runAndWait 的 model 透传（CLI --model 同步面契约）：norm.model → core runAndWait
+// 第 6 参 → spec.model（Option B）→ workerData → $MODEL → agent() fallback →
+// runner opts.model。此前同步面丢弃该参数致 --model 失效（异步 run 面生效，劈叉）。
+test('runAndWait 透传 model 到 runner（真实 core $MODEL 链）', async () => {
+  freshRoot();
+  const dir = freshScriptDir();
+  const scriptFile = writeAnchoredScript(dir);
+  const runner = makeFakeAgentRunner();
+  const host = makeHost(runner);
+
+  const result = await host.runAndWait(
+    { workflow: scriptFile, task: 't', workdir: dir, model: 'zai-coding-cn/glm-5.3-flash' },
+    {},
+  );
+  assert.equal(result.reason, 'completed', `expect completed, got: ${JSON.stringify(result)}`);
+  assert.ok(runner.__calls.some((c) => c.model === 'zai-coding-cn/glm-5.3-flash'),
+    `runner should receive model via $MODEL fallback: ${JSON.stringify(runner.__calls.map((c) => c.model))}`);
+});
+
+test('runAndWait 未传 model → runner 收到 undefined（不覆盖既有解析序）', async () => {
+  freshRoot();
+  const dir = freshScriptDir();
+  const scriptFile = writeAnchoredScript(dir);
+  const runner = makeFakeAgentRunner();
+  const host = makeHost(runner);
+
+  const result = await host.runAndWait({ workflow: scriptFile, task: 't', workdir: dir }, {});
+  assert.equal(result.reason, 'completed');
+  assert.ok(runner.__calls.length > 0 && runner.__calls.every((c) => c.model === undefined),
+    `runner model should stay undefined: ${JSON.stringify(runner.__calls.map((c) => c.model))}`);
+});
+
+// runAndWait 的 budgetTimeMs 作轮询 deadline（CLI --timeout-ms 同步面契约）：
+// norm.budgetTimeMs → core runAndWait 第 5 参 → pollRunToResult 到期 safeAbort
+// （done,time_limited）。此前同步面无任何超时承载，worker hang 时 CLI 永久挂起。
+test('runAndWait budgetTimeMs 生效：到期 abort 出 time_limited 终态', async () => {
+  freshRoot();
+  const dir = freshScriptDir();
+  const scriptFile = writeAnchoredScript(dir);
+  const runner = makeFakeAgentRunner({ hang: true });
+  const host = makeHost(runner);
+
+  const result = await host.runAndWait({ workflow: scriptFile, task: 't', workdir: dir, timeoutMs: 300 }, {});
+  assert.equal(result.status, 'done');
+  assert.equal(result.reason, 'time_limited', `expect time_limited, got: ${JSON.stringify(result)}`);
+});
+
 test('FileRunStore 落盘形状：append-only JSONL，末行终态快照', async () => {
   const root = freshRoot();
   const dir = freshScriptDir();
@@ -215,7 +262,7 @@ test('孤儿 run 恢复标记：遗留 running 快照 → done,failed', async ()
   const host = makeHost(makeFakeAgentRunner());
   const rec = await host.recoverOrphans();
   assert.equal(rec.orphaned, 1);
-  assert.equal(rec.recovered, 1);
+  assert.equal(rec.rehydrated, 1);
   const fin = host.status(orphanRunId);
   assert.equal(fin.status, 'done');
   assert.equal(fin.reason, 'failed');
@@ -469,8 +516,8 @@ test('C12 种子夹具恢复实测：25 历史快照经 recoverCrashedRuns 路�
 
   const host = makeHost(makeFakeAgentRunner());
   const rec = await host.recoverOrphans();
-  // recovered = 重水合条数（25 全部可读）；orphaned = 遗留 running 全部标终态
-  assert.equal(rec.recovered, 25, '25 文件全部重水合');
+  // rehydrated = 重水合条数（25 全部可读）；orphaned = 遗留 running 全部标终态
+  assert.equal(rec.rehydrated, 25, '25 文件全部重水合');
   assert.equal(rec.orphaned, 6, '遗留 running（崩溃 3 + 执行中 3）全部标终态 failed');
 
   // 磁盘面：25 文件末行 = 恢复后状态；running → done/failed（core 接管语义），done 组 reason 不丢

@@ -585,15 +585,24 @@ function createOrchestrationHost(opts = {}) {
      * 下个 500ms tick 永不到来，进程带着 exitCode 0 静默溜走（实测复现）。
      * 这里挂一个 ref'd interval 撑住事件循环，finally 清理。daemon/MCP 形态
      * 恒有句柄，keepAlive 无行为影响（纯多余句柄，随 finally 消失）。
+     *
+     * timeoutMs 合并序：调用方显式 options.timeoutMs（socket 面 deadline）优先，
+     * 缺省回落 norm.budgetTimeMs（CLI --timeout-ms 解析产物）——core runAndWait
+     * 的轮询 deadline 即同步面的预算承载（core 设计：spec 级 budgetTimeMs 服务
+     * fire-and-forget run，两处同设会竞态，故只走轮询通道）。
+     * model：norm.model 透传 core（spec Option B → $MODEL → agent() fallback），
+     * 与异步 run 面 buildSpec 对齐——此前同步面丢弃该参数致 CLI --model 失效。
      */
     async runAndWait(params, ctx = {}, { signal, timeoutMs } = {}) {
       const { norm, script, workdir } = await resolveRun(params, ctx.cwd);
       const deps = makeDeps(workdir);
+      const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : (Number.isFinite(norm.budgetTimeMs) && norm.budgetTimeMs > 0 ? norm.budgetTimeMs : undefined);
       const keepAlive = setInterval(() => {}, 2_147_000_000);
       let result;
       try {
-        result = await core.runAndWait(script.path, norm.args, deps, signal,
-          Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined);
+        result = await core.runAndWait(script.path, norm.args, deps, signal, effectiveTimeoutMs, norm.model);
       } finally {
         clearInterval(keepAlive);
       }
@@ -674,18 +683,19 @@ function createOrchestrationHost(opts = {}) {
      * daemon 接管/启动恢复（C12）：恢复线单源 core.recoverCrashedRuns——
      * loadAll 重水合 + running 标终态 failed（worker 随旧进程死亡）+ 落盘 +
      * 按 cap 裁剪，全部由 core 承担；zsw 的接管文案经 reason 传入（error
-     * 字段值与手写线逐字节一致），hooks.onRunRecovered 接 orphaned 计数。
-     * recovered 契约（dist/mcp/server.js 启动日志）= 重水合条数，core 恢复
-     * 线无返回值，这里预读一次 store.loadAll 只取条数（幂等只读；fromSnapshot
-     * 的畸形行 warn 会双份，为已知代价）。
+     * 字段值与手写线逐字节一致）。
+     * 计数口径（core 返回值单源，不再宿主预读 loadAll——双读 + 畸形行 warn
+     * 双份已消）：rehydrated = 重水合全量数（含 done 历史快照），orphaned =
+     * running 遗留被标 failed 的条数。字段名刻意分开，避免「重水合 N」被
+     * 误读为「恢复 N」。
      */
     async recoverOrphans() {
-      const loaded = await store.loadAll();
-      let orphaned = 0;
-      await core.recoverCrashedRuns(store, runs, 'daemon takeover: worker died with previous process', {
-        onRunRecovered: () => { orphaned++; },
-      });
-      return { recovered: loaded.length, orphaned };
+      const { loaded, recovered } = await core.recoverCrashedRuns(
+        store,
+        runs,
+        'daemon takeover: worker died with previous process',
+      );
+      return { rehydrated: loaded, orphaned: recovered };
     },
 
     /** daemon 退出：全部 running run 转 done,failed 落盘（对齐 E 壳 session_shutdown 语义）。 */
