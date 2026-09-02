@@ -3,7 +3,7 @@
 /**
  * zsw CLI 薄壳（决策位③入口之二，D13）：与 MCP server 共用 lib/assemble
  * 的同一 manager 组装。定位：
- *   1. 人类调试与脚本化（不需要 LLM，直接驱动九 action + workflow 六面）
+ *   1. 人类调试与脚本化（不需要 LLM，直接驱动九 action + workflow 九面）
  *   2. bash 增强通道留位：本命令可被 Bash run_in_background 包裹——
  *      CLI 进程被引擎跟踪，完成时触发原生 task-notification（独立 turn
  *      唤醒 + goal gate，Z4/Z6 语义）。这是 TaskNotificationNotifier
@@ -11,7 +11,8 @@
  *      「下次活动才注入」边界在此通道不复存在。
  *
  * 与 --local 模式的差异（如实声明；--local = 本地一次性执行，调试后门）：
- * --local 下 CLI 是一次性进程，start 与 message 一律阻塞到本轮完成再退出——
+ * --local 下 CLI 是一次性进程，start 阻塞到本轮完成再退出（message 续聊执行线
+ * 暂不可用，见下方 message 用法行说明）——
  * 进程退出即丢失后台执行体（轮死、record 卡 running、outputs/通知永不产生），
  * 且无常驻组件会接管 --local 启动的任务（server 的 recover 只在启动时跑，
  * 只会把 running 标成孤儿，不会收尾）。日常用法（默认，即 daemon 模式）执行体
@@ -19,30 +20,42 @@
  * CLI 阻塞进程成为引擎进程内 background task，完成即原生通知。
  *
  * 用法（1.0.0 起：默认 = daemon thin client；--local 显式本地执行）：
- *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <名>]
+ *   node bin/zsw.js start --task "<任务书>" --slug <短名> [--agent <.md绝对路径>]
+ *        （agent 仅收 .md 绝对路径，支持 ~/ 展开——传名字会被拒并给路径指引
+ *         （报错与 core agent-registry 同源）；缺省不传 = 加载 vendored
+ *         general-purpose 内置角色（project 级同名可遮蔽），不想要角色请显式
+ *         传自定义 .md 路径。路径清单先查 zsw agents 的 location/file 列）
  *        [--model <短名>] [--schema <json或文件路径>] [--worktree]
  *        [--conversation] [--timeout-ms <n>] [--wait]
  *        [--thinking <low|high|max>]
  *        [--allow-tools <逗号分隔工具名>] [--deny-tools <逗号分隔工具名>]
- *        （--thinking：appserver 通道映射 create.thoughtLevel，非法档位 warn
- *         跳过不失败，spawn 回退通道不可用并如实标注；--allow-tools/--deny-tools：
- *         appserver 通道 create.toolAllowlist/toolDenylist，deny 与 agent .md
- *         frontmatter disallowedTools 并集去重，spawn 通道不消费）
+ *        （--thinking：请求值未被引擎通道映射，终态 record 落
+ *         thinking="null (请求未生效：引擎通道未映射)" 如实标注；
+ *         --allow-tools：引擎无白名单 flag 通道不消费，终态 record 落
+ *         toolsNote 如实标注；--deny-tools：与 agent .md frontmatter
+ *         disallowedTools 并集去重后落引擎 --disallowed-tools flag 硬生效）
  *   node bin/zsw.js wait --id <id> [--id <id2> ...] [--timeout-ms <n>]
  *        （等待由 daemon 内存挂起到终态，零轮询；--timeout-ms 到点返回
  *         partial 结果，exit 2）
  *   node bin/zsw.js list
  *   node bin/zsw.js status --id <subagentId>
- *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（投递即回，完成经 wait 收）
+ *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（续聊执行线暂不可用——冷续聊回归已登记 P3；调用会收到明确不可用错误）
  *   node bin/zsw.js cancel --id <subagentId>
  *   node bin/zsw.js close --id <subagentId>
- *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>]
- *        --workflow <chain|parallel|map-reduce|scatter-gather|review-fix-loop|script:<名>>
- *        --task "<任务/目标>" --workdir <绝对路径> [options]（--action 缺省 = run）
- *        abort/status/list/scripts 管理面默认经 daemon（zflow 同源，MF1）；
- *        run 恒本地同步形态（执行体 = CLI 进程，bg 包裹即原生通知——设计
- *        v5 决策，无 daemon 化形态）、lint 恒本地（纯文件校验无状态）；
+ *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint|script-generate|script-save|script-delete>]
+ *        --workflow <内置名|.js绝对路径（~/ 可展开）> --task "<任务/目标>" --workdir <绝对路径>
+ *        [options]（--action 缺省 = run；workflow 引用契约（D-4/D-E3）：script:<名>
+ *        拒收；内置名 / 已保存脚本名（scripts 清单，D-E3 裸名放行）/ .js 绝对
+ *        路径合法——报错自带恢复指引）
+ *        abort/status/list/scripts/script-save/script-delete 管理面默认经 daemon
+ *        （zflow 同源，MF1）；run/lint/script-generate 恒本地（run 执行体 = CLI
+ *        进程，bg 包裹即原生通知——设计 v5 决策；lint/generate 纯文件操作无
+ *        状态）；script-generate/save/delete 为 W8 创作闭环（D-6：core 管线，
+ *        落盘目录 = zsw 宿主布局 ~/.zsw/workflows）；
  *        --local = 全 action 本地一次性执行（无 daemon 依赖，调试用）。
+ *        （回接 2b：workflow 编排 = vendored subagent-core orchestration，
+ *        旧 reviewers sugar / max-concurrent / timeout-per-phase /
+ *        subtask-count 已废弃——详见 workflow 子命令 usage）
  *   以上子命令加 --local 走本地一次性执行（无 daemon 依赖，调试用）。
  *   node bin/zsw.js hook session-start
  *        （SessionStart hook 入口，恒本地不经 daemon，不适用 --local：stdout
@@ -65,9 +78,24 @@
  */
 
 const path = require('node:path');
+const { isNestedEnv, zswCliPath } = require('../lib/config');
 const { assembleManager } = require('../lib/assemble');
 const { callDaemon } = require('../lib/cli-client');
 const { TERMINAL_STATUSES } = require('../lib/record-store');
+const { execZsubAction } = require('../lib/zsub-actions');
+const coreRef = require('../lib/core-ref');
+const { buildKnownWorkflowNames, ensureConfigured } = require('../lib/orchestration-host');
+// MF-1：引用契约 + script-* 创作闭环收口到 lib/workflow-actions.js（镜像
+// zsub-actions 模式）——MCP/daemon 入口不再反向 require CLI 入口模块取业务逻辑
+const {
+  validateWorkflowRef,
+  knownWorkflowNames,
+  scriptGenerateAction,
+  scriptSaveAction,
+  scriptDeleteAction,
+  runningScriptPredicate,
+  requireScriptActionName,
+} = require('../lib/workflow-actions');
 
 function usage(exitCode = 1) {
   process.stderr.write(
@@ -79,7 +107,7 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
     + '  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）\n'
     + '  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）\n'
-    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（start 前查名）\n'
+    + '  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）\n'
     + '  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）\n'
     + '  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
@@ -140,67 +168,67 @@ function startCapabilityArgs(args) {
   };
 }
 
+/**
+ * start 的 --schema 解析（daemon 与 --local 两形态共用，防漂移）：非绝对路径
+ * 的 .json 文件路径读成内容字符串，其余值（JSON 字面量 / 绝对路径 / 未传）
+ * 原样透传给 manager。
+ */
+function schemaArg(schema) {
+  if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
+    return require('node:fs').readFileSync(schema, 'utf8');
+  }
+  return schema;
+}
+
 // ------------------------------------------------------ workflow 子命令
 
-/** workflow 六 action（与 MCP zflow tool 的 action 枚举同源）。 */
-const WORKFLOW_ACTIONS = ['run', 'abort', 'status', 'list', 'scripts', 'lint'];
-
-/**
- * scripts action 的内置索引。面向人类 CLI 的中文一句话；LLM 侧权威索引在
- * dist/mcp/server.js 的 BUILTIN_WORKFLOW_INFO（英文，随 tool description）——
- * 两个入口受众不同，文案独立维护，名字集合以 lib/workflow-manager 的
- * defaultWorkflows 为准。
- */
-const BUILTIN_WORKFLOW_INFO = [
-  { name: 'chain', description: '分析 → 实现 → 总结 三步顺序链' },
-  { name: 'parallel', description: '单目标多视角并行审查后聚合' },
-  { name: 'map-reduce', description: '对已知 items 数组并行变换再归约' },
-  { name: 'scatter-gather', description: '大任务拆 2-4 份并行处理再合并' },
-  { name: 'review-fix-loop', description: '并行审查 → 聚合 must-fix → 修复 → 复审到 clean（会写文件）' },
-];
+/** workflow 九 action（与 zflow 语义层 action 枚举同源；script-* 三 action 为 W8 创作闭环）。 */
+const WORKFLOW_ACTIONS = ['run', 'abort', 'status', 'list', 'scripts', 'lint', 'script-generate', 'script-save', 'script-delete'];
 
 function workflowUsage(exitCode = 1) {
   process.stderr.write(
-    'zsw workflow：workflow 编排与管理（经 WorkflowManager，record/outputs/通知与 MCP zflow 同源）\n'
+    'zsw workflow：workflow 编排与管理（vendored subagent-core orchestration，经'
+    + ' lib/orchestration-host.js；状态面 = <zsw 数据根>/workflow-state/，不再写 zsw record）\n'
     + '\n'
     + '用法:\n'
-    + '  node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint>] [options]\n'
-    + '  （--action 缺省 = run；abort/status/list/scripts 管理面默认经 daemon\n'
-    + '   thin client（zflow tool 同源）；run/lint 恒本地；--local = 全 action\n'
-    + '   本地一次性执行）\n'
+    + '  node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint|script-generate|script-save|script-delete>] [options]\n'
+    + '  （--action 缺省 = run；abort/status/list/scripts/script-save/script-delete 管理面\n'
+    + '   默认经 daemon thin client（zflow 同源）；run/lint/script-generate 恒本地；\n'
+    + '   --local = 全 action 本地一次性执行）\n'
     + '\n'
     + 'run（默认）—— 同步等待完成并输出报告（CLI 一次性进程无后台模式，\n'
-    + '  异步 runId + 完成通知走 MCP zflow）:\n'
-    + '  --workflow <名>           chain / parallel / map-reduce / scatter-gather /\n'
-    + '                            review-fix-loop / script:<自定义脚本名>\n'
-    + '  --task <text>             任务描述（必填，自包含）\n'
-    + '  --workdir <path>          工作目录（必填，绝对路径）\n'
-    + '  --model <name>            模型短名或 provider 全名（默认跟随配置的 main 模型；仅限 provider 已启用的模型，传错会列出可用清单）\n'
-    + '  --max-concurrent <n>      单 workflow 内阶段并发上限（默认 3）\n'
-    + '  --timeout-per-phase <ms>  单阶段超时（不设则无超时）\n'
-    + '  --timeout-ms <ms>         workflow 整体超时（不设则无超时）\n'
+    + '  异步 runId 走 socket 面后用 status 查询）:\n'
+    + '  --workflow <ref>           内置名（chain / parallel / map-reduce /\n'
+    + '                            scatter-gather / review-fix-loop）、已保存脚本名\n'
+    + '                            （scripts 清单，D-E3 裸名放行）或 .js 绝对路径\n'
+    + '                            （~/ 前缀可展开）。script:<名> 已废弃拒收\n'
+    + '  --task <text>             任务描述（必填；parallel 场景作为 target 回退，\n'
+    + '                            review-fix-loop 场景作为 target 回退）\n'
+    + '  --workdir <path>          工作目录（必填，绝对路径——agent() 调用的 cwd）\n'
+    + '  --model <name>            RunSpec.model（短名或 provider 全名；\n'
+    + '                            传错会列出可用清单）\n'
+    + '  --timeout-ms <ms>         workflow 整体墙钟预算（RunSpec.budgetTimeMs；不设则无限制）\n'
     + '  --json                    只输出 run 摘要 JSON（默认 markdown 报告 + 摘要两段）\n'
     + '\n'
     + '  per-workflow 选项:\n'
     + '  --perspectives "a,b,c"    parallel：分析视角（默认 security,performance,maintainability）\n'
     + '  --items <json数组|a,b,c>  map-reduce：待处理条目，如 \'["a","b"]\' 或 a,b,c\n'
     + '  --operation <text>        map-reduce：对每个 item 做什么\n'
-    + '  --subtask-count <n>       scatter-gather：拆分数提示（2-4）\n'
     + '  review-fix-loop（批次外环：batch1..batchN 串行，批内 review→聚合→fix→重审到 clean）:\n'
-    + '  --batch1 "a,b"            批次维度（batch1、batch2、… 连续编号，缺号报错；批间串行，\n'
-    + '                            前一批 clean 后一批才启动；跨批 clean 且无 fix 的维度跳过）\n'
+    + '  --batch1 "<refs>"         批次执行者：agent .md 绝对路径（逗号分隔多 agent）。\n'
+    + '                            batch2、batch3… 连续编号同形态；至少传一个\n'
+    + '                            batchN（无 agent .md 时改用自定义脚本——.js 绝对\n'
+    + '                            路径引用，可经 script-generate 创作）\n'
     + '  --batch-names "a,b"       批次命名（数量须与批次数一致，缺省 batch-1..N）\n'
-    + '  --reviewers "a,b"         老参数 sugar：包装为单批（默认 correctness,robustness；\n'
-    + '                            与 batchN 同传时 batchN 优先）\n'
     + '  --target-type <t>         审查目标类型 git-diff|file|dir|text（默认 text）\n'
-    + '  --target <text>           审查目标（与 --target-type 配套；git-diff/file/dir 必填，text 缺省 = "git 未提交改动"）\n'
+    + '  --target <text>           审查目标（必填：git-diff 传 base ref 如 main、\n'
+    + '                            file/dir 传路径、text 传描述）\n'
     + '  --review-target <text>    老参数 sugar：等价 --target-type text --target <text>\n'
     + '  --max-rounds <n>          每批最大轮数（默认 10，≥1）\n'
     + '  --stuck-threshold <n>     连续 N 轮 must-fix 不降判 stuck（默认 3）\n'
-    + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭；\n'
-    + '                            同时作用于批内轮间与跨批）\n'
-    + '  --recheck-after-fix [b]   fix 后重派全批，上一轮 clean 的走限定复检（只查 fix 引入的\n'
-    + '                            回归；默认 false，clean 持续跳过）\n'
+    + '  --skip-clean-agents [b]   clean 审查者跳过不派（默认 true；传 false 关闭）\n'
+    + '  --recheck-after-fix [b]   fix 后重派全批，上一轮 clean 的走限定复检\n'
+    + '                            （默认 false，clean 持续跳过）\n'
     + '  --converge-new-issues <n> 收敛判定：每轮新发现上限（默认 1）\n'
     + '  --converge-rounds <n>     收敛判定：连续 N 轮达标即收敛（默认 2）\n'
     + '  --max-fix-attempts <n>    同一问题回归 N 次后判 needs-redesign（默认 2）\n'
@@ -211,15 +239,34 @@ function workflowUsage(exitCode = 1) {
     + '                            默认 false）\n'
     + '  --auto-commit [b]         允许修复者提交改动（默认 false，改动留给用户）\n'
     + '\n'
-    + 'abort / status / list / scripts（管理面：默认经 daemon，zflow 同源；--local 本地）:\n'
-    + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
-    + '                            abort 后状态落 cancelled）\n'
-    + 'list:                       全部 workflow run（精简视图）\n'
-    + 'scripts:                    内置 5 + 自定义脚本清单（四根发现）\n'
-    + 'lint:\n'
-    + '  --file <脚本路径>         校验脚本（node --check 语法 + name/description/run 契约形状）\n'
+    + '  已废弃 flags（显式报错或 warning，不静默）:\n'
+    + '  --reviewers               报错：core 契约批次值 = agent .md 路径（用 --batch1）\n'
+    + '  --max-concurrent / --timeout-per-phase / --subtask-count\n'
+    + '                            warning：core 编排无对应面，已忽略\n'
     + '\n'
-    + '进度打 stderr；exit 0 = 成功（run 以终态 closed 判定）。zcode CLI 路径可用 ZSW_ZCODE_CLI 覆盖。\n'
+    + 'abort / status / list / scripts / script-save / script-delete（管理面：默认经\n'
+    + '  daemon，zflow 同源；--local 本地）:\n'
+    + '  --id <runId>              abort/status 必填：wf- 前缀的 run id（list 可查；\n'
+    + '                            abort 后状态落 aborted）\n'
+    + 'list:                       全部 workflow run（精简视图；done run 内存保留\n'
+    + '                            有上限，淘汰后读 stateFile）\n'
+    + 'scripts:                    vendored 内置 5 + 用户脚本（core 发现面 + .zsw 根）\n'
+    + 'script-save:\n'
+    + '  --name <脚本名>           tmp → ~/.zsw/workflows/ 固化（重名拒绝；固化后\n'
+    + '                            scripts 清单可见、run 按绝对路径引用）\n'
+    + 'script-delete:\n'
+    + '  --name <脚本名>           删 tmp 或已固化脚本（运行中拒绝——daemon 侧 runs\n'
+    + '                            真实状态裁决；--local 下本地进程无 runs 视图，\n'
+    + '                            恒放行，仅调试用）\n'
+    + 'lint / script-generate（恒本地：纯文件校验/写盘，无共享进程态）:\n'
+    + '  --file <脚本路径>         lint 校验脚本（core lintScript：agent() 入口等契约）\n'
+    + '  --name <脚本名>           script-generate 必填（单段文件名，不含路径分隔符）\n'
+    + '  --script "<JS 源码>"      script-generate 必填（完整源码：@pi-meta 块 +\n'
+    + '                            top-level agent()；core 五道闸校验 = ESM 拒/\n'
+    + '                            meta 必需/agent() 必需/语法/@pi-meta round-trip，\n'
+    + '                            非法报错与 pi 侧同源、round-trip 含行列）\n'
+    + '\n'
+    + '进度打 stderr；exit 0 = 成功（run 以 reason=completed 判定）。zcode CLI 路径（core 引擎）可用 XYZ_ZCODE_CLI 覆盖。\n'
   );
   process.exit(exitCode);
 }
@@ -255,6 +302,8 @@ function requireRunIdArg(args) {
   return args.id;
 }
 
+// ------- workflow 引用契约（D-4）+ 创作闭环（W8 / D-6）实现已收口 lib/workflow-actions.js（MF-1）
+
 /** run action 参数面①：必填三参校验（声明顺序即缺参报错的优先级）。 */
 function requireWorkflowRunArgs(args) {
   if (!args.workflow) { process.stderr.write('缺少 --workflow\n'); workflowUsage(1); }
@@ -262,8 +311,34 @@ function requireWorkflowRunArgs(args) {
   if (!args.workdir) { process.stderr.write('缺少 --workdir\n'); workflowUsage(1); }
 }
 
-/** run action 参数面②：通用 per-workflow 选项（csv→数组、字符串→数字/布尔）。 */
-function applyWorkflowCoreOptions(params, args) {
+/**
+ * run action 参数组装（回接 2b）：CLI flag → zflow params 形态（csv→数组、
+ * 字符串→数字/布尔），$ARGS 映射 / sugar 裁决 / 废弃 flag 拦截统一在
+ * lib/orchestration-host.js 的 normalizeRunParams（单一权威，CLI 不重复实现
+ * 映射，防两处漂移）。CLI 只做形态转换与已消费键标记。
+ *
+ * 异步化（C17/D-E3）：knownNames 构建（发现面扫描）是异步——cwd 口径与
+ * runWorkflowCommand 传给 host 的 ctx.cwd 同源（ZCODE_PROJECT_DIR || cwd），
+ * 同一目录集两入口产出同一 knownNames 集（⛔D）。
+ */
+async function buildWorkflowRunParams(args, cwd) {
+  // U1（F02 同款惯例）：发现面扫描前显式 ensureConfigured——knownNames 的
+  // saved 名依赖 discoveryRoots（~/.zsw/workflows 借 user-pi 槽）注入，未组装
+  // host 的进程直调本函数会静默缩水成内置 5 名。幂等（进程级 flag），已配置
+  // 时零开销；CLI 正常路径经 runWorkflowCommand → assembleManager 已配置，
+  // 此处是对直调导出面的防御收口
+  ensureConfigured();
+  // D-4/D-E3 引用契约入口（CLI 面）：script: 前缀拒收、saved 裸名放行
+  // （knownNames = 内置 + 发现面 saved 名）、非法 ref 在此拦下不进 host
+  validateWorkflowRef(args.workflow, await buildKnownWorkflowNames(coreRef.requireCore(), cwd));
+  const params = {
+    workflow: args.workflow, // 内置名 / .js 绝对路径（合法性已在入口校验）
+    task: args.task,
+    workdir: path.resolve(args.workdir),
+    model: args.model,
+    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+  };
+  // 通用 per-workflow 选项
   if (args.perspectives !== undefined) params.perspectives = csv(args.perspectives);
   if (args.items !== undefined) params.items = parseItems(args.items);
   if (args.operation !== undefined) params.operation = args.operation;
@@ -273,26 +348,17 @@ function applyWorkflowCoreOptions(params, args) {
   if (args.maxRounds !== undefined) params.maxRounds = Number(args.maxRounds);
   if (args.skipCleanAgents !== undefined) params.skipCleanAgents = parseBoolFlag(args.skipCleanAgents);
   if (args.recheckAfterFix !== undefined) params.recheckAfterFix = parseBoolFlag(args.recheckAfterFix);
-}
-
-/** batchN 动态键（--batch1、--batch2、… 连续编号）：csv 归一 + 已消费标记 + 无值报错。 */
-function applyBatchArgs(params, args, consumedArgs) {
+  // review-fix-loop 显式 flag 面
+  if (args.targetType !== undefined) params.targetType = args.targetType;
+  if (args.target !== undefined) params.target = args.target;
   for (const [key, value] of Object.entries(args)) {
     if (!/^batch([1-9]\d*)$/.test(key)) continue;
-    consumedArgs.add(key); // 已映射为 csv 数组，透传循环不得用原始字符串覆写
     if (value === true) {
-      process.stderr.write(`--${key} 需要值（逗号分隔维度，如 --${key} "correctness,robustness"）\n`);
+      process.stderr.write(`--${key} 需要值（agent .md 绝对路径，逗号分隔多 agent）\n`);
       workflowUsage(1);
     }
     params[key] = csv(value);
   }
-}
-
-/** review-fix-loop v2 显式 flag 面：target/batch/聚合收敛/fix 行为 → params。 */
-function applyReviewFixLoopOptions(params, args, consumedArgs) {
-  if (args.targetType !== undefined) params.targetType = args.targetType;
-  if (args.target !== undefined) params.target = args.target;
-  applyBatchArgs(params, args, consumedArgs);
   if (args.batchNames !== undefined) params.batchNames = csv(args.batchNames);
   if (args.stuckThreshold !== undefined) params.stuckThreshold = Number(args.stuckThreshold);
   if (args.convergeNewIssues !== undefined) params.convergeNewIssues = Number(args.convergeNewIssues);
@@ -303,101 +369,147 @@ function applyReviewFixLoopOptions(params, args, consumedArgs) {
   if (args.fixPrompt !== undefined) params.fixPrompt = args.fixPrompt;
   if (args.fallowScan !== undefined) params.fallowScan = parseBoolFlag(args.fallowScan);
   if (args.autoCommit !== undefined) params.autoCommit = parseBoolFlag(args.autoCommit);
-}
 
-/** 透传面：consumedArgs 之外的未知 flag 原样透传（拼错 flag 不在 CLI 静默丢弃）。 */
-function applyPassthroughArgs(params, args, consumedArgs) {
-  for (const [key, value] of Object.entries(args)) {
-    if (consumedArgs.has(key) || value === undefined) continue;
-    params[key] = value;
-  }
-}
-
-/** run action 参数组装：基础参数 → 通用选项 → review-fix-loop 选项 → 透传。 */
-function buildWorkflowRunParams(args) {
-  const params = {
-    workflow: args.workflow, // 内置名或 script:<脚本名>（合法性由 manager 校验）
-    task: args.task,
-    workdir: path.resolve(args.workdir),
-    model: args.model,
-    maxConcurrent: args.maxConcurrent ? Number(args.maxConcurrent) : undefined,
-    timeoutMsPerPhase: args.timeoutPerPhase ? Number(args.timeoutPerPhase) : undefined,
-    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
-    // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
-    // start 的 CLI 语义对齐；异步启动走 MCP zflow
-    wait: true,
-    // 进度走 stderr（stdout 留给结果）；回调经 record 的 JSON 序列化自然丢弃，不落盘
-    onPhase: ({ phase, status }) => process.stderr.write(`[${new Date().toISOString()}] ${phase}: ${status}\n`),
-  };
-  applyWorkflowCoreOptions(params, args);
-
-  // review-fix-loop v2 参数面（设计 §3.4 终态全集）。target/review-target/batchN/
-  // reviewers 的优先级裁决与缺省映射统一在 workflow 入口 normalizeParams（D5）——
-  // CLI 负责形态转换（csv→数组、字符串→数字/布尔）与已映射键的消费标记：
-  // batchN 动态键必须 add 进 consumedArgs，否则下方透传循环会用原始逗号字符串
-  // 覆写回 params，数组形态永远到不了入口。CLI 不重复实现映射，防两处漂移。
-  //
-  // 透传面：CLI 自有 / 已映射 flag（consumedArgs）不透传，其余 flags 原样透传
-  // ——parseArgs 是通用 --key 解析，拼错的 flag（如 --batchX、--stuck-threshld）
-  // 若在此静默丢弃，入口白名单就永远拦不到。透传后 review-fix-loop 入口的参数
-  // 白名单会报「未知参数」并列合法清单（单一权威，CLI 不重复维护清单）；其他
-  // 内置 workflow 无白名单，多余键被入口解构忽略，与透传前行为一致。
+  // 透传面（用户脚本的 $ARGS 通道）：CLI 自有/已映射 flag 不透传，其余 flags
+  // 原样透传——拼错的 flag（如 --stuck-threshld）不在 CLI 静默丢弃，透传后
+  // host 对内置形态出 warning、用户脚本形态进 $ARGS 由脚本自己的
+  // parameters schema 裁决
   const consumedArgs = new Set([
-    '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait',
+    '_', 'action', 'json', 'local', 'help', 'id', 'file', 'wait', 'name', 'script',
     'workflow', 'task', 'workdir', 'model', 'maxConcurrent', 'timeoutPerPhase', 'timeoutMs',
     'perspectives', 'items', 'operation', 'subtaskCount',
     'reviewTarget', 'reviewers', 'maxRounds', 'skipCleanAgents', 'recheckAfterFix',
     'targetType', 'target', 'batchNames', 'stuckThreshold', 'convergeNewIssues',
     'convergeRounds', 'maxFixAttempts', 'aggregatorModel', 'reviewPrompt', 'fixPrompt',
-    'fallowScan', 'autoCommit', 'onPhase',
+    'fallowScan', 'autoCommit',
   ]);
-  applyReviewFixLoopOptions(params, args, consumedArgs);
-  applyPassthroughArgs(params, args, consumedArgs);
+  for (const [key, value] of Object.entries(args)) {
+    if (consumedArgs.has(key) || /^(batch([1-9]\d*))$/.test(key) || value === undefined) continue;
+    params[key] = value;
+  }
+  // maxConcurrent/timeoutPerPhase 拼写保留位：透传给 host 出显式 warning（不再
+  // 静默忽略），CLI 不消费
+  if (args.maxConcurrent !== undefined) params.maxConcurrent = Number(args.maxConcurrent);
+  if (args.timeoutPerPhase !== undefined) params.timeoutMsPerPhase = Number(args.timeoutPerPhase);
   return params;
 }
 
-/** run action 输出面：--json 只出摘要；默认 markdown 报告 + 摘要两段；exit 按终态。 */
+/**
+ * run action 输出面：--json 只出摘要；默认 markdown 报告 + 摘要两段；
+ * exit 按 reason=completed 判定。报告正文 = core scriptResult（资产返回值），
+ * message 字段优先（人读一行结论），其余字段 JSON 序列化补全。
+ * 用 process.exitCode 而非 process.exit：大报告的 stdout write 可能仍挂起，
+ * process.exit 会截断 pending flush（输出丢失），自然退出让事件循环排空。
+ */
 function renderWorkflowRunOutput(fin, args) {
   const summary = {
-    runId: fin.runId, workflow: fin.workflow, status: fin.status,
-    outputFile: fin.outputFile, error: fin.error === undefined ? null : fin.error,
+    runId: fin.runId,
+    workflow: args.workflow,
+    reason: fin.reason,
+    error: fin.error === undefined ? null : fin.error,
+    stateFile: fin.stateFile === undefined ? null : fin.stateFile,
+    warnings: Array.isArray(fin.warnings) && fin.warnings.length > 0 ? fin.warnings : undefined,
   };
+  if (Array.isArray(fin.warnings)) {
+    for (const w of fin.warnings) process.stderr.write(`[zsw] ${w}\n`);
+  }
   if (args.json === true) {
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   } else {
+    const reportBody = renderScriptResultMarkdown(fin.scriptResult);
     process.stdout.write(`\n${'='.repeat(60)}\nmarkdown 报告:\n${'='.repeat(60)}\n`);
-    process.stdout.write(`${fin.report || ''}\n`);
+    process.stdout.write(`${reportBody}\n`);
     process.stdout.write(`\n${'='.repeat(60)}\nrun 摘要:\n${'='.repeat(60)}\n`);
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   }
-  process.exit(fin.status === 'closed' ? 0 : 1);
+  process.exitCode = fin.reason === 'completed' ? 0 : 1;
 }
 
-/** run action：组参 → 同步等完成 → 报告 + 摘要（exit code 按终态）。 */
-async function runWorkflowRun(wfManager, args, cwd) {
+/** scriptResult（core 资产返回值，对象/字符串/null）→ 人读 markdown 段。 */
+function renderScriptResultMarkdown(scriptResult) {
+  if (scriptResult === null || scriptResult === undefined) return '(无 scriptResult)';
+  if (typeof scriptResult === 'string') return scriptResult;
+  // 迁移脚本兼容（D6-⑧ 改写对照的产出等价面）：旧契约脚本返回 {markdown, json}，
+  // markdown 字段为非空字符串时直接作报告主体，其余键以 json 块补齐、不重复 dump。
+  if (typeof scriptResult.markdown === 'string' && scriptResult.markdown !== '') {
+    const rest = { ...scriptResult };
+    delete rest.markdown;
+    const extra = Object.keys(rest).length > 0
+      ? `\n\n\`\`\`json\n${JSON.stringify(rest, null, 2)}\n\`\`\``
+      : '';
+    return scriptResult.markdown + extra;
+  }
+  const lines = [];
+  if (typeof scriptResult.message === 'string' && scriptResult.message !== '') {
+    lines.push(scriptResult.message);
+  }
+  const rest = { ...scriptResult };
+  delete rest.message;
+  if (Object.keys(rest).length > 0) {
+    lines.push('', '```json', JSON.stringify(rest, null, 2), '```');
+  }
+  return lines.join('\n');
+}
+/**
+ * CLI 一次性进程的常驻引擎收口（W6a2 移交修复，W6b 落地）：core engine 已
+ * 缺省 appserver 常驻模式——任务跑完后常驻子进程的 pipe stdio 仍挂住父进程
+ * 事件循环，CLI 无法自然退出。本地执行体完成后统一调 wfHost.shutdown
+ * （assemble 已组合 runner.shutdown：宿主惰性引擎实例逐个 dispose（close 帧
+ * 先于 SIGTERM）+ killAllSpawnedChildren 兜底）。兜底 exit timer 用 unref：
+ * 事件循环已空（dispose 后 stdio 管道关闭）则进程自然退出，stdout flush 走
+ * node 退出路径；仍有残留 handle 则 250ms 后强制 exit（延迟给大报告的
+ * stdout flush 留时间——与 renderWorkflowRunOutput 不用 process.exit 的理由
+ * 一致）。daemon thin-client 路径不经本函数：执行体由 daemon 持有，引擎
+ * dispose 是 daemon 自己的退出面（stdin 关闭钩子），CLI 侧 socket 断开即可。
+ */
+function exitAfterEngineShutdown(wfHost) {
+  return Promise.resolve()
+    .then(() => (wfHost && typeof wfHost.shutdown === 'function' ? wfHost.shutdown() : undefined))
+    .catch((e) => {
+      process.stderr.write(`[zsw] engine 收口失败（继续退出）: ${e && e.message || e}\n`);
+    })
+    .then(() => {
+      const code = process.exitCode || 0;
+      setTimeout(() => process.exit(code), 250).unref();
+    });
+}
+
+/** run action：组参 → host.runAndWait 同步等终态 → 报告 + 摘要（exit 按终态）。 */
+async function runWorkflowRun(wfHost, args, cwd) {
   requireWorkflowRunArgs(args);
-  const params = buildWorkflowRunParams(args);
-  const fin = await wfManager.start(params, { cwd });
+  const params = await buildWorkflowRunParams(args, cwd);
+  // CLI 一次性进程：同步等完成（后台执行体随进程退出而死）——与 subagent
+  // start 的 CLI 语义对齐。异步需求走 Bash run_in_background 包裹本命令（引擎
+  // 原生 task-notification 唤醒）；daemon 的 zflow run 分支（server.js，wait
+  // 缺省 false）是已接线保留面，但 workflowDaemonParams 对 run 返回 null——
+  // 当前无 CLI 构帧方，勿据此推断存在「CLI 异步启动」入口。
+  const fin = await wfHost.runAndWait(params, { cwd });
   renderWorkflowRunOutput(fin, args);
+  // appserver 常驻引擎的 pipe stdio 挂事件循环（见 exitAfterEngineShutdown 头注）
+  await exitAfterEngineShutdown(wfHost);
 }
 
 /**
  * workflow 子命令双模式（MF1）：
- * - abort/status/list/scripts 管理面默认经 daemon thin client（zflow tool
- *   同源）——record/执行体由常驻 daemon 持有，CLI 不再把非终态 run 误标
- *   lost；--local 显式走本地（调试后门）。
+ * - abort/status/list/scripts/script-save/script-delete 管理面默认经 daemon thin
+ *   client（zflow 同源）——record/执行体/运行中 runs 状态由常驻 daemon 持有：
+ *   script-delete 的「运行中拒绝」只有 daemon 的 runs 表能真实裁决，
+ *   script-save 后的发现面 invalidate 也落在 daemon 进程内；--local 显式走
+ *   本地（调试后门：无 runs 视图，delete 恒放行）。
  * - run 恒本地同步（执行体 = CLI 进程本身，bash run_in_background 包裹即
- *   原生通知——设计 v5 决策，无 daemon 化形态）；lint 恒本地（纯文件校验
- *   无状态）。两者的 --local flag 无行为差异，但 NESTED 检查仍前置（MF2：
- *   workflow 在 main 顶部提前分流，绕过 runDaemonCommand 的检查，此处补洞；
- *   --local 同拒——嵌套里本地跑同样递归）。
- * 本地路径（--local 或 run/lint）：一次性进程只重建内存索引（同 main 的
- * subagent 路径：不探活、不落盘），非终态 run 在 CLI 视角显示 lost。
+ *   原生通知——设计 v5 决策，无 daemon 化形态）；lint/script-generate 恒本地
+ *   （纯文件校验/写盘，无共享进程态）。两者的 --local flag 无行为差异，但
+ *   NESTED 检查仍前置（MF2：workflow 在 main 顶部提前分流，绕过
+ *   runDaemonCommand 的检查，此处补洞；--local 同拒——嵌套里本地跑同样递归）。
+ * 本地路径（--local 或 run/lint/script-generate）：一次性进程只重建内存索引
+ * （同 main 的 subagent 路径：不探活、不落盘），非终态 run 在 CLI 视角显示 lost。
  */
 /**
  * 管理面 CLI flag → zflow handler 参数映射（契约对齐 dist/mcp/server.js 的
  * zflow handler：abort/status 必填 runId（CLI 侧 flag 是 --id）、list/scripts
- * 无参）。requireRunIdArg 的缺参报错在组帧前发生，daemon/--local 两形态一致。
+ * 无参、script-save/script-delete 必填 name）。缺参报错在组帧前发生
+ * （requireRunIdArg 同理；requireScriptActionName 的 throw 经 main catch 出
+ * exit 1），daemon/--local 两形态一致。
  */
 function workflowDaemonParams(action, args) {
   switch (action) {
@@ -409,8 +521,60 @@ function workflowDaemonParams(action, args) {
       return { action: 'list' };
     case 'scripts':
       return { action: 'scripts' };
+    case 'script-save':
+      return { action: 'script-save', name: requireScriptActionName(args.name) };
+    case 'script-delete':
+      return { action: 'script-delete', name: requireScriptActionName(args.name) };
     default:
-      return null; // run/lint：恒本地，不走 daemon
+      return null; // run/lint/script-generate：恒本地，不走 daemon
+  }
+}
+
+// workflow 本地 action 分发（由 runWorkflowCommand 拆出；daemon 分流与 run 的先行分流仍在主函数）
+async function dispatchWorkflowLocalAction(wfHost, action, args, cwd) {
+  switch (action) {
+    case 'abort':
+      process.stdout.write(`${JSON.stringify(await wfHost.abort(requireRunIdArg(args)), null, 2)}\n`);
+      break;
+    case 'status':
+      process.stdout.write(`${JSON.stringify(wfHost.status(requireRunIdArg(args)), null, 2)}\n`);
+      break;
+    case 'list':
+      process.stdout.write(`${JSON.stringify(wfHost.list(), null, 2)}\n`);
+      break;
+    case 'scripts': {
+      const found = await wfHost.scripts(cwd);
+      process.stdout.write(`${JSON.stringify({
+        builtin: found.builtin.map((b) => ({ name: b.name, description: b.description, path: b.path })),
+        scripts: found.scripts,
+      }, null, 2)}\n`);
+      break;
+    }
+    case 'lint': {
+      if (typeof args.file !== 'string' || args.file.trim() === '') {
+        process.stderr.write('lint 需要 --file <脚本路径>（scripts 可查已发现脚本的 path 字段）\n');
+        workflowUsage(1);
+      }
+      process.stdout.write(`${JSON.stringify(await wfHost.lint(args.file), null, 2)}\n`);
+      break;
+    }
+    case 'script-generate': {
+      // 恒本地：core 管线纯校验 + tmp 写盘，无共享进程态（同 lint 语义）
+      process.stdout.write(`${JSON.stringify(scriptGenerateAction(args.name, args.script), null, 2)}\n`);
+      break;
+    }
+    case 'script-save': {
+      // --local 路径：目录操作无共享态，直接走共享实现（daemon 默认路径在上方
+      // workflowDaemonParams 已分流，此处仅调试后门）
+      process.stdout.write(`${JSON.stringify(await scriptSaveAction(args.name), null, 2)}\n`);
+      break;
+    }
+    case 'script-delete': {
+      // --local 一次性进程无 runs 视图：runningScriptPredicate 对空 runs Map 恒
+      // false（如实声明——「运行中拒绝」的真实裁决只在 daemon 面）
+      process.stdout.write(`${JSON.stringify(scriptDeleteAction(args.name, runningScriptPredicate(wfHost)), null, 2)}\n`);
+      break;
+    }
   }
 }
 
@@ -435,40 +599,15 @@ async function runWorkflowCommand(rest) {
     }
   }
 
-  const { wfManager } = await assembleManager();
-  try { wfManager.records.rebuildFromLog(); } catch (e) {
-    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
-  }
+  // 回接 2b：本地路径走 orchestration host（vendored subagent-core）。
+  // 一次性进程不重水合历史 run（内存 runs 空，list 显示为空；历史快照在
+  // <zsw 数据根>/workflow-state/，daemon 启动/接管时由 recoverOrphans 收编）
+  const { wfHost } = await assembleManager();
   const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
 
-  if (action === 'run') return runWorkflowRun(wfManager, args, cwd);
+  if (action === 'run') return runWorkflowRun(wfHost, args, cwd);
 
-  switch (action) {
-    case 'abort':
-      process.stdout.write(`${JSON.stringify(await wfManager.abort(requireRunIdArg(args)), null, 2)}\n`);
-      break;
-    case 'status':
-      process.stdout.write(`${JSON.stringify(wfManager.status(requireRunIdArg(args)), null, 2)}\n`);
-      break;
-    case 'list':
-      process.stdout.write(`${JSON.stringify(wfManager.list(), null, 2)}\n`);
-      break;
-    case 'scripts':
-      process.stdout.write(`${JSON.stringify({
-        builtin: BUILTIN_WORKFLOW_INFO,
-        scripts: wfManager.listScripts(cwd),
-      }, null, 2)}\n`);
-      break;
-    case 'lint': {
-      if (typeof args.file !== 'string' || args.file.trim() === '') {
-        process.stderr.write('lint 需要 --file <脚本路径>（scripts 可查已发现脚本的 file 字段）\n');
-        workflowUsage(1);
-      }
-      const { lintScript } = require('../lib/workflow-script');
-      process.stdout.write(`${JSON.stringify(await lintScript(path.resolve(args.file)), null, 2)}\n`);
-      break;
-    }
-  }
+  return dispatchWorkflowLocalAction(wfHost, action, args, cwd);
 }
 
 // ------------------------------------------------------ hook 子命令（SessionStart）
@@ -494,8 +633,9 @@ async function runWorkflowCommand(rest) {
  * 数据组装/渲染/降级语义（D4/D5/D6 三条硬约束与口径）见 lib/hook-source.js 头注。
  */
 function runHookCommand(rest) {
-  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用都零开销退出）
-  if (process.env.ZSW_NESTED === '1') {
+  // 嵌套守卫最前（守卫优先于事件名校验，嵌套下任何 hook 调用零开销退出；
+  // F03 双标记判定，谓词权威源 lib/config isNestedEnv）
+  if (isNestedEnv()) {
     process.stdout.write('{}\n');
     return; // 自然退出 = exit 0；不用 process.exit 防 stdout 未 flush
   }
@@ -504,7 +644,9 @@ function runHookCommand(rest) {
     usage(1);
   }
   try {
-    require('../lib/hook-source').runSessionStartHook();
+    // async（core 发现面异步）+ 容错：runSessionStartHook 内部已消化正常
+    // 降级，此处 .catch 只兜 promise 链意外拒绝
+    require('../lib/hook-source').runSessionStartHook().catch(() => {});
   } catch (e) {
     // hook-source 加载/执行本身的意外抛出（正常降级路径在其内部已消化）：
     // stdout 是协议通道，必须给引擎一个合法帧；诊断尽力写 stderr
@@ -521,15 +663,26 @@ function runHookCommand(rest) {
  * 共用同一文案与退出码，防两处漂移。
  */
 function ensureNotNested() {
-  if (process.env.ZSW_NESTED === '1') {
+  // F03 双标记判定（isNestedEnv）：core 引擎嵌套派发的会话只带
+  // XYZ_AGENT_SUBAGENT=1，只查 ZSW_NESTED 会让 CLI 面第二重门禁失效
+  if (isNestedEnv()) {
     // 防递归边界从 MCP 工具面平移到 CLI 面（DESIGN-v4 §7 要点 4）
     process.stderr.write(
-      '嵌套环境禁止编排（防递归，ZSW_NESTED=1）。'
+      '嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）。'
       + '恢复指引：subagent 会话内不要编排，由主会话派发。\n'
     );
     process.exit(1);
   }
 }
+
+/**
+ * --local 的可用子命令白名单（D3 效果段：--local 查表但保持现状 6-action
+ * 子集）：执行面查 lib/zsub-actions 表（与 daemon 同一单源），能力面维持
+ * 既有差异——agents/models 无 --local 形态（daemon 端口面），维持
+ * 「未知子命令」现状输出；wait 亦无 --local 形态（daemon 内存挂起），
+ * 但走 main 早段 wait 检查的专属精确报错，先于本白名单过滤。
+ */
+const LOCAL_SUBCOMMANDS = new Set(['start', 'list', 'status', 'message', 'cancel', 'close']);
 
 /**
  * daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
@@ -546,10 +699,7 @@ async function runDaemonCommand(cmd, args, rest) {
   switch (cmd) {
     case 'start': {
       if (!args.task || !args.slug) usage();
-      let schema = args.schema;
-      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
-        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径（与本地模式同款解析）
-      }
+      const schema = schemaArg(args.schema);
       // wait 刻意不传：执行体由 daemon 持有，CLI 退出不丢——异步启动是安全
       // 默认；--wait 由 runDaemonStartWait 的 sugar 处理（不透传给 daemon）
       params = {
@@ -562,8 +712,10 @@ async function runDaemonCommand(cmd, args, rest) {
         worktree: args.worktree === true,
         conversation: args.conversation === true,
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
-        // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——appserver 通道落
-        // create 面；spawn 回退通道 manager 如实标注（thinking: null (spawn 降级)）
+        // F4 能力增量（D5/D6）：thinking 与 CLI 工具限制——thinking/allow
+        // 请求值未被引擎通道映射（不消费），manager 终态如实标注（thinking:
+        // null (请求未生效：引擎通道未映射)；allow 侧 toolsNote）；deny 侧
+        // 并集落引擎 --disallowed-tools 硬生效
         ...startCapabilityArgs(args),
       };
       break;
@@ -572,7 +724,9 @@ async function runDaemonCommand(cmd, args, rest) {
       params = { action: 'list' };
       break;
     case 'agents':
-      // 四根 agent .md 发现（start 前不确定 agent 名时先查，M1 起 CLI 唯一入口）
+      // agent .md 发现（W6a 起 core 发现面：vendored 内置 10 角色 + 四根，daemon
+      // 侧 handler 数据源 = lib/agent-discovery；D-4a 后 start 只收路径——不确定
+      // 路径时先查，输出带 location/file 列）
       params = { action: 'agents' };
       break;
     case 'models':
@@ -614,7 +768,7 @@ function exitWithDaemonResponse(resp) {
   process.exit(1);
 }
 
-/** error 帧字段（{code,message} 对象）的可读化；异常形态兜底 JSON 序列化。 */
+/** error 载荷可读化（协议 error 仅含 message；error.code 为防御性读取，存在时附注）；异常形态兜底 JSON 序列化。 */
 function daemonErrorMessage(error) {
   if (error && typeof error === 'object') {
     const msg = error.message || JSON.stringify(error);
@@ -685,6 +839,15 @@ function collectIds(rest) {
 }
 
 async function main() {
+  // ZSW_RUNNER 校验前置（回接 2c）：thin client / daemon / --local 三形态一致
+  // 立即报退役错误，不依赖 daemon 在场或组装时机（hook/workflow 子命令不经
+  // 组装面，但 env 误配同样应尽早在用户可见面出声）
+  try {
+    require('../lib/assemble').assertRunnerEnv();
+  } catch (e) {
+    process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
+    process.exit(1);
+  }
   const [cmd, ...rest] = process.argv.slice(2);
   if (!cmd) usage();
   // workflow 子命令在 manager 组装之前分流（见 runWorkflowCommand 头注）
@@ -702,7 +865,7 @@ async function main() {
     process.stderr.write(
       '[zsw] wait 无本地模式：等待由常驻 daemon 内存挂起实现（零轮询，DESIGN-v4 D4），'
       + '本地一次性进程没有可挂起的等待方。'
-      + '恢复指引：zsw wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；'
+      + `恢复指引：node "${zswCliPath()}" wait --id <id> [--id <id2> ...] [--timeout-ms <n>]；`
       + '本地模式 start 本身阻塞到本轮完成，无需 wait。\n'
     );
     process.exit(1);
@@ -715,7 +878,7 @@ async function main() {
   // 防文案漂移）；wait --local 保留其上方的精确报错，不被嵌套文案遮蔽。
   ensureNotNested();
 
-  const { manager } = await assembleManager();
+  const { manager, wfHost } = await assembleManager();
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
   // list/status 看到历史。刻意不走 manager.recover() 的探活段——探活会对
   // 常驻 server 正在管理的 running 任务误标 orphan 落盘（健康任务被标
@@ -733,7 +896,21 @@ async function main() {
     targetSessionId: typeof args.targetSession === 'string' ? args.targetSession : undefined,
   };
 
-  let result;
+  // --local 6-action 子集（D3 效果段 + impl-plan 偏差表）：执行查 zsub-actions
+  // 表（与 daemon 入口同一单源），但能力面维持现状子集——agents/models
+  // 在 --local 维持「未知子命令」现状输出（两入口能力面差异是既有现状，
+  // 零行为变化基准下不收口）；wait 不落入此文案——main 早段的 wait
+  // 专属精确报错先于此过滤生效，过滤在查表之前。
+  if (!LOCAL_SUBCOMMANDS.has(cmd)) {
+    process.stderr.write(`未知子命令: ${cmd}\n`);
+    usage();
+  }
+
+  // CLI flag → zsub params 翻译（argv 组参是 CLI 特有职责，D3 保留——与
+  // daemon 路径 runDaemonCommand 的组参 switch 对称）。start 的 wait 有意
+  // 分叉（D3 显式保留项）：--local 恒 true（CLI 进程活着才有后台执行体），
+  // daemon 路径不传（执行体由 daemon 持有）——分叉在调用点可见，exec 单一。
+  let params;
   switch (cmd) {
     case 'start': {
       if (!args.task || !args.slug) usage();
@@ -745,15 +922,13 @@ async function main() {
           '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running），'
           + '没有常驻组件会接管 CLI 启动的后台任务。'
           + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
-          + '需要异步启动与完成通知请去掉 --local 用默认 daemon 模式（zsw start 不带 --local 即异步启动，zsw wait 收结果）。\n'
+          + `需要异步启动与完成通知请去掉 --local 用默认 daemon 模式（node "${zswCliPath()}" start 不带 --local 即异步启动，`
+          + `node "${zswCliPath()}" wait 收结果）。\n`
         );
         process.exit(1);
       }
-      let schema = args.schema;
-      if (typeof schema === 'string' && /^\//.test(schema) === false && /\.json$/.test(schema)) {
-        schema = require('node:fs').readFileSync(schema, 'utf8'); // schema 文件路径
-      }
-      result = await manager.start({
+      const schema = schemaArg(args.schema);
+      params = {
         task: args.task,
         slug: args.slug,
         agent: args.agent,
@@ -764,44 +939,62 @@ async function main() {
         wait: true, // CLI 进程活着才有后台执行体（无 --no-wait，见文件头注）
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
         ...startCapabilityArgs(args), // F4：与 daemon 形态同款参数面（防漂移）
-      }, ctx);
+      };
       break;
     }
     case 'list':
-      result = manager.list();
+      params = {};
       break;
     case 'status':
-      result = manager.status(args.id);
+      params = { subagentId: args.id };
       break;
-    case 'message': {
-      result = await manager.message(args.id, args.text);
-      if (result && result.busy) break; // busy：本轮未投递，无执行体可等
-      // 等本轮完成再退出（与 start 的 wait 语义对齐）：CLI 若在启动 resume
-      // 轮后立即退出，执行体变孤儿、record 卡 running、outputs/通知永不产生。
-      // manager.pending 是执行体 promise（cancel 的同款等待路径）；失败原因
-      // 已落 record（error 终态），这里不再重报。极快完成的轮可能已从
-      // pending 清除——此时 status 本就直接是终态，结果同样正确。
-      const pending = manager.pending.get(args.id);
-      if (pending) await pending.catch(() => {});
-      result = { subagentId: args.id, round: result.round, notify: result.notify, final: manager.status(args.id) };
+    case 'message':
+      // message 的 busy 早退与 await pending 内联段已删（D6）：--local rebuild
+      // 后非终态全标 lost（busy 闸要求 running/created，永不命中），续聊执行
+      // 线已移除（manager.message 恒 throw）——该入口 message 收敛为纯错误
+      // 路径（id 不存在 / 非 conversation / 状态非 idle），由表 exec 直返。
+      // P3 冷续聊回归时的 wait 语义统一走 lib/wait-handler（daemon 面）
+      params = { subagentId: args.id, text: args.text };
       break;
-    }
     case 'cancel':
-      result = await manager.cancel(args.id);
+      params = { subagentId: args.id };
       break;
     case 'close':
-      result = await manager.close(args.id);
+      params = { subagentId: args.id };
       break;
     default:
-      process.stderr.write(`未知子命令: ${cmd}\n`);
-      usage();
+      break; // 白名单已过滤，不可达
   }
+
+  // 查表执行（与 daemon handler 同一 action 表单源，D3）；错误 throw 由
+  // main catch 打印 [zsw] 错误 + exit 1（与收口前 --local 直调链同输出形态）
+  const result = await execZsubAction(cmd, params, ctx, {
+    manager,
+    // --local 无 wait 形态（wait 无本地模式，上方子集过滤在先）：不注入
+    // waitHandler；agents/models 同理不可达，ports 仅为结构一致而组装
+    ports: { agentResolver: manager.resolver, modelRouter: manager.modelRouter },
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  // --local 一次性进程的引擎收口（与 zflow run 同根因：start/message 跑完
+  // 任务后 appserver 常驻子进程的 stdio 挂住事件循环，防 CLI 无法退出）
+  await exitAfterEngineShutdown(wfHost);
 }
 
-// require.main 守卫：test/cli.test.js 经 require 复用 parseArgs/csv 做解析
-// 单测（bin 直接执行时行为不变）；导出面只含纯解析函数，无副作用。
-module.exports = { parseArgs, csv };
+// require.main 守卫：test/cli.test.js 与 test/orchestration-host.test.js 经
+// require 复用导出函数（bin 直接执行时行为不变）。模块加载零副作用；副作用只
+// 发生在显式调用的 script-* action 函数体内（写 tmp/saved 目录）。
+module.exports = {
+  parseArgs,
+  csv,
+  // MF-1：W8 创作闭环（D-6）+ workflow 引用契约（D-4/D-E3）实现已收口
+  // lib/workflow-actions.js，此处 re-export 维持既有消费面（测试与旧引用）不变
+  validateWorkflowRef,
+  knownWorkflowNames,
+  scriptGenerateAction,
+  scriptSaveAction,
+  scriptDeleteAction,
+  runningScriptPredicate,
+};
 
 if (require.main === module) {
   main().catch((e) => {

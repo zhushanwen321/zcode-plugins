@@ -14,6 +14,8 @@
  *   3. marketplace.json 必须已登记该插件
  *   4. 零依赖红线：package.json 不得声明 dependencies / devDependencies
  *      （发布清单用途，不是依赖管理入口；引入依赖须走 AGENTS.md 评估流程）
+ *   5. plugin.json 的 description / description_i18n 与 marketplace.json 条目
+ *      逐字一致（package.json 的 description 是有意差异化，不参与比对）
  *
  * 用法：node scripts/check-sync.js [workspaceRoot]
  *   退出码 0 = 全部通过；1 = 有违规（每条违规输出具体文件与修复方向）。
@@ -71,10 +73,11 @@ for (const name of pluginDirs) {
     }
   }
 
-  // 规则 2：plugin.json 版本一致（有 plugin.json 才检查）
+  // 规则 2：plugin.json 版本一致（有 plugin.json 才检查；manifest 留给规则 5 复用）
   const manifestPath = path.join(dir, '.zcode-plugin', 'plugin.json');
+  let manifest = null;
   if (fs.existsSync(manifestPath)) {
-    const manifest = readJson(manifestPath);
+    manifest = readJson(manifestPath);
     if (manifest.__error) {
       bad(manifest.__error);
     } else if (manifest.version !== pkg.version) {
@@ -90,6 +93,18 @@ for (const name of pluginDirs) {
     bad(`marketplace.json: 插件 ${name} 未登记（合入 main 前必须补条目）`);
   } else if (entry.version !== pkg.version) {
     bad(`版本漂移：${name}/package.json@${pkg.version} != marketplace.json@${entry.version}（用 node scripts/release.js ${name} <patch|minor|major> 统一 bump 三处）`);
+  }
+
+  // 规则 5：plugin.json ↔ marketplace.json 描述一致。以 plugin.json 已声明的
+  // 键为准逐键 JSON.stringify 比对（字符串与 i18n 对象统一处理，值漂移/单侧
+  // 缺键都拦）；package.json 的 description 是有意差异化，不参与比对。
+  if (entry && manifest && !manifest.__error) {
+    for (const key of ['description', 'description_i18n']) {
+      if (manifest[key] === undefined) continue; // plugin.json 未声明该键不比对（如暂无 i18n 的插件）
+      if (JSON.stringify(manifest[key]) !== JSON.stringify(entry[key])) {
+        bad(`${name}/.zcode-plugin/plugin.json: ${key} 与 marketplace.json 对应条目不一致（两处须逐字一致，改任一侧对齐；package.json 的 description 不参与比对）`);
+      }
+    }
   }
 }
 

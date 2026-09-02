@@ -30,7 +30,7 @@ reviewer 契约不兼容（见差异表），**两引擎统一走 zsw CLI**—�
 | 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | quality-gate.js（零依赖：单测执行 + 增量覆盖率 ratchet + 新增函数圈复杂度 fail + CRAP warn 靶子） | 零依赖红线：NODE_V8_COVERAGE 原生产物 + V8 函数区间 decision-point 启发式（口径与取舍见脚本头部声明）；不搬死代码/循环依赖/重复检测（需依赖图分析，单插件仓收益不抵成本） |
 | changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack + check-release-needed | 本仓发布走 tag 直发（非 changesets）：三件套一致性 + 包内容 + 改动-发版关联检测（UNDECLARED 等价物） |
 | reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；本项目 v2 契约不匹配 = parseFail 即 review-failed 结构化终止（响亮失败，不静默漏审）；pi 原生版才是 parseFail 按 clean 处理（禁用原因，见阶段 2 MANDATORY 节） |
-| agent.md 消费方式 | pi workflow batch1 传 agent 路径 | task 内映射表 + reviewer 自行 Read | 本项目 reviewers 是视角名（非 agent .md 引用），workflow prompt 模板不挂 agent |
+| agent.md 消费方式 | pi workflow batch1 传 agent 路径 | 批次值即 agent .md 路径（reviewer 实体）+ task 内映射表指引 Read 对应 checklist | 两引擎同构：zsw CLI batch1 值 = agent .md 绝对路径，agent.md 是审查契约本体 |
 | 审查维度 | 8 维（含 electron-build/extension-api 等） | 5 维（zsw 领域重划） | 本仓是零依赖 Node CLI/MCP server，无 Electron/monorepo |
 
 ## 前置条件 [MANDATORY]
@@ -94,18 +94,30 @@ json 围栏块契约不匹配——pi workflow 解析失败会按 clean 处理�
 退出即引擎原生 task-notification 唤醒（zcode/pi 同理），禁止轮询 status。
 
 ```bash
+AGENTS="<仓库绝对路径>/.agents/skills/pr-cr-fix/agents"
 node z-subagent-workflow/bin/zsw.js workflow \
   --workflow review-fix-loop \
   --task "<下方模板>" --workdir <仓库绝对路径> \
-  --reviewers "arch-boundary,concurrency,business-logic,mcp-contract,test-coverage" \
-  --review-target "git diff main...HEAD 的全部变更（分支整体，含 z-subagent-workflow/lib、bin、dist、test、skills 与 workspace 级 scripts/、.github/、.githooks/、docs/）" \
-  --max-rounds 3
+  --batch1 "$AGENTS/review-arch-boundary.md,$AGENTS/review-concurrency.md,$AGENTS/review-business-logic.md,$AGENTS/review-mcp-contract.md,$AGENTS/review-test-coverage.md" \
+  --target-type git-diff --target main \
+  --max-rounds 3 \
+  --review-prompt "执行纪律（引擎层 turn 观察窗约束，与审查标准无关）：单个 turn 内不要连续做长时间工作——每读完 2-3 个文件就结束当前 turn 输出阶段性结论，下一 turn 继续；报告主体写完后立即收尾输出结构化 json 围栏块，不要在报告完成后再做额外探查。审查覆盖面与 checklist 标准不打折。"
+# 契约（2026-09-02 实测校准）：批次值 = agent .md 绝对路径（逗号分隔多 agent，一批 =
+# 并行 review → 聚合 → fix → 重审）；旧 --reviewers 参数已被 CLI 拒收（fail-fast）。
+# --target-type git-diff --target main = 审查分支全量变更（--review-target 是 text
+# 类型老 sugar，不用于 git-diff 场景）
 # [MANDATORY] 不传 --timeout-per-phase / --timeout-ms：体系默认无超时（config.DEFAULTS
 # .timeoutMs=null、timeoutMsPerPhase 缺省无、CLI 不传则无）。review/fix 是时长不可
 # 预测的 LLM 长任务，死线超时到期 = SIGKILL 毁掉全部在途工作（fix 半成品灾难，
 # 2026-08-29 run2 实证：20min 死线杀掉完成度 90% 的 fixer）。仅用户明确要求死线
 # （如 CI 硬预算）时才由用户显式传参
 # --model 不传：review/fix 是重量任务，跟随默认主模型（纪律见 zsub-zflow-orchestration skill）
+# --review-prompt 必传：core 引擎 app-server turn 观察窗是 300s wall-clock（不因
+# delta 流重置、无配置面），重量 reviewer 单 turn 连续读大 diff 易被误杀为
+# engine_run_failed（2026-09-02 run1 实证：concurrency 报告已写完但收尾帧迟到被
+# 判死，整轮 review-failure）。该缓解是行为层短期方案；长期方案 = core 源仓把观察
+# 窗改为空闲窗（delta 重置）或加配置面后 vendor 刷新——禁直改 vendored dist（sha256
+# 自检）
 ```
 
 ### task 模板 [MANDATORY 结构]
@@ -295,6 +307,8 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | `gh pr checks --watch` 等 CI（无限阻塞） | runner 排队时挂死（PR #4 事故挂 7h+ 跨会话残留）；用 Gate-3 的有限轮询姿势 |
 | 脏工作区跑审查 | fix 改动与认知外改动混淆 |
 | 用旧 token（`run_workflow` tool / `zflow(action=...)` MCP 调用 / `zsub` 目录名 / `bin/zsub.js`） | zflow MCP 面 1.0.0 起恒空；2026-08 改名后失效；命名 SSOT 见 z-subagent-workflow/CONTEXT.md |
+| review-fix-loop 传 `--reviewers`（旧自由文本视角名） | CLI 显式报错拒收（fail-fast 不静默）；批次契约值 = agent .md 绝对路径，用 `--batch1`（2026-09-02 实测） |
+| reviewer 单 turn 连续长时间工作（读大 diff 不分步） | 超 core 300s turn 观察窗被误杀 engine_run_failed → 整轮 review-failure；经 `--review-prompt` 注入分步执行纪律缓解 |
 | review 前先开 PR | review/fix 期间分支会变，PR 描述反复过期；PR 在 3b 一次性开 |
 | 删/改 agents/ 下的 review agent | 破坏 review 维度完整性 |
 

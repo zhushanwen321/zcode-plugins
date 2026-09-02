@@ -31,6 +31,7 @@ const BIN = path.join(__dirname, '..', 'bin', 'zsw.js');
 const NO_DAEMON_SOCK = path.join(TMP, 'no-daemon', 'daemon.sock');
 
 let sockSeq = 0;
+const { encodeFrame } = require('../lib/frame-codec');
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -45,6 +46,7 @@ function run(args, extraEnv = {}) {
           HOME: path.join(TMP, 'home'),
           ZCODE_PROJECT_DIR: TMP,
           ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖（MF2 用例经 extraEnv 显式置 '1'，同 cli.test.js 口径）
+          XYZ_AGENT_SUBAGENT: '', // F03：core 引擎嵌套标记同款清掉（嵌套宿主下跑测试防误拒）
           ZSW_SOCK: NO_DAEMON_SOCK,
           ...extraEnv,
         },
@@ -58,7 +60,11 @@ function run(args, extraEnv = {}) {
 
 /**
  * 起假 daemon：记录收到的全部请求帧；onFrame(req) 返回要写回的响应对象
- * （不含 id，这里补上）。CLI 每次调用独立连接，seen 跨用例累积后按序断言。
+ * （不含 id，这里补上）；构响应帧 import 生产 encodeFrame（帧语法单源，设计
+ * D2）。CLI 每次调用独立连接，seen 跨用例累积后按序断言。请求侧解析是测试
+ * 替身对已知输入的简化（一行一解、粘包余帧丢弃、string 拼接）——CLI 每次
+ * 调用只发单请求帧，替身不复制协议权威解码，解码一般性由 lib/frame-codec
+ * 与 daemon-socket 回归锚保证（设计 D2 显式豁免类）。
  */
 function startFakeDaemon(onFrame) {
   return new Promise((resolve) => {
@@ -73,7 +79,7 @@ function startFakeDaemon(onFrame) {
         const req = JSON.parse(buf.slice(0, nl));
         buf = '';
         seen.push(req);
-        conn.write(`${JSON.stringify({ id: req.id, ...onFrame(req) })}\n`);
+        conn.write(encodeFrame({ id: req.id, ...onFrame(req) }));
       });
     });
     server.listen(sockPath, () => resolve({ server, sockPath, seen }));
@@ -89,8 +95,15 @@ after(() => {
 test('MF2: ZSW_NESTED=1 workflow --action list → exit 1 嵌套拒绝', async () => {
   const r = await run(['workflow', '--action', 'list'], { ZSW_NESTED: '1' });
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1）/);
+  assert.match(r.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）/);
   assert.match(r.stderr, /恢复指引/);
+});
+
+test('MF2/F03: XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）→ 同款拒绝', async () => {
+  // core 引擎嵌套派发的会话只带 XYZ_AGENT_SUBAGENT=1——只查 ZSW_NESTED 会漏
+  const r = await run(['workflow', '--action', 'list'], { ZSW_NESTED: '', XYZ_AGENT_SUBAGENT: '1' });
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /嵌套环境禁止编排（防递归，ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）/);
 });
 
 test('MF2: ZSW_NESTED=1 workflow --action list --local → 同款拒绝（本地跑同样递归）', async () => {

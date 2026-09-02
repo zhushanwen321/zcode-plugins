@@ -10,15 +10,18 @@
  * 数据流（对齐设计 §3.3 七步，bg start + mailbox 主通道）：
  *
  *   MCP tools/call zsub(start)   ← ctx {targetSessionId(取自 _meta, Z3), cwd}
+ *                                  （历史形态；现入口 = CLI/daemon socket）
  *    ①  notifyMode 探测：notifier.capabilities().mode
  *        （mailbox|polling；env 探测在 createRuntime，本层只消费）
- *    ②  resolver.resolve(agent, cwd)            四根 agent .md 发现（D6）
- *    ③  modelRouter.resolve + prepareRunEnv     模型链解析 + 隔离 HOME（D5）
+ *    ②  resolver.resolve(agent, cwd)            agent .md 路径解析（D-4a 收紧：
+ *                                               仅绝对路径，名字拒；缺省走
+ *                                               resolveDefault = general-purpose）
+ *    ③  模型引用原始透传（校验归 core 引擎 preparer，回接 2c）
  *        + promptBuilder.buildPrompt            拼装角色/工具约束/任务/schema/技能（D7）
  *        + worktree.prepare（可选）             任务 cwd 切到隔离目录（D12）
  *        + records.create                       append-only 事件流（D9）
  *    ④  后台执行体（不 await）：slots.acquire（D11 深度分层）→ created→running
- *        → runner.start(taskCtx)（spawn 侧由 driver 注入 ZSW_NESTED=1，D10）
+ *        → runner.start(taskCtx)（core 引擎经公共 nesting-guard 注入嵌套标记，D10）
  *    ⑤  wait=false 立即返回句柄 {subagentId, status:'running', notify, guidance?}
  *    ⑥  done 回调：outputs.writeResult（worktree 再 collectPatch 回填 patchFile）
  *        → record 终态 closed/error/timeout（conversation 首轮置 idle）→ 释放槽位
@@ -40,16 +43,13 @@ const config = require('./config');
 const { buildPrompt, toolList } = require('./prompt-builder');
 const { TERMINAL_STATUSES } = require('./record-store');
 const { extractJsonObject } = require('./jsonout');
+const coreRef = require('./core-ref');
+const {
+  normalizeAgentRef, invalidAgentRefMessage, agentFileNotFoundMessage,
+} = require('./agent-discovery');
 
 /** 通知文案里 response 的截断长度：mailbox 消息进上下文，500 字符够判断去向。 */
 const SUMMARY_HEAD_CHARS = 500;
-
-/**
- * maxTurns → timeoutMs 换算系数（MUST_FIX-3）：对齐 pi watchdog 语义
- * （每 turn 预算 5 分钟）。zcode 无头 CLI 无 turn 计数通道（--max-turns 拒收），
- * 只能以总时长近似「轮数上限」——maxTurns × 5min 作为该任务的超时预算。
- */
-const MS_PER_TURN = 300_000;
 
 /**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
@@ -115,6 +115,7 @@ class SubagentManager {
    * @param {object} ctx    {targetSessionId?, cwd} 由入口层传入（MCP：_meta + env）
    */
   async start(params = {}, ctx = {}) {
+    const core = coreRef.requireCore();
     const { task, slug } = params;
     if (typeof task !== 'string' || task.trim() === '') {
       throw new Error(
@@ -125,6 +126,14 @@ class SubagentManager {
     if (typeof slug !== 'string' || slug.trim() === '') {
       throw new Error('start 需要 slug（任务短名，用于通知文案与 worktree 分支命名）。');
     }
+    // slug 长度闸（V1a C11，行为变更：超长从放行改拒绝）：slug 进 mailbox
+    // 通知文案与 worktree 分支命名（zsub/<slug>），超长撞分支名约束且通知
+    // 不可读——上限单源 core SLUG_MAX_LENGTH，与 core 引擎侧同闸同值
+    if (slug.length > core.SLUG_MAX_LENGTH) {
+      throw new Error(
+        `task-slug 超过 ${core.SLUG_MAX_LENGTH} 字符上限（SLUG_MAX_LENGTH）——请缩短后重试`
+      );
+    }
     if (typeof ctx.cwd !== 'string' || ctx.cwd.trim() === '') {
       throw new Error(
         'start 需要 ctx.cwd（任务运行目录）。'
@@ -132,35 +141,47 @@ class SubagentManager {
       );
     }
 
-    // ② agent 解析（可选）：找不到立刻报错比带着空角色跑完再发现用错 agent 便宜
+    // ② agent 解析（D-4a 收紧 + D-4 缺省统一，W6b）：
+    //    - 引用唯一形态 = .md 绝对路径（~/ 展开与 .. 段拒绝同 core normalizeRef
+    //      单源，V1a C2：含 .. 的绝对路径从放行改拒绝）。名字/相对路径/非 .md →
+    //      invalidAgentRefMessage（core 工厂单源，报错同源基准）；路径合法但
+    //      不可读 → agentFileNotFoundMessage（core 同款）。找不到立刻报错比
+    //      带着空角色跑完再发现用错 agent 便宜。
+    //    - 缺省不再无角色裸跑：resolveDefault 解析 general-purpose 内置角色
+    //      （遮蔽序胜者，project 级可覆写）；解析面异常退化 null = 诚实裸跑
+    //      （record.agent 如实 null）。不想要角色的用户显式传自定义 .md 路径。
+    //    resolver.resolve/resolveDefault 是 async（W6a 起 core discoverResources）；
+    //    sync 注入的测试 fake resolver 经 await 透明兼容。
     let profile = null;
     if (params.agent != null && params.agent !== '') {
-      profile = this.resolver.resolve(params.agent, ctx.cwd);
-      if (!profile) {
-        throw new Error(
-          `未找到 agent "${params.agent}"（四根发现：项目 .agents/agents > .zcode/agents，`
-          + '再到 HOME 下同名两根；支持名字或 ./ 相对路径 / 绝对路径）。'
-          + '恢复指引：检查名字拼写，或改用 agent .md 的绝对路径。'
-        );
+      const norm = normalizeAgentRef(params.agent);
+      if (norm === null) {
+        throw new Error(invalidAgentRefMessage(params.agent));
       }
+      profile = await this.resolver.resolve(norm, ctx.cwd);
+      if (!profile) {
+        throw new Error(agentFileNotFoundMessage(norm));
+      }
+    } else {
+      profile = await this.resolver.resolveDefault(ctx.cwd) || null;
     }
 
-    // ③ 模型解析链 requested > agent frontmatter > 默认；再准备运行环境
-    const modelRef = this.modelRouter.resolve(params.model, profile ? profile.model : undefined);
+    // ③ 模型解析链 requested > agent frontmatter > 默认链（2c 起：原始请求透传，
+    // 校验与兜底归 core 引擎 preparer——resolveZcodeModelRef 短名/全名/兜底全支持；
+    // 默认链产物仅服务 record.model 台账展示，与历史形态一致）
+    const modelRef = (typeof params.model === 'string' && params.model.trim() !== ''
+      ? params.model.trim()
+      : (profile && typeof profile.model === 'string' && profile.model.trim() !== ''
+        ? profile.model.trim()
+        : this.modelRouter.resolveDefault()));
     const runnerKind = this.runner.capabilities().kind;
-    // F4 per-session 能力参数（D5/D6）：thinking 与 CLI 工具限制。appserver 通道
-    // 经 runEnv.createParams 落 create 面；spawn 通道无对应 flag 通道（D6 决策：
-    // 行为不变），prepareRunEnv 的 spawn 分支整体忽略
+    // F4 per-session 能力参数（D5/D6）：thinking 与 CLI 工具限制。2c 后唯一通道是
+    // spawn 单轮：无 flag 通道（行为不变），请求值随 record 落盘、终态标注降级
     const thinking = typeof params.thinking === 'string' && params.thinking.trim() !== ''
       ? params.thinking.trim()
       : undefined;
     const allowTools = toolList(params.allowTools);
     const denyTools = toolList(params.denyTools);
-    const runEnv = await this.modelRouter.prepareRunEnv(modelRef, runnerKind, {
-      thinking,
-      toolAllowlist: allowTools,
-      toolDenylist: denyTools,
-    });
     const prompt = buildPrompt({
       agentProfile: profile,
       task,
@@ -182,12 +203,14 @@ class SubagentManager {
     }
     const conversation = params.conversation === true;
     // timeoutMs 决策链（MUST_FIX-3）：显式 params.timeoutMs > profile.maxTurns
-    // 换算（×5min，对齐 pi watchdog，见 MS_PER_TURN 注释）> 全局默认。
+    // 经 core maxTurnsToWatchdogMs 换算（×5min/turn + floor=30min 下限，
+    // V1a C4/S2① 漂移修复——行为变更：旧 MS_PER_TURN 纯线性自算在 maxTurns
+    // 小时 watchdog 短于 30 分钟，floor 恢复后不再低于）> 全局默认。
     // 显式值优先于 agent 约定——调用方带 timeoutMs 即表示覆盖 agent .md。
     const timeoutMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0
       ? params.timeoutMs
       : (profile && Number.isFinite(profile.maxTurns) && profile.maxTurns > 0
-        ? profile.maxTurns * MS_PER_TURN
+        ? core.maxTurnsToWatchdogMs(profile.maxTurns)
         : config.DEFAULTS.timeoutMs);
     const createInit = {
       subagentId,
@@ -210,18 +233,21 @@ class SubagentManager {
       createInit.schema = params.schema;
     }
     // thinking 请求值随创建落盘（F4/D5）：运行中 status 可见请求意图；终态时由
-    // _completeRun 覆盖为实际生效标注（生效档位 / null / 'null (spawn 降级)'）
+    // _completeRun 覆盖为实际生效标注（生效档位 / null / 'null (请求未生效：引擎通道未映射)'）
     if (thinking !== undefined) {
       createInit.thinking = thinking;
     }
     this.records.create(createInit);
 
-    // taskCtx.disallowedTools：runner 层落 --disallowed-tools flag（硬约束）；
-    // 白名单（tools）无 flag 通道，已由 buildPrompt 拼软约束段。
-    // F4/D6：CLI 工具限制（allowTools/denyTools）随 taskCtx 上行，appserver
-    // runner 组 create 时 deny 与 frontmatter disallowedTools 并集去重
+    // taskCtx.disallowedTools：与 CLI toolDenylist 在 runner-core 并集去重后落
+    // core 引擎 --disallowed-tools flag（硬约束）；白名单（tools）无 flag 通道，
+    // 已由 buildPrompt 拼软约束段。engine（frontmatter）经 taskCtx.agentEngine
+    // 进 core 路由三层（V3-①）
     const taskCtx = {
-      subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation, runEnv,
+      subagentId, slug, prompt, cwd: runCwd, modelRef, timeoutMs, conversation,
+      agentEngine: profile && typeof profile.engine === 'string' && profile.engine.trim() !== ''
+        ? profile.engine.trim()
+        : undefined,
       disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
       thinking,
       toolAllowlist: allowTools.length > 0 ? allowTools : undefined,
@@ -241,8 +267,14 @@ class SubagentManager {
         result: fin.result && typeof fin.result.response === 'string' ? fin.result.response : '',
         outputFile: fin.outputFile,
         patchFile: fin.patchFile,
+        // V4o 降级留痕投影（与 record.patchIncomplete 同源）：core worktree
+        // 降级裸 diff 时为 true，正常路径 undefined（不携带键）
+        patchIncomplete: finRec && finRec.patchIncomplete === true ? true : undefined,
         error: finRec ? finRec.error : null,
         usage: fin.result ? fin.result.usage : null,
+        // rounds 完成计数（E3）：wait=true 面与 record 同读——conversation 首轮
+        // 成功即 1（终态 idle），失败/取消轮不计
+        rounds: finRec ? finRec.rounds : undefined,
         // SUGGESTION-4：schema 提取产物（closed 轮才提取；失败见 schemaParseFailed）
         structured: finRec && finRec.structured !== undefined ? finRec.structured : undefined,
         schemaParseFailed: finRec && finRec.schemaParseFailed === true ? true : undefined,
@@ -268,8 +300,9 @@ class SubagentManager {
   /** 精简视图：给主 agent 扫一眼用，全量走 status。 */
   list() {
     return this.records.list()
-      // recordType 过滤：workflow record（wf- 前缀，N2-a 起写入）不经 zsub 面
-      // 露出——双池独立（README 已知边界）；旧 record 无该字段视为 subagent
+      // recordType 过滤：workflow record 不经 zsub 面露出——双池独立（README
+      // 已知边界）。wf 写入线已退役，本防御为 1.x 磁盘旧 record 兼容保留；
+      // 旧 record 无该字段视为 subagent
       .filter((r) => r.recordType === undefined || r.recordType === 'subagent')
       .map((r) => ({
       subagentId: r.subagentId,
@@ -306,8 +339,9 @@ class SubagentManager {
   }
 
   /**
-   * 向 conversation 任务投递续聊消息（仅 idle 可投递，busy 语义对齐 spawn 单轮）。
-   * 不等待本轮完成（与 start 后台语义一致），完成后再通知。
+   * 向 conversation 任务投递续聊消息。续聊执行线已随 app-server 常驻化重构
+   * 移除（P3 回归路线）：入口校验（conversation/busy/idle/text）保持既有
+   * 语义，通过即在 manager 层直接报明确 unavailable 错误，不再起轮。
    * 同 id 并发安全经 _withLock（R2）。
    */
   async message(id, text) {
@@ -323,11 +357,14 @@ class SubagentManager {
       );
     }
     if (rec.status === 'running' || rec.status === 'created') {
-      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令真实可执行
+      // A-9：busy 报错必须给两条出路（等待 / 取消）且命令完整可执行——
+      // config.zswCliPath 绝对路径形态（marketplace/inline 下裸 `zsw` 不在
+      // PATH，主 agent cwd 是项目目录，照抄短命令即 ENOENT）
       return {
         busy: true,
         message: `该 subagent 正在运行，仅 idle 状态可投递。`
-          + `等待当前轮完成（zsw wait --id ${id}）或 zsw cancel --id ${id} 取消后再投递`,
+          + `等待当前轮完成（node "${config.zswCliPath()}" wait --id ${id}）`
+          + `或 node "${config.zswCliPath()}" cancel --id ${id} 取消后再投递`,
       };
     }
     if (rec.status !== 'idle') {
@@ -339,17 +376,15 @@ class SubagentManager {
     if (typeof text !== 'string' || text.trim() === '') {
       throw new Error('message 需要 text（非空字符串，续聊消息内容）。');
     }
-    // CAS 同步占位：running 期间后续 message 走 busy 分支，天然单轮在飞。
-    // rounds 计数统一在 _completeRun 收尾时 +1（完成计数语义：首轮 done → 1，
-    // 续聊轮 done → 2）；此处只返回「即将开始的轮号」，不预置写盘——预置会让
-    // 失败轮虚增计数，且与 _completeRun 的 +1 双计。
-    this.records.transition(id, 'idle', 'running');
-    const round = (rec.rounds || 0) + 1;
-    const p = this._runResumeRound(id, text);
-    p.catch(() => {}); // 错误已落 record（error 终态），后台路径不产生 unhandledRejection
-    // notify 语义同 start 句柄（MF6）：targetSessionId 取 record（create 时已随
-    // ctx 落盘，null = 无回流通道）——续聊轮与首轮句柄不漂移
-    return { subagentId: id, status: 'running', round, notify: this._notifyLabel(rec.targetSessionId) };
+    // 续聊执行线已随 app-server 常驻化重构移除（core 引擎面无 resume 入口，
+    // 下游起轮链恒败，死代码已删）；冷续聊回归路线已登记 P3。入口层直接报
+    // 明确 unavailable——record 不再 idle→running→error 翻转（失败轮不落盘、
+    // rounds 不动），调用方拿到的是清晰错误而非深层异常
+    throw new Error(
+      `subagent "${id}" 续聊暂不可用：续聊执行线已随 app-server 常驻化重构移除，`
+      + '冷续聊回归路线已登记 P3。'
+      + '恢复指引：需要多轮交互请重新 start 派发新任务（上下文写进 task 文本）。'
+    );
   }
 
   // ------------------------------------------------------- cancel / close
@@ -367,7 +402,7 @@ class SubagentManager {
     if (handle) {
       // 有句柄：杀进程 → done 落 cancelled → 执行体完成终态落盘；等它再返回，
       // 保证 cancel 响应里的 status 与 record 一致（端口契约保证 cancel 必然
-      // 唤醒 done：driver 的 SIGTERM→SIGKILL 链）
+      // 唤醒 done：core 引擎杀链 SIGTERM→grace→SIGKILL）
       handle.cancel();
       const pending = this.pending.get(id);
       if (pending) await pending.catch(() => {});
@@ -445,14 +480,20 @@ class SubagentManager {
       // subagent 探活循环——wf record 无 exec 字段会被误判死进程并写入
       // subagent 语义的 lostReason update 事件（事件流 append-only，永久污染）
       if (rec.recordType !== undefined && rec.recordType !== 'subagent') continue;
-      // AppServerRunner.alive 是 async（session/list 探活），必须 await 取真值；
-      // 直接以返回值判断会把 Promise 误当存活，导致死进程全部误入 orphan 分支
+      // alive 契约为同步 boolean（ports.js RunnerPort；runner-core 按 exec 形态
+      // 分支：spawn = pid 探活、appserver 形态 = 引擎语义保守判定）——此处
+      // await 为防御未来异步实现，同步值 await 无害
       const alive = rec.exec ? await this.runner.alive(rec.exec) : false;
       if (alive) {
         orphan.push(rec.subagentId);
+        // appserver 形态的 alive 是保守判定（core 未暴露任务级探活面，见
+        // runner-core.alive 注释）——文案如实区分「进程在跑」与「进度未知」
+        const appserverExec = rec.exec && rec.exec.kind === 'appserver';
         this.records.update(rec.subagentId, {
           orphan: true,
-          lostReason: '孤儿进程：server 重启丢失句柄，进程仍在运行，结果无法回流。建议 cancel 后重发任务',
+          lostReason: appserverExec
+            ? '孤儿会话：server 重启丢失句柄（appserver 常驻模式，任务进度未知——保守按存活处置），结果无法回流。建议 cancel 后重发任务'
+            : '孤儿进程：server 重启丢失句柄，进程仍在运行，结果无法回流。建议 cancel 后重发任务',
         });
       } else {
         dead.push(rec.subagentId);
@@ -472,79 +513,58 @@ class SubagentManager {
 
   /** 首轮：占 pending（cancel 等待用），完成后清理句柄表。 */
   _runFirstRound(id, taskCtx) {
-    const p = this._execRound(id, { kind: 'first', taskCtx })
+    const p = this._execRound(id, taskCtx)
       .finally(() => { this.pending.delete(id); this.handles.delete(id); });
     this.pending.set(id, p);
     return p;
   }
 
-  /**
-   * 续聊轮：resume 句柄经 onHandle 挂入 handles（S-6① 接线，取消可杀轮进程，
-   * 同 start 的 pending 句柄管理）；runner 无句柄时维持无句柄路径。
-   */
-  _runResumeRound(id, text) {
-    const p = this._execRound(id, { kind: 'resume', text })
-      .finally(() => { this.pending.delete(id); this.handles.delete(id); });
-    this.pending.set(id, p);
-    return p;
-  }
-
-  async _execRound(id, plan) {
+  async _execRound(id, taskCtx) {
     let release;
     try {
       release = await this.slots.acquire(this._depth());
       const cur = this.records.get(id);
-      const expectStatus = plan.kind === 'first' ? 'created' : 'running';
-      if (!cur || cur.status !== expectStatus) {
+      if (!cur || cur.status !== 'created') {
         // 排队期间被 cancel/close：终态已定，不再启动进程（槽位照常释放）
         return { record: cur, result: null, outputFile: null, patchFile: null };
       }
+      // exec 异步回填的持久化通道（A5 修复）：runner（core 引擎）返回的 exec
+      // 是可变引用——pid 在 spawn 后、sessionId 在 done 后才回填，而 running
+      // 转换事件序列化于 spawn 之前（无 pid）。不补落盘的话 standby 从磁盘
+      // rebuild 后 alive 探活无依据，孤儿进程被误判 dead。经 onExec 钩子在
+      // 字段就绪时追加 update 事件，磁盘 exec 与内存保持同步。
+      // created 期（transition 前）暂存：update 若先于 running 事件落盘，
+      // 会被转换事件携带的旧 exec 覆盖（append-only 按序重放），transition
+      // 后立即 flush。当前 runner 的首次 onExec 必在 routeEngine 异步段，
+      // 天然晚于同步的 transition——暂存是对未来同步回调实现的防御。
+      let stagedExec = null;
+      const handle = this.runner.start(taskCtx, {
+        onExec: (snapshot) => {
+          const cur0 = this.records.get(id);
+          if (cur0 && cur0.status === 'created') { stagedExec = snapshot; return; }
+          this.records.update(id, { exec: snapshot });
+        },
+      });
+      this.handles.set(id, handle);
+      // exec 随 running 事件持久化（此刻无 sessionId；done 后由 _completeRun
+      // 重写回填版——崩溃恢复探活与 P3 冷续聊锚点的磁盘依据）
+      this.records.transition(id, 'created', 'running', { exec: handle.exec });
+      if (stagedExec !== null) this.records.update(id, { exec: stagedExec });
       let result;
-      if (plan.kind === 'first') {
-        const handle = this.runner.start(plan.taskCtx);
-        this.handles.set(id, handle);
-        // exec 随 running 事件持久化（此刻无 sessionId；done 后由 _completeRun
-        // 重写回填版——重启后 resume 依赖它）
-        this.records.transition(id, 'created', 'running', { exec: handle.exec });
-        try {
-          result = await handle.done;
-        } finally {
-          this.handles.delete(id);
-        }
-      } else {
-        // resume 句柄接线（S-6①）：两层取法——①onHandle（SpawnRunner 轮启动
-        // 后同步回调 {pid, cancel}）；②onHandle 未触发时兜底看返回 promise
-        // 自带的 cancel（runner-spawn 的 resume 双取法同款）。挂入 handles
-        // 让 cancel 能杀轮进程（SIGTERM→SIGKILL 链）。AppServerRunner 的
-        // resume 是 async 无句柄（多余参数被忽略、promise 无 cancel 属性）
-        // ——两层都取不到时维持无句柄路径（终态化 record + 注明进程可能残留）。
-        let handleSet = false;
-        const run = this.runner.resume(
-          cur.exec,
-          plan.text,
-          { timeoutMs: cur.timeoutMs },
-          (h) => {
-            if (h && typeof h.cancel === 'function') {
-              handleSet = true;
-              this.handles.set(id, { pid: h.pid, cancel: () => h.cancel() });
-            }
-          },
-        );
-        if (!handleSet && run && typeof run.cancel === 'function' && typeof run.then === 'function') {
-          this.handles.set(id, { pid: run.pid, cancel: () => run.cancel() });
-        }
-        result = await run;
+      try {
+        result = await handle.done;
+      } finally {
+        this.handles.delete(id);
       }
       const record = await this._completeRun(id, result, {
         conversation: cur.conversation === true,
-        // F4/D5：thinking 请求值随首轮下行——终态标注的判定依据（resume 轮无
-        // create 面，会话级设置随会话驻留，不改写首轮标注）
-        thinkingRequested: plan.kind === 'first' ? plan.taskCtx.thinking : undefined,
-        // F4/D6（G6 标注面对称）：CLI 工具限制请求值随首轮下行——最终通道为
-        // spawn 时限制静默失效，终态落 toolsNote 如实标注
-        toolsRequested: plan.kind === 'first'
-          ? Boolean(plan.taskCtx.toolAllowlist || plan.taskCtx.toolDenylist)
-          : undefined,
+        // F4/D5：thinking 请求值下行——终态标注的判定依据（undefined 即不携带键）
+        thinkingRequested: taskCtx.thinking,
+        // F4/D6（G6 标注面对称）：CLI 工具限制中 allow 侧请求值随轮下行——
+        // spawn 单轮通道无白名单 flag 通道，请求了 allowlist 即终态落
+        // toolsNote 如实标注；deny 侧并集落引擎 --disallowed-tools 硬生效
+        // （runner-core mergeDenyTools），无失效面，不参与标注判定
+        toolsRequested: Boolean(taskCtx.toolAllowlist),
       });
       return { record, result, outputFile: record.outputFile, patchFile: record.patchFile === undefined ? null : record.patchFile };
     } catch (err) {
@@ -574,13 +594,29 @@ class SubagentManager {
     );
 
     // worktree patch 收集：失败不阻断终态（任务结果已到手），错误显式进 record。
-    // collectPatch 由适配层直接落盘 outputs/<id>.patch 并返回路径（产出方唯一）
+    // collectPatch 由适配层落盘 outputs/<id>.patch；V4o 起透传结构化结果
+    // {patchFile, patchIncomplete?}（worktree-adapter 对 worktree.js 真实现
+    // 的透传形态），string 旧形态（ports.js 契约口径/测试 fake）兼容保留。
+    // patchIncomplete = core 已降级裸 diff（锚点缺失/损坏/add 失败，已提交
+    // 增量丢失）：投影为可断言的降级信号——record/outcome 同名布尔字段
+    // （仅在 true 时携带键，与 thinking/toolsNote 的「仅在应标注时携带键」
+    // 纪律一致）+ stderr warn。
     const before = this.records.get(id);
     let patchFile = before.patchFile === undefined ? null : before.patchFile;
+    let patchIncomplete = false;
     if (before.worktree) {
       try {
         const p = await this.worktree.collectPatch({ dir: before.worktree, subagentId: id });
-        if (typeof p === 'string') patchFile = p;
+        const structured = p !== null && typeof p === 'object';
+        const patch = structured ? p.patchFile : p;
+        if (typeof patch === 'string') patchFile = patch;
+        if (structured && p.patchIncomplete === true) {
+          patchIncomplete = true;
+          process.stderr.write(
+            `[zsw] worktree patch 不完整（core 降级裸 diff，已提交增量可能缺失）：subagentId=${id}`
+            + ` patchFile=${patchFile || '(无改动未落盘)'}\n`,
+          );
+        }
       } catch (e) {
         this.records.update(id, { patchError: String(e && e.message || e) });
       }
@@ -606,8 +642,8 @@ class SubagentManager {
     }
 
     // F4/D5 thinking 标注：runner 回填优先（生效档位 string / 非法跳过 null）；
-    // 请求了但 runner 无回填时按实际通道判定——非 appserver（spawn 回退 /
-    // probe 降级翻转）= 'null (spawn 降级)'；未请求不落字段。**仅在应改写时
+    // 请求了但 runner 无回填时按「请求未生效：引擎通道未映射」如实标注（不绑定
+    // 引擎形态）；未请求不落字段。**仅在应改写时
     // 携带键**：record-store 内存 fold 是 Object.assign（undefined 会覆盖既有
     // 值，与 JSON 落盘面的 undefined-丢弃不同）——resume 轮不携带键才能保住
     // 首轮标注（thinking 是会话级设置，随会话驻留）
@@ -615,10 +651,15 @@ class SubagentManager {
       closedReason,
       error: result ? result.error : undefined,
       // F1 移交（D3）：protocol-drift 分类以独立字段落 record——错误类别可查询，
-      // 不必从 error 文案反推
+      // 不必从 error 文案反推（2c 后 core 引擎错误不经 JSON-RPC 通道，该字段
+      // 仅旧 record 兼容读取面存在）
       errorKind: result ? result.errorKind : undefined,
       sessionId: (result && result.sessionId) || before.sessionId,
       tokens: (result && result.usage) || before.tokens,
+      // 引擎留痕（V3-①③，2c 新增 optional 字段）：实际执行引擎 id 与 probe
+      // 失败 fallback 事实随终态原子落盘，status 可查、GUI 可警示
+      engine: (result && result.engineId) || before.engine,
+      engineFallback: (result && result.engineFallback) || before.engineFallback,
       // rounds 完成计数：成功收尾的轮 +1（首轮 0→1，续聊轮 1→2）；失败/取消轮
       // 不计（「成功完成的轮数」语义，与 E3 验收「两轮后 rounds=2」对齐）。
       // 放在 transition patch 里与终态原子落盘，避免「先 update 后 transition」
@@ -629,21 +670,26 @@ class SubagentManager {
       exec: before.exec,
       outputFile,
       patchFile,
+      // 降级留痕原子落盘（仅 true 携带键）：status 可断言的 worktree patch
+      // 完整性信号，restart 后 rebuild 仍可读
+      patchIncomplete: patchIncomplete ? true : undefined,
       structured: structured !== null ? structured : undefined,
       schemaParseFailed: schemaParseFailed ? true : undefined,
     };
     if (result && result.thinking !== undefined) {
       transitionPatch.thinking = result.thinking;
     } else if (thinkingRequested !== undefined) {
-      transitionPatch.thinking = before.runnerKind === 'appserver' ? null : 'null (spawn 降级)';
+      // 请求了但 runner 无回填 = 请求值未被引擎通道映射（不绑定引擎形态——
+      // 旧「spawn 降级」归因在缺省常驻形态下失真；旧 record 的 null 值仍可读）
+      transitionPatch.thinking = 'null (请求未生效：引擎通道未映射)';
     }
     // F4/D6 工具限制标注（G6 与 thinking 标注面对称，同款「仅在应标注时携带
-    // 键」纪律）：请求了 allow/deny 且最终通道非 appserver（spawn 回退 / probe
-    // 降级翻转）= 限制未生效，落 toolsNote；未请求或 appserver 通道不落字段。
-    // before.runnerKind 在此已是最终通道——降级翻转的 record 改标发生在 done
-    // settle 之前（assemble.relabelRecord）
+    // 键」纪律）：toolsRequested 已收紧为仅 allowlist 存在——deny-only 在
+    // runner-core 并入引擎 --disallowed-tools 硬约束生效，落「未生效」标注
+    // 就是失真（缺标注可容忍，错标注不可容忍）；allow 白名单无引擎 flag 通道
+    // = 请求未映射，落 toolsNote 如实标注
     if (toolsRequested && before.runnerKind !== 'appserver') {
-      transitionPatch.toolsNote = 'null (spawn 降级：工具限制未生效)';
+      transitionPatch.toolsNote = 'null (工具限制未生效：引擎通道未映射)';
     }
     this._transitionOrSkip(id, 'running', to, transitionPatch);
 
@@ -703,6 +749,11 @@ class SubagentManager {
       if (patchFile) {
         s += `\n改动 patch: ${patchFile}`;
         s += `\n应用指引: 在主仓库根目录执行 git apply ${patchFile}（先 review 再应用）`;
+        // 降级留痕投影（V4o）：mailbox 面主 agent 只看通知——patch 不完整
+        // 不提示会直接 apply 出残缺改动
+        if (record.patchIncomplete === true) {
+          s += `\n注意: patch 不完整（worktree 降级裸 diff，已提交增量缺失），应用前务必人工核对`;
+        }
       }
       return s;
     }
@@ -733,23 +784,24 @@ class SubagentManager {
     if (!rec) {
       throw new Error(`subagent "${id}" 不存在。恢复指引：用 list 查看全部任务 id。`);
     }
-    // recordType 校验（与 WorkflowManager._mustGet 对称）：workflow record 不经
-    // zsub 面读写——cancel/close 的 transition 语义会越界落 wf record 终态。
-    // 旧 record 无该字段视为 subagent。
+    // recordType 校验（与 WorkflowManager._mustGet 对称，WorkflowManager 已退役）：
+    // workflow record 不经 zsub 面读写——cancel/close 的 transition 语义会越界
+    // 落 wf record 终态。旧 record 无该字段视为 subagent。
     if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
       throw new Error(
         `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
-        + '恢复指引：wf- 前缀的 runId 请用 workflow 面的 zflow tool'
-        + '（action=abort/status）或 CLI `zsub workflow --action ...`。'
+        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\``
+        + '（管理面默认经 daemon，--local 本地）。'
       );
     }
     return rec;
   }
 
-  /** 嵌套深度（D11）：本 server 若运行在 ZSW_NESTED=1 环境，子任务算 depth 1。 */
+  /** 嵌套深度（D11）：本 server 若运行在嵌套环境（ZSW_NESTED=1 或
+   *  XYZ_AGENT_SUBAGENT=1，config.isNestedEnv 判定），子任务算 depth 1。 */
   _depth() {
     return config.NESTED ? 1 : 0;
   }
 }
 
-module.exports = { SubagentManager, noOpWorktree };
+module.exports = { SubagentManager };

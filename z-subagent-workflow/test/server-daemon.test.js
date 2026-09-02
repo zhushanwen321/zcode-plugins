@@ -11,11 +11,13 @@
  *    CLI（原 ZSW_TOOLS_DISABLED 灰度开关已随 M1 删除，终态内置无开关）；
  * c) 竞选集成：两个 startDaemon 实例接 MCP handler 表，一 daemon 一 standby，
  *    daemon stop 后 standby 事件驱动接管，新 daemon 的 handlers 服务正常；
- * d) zsub inputSchema 的 wait 契约防漂移。
+ * d) 帧 cwd 传导（MF7）。
  *
- * env 必须在 require server 之前设置（同 test/server.test.js：dispatchToolCall
- * 的 meta-debug 落盘走 config.zswRoot()，模块加载期从 env 冻结路径）。
+ * env 必须在 require server 之前设置（同 test/server.test.js：config 在模块
+ * 加载期从 env 冻结路径——ZSW_ROOT / HOME / mailbox 根）。
  * socket 隔离：sockPath 全落 mkdtemp 临时目录，不碰 ~/.zcode/zsw。
+ * 帧语法单源 import lib/frame-codec（设计 D1/D2）：构帧 encodeFrame、解帧
+ * createFrameDecoder——此前就地内联的第三份 codec 副本已退役。
  */
 
 const fs = require('node:fs');
@@ -33,7 +35,8 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 
 // env 隔离完成后才允许 require（见文件头注释）
 const server = require('../dist/mcp/server');
-const { startDaemon, encodeFrame, createFrameDecoder } = require('../lib/daemon-socket');
+const { startDaemon } = require('../lib/daemon-socket');
+const { encodeFrame, createFrameDecoder } = require('../lib/frame-codec');
 
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
@@ -65,7 +68,12 @@ function canConnect(sockPath) {
   });
 }
 
-/** 单请求 rpc：发一帧收一帧（wait-handler.test / daemon-socket.test 同款形态）。 */
+/**
+ * 单请求 rpc：发一帧收一帧（wait-handler.test / daemon-socket.test 同款形态）。
+ * 构帧/解帧 import 生产 codec（lib/frame-codec）；取首个完整帧即返回是本替身
+ * 对「单请求单响应」已知输入的消费语义（半包缓冲/坏行丢弃/空行跳过由生产
+ * decoder 处理），不复制 client 侧宽容过滤。
+ */
 function rpc(sockPath, req, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(sockPath);
@@ -80,15 +88,14 @@ function rpc(sockPath, req, timeoutMs = 5000) {
       reject(e);
     };
     sock.on('connect', () => sock.write(encodeFrame(req)));
-    sock.on('data', (c) => {
+    sock.on('data', (chunk) => {
       if (done) return;
-      const frames = decoder.push(c);
-      if (frames.length > 0) {
-        done = true;
-        clearTimeout(timer);
-        sock.end();
-        resolve(frames[0]);
-      }
+      const [frame] = decoder.push(chunk);
+      if (frame === undefined) return; // 半包/空行/坏行：等下一 chunk 吐出完整帧
+      done = true;
+      clearTimeout(timer);
+      sock.end();
+      resolve(frame);
     });
     sock.on('error', fail);
     sock.on('close', () => { if (!done) fail(new Error('连接提前关闭')); });
@@ -256,33 +263,14 @@ test('socket 面经适配器可调全部注册 tool：zflow status 走 runId 校
   const { sockPath } = tmpSock(t);
   const inst = await startInstance(sockPath, 'f');
   t.after(() => inst.handle.stop());
-  // 本实例未注入 wfManager：zflow 走 -32603（协议级 throw）→ daemon-socket
-  // dispatch 统一映射 ok:false 帧（MCP RpcError 不因换传输面而丢语义）
+  // 本实例未注入 wfHost：zflow handler throw → daemon-socket dispatch 统一
+  // 映射 ok:false 帧（handler 异常语义不因换传输面而丢）
   const frame = await rpc(sockPath, { id: 1, tool: 'zflow', params: { action: 'list' } });
   assert.equal(frame.ok, false);
   assert.match(frame.error.message, /workflow 运行时/);
 });
 
-// ------------------------------------------------ d) inputSchema 契约防漂移
-
-test('zsub inputSchema：action enum 含 wait，ids 参数在 schema 内（防漂移）', () => {
-  const tool = server.buildToolDefinition();
-  assert.ok(
-    tool.inputSchema.properties.action.enum.includes('wait'),
-    'enum 缺 wait：socket 面/MCP 面 wait 分发将不可达',
-  );
-  assert.equal(tool.inputSchema.properties.ids.type, 'array');
-  assert.equal(tool.inputSchema.properties.ids.items.type, 'string');
-  // models --all（全 provider 视图）声明面：handler 已实现（all===true →
-  // router.allProviders()），schema 漏声明 = MCP 调用方按 inputSchema 不可发现
-  assert.equal(tool.inputSchema.properties.all.type, 'boolean');
-  assert.ok(tool.inputSchema.properties.all.description.includes('全 provider'));
-  // description 速查行同步（enum 与速查漂移会让模型知道 enum 却不知道用法）
-  assert.match(tool.description, /- wait：/);
-  assert.match(tool.description, /- models：.*all=true/);
-});
-
-// ------------------------------------------------ e) 帧cwd 传导（MF7）
+// ------------------------------------------------ d) 帧 cwd 传导（MF7）
 
 test('buildDaemonHandlers：req.cwd（非空 string）透传为 handler env.cwd → ctx.cwd；缺失/非 string 走既有回落链', async () => {
   const seen = [];

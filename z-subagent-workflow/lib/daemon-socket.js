@@ -20,17 +20,10 @@
  * listen 完」的启动窗口（正常是毫秒级），避免误清活锁；3 次退避仍不可达才
  * 判定持有者死亡或从未完成启动，清残留重竞选。
  *
- * 帧协议（D2，NDJSON；MF7 扩展 cwd 字段）：
- *   请求 {id, tool:"zsub"|"zflow", params:{...}, cwd?}
- *     cwd：string，可选——调用方进程目录。多 worktree 下 agent 发现 / worktree
- *     定位依赖发起方 cwd（daemon 宿主 cwd 会用错目录），故随帧传导。传输层
- *     仅做类型守卫：非 string 忽略（req.cwd = undefined），存在性校验留给
- *     handler 层（workdir/resolver 已有，协议层不重复）。
- *   响应 {id, ok:true, result} | {id, ok:false, error:{message}}
- *   帧编解码是纯函数导出；CLI thin client（lib/cli-client.js）不复用它——
- *   自带一份最小编解码（S8 收敛定论：两份最小实现并存、语义兼容，帧语法
- *   变更须两文件同步改），帧协议契约以 cli-client.js 头注为权威（互指维护）。
- *   每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
+ * 帧协议（D2，NDJSON；MF7 扩展 cwd 字段）：帧语法单源在 lib/frame-codec.js
+ * （encodeFrame/createFrameDecoder，NDJSON 契约与 cwd 传导语义见其头注）。
+ * 本模块只留传输层职责（listen/accept/锁竞选/看门狗），编解码经 import 消费。
+ * 每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
  *   挂起 handler 据此取消等待（不影响任务执行体）；handler throw 统一映射为
  *   ok:false 帧。本层只管传输，zsub/zflow 语义由调用方注入的 handler 表定义。
  *
@@ -49,6 +42,13 @@
 const fs = require('node:fs');
 const net = require('node:net');
 
+// 帧语法单源（D1）：encodeFrame/createFrameDecoder 见 lib/frame-codec.js
+const { encodeFrame, createFrameDecoder } = require('./frame-codec');
+
+// 探活原语单一源（V5e 收口）：core-ref 模块本身轻量（fs/path），barrel 在
+// requireCore() 调用时才加载——probeLockHolder 是看门狗触发路径的低频探测
+const coreRef = require('./core-ref');
+
 const WATCHDOG_BACKOFF_MS = 200;
 const WATCHDOG_RETRIES = 3;
 const SOCKET_MODE = 0o600; // D2 安全边界：仅本用户可 connect
@@ -58,61 +58,49 @@ function defaultLog(msg) {
   process.stderr.write(`[zsub-daemon] ${new Date().toISOString()} ${msg}\n`);
 }
 
-/** NDJSON 编码：对象 → 单行 JSON + '\n'。协议出口统一走这里，client 复用。 */
-function encodeFrame(obj) {
-  return `${JSON.stringify(obj)}\n`;
-}
-
-/**
- * 流式 NDJSON 解码器：按行分割 + JSON.parse，半包缓冲跨 chunk 拼接。
- * 内部按字节（0x0A）找行边界、行完整后才 toString——多字节 UTF-8 被 chunk
- * 边界切开时逐 chunk 解码会产生替换字符，帧含中文（任务书/错误消息）必坏。
- * 坏行（JSON.parse 失败）丢弃并回调 onBadLine（传 log 即可观测），单行损坏
- * 不中断后续解码；解析成功的裸值（数字/字符串）原样吐出，由分发层把关形态。
- *
- * @param {(badLine: string) => void} [onBadLine]
- * @returns {{ push(chunk: string|Buffer): object[] }} 每次吃进一个 chunk，吐出其中的完整帧
- */
-function createFrameDecoder(onBadLine) {
-  let buf = Buffer.alloc(0);
-  return {
-    push(chunk) {
-      buf = Buffer.concat([
-        buf,
-        Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'),
-      ]);
-      const frames = [];
-      let nl;
-      while ((nl = buf.indexOf(0x0a)) >= 0) {
-        const line = buf.subarray(0, nl).toString('utf8').trim();
-        buf = buf.subarray(nl + 1);
-        if (!line) continue; // 空行不是帧（如结尾 \n 后的尾巴）
-        try {
-          frames.push(JSON.parse(line));
-        } catch {
-          if (onBadLine) onBadLine(line);
-        }
-      }
-      return frames;
-    },
-  };
-}
-
 /** 活跃实例的同步清理集：信号/退出钩子遍历执行（模块级一份，多实例共用）。 */
 const LIVE_CLEANUPS = new Set();
+/**
+ * 信号路径的异步收尾集（MF-2）：宿主引擎 dispose（wfHost.shutdown →
+ * runner.shutdown，常驻 appserver 引擎进程的存活锚点）不能在 'exit' 钩子里
+ * 跑（只允许同步操作）。宿主经 registerSignalFinalizer 注入；SIGTERM/SIGINT
+ * 时同步清理后、显式退出前，在 SIGNAL_FINALIZE_TIMEOUT_MS 窗内逐个跑完。
+ */
+const SIGNAL_FINALIZERS = new Set();
+const SIGNAL_FINALIZE_TIMEOUT_MS = 5_000;
 let hooksInstalled = false;
 function installExitHooks() {
   if (hooksInstalled) return;
   hooksInstalled = true;
   const cleanupAll = () => { for (const cleanup of LIVE_CLEANUPS) cleanup(); };
-  // 信号路径：清理是同步的（unlink），先清后显式退出。接线注意：process.exit
-  // 会跳过其后注册的其他同名信号 listener——宿主（dist/mcp/server.js）若有
-  // 自己的 SIGTERM 收尾，需在本模块之前注册或把收尾统一收口到这里。
-  process.on('SIGTERM', () => { cleanupAll(); process.exit(0); });
-  process.on('SIGINT', () => { cleanupAll(); process.exit(0); });
+  const onSignal = () => {
+    cleanupAll();
+    if (SIGNAL_FINALIZERS.size === 0) { process.exit(0); return; }
+    // 异步收尾带短超时强制 exit：收尾挂死（引擎不响应）不把信号退出变成僵尸
+    setTimeout(() => process.exit(0), SIGNAL_FINALIZE_TIMEOUT_MS).unref();
+    Promise.all([...SIGNAL_FINALIZERS].map((f) => Promise.resolve().then(f).catch(() => {})))
+      .then(() => process.exit(0));
+  };
+  // 信号路径：同步清理（unlink）先清；有异步收尾则窗内跑完再退出，否则直接退
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
   // 自然退出路径兜底（如 MCP stdin 关闭后宿主 process.exit）：exit 钩子只允许
   // 同步操作，而退出卫生恰好全是同步 unlink。
   process.on('exit', cleanupAll);
+}
+
+/**
+ * 注册信号路径的异步收尾（MF-2）：返回注销函数。须在 startDaemon 之前（或
+ * 任意时刻——集合是模块级的，信号触发时统一消费）注册；收尾异常被吞（信号
+ * 退出是 best-effort，与 stdin 关闭路径的 shutdown 容错同语义）。
+ * @param {() => void | Promise<void>} finalizer
+ */
+function registerSignalFinalizer(finalizer) {
+  if (typeof finalizer !== 'function') {
+    throw new TypeError('registerSignalFinalizer 需要 finalizer 函数');
+  }
+  SIGNAL_FINALIZERS.add(finalizer);
+  return () => SIGNAL_FINALIZERS.delete(finalizer);
 }
 
 /**
@@ -134,7 +122,7 @@ function installExitHooks() {
  */
 function startDaemon(opts) {
   if (!opts || typeof opts.sockPath !== 'string' || !opts.sockPath) {
-    throw new TypeError('startDaemon 缺少 sockPath（unix socket 路径）。👉 从 config.sockPath() 取值，不要手工拼路径');
+    throw new TypeError('startDaemon 缺少 sockPath（unix socket 路径）。👉 从 lib/cli-client.js 的 defaultSockPath() 取值（ZSW_SOCK env 可覆盖），不要手工拼路径');
   }
   const sockPath = opts.sockPath;
   const handlers = opts.handlers || {};
@@ -182,7 +170,8 @@ function startDaemon(opts) {
     }
   }
 
-  /** 接管前探活锁持有者（R1）：读 lock 内 pid 做 kill(pid,0)。
+  /** 接管前探活锁持有者（R1）：读 lock 内 pid 做信号 0 探测（原语消费 core
+   *  isProcessAlive，V5e 收口；EPERM = 进程存在但属他人，core 按存在算）。
    *  返回 'alive'（持有者进程在世，新 daemon 已上位）/ 'dead'（pid 已死，残留可清）
    *  / 'gone'（lock 已不存在，他人已 sweep+重竞选）/ 'unreadable'（按残留处理）。 */
   function probeLockHolder() {
@@ -193,13 +182,7 @@ function startDaemon(opts) {
       return e.code === 'ENOENT' ? 'gone' : 'unreadable';
     }
     if (!/^\d+$/.test(pidStr)) return 'unreadable';
-    try {
-      process.kill(Number(pidStr), 0);
-      return 'alive';
-    } catch (e) {
-      // EPERM = 进程存在但属他人（同机跨用户），按存活处理，宁可不接管
-      return e.code === 'EPERM' ? 'alive' : 'dead';
-    }
+    return coreRef.requireCore().isProcessAlive(Number(pidStr)) ? 'alive' : 'dead';
   }
 
   /** 原子拿锁：成功（已写入 pid）返回 true；他人持有返回 false；其余错误抛出。 */
@@ -298,7 +281,7 @@ function startDaemon(opts) {
         : `daemon socket ${WATCHDOG_RETRIES} 次退避后仍不可达，判定持有者死亡或未完成启动`;
       // 接管前重验当前持有者（R1）：多 standby 同时被同一 daemon 死亡唤醒时，
       // 后到者的无凭据 sweep 会删掉先到者刚上位的新 lock+sock，O_EXCL 裁决被
-      // 击穿成双 daemon。死锁 pid 探活通过（kill(pid,0)）= 新持有者已就位，
+      // 击穿成双 daemon。死锁 pid 探活通过（core isProcessAlive）= 新持有者已就位，
       // 绝不 sweep，直接回 elect（O_EXCL 必 EEXIST → 重新 standby）。
       const holder = probeLockHolder();
       if (holder !== 'alive' && holder !== 'gone') {
@@ -465,4 +448,4 @@ function startDaemon(opts) {
   return ready;
 }
 
-module.exports = { startDaemon, encodeFrame, createFrameDecoder };
+module.exports = { startDaemon, registerSignalFinalizer };

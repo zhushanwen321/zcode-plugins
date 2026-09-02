@@ -19,7 +19,14 @@ const { once } = require('node:events');
 const { spawn } = require('node:child_process');
 
 const LIB = path.join(__dirname, '..', 'lib', 'daemon-socket.js');
-const { startDaemon, encodeFrame, createFrameDecoder } = require(LIB);
+const { startDaemon, registerSignalFinalizer } = require(LIB);
+const { encodeFrame, createFrameDecoder } = require('../lib/frame-codec');
+
+// 帧语法单源在 lib/frame-codec.js（设计 D1，encodeFrame/createFrameDecoder 已
+// 随 U0 抽出导出）——本文件此前的手写 replica 已退役（69f71eb 留债清偿），
+// 构帧/解帧一律 import 生产 codec；协议契约以 lib/frame-codec.js 头注为权威。
+// **生产 decoder 回归锚**仍经传输层字节级写入驱动（见「帧编解码回归锚」组）
+// ——socket 写入时机即 decoder.push 的 chunk 边界，锚形态不随 replica 退役而变。
 
 /** 建临时 sock 目录；测试结束整目录删除（残留清理断言失败时也不会泄漏）。 */
 function tmpSock(t) {
@@ -85,6 +92,33 @@ function rpc(sockPath, reqs, { timeoutMs = 4000 } = {}) {
   });
 }
 
+/** 在既有连接上等待收满 n 个响应帧（复用调用方 decoder，保留其半包缓冲状态）。 */
+function awaitFrames(sock, decoder, n, { timeoutMs = 4000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const got = [];
+    let done = false;
+    const timer = setTimeout(
+      () => finish(reject, new Error(`等待 ${n} 个响应帧超时（已收 ${got.length} 个）。👉 检查 decoder 是否吞帧/坏行`)),
+      timeoutMs,
+    );
+    const finish = (fn, v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      sock.off('data', onData);
+      sock.off('error', onErr);
+      fn(v);
+    };
+    const onData = (c) => {
+      got.push(...decoder.push(c));
+      if (got.length >= n) finish(resolve, got);
+    };
+    const onErr = (e) => finish(reject, e);
+    sock.on('data', onData);
+    sock.on('error', onErr);
+  });
+}
+
 /** spawn 一个真实 daemon 子进程（keep-alive 由脚本自持——传输层 handle 全 unref）。 */
 function spawnDaemonProc(sockPath) {
   const script = `
@@ -141,53 +175,6 @@ function waitClose(child, timeoutMs = 5000) {
     });
   });
 }
-
-// ------------------------------------------------------ 帧编解码纯函数
-
-test('encodeFrame：单行 JSON + 换行结尾', () => {
-  const line = encodeFrame({ id: 1, tool: 'zsub', params: { a: '中' } });
-  assert.ok(line.endsWith('\n'), '帧以 \\n 结尾（NDJSON 行边界）');
-  assert.strictEqual(line.indexOf('\n'), line.length - 1, 'JSON 内无裸换行');
-  assert.deepStrictEqual(JSON.parse(line), { id: 1, tool: 'zsub', params: { a: '中' } });
-});
-
-test('createFrameDecoder：多帧一 chunk / 半包拼接 / 空行容忍 / 坏行丢弃回调', () => {
-  const bad = [];
-  const dec = createFrameDecoder((l) => bad.push(l));
-
-  // 多帧 + 坏行 + 空行混在一个 chunk：好帧全解出，坏行进回调
-  const out = dec.push(Buffer.from(
-    '{"id":1,"tool":"a"}\n{oops\n\n{"id":2,"tool":"b"}\n',
-  ));
-  assert.strictEqual(out.length, 2);
-  assert.strictEqual(out[0].id, 1);
-  assert.strictEqual(out[1].id, 2);
-  assert.deepStrictEqual(bad, ['{oops'], '坏行丢弃且可观测');
-
-  // 半包：前半不产帧，补齐后产完整帧
-  const line = encodeFrame({ id: 3, tool: 'c', params: { v: '中文' } });
-  const buf = Buffer.from(line);
-  assert.deepStrictEqual(dec.push(buf.subarray(0, 5)), [], '半包缓冲不吐帧');
-  const rest = dec.push(buf.subarray(5));
-  assert.strictEqual(rest.length, 1);
-  assert.deepStrictEqual(rest[0], { id: 3, tool: 'c', params: { v: '中文' } });
-
-  // 无换行尾巴持续缓冲，不误吐
-  assert.deepStrictEqual(dec.push(Buffer.from('{"id":4,')), []);
-});
-
-test('createFrameDecoder：多字节 UTF-8 被字节级切分仍正确解码（按字节找行、行完整后才 decode）', () => {
-  const dec = createFrameDecoder();
-  const line = encodeFrame({ id: 7, params: { s: '中文字' } });
-  const buf = Buffer.from(line);
-  const idx = buf.indexOf(Buffer.from('中', 'utf8'));
-  assert.ok(idx > 0, '前提：帧里确实含多字节字符');
-  const cut = idx + 1; // 切在「中」3 字节的中间
-  assert.deepStrictEqual(dec.push(buf.subarray(0, cut)), []);
-  const frames = dec.push(buf.subarray(cut));
-  assert.strictEqual(frames.length, 1);
-  assert.strictEqual(frames[0].params.s, '中文字', '无替换字符、无丢字节');
-});
 
 // ------------------------------------------------------ 竞选与协议往返
 
@@ -359,7 +346,44 @@ test('SIGTERM：standby 子进程直接退出，不动 daemon 的 lock/sock', as
   assert.deepStrictEqual(frames[0].result, { who: 'daemon' }, 'daemon 服务照常');
 });
 
-// ------------------------------------------------------ 挂起取消与半包
+// ------------------------------------------------------ 信号 finalizer（MF-2 收尾面）
+
+test('SIGTERM：registerSignalFinalizer 注入的异步收尾在退出前执行（exit 0 + 文件副作用）', async (t) => {
+  const { dir, sockPath } = tmpSock(t);
+  const markerPath = path.join(dir, 'finalized');
+  const script = `
+    const { startDaemon, registerSignalFinalizer } = require(${JSON.stringify(LIB)});
+    registerSignalFinalizer(async () => {
+      await new Promise((r) => setTimeout(r, 50)); // 证明异步收尾真的等得到
+      require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ok');
+    });
+    startDaemon({
+      sockPath: ${JSON.stringify(sockPath)},
+      handlers: { zsub: async () => ({ pong: true }) },
+      log: () => {},
+    }).then(
+      () => process.stderr.write('READY daemon\\n'),
+      (e) => { process.stderr.write('FAIL ' + e.message + '\\n'); process.exit(1); },
+    );
+    setInterval(() => {}, 3600000);
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { child.kill('SIGKILL'); });
+  assert.match(await waitProcReady(child), /^daemon$/);
+
+  child.kill('SIGTERM');
+  const { code, signal } = await waitClose(child);
+  assert.strictEqual(signal, null, '信号被 handler 接住');
+  assert.strictEqual(code, 0, 'finalizer 跑完后显式 exit(0)');
+  assert.strictEqual(fs.readFileSync(markerPath, 'utf8'), 'ok', '异步 finalizer 在退出前完成（文件副作用）');
+});
+
+test('registerSignalFinalizer：非函数入参同步抛 TypeError', () => {
+  assert.throws(() => registerSignalFinalizer('not-a-function'), TypeError);
+  assert.throws(() => registerSignalFinalizer(undefined), TypeError);
+});
+
+
 
 test('客户端断连：连接级 AbortSignal 被 abort，挂起 handler 取消等待，daemon 不受影响', async (t) => {
   const { sockPath } = tmpSock(t);
@@ -421,6 +445,128 @@ test('socket 层半包：一帧按字节切两半发送，daemon 仍正确解码
   assert.deepStrictEqual(got.result, { half: '帧' });
 });
 
+// -------------------------------------------- 帧编解码回归锚（驱动生产 decoder）
+// createFrameDecoder 已随 lib/frame-codec.js 抽出导出（设计 D1/U0，replica 债
+// 清偿），本组锚的传输层字节级驱动形态保持不变：请求侧 socket 字节级写入精确
+// 复现 decoder.push 的输入形态（chunk 边界 / 坏行 / 空行 / 裸值），断言可观测
+// 面 = 分发响应 + onBadLine→log 留痕。锚定 decoder 四行为：行完整后才
+// toString（多字节 UTF-8 跨 chunk 保真）、坏行丢弃不断流、半包字节缓冲、空行跳过。
+
+test('帧编解码·坏行容忍：非 JSON 行丢弃且 onBadLine 留痕，空行/纯空白行静默跳过，后续帧不受影响', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const logs = [];
+  const d = await startDaemon({
+    sockPath, handlers: { zsub: async (req) => req.params }, log: (m) => logs.push(m),
+  });
+  t.after(() => d.stop());
+
+  const bad = 'not-a-json-line {oops';
+  const sock = net.connect(sockPath);
+  await once(sock, 'connect');
+  const decoder = createFrameDecoder();
+  // 单次写入复现真实流形态：坏行 + 空行 + 纯空白行 + 合法帧，同 chunk 相邻
+  sock.write(`${bad}\n\n   \n${encodeFrame({ id: 1, tool: 'zsub', params: { ok: true } })}`);
+  const [frame] = await awaitFrames(sock, decoder, 1);
+  sock.destroy();
+
+  assert.deepStrictEqual(frame, { id: 1, ok: true, result: { ok: true } },
+    '单行损坏不中断后续解码：合法帧照常响应');
+  const badLineLogs = logs.filter((m) => m.includes('丢弃坏帧行'));
+  assert.strictEqual(badLineLogs.length, 1, `坏行留痕须恰 1 条，实际 logs: ${JSON.stringify(logs)}`);
+  assert.ok(badLineLogs[0].includes(bad), '坏行日志须携带原始行内容（可观测丢弃了什么）');
+});
+
+test('帧编解码·粘包与半包：一 chunk 多帧逐帧解析；一帧切 3 份跨事件轮次写入恰好产一帧', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const d = await startDaemon({
+    sockPath, handlers: { zsub: async (req) => req.params }, log: () => {},
+  });
+  t.after(() => d.stop());
+
+  const sock = net.connect(sockPath);
+  await once(sock, 'connect');
+  const decoder = createFrameDecoder();
+
+  // 粘包（完整帧解析锚）：两帧拼一个 chunk 一次写入 → 恰好两个响应
+  sock.write(
+    encodeFrame({ id: 1, tool: 'zsub', params: { n: 1 } })
+    + encodeFrame({ id: 2, tool: 'zsub', params: { n: 2 } }),
+  );
+  const pair = await awaitFrames(sock, decoder, 2);
+  assert.deepEqual(pair.map((f) => f.id).sort(), [1, 2], '粘包两帧都必须被解析');
+  assert.ok(pair.every((f) => f.ok), '粘包不损帧语义');
+
+  // 半包跨 chunk 缓存锚：一帧按字节切 3 份，中间两段悬停一个事件轮次再续写
+  // → 恰好一帧（不重复不截断不吞）
+  const buf = Buffer.from(encodeFrame({ id: 3, tool: 'zsub', params: { half: true } }), 'utf8');
+  sock.write(buf.subarray(0, 3));
+  await new Promise((r) => setTimeout(r, 20));
+  sock.write(buf.subarray(3, buf.length - 4));
+  await new Promise((r) => setTimeout(r, 20));
+  sock.write(buf.subarray(buf.length - 4));
+  const [third] = await awaitFrames(sock, decoder, 1);
+  sock.destroy();
+  assert.deepStrictEqual(third, { id: 3, ok: true, result: { half: true } },
+    '半包拼装后帧语义必须完整');
+});
+
+test('帧编解码·UTF-8 切分：多字节字符被 chunk 边界切开不乱码（字节缓冲，行完整后才解码）', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const logs = [];
+  const d = await startDaemon({
+    sockPath, handlers: { zsub: async (req) => req.params }, log: (m) => logs.push(m),
+  });
+  t.after(() => d.stop());
+
+  const text = '多字节帧切片';
+  const buf = Buffer.from(encodeFrame({ id: 1, tool: 'zsub', params: { text } }), 'utf8');
+  // 在第 3 个字符（'帧'，3 字节序列）的中间字节切开：decoder 若逐 chunk 解码
+  // 会产生替换字符（帧含中文必坏），只有行完整后才 toString 才能保真
+  const cut = buf.indexOf(Buffer.from('帧', 'utf8')) + 2;
+
+  const sock = net.connect(sockPath);
+  await once(sock, 'connect');
+  const decoder = createFrameDecoder();
+  sock.write(buf.subarray(0, cut));
+  await new Promise((r) => setTimeout(r, 30)); // 半包悬停，确保跨 chunk
+  sock.write(buf.subarray(cut));
+  const [frame] = await awaitFrames(sock, decoder, 1);
+  sock.destroy();
+
+  assert.strictEqual(frame.ok, true);
+  assert.strictEqual(frame.result.text, text, '跨 chunk 切开的多字节字符必须原样还原');
+  assert.deepStrictEqual(
+    logs.filter((m) => m.includes('丢弃坏帧行')), [],
+    'UTF-8 切分不得被误判为坏行丢弃',
+  );
+});
+
+test('帧编解码·裸值与空白：解析成功的裸值原样吐出由分发层把关（ok:false 报错不断连）；行首尾空白 trim 后仍可解析', async (t) => {
+  const { sockPath } = tmpSock(t);
+  const d = await startDaemon({
+    sockPath, handlers: { zsub: async () => ({ pong: 1 }) }, log: () => {},
+  });
+  t.after(() => d.stop());
+
+  const sock = net.connect(sockPath);
+  await once(sock, 'connect');
+  const decoder = createFrameDecoder();
+  // 一次写入：裸数字 + 裸字符串 + 带首尾空白的合法帧（trim 语义）
+  sock.write(
+    '42\n'
+    + '"bare-string"\n'
+    + `   ${encodeFrame({ id: 3, tool: 'zsub', params: {} }).trim()}  \n`,
+  );
+  const frames = await awaitFrames(sock, decoder, 3);
+  sock.destroy();
+
+  const bare = frames.filter((f) => f.ok === false);
+  assert.strictEqual(bare.length, 2, '裸值帧统一 ok:false，连接不中断');
+  for (const f of bare) assert.match(f.error.message, /帧必须是 JSON 对象/);
+  const ok = frames.find((f) => f.ok === true);
+  assert.strictEqual(ok && ok.id, 3, '行首尾空白不影响帧解析');
+});
+
 // ------------------------------------------------------ 看门狗安静性
 
 test('看门狗连接不发帧：daemon 无错误日志、正常服务不受干扰', async (t) => {
@@ -476,6 +622,9 @@ test('看门狗接管成为 daemon 时触发 onTakeover；首竞选不触发', a
 });
 
 // ------------------------------------------------- R1：接管前持有者探活重验
+// V5e 收口：probeLockHolder 的 pid 探测改调 core isProcessAlive（kill 0 成功→
+// 'alive' / EPERM→'alive' / 其余→'dead'，与退役自研逐分支等值）；本组用例的
+// 活 holder（sleep 子进程）/ 死 holder（SIGKILL）两分支即改调等值回归锚
 
 test('R1：看门狗触发时锁持有者 pid 存活 → 不 sweep 残留（防多 standby 竞态双 daemon）', async (t) => {
   const { sockPath, lockPath } = tmpSock(t);

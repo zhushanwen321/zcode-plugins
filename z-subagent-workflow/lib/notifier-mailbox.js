@@ -16,15 +16,17 @@
  *
  * 1. tmp+rename 原子落位 —— 防「半截文件毒化 drain」。drain 是「先 parse 后
  *    rename」，若边写 .json 边被引擎读走，截断 JSON 会 parse 失败成为坏文件，
- *    永久阻塞该会话后续所有消息且无法自愈（无 quarantine）。先写 .json.tmp 再
- *    rename：drain 的 .json 过滤器天然忽略 .tmp，rename 在同一目录内原子完成，
- *    引擎任何时刻看到的 .json 都是完整文件。
+ *    永久阻塞该会话后续所有消息且无法自愈（无 quarantine）。C15 起原子写改调
+ *    core writeAtomicFileSync（先写 tmp 再同目录 rename，write 失败由 core
+ *    清理残留）：tmp 名为 `<final>.tmp.<pid>.<seq>-<rand>`，drain 的 .json
+ *    后缀过滤器天然忽略它，rename 在同一目录内原子完成，引擎任何时刻看到的
+ *    .json 都是完整文件。
  *
  * 2. envelope 写前自检 —— 防「投出毒文件」（不可逆事故在写之前拦截）。坏文件
  *    一旦落盘没有自动清除机制，所以把引擎同款校验复制到写之前：version 必须
  *    是数字 1（引擎判 !== 1，字符串 "1" 同样是毒文件，这是与任务书「六字段全
  *    string」表述的关键差异，以引擎源码为准）；其余五字段必须 string。自检不
- *    过直接抛错，一个字节都不落盘（连 .tmp 都不产生，也不建目录），让调用方
+ *    过直接抛错，一个字节都不落盘（连 tmp 都不产生，也不建目录），让调用方
  *    在造成不可逆后果前看到可操作的错误。
  *
  * 3. 文件名单调前缀 <epochMs>-<seq>-<subagentId>.json —— 防「乱序 / 挤窗」。
@@ -35,9 +37,10 @@
  *    计数器而非随机后缀，同毫秒连投也能保持稳定顺序。
  *
  * 4. sweepStaleTmp 启动清扫 —— 防「崩溃残留无限累积」。进程在 write tmp 与
- *    rename 之间崩溃会留下 .tmp 残留：drain 不读它们（无害），但会持续堆积，
- *    且其中任务结果已丢失投递。启动时按 <digits>-<digits>-<id>.json.tmp 模式
- *    清扫己方残留，让「投递中途崩溃」保持可观测而不是被垃圾掩盖。
+ *    rename 之间崩溃会留下 tmp 残留：drain 不读它们（无害），但会持续堆积，
+ *    且其中任务结果已丢失投递。启动时按己方文件名模式清扫残留（含 core
+ *    atomic-write 形态与历史 `.json.tmp` 后缀形态——升级前旧进程的崩溃残留
+ *    也要能清），让「投递中途崩溃」保持可观测而不是被垃圾掩盖。
  */
 
 const fs = require('node:fs');
@@ -45,17 +48,23 @@ const path = require('node:path');
 
 /**
  * zsw CLI 可执行路径（给主 agent 照抄执行，必须绝对可定位——主 agent cwd 是
- * 项目目录，裸 `node bin/zsw.js` 会 ENOENT）：优先插件根 env，回退模块相对
- * （npm 包/inline/marketplace 副本三形态下 lib 的上级都是插件根，路径一致）。
+ * 项目目录，裸 `node bin/zsw.js` 会 ENOENT）：解析规则（插件根 env 优先、回退
+ * 模块相对）单源 lib/config zswCliPath（F12 收敛，原就地 path.join 表达式退役）。
  */
-const ZSW_CLI = path.join(process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..'), 'bin', 'zsw.js');
-const { mailboxRoot, outputsDir } = require('./config');
+const { mailboxRoot, outputsDir, zswCliPath } = require('./config');
+const { requireCore } = require('./core-ref');
+const ZSW_CLI = zswCliPath();
 
 /** 引擎同款会话 id 校验（zcode.cjs zti）：drain 侧 sessionDir 对目录名强制此格式 */
 const SESSION_ID_RE = /^sess_[A-Za-z0-9._-]+$/;
 
-/** 己方投递残留识别：与本类生成的文件名格式一一对应（见头注规范 3/4） */
-const OWN_TMP_RE = /^\d+-\d+-.+\.json\.tmp$/;
+/**
+ * 己方投递残留识别（见头注规范 3/4）。两种形态都以本类的定宽
+ * `<epochMs>-<seq>-<subagentId>.json` 前缀为锚：
+ * - core writeAtomicFileSync tmp：`<final>.tmp.<pid>.<seq>-<rand>`（现行）；
+ * - 历史 `.json.tmp` 后缀：升级前旧进程的崩溃残留（仍要能清）。
+ */
+const OWN_TMP_RE = /^\d+-\d+-.+\.json\.tmp(\.\d+\.[0-9A-Za-z-]+)?$/;
 
 /** seq 零填充宽度：定宽是「字典序 = 时间序」的前提（见头注规范 3） */
 const SEQ_WIDTH = 6;
@@ -123,15 +132,11 @@ class MailboxNotifier {
     };
     assertEnvelopeLike(envelope); // 先于一切 mkdir/write（头注规范 2）
 
-    const dir = path.join(mailboxRoot(), target, 'unread');
-    fs.mkdirSync(dir, { recursive: true });
+    // core writeAtomicFileSync：ensureDir 内建（unread/ 可能尚未存在），tmp+
+    // rename 同目录原子落位，write 失败由 core 清理残留 tmp（头注规范 1）
     const finalName = `${ms}-${seq}-${record.subagentId}.json`;
-    const tmpPath = path.join(dir, `${finalName}.tmp`);
-    const finalPath = path.join(dir, finalName);
-    // 同步写+改名：进程内调用序 = 落盘序，不给 async 回调交错留窗口；
-    // .tmp 与终名同目录，rename 不跨文件系统，原子性有保证（头注规范 1）
-    fs.writeFileSync(tmpPath, JSON.stringify(envelope), 'utf8');
-    fs.renameSync(tmpPath, finalPath);
+    const finalPath = path.join(mailboxRoot(), target, 'unread', finalName);
+    requireCore().writeAtomicFileSync(finalPath, JSON.stringify(envelope));
     return { delivered: true, target, filePath: finalPath };
   }
 
@@ -167,11 +172,14 @@ class PollingNotifier {
   }
 
   /**
-   * 兜底档不投递：不写任何文件，只声明「结果需主动查询」。
-   * @returns {Promise<{delivered:false, guidance:'poll via list'}>}
+   * 兜底档不投递：不写任何文件，只以 delivered:false 声明「结果需主动查询」。
+   * 返回值仅 delivered 一个字段——唯一生产消费者（manager 通知分支）只读它
+   * 决定是否记 notifyNote；给主 agent 的轮询指引另有专道（start 时刻的
+   * handle.guidance 与完成时的 record notifyNote），不经本返回值。
+   * @returns {Promise<{delivered:false}>}
    */
   async notifyCompletion() {
-    return { delivered: false, guidance: 'poll via list' };
+    return { delivered: false };
   }
 
   /**

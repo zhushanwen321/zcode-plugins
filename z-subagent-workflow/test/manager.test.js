@@ -30,7 +30,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 // env 隔离完成后才允许 require lib（见文件头注释）
 const { RecordStore } = require('../lib/record-store');
 const outputs = require('../lib/output-store');
-const { recordsPath, DEFAULTS } = require('../lib/config');
+const { recordsPath, DEFAULTS, zswCliPath } = require('../lib/config');
 const { MailboxNotifier, PollingNotifier } = require('../lib/notifier-mailbox');
 const { SubagentManager } = require('../lib/manager');
 
@@ -45,13 +45,12 @@ function ctx() {
 
 /**
  * 内存 FakeRunner：start 注册待决议 waiter（测试用 finish/finishAll 注入
- * 延迟完成/失败/超时/取消），resume 立即闭环；alive 由 livePids 决定
+ * 延迟完成/失败/超时/取消）；alive 由 livePids 决定
  * （预置 process.pid 供 recover 测试探活）。
  */
 class FakeRunner {
   constructor() {
     this.startCalls = [];
-    this.resumeCalls = [];
     this.livePids = new Set([process.pid]); // 本进程恒活（recover 活探活用）
     this._seq = 0;
     this._pending = new Map(); // pid -> finish(result)
@@ -85,15 +84,6 @@ class FakeRunner {
     });
     return { exec, cancel: () => this.finish(exec, { status: 'cancelled', response: '' }), done };
   }
-  resume(exec, message, opts = {}) {
-    this.resumeCalls.push({ exec, message, opts });
-    return Promise.resolve({
-      status: 'closed',
-      response: `续聊回复:${message}`,
-      sessionId: exec.sessionId,
-      usage: { input_tokens: 5, output_tokens: 5 },
-    });
-  }
   alive(exec) {
     return Boolean(exec && this.livePids.has(exec.pid));
   }
@@ -106,10 +96,19 @@ class FakeRunner {
   }
 }
 
+/** 缺省角色 fake（D-4 缺省统一：resolveDefault 的 general-purpose 形态）。 */
+const fakeGeneralPurpose = () => ({
+  name: 'general-purpose',
+  description: '通用兜底',
+  filePath: '/fake/general-purpose.md',
+  body: '你是通用兜底 agent——直接用提供的工具执行 task',
+});
+
 function fakeResolver() {
   return {
-    resolve(nameOrPath) {
-      if (nameOrPath !== 'reviewer') return null;
+    // D-4a 收紧后 resolver 只吃归一化绝对路径（manager 先 normalizeAgentRef）
+    resolve(ref) {
+      if (ref !== '/fake/reviewer.md') return null;
       return {
         name: 'reviewer',
         description: '代码审查',
@@ -119,13 +118,17 @@ function fakeResolver() {
         body: '你是资深代码审查员',
       };
     },
+    resolveDefault() {
+      return fakeGeneralPurpose();
+    },
   };
 }
 
 function fakeRouter() {
+  // 2c 后 manager 只消费清单器的 resolveDefault（默认模型回退链展示值）；
+  // 模型校验归 core 引擎 preparer，fake 不再需要 resolve/prepareRunEnv
   return {
-    resolve: (requested, agentDefault) => requested || agentDefault || 'fake/default-model',
-    prepareRunEnv: async (modelRef) => ({ env: { HOME: `/fake/home/${modelRef}`, ZSW_NESTED: '1' } }),
+    resolveDefault: () => 'fake/default-model',
   };
 }
 
@@ -191,6 +194,16 @@ function envelopeCount(sessionId) {
   }
 }
 
+/** 替代退役的 output-store.writePatch 作夹具：直接落一个 .patch 文件到本测试
+ *  临时目录（manager 只消费 collectPatch 返回的路径与文件内容，不依赖 outputs
+ *  目录位置约定，故写到独立 fixtures 目录即可）。 */
+function writePatchFixture(id, diffText) {
+  const file = path.join(TMP, 'patch-fixtures', `${id}.patch`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, diffText);
+  return file;
+}
+
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
@@ -201,7 +214,7 @@ test('start(wait=false)：立即返回句柄，后台终态落盘 + mailbox 通�
   const c = ctx();
   const { manager, runner, records, slots } = buildManager();
   const h = await manager.start(
-    { task: '分析 lib 目录并给出重构清单', slug: 'bg-demo', agent: 'reviewer', model: 'fake/override-model' },
+    { task: '分析 lib 目录并给出重构清单', slug: 'bg-demo', agent: '/fake/reviewer.md', model: 'fake/override-model' },
     c,
   );
   assert.match(h.subagentId, /^sa-/);
@@ -258,8 +271,7 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
     },
     async collectPatch({ dir, subagentId }) {
       wtCalls.patched.push({ dir, subagentId });
-      const { writePatch } = require('../lib/output-store');
-      return writePatch(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n');
+      return writePatchFixture(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n');
     },
     async cleanup({ dir, subagentId, meta }) { wtCalls.cleaned.push({ dir, subagentId, meta }); },
   };
@@ -282,6 +294,69 @@ test('start(worktree=true)：任务 cwd 切隔离目录，patchFile 回填 + 通
   const env1 = readEnvelopes(c.targetSessionId).at(-1);
   assert.ok(env1.content.includes(rec.patchFile)); // patch 路径
   assert.ok(env1.content.includes('git apply'));   // apply 指引行
+});
+
+test('V4o 降级留痕投影：collectPatch 结构化 patchIncomplete → record/outcome 可断言 + stderr warn + 通知提示', async () => {
+  const c = ctx();
+  const stderrLines = [];
+  const origWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (chunk) => { stderrLines.push(String(chunk)); return true; };
+  const fakeWorktree = {
+    async prepare({ slug, subagentId }) {
+      return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
+    },
+    // worktree-adapter V4o 透传形态：结构化 {patchFile, patchIncomplete:true}
+    async collectPatch({ subagentId }) {
+      return {
+        patchFile: writePatchFixture(subagentId, 'diff --git a/f b/f\n--- a/f\n+++ b/f\n'),
+        patchIncomplete: true,
+      };
+    },
+    async cleanup() {},
+  };
+  try {
+    const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
+    // 既有 start(wait=true) 用例同款：先注册终态注入（runner.start 后 20ms
+    // finishAll），再同步等 start 返回
+    setTimeout(() => runner.finishAll({ status: 'closed', response: '降级场景完成', sessionId: 'sess-wt-incomplete' }), 20);
+    const h = await manager.start(
+      { task: '降级场景任务书', slug: 'wt-incomplete', worktree: true, wait: true }, c,
+    );
+    assert.equal(h.status, 'closed');
+    assert.equal(h.patchIncomplete, true, 'outcome 必须携带可断言降级信号');
+    const rec = records.get(h.subagentId);
+    assert.equal(rec.patchIncomplete, true, 'record 必须原子落盘降级留痕');
+    assert.ok(rec.patchFile && rec.patchFile.endsWith('.patch'), '降级时 patchFile 仍正常回填');
+    assert.ok(
+      stderrLines.some((l) => l.includes('patch 不完整') && l.includes(h.subagentId)),
+      `stderr warn 期望含 subagentId，实得: ${JSON.stringify(stderrLines)}`,
+    );
+    // mailbox 面主 agent 只看通知：降级必须可感知
+    const envelopes = readEnvelopes(c.targetSessionId);
+    assert.ok(envelopes.some((e) => e.content.includes('patch 不完整')), '通知应含 patch 不完整提示');
+    assert.ok(envelopes.some((e) => e.content.includes('git apply')), '通知仍含 git apply 指引');
+  } finally {
+    process.stderr.write = origWrite;
+  }
+});
+
+test('V4o 降级留痕投影：正常 patch（string 旧形态）不带 patchIncomplete 键', async () => {
+  const c = ctx();
+  const fakeWorktree = {
+    async prepare({ slug, subagentId }) {
+      return { dir: path.join(TMP, 'wt', slug), branch: `zsub/${slug}`, mainRepo: TMP };
+    },
+    // string 旧形态（ports.js 契约口径）：健康路径无降级信号
+    async collectPatch({ subagentId }) { return writePatchFixture(subagentId, 'diff --git a/g b/g\n'); },
+    async cleanup() {},
+  };
+  const { manager, runner, records } = buildManager({ worktree: fakeWorktree });
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '健康场景完成', sessionId: 'sess-wt-healthy' }), 20);
+  const h = await manager.start({ task: '健康场景任务书', slug: 'wt-healthy', worktree: true, wait: true }, c);
+  assert.equal(h.status, 'closed');
+  assert.equal(h.patchIncomplete, undefined, '健康路径 outcome 不携带降级键');
+  assert.equal(records.get(h.subagentId).patchIncomplete, undefined, '健康路径 record 不携带降级键');
+  assert.ok(h.patchFile && h.patchFile.endsWith('.patch'));
 });
 
 test('start(wait=true)：同步等待，返回终态与结果全文（不截断）', async () => {
@@ -318,7 +393,8 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   const busy = await manager.message(h.subagentId, '现在怎么样了');
   assert.deepEqual(busy, {
     busy: true,
-    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（zsw wait --id ${h.subagentId}）或 zsw cancel --id ${h.subagentId} 取消后再投递`,
+    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（node "${zswCliPath()}" wait --id ${h.subagentId}）`
+      + `或 node "${zswCliPath()}" cancel --id ${h.subagentId} 取消后再投递`,
   });
 
   // 非 conversation：完成后 message 直接报可操作错误
@@ -328,9 +404,9 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   await assert.rejects(() => manager.message(h2.subagentId, 'hi'), /不支持续聊/);
 });
 
-test('message：idle 续聊流转（idle→running→idle），resume 拿到回填句柄，二轮通知', async () => {
+test('message：idle 续聊在 manager 入口直接报 unavailable（record 不翻转，无二轮通知）', async () => {
   const c = ctx();
-  const { manager, runner, records, slots } = buildManager();
+  const { manager, runner, records } = buildManager();
   const h = await manager.start({ task: '对话任务书', slug: 'chat-demo', conversation: true }, c);
   await waitFor(() => runner.startCalls.length === 1);
   runner.finishAll({ status: 'closed', response: '第一轮回答', sessionId: 'sess-chat-1' });
@@ -342,22 +418,17 @@ test('message：idle 续聊流转（idle→running→idle），resume 拿到回�
   assert.equal(idle1.rounds, 1); // 完成计数：首轮成功收尾 0→1
   assert.equal(idle1.exec.sessionId, 'sess-chat-1');
 
-  const r = await manager.message(h.subagentId, '追问：详细说说');
-  assert.equal(r.status, 'running');
-  assert.equal(r.round, 2); // 即将开始的轮号 = 已完成 + 1
-  const idle2 = await waitFor(() => {
-    const rec = records.get(h.subagentId);
-    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
-  });
-  assert.equal(runner.resumeCalls.length, 1);
-  assert.equal(runner.resumeCalls[0].exec.sessionId, 'sess-chat-1'); // 首轮回填的句柄
-  assert.equal(runner.resumeCalls[0].message, '追问：详细说说');
-  assert.equal(idle2.status, 'idle');
-  // 第二封完成通知（首轮 + 续聊轮各一封）
-  await waitFor(() => envelopeCount(c.targetSessionId) >= 2);
-  const second = readEnvelopes(c.targetSessionId).at(-1);
-  assert.ok(second.content.includes('续聊回复:追问：详细说说'));
-  assert.equal(slots.running(), 0);
+  // 续聊执行线已随 app-server 常驻化重构移除（P3 回归）：入口即报明确
+  // unavailable，不起轮——调用方拿到清晰错误而非深层异常
+  await assert.rejects(
+    () => manager.message(h.subagentId, '追问：详细说说'),
+    (e) => /续聊暂不可用/.test(e.message) && /P3/.test(e.message) && /重新 start/.test(e.message),
+  );
+  const idle2 = records.get(h.subagentId);
+  assert.equal(idle2.status, 'idle', 'record 不发生 idle→running 翻转');
+  assert.equal(idle2.rounds, 1, '入口报错不产生轮，完成计数不动');
+  await sleep(30);
+  assert.equal(envelopeCount(c.targetSessionId), 1, '无二轮通知');
 });
 
 test('cancel（有句柄）：杀进程 + record 落 cancelled + 不发通知', async () => {
@@ -410,11 +481,39 @@ test('recover：死 pid → lost 落因，活 pid → 保留 + 孤儿标记', as
   assert.match(orphan.lostReason, /孤儿/);
 });
 
+test('recover（W6a2）：appserver 形态 exec 保守存活 → orphan 分流 + 如实文案（不判死）', async () => {
+  const runner = new FakeRunner();
+  // appserver 形态的 exec 无 pid（常驻进程不经 onChildSpawned）；alive 按 kind
+  // 分支返回 true（保守），不走 livePids 的 pid 判定
+  runner.alive = (exec) => Boolean(exec && exec.kind === 'appserver');
+  const { manager, records } = buildManager({ runner });
+  records.create({
+    subagentId: 'sa-app-1', slug: 'app-resident',
+    exec: {
+      kind: 'appserver', sessionId: 'sess-app-1',
+      sessionRef: { dbPath: '.zcode/cli/db/db.sqlite', sessionId: 'sess-app-1' },
+      poolKey: 'home-appserver',
+    },
+  });
+  records.transition('sa-app-1', 'created', 'running');
+
+  const summary = await manager.recover();
+  assert.deepEqual(summary.dead, [], 'appserver 形态不判死（core 未暴露任务级探活面，保守处置）');
+  assert.deepEqual(summary.orphan, ['sa-app-1']);
+  const rec = records.get('sa-app-1');
+  assert.equal(rec.status, 'lost');
+  assert.equal(rec.orphan, true);
+  assert.match(rec.lostReason, /孤儿会话/);
+  assert.match(rec.lostReason, /进度未知/);
+  assert.match(rec.lostReason, /cancel 后重发/);
+});
+
 // ------------------------------- R1/R2 回归（上轮 must-fix 的反退化锚点）
 
 test('R1 回归：alive 返回 Promise 时 recover 仍正确分流死/活进程（await 退化即翻车）', async () => {
-  // AppServerRunner.alive 是 async——若 manager 漏 await，Promise 恒 truthy，
-  // 死进程全部误入 orphan 分支。此用例用 Promise 返回的 alive 钉住该语义。
+  // runner.alive 可能是 async（runner-core 的 exec 形态分支）——若 manager 漏
+  // await，Promise 恒 truthy，死进程全部误入 orphan 分支。此用例用 Promise
+  // 返回的 alive 钉住该语义。
   const runner = new FakeRunner();
   runner.alive = (exec) => Promise.resolve(Boolean(exec && runner.livePids.has(exec.pid)));
   const { manager, records } = buildManager({ runner });
@@ -455,7 +554,7 @@ test('R2 回归：start 同步抛错 + wait=false → 句柄正常返回、recor
   }
 });
 
-test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', async () => {
+test('worktree 端口缺省占位：worktree=true 报可操作错误，且不产生 record', async () => {
   const { manager, records } = buildManager(); // 不注入 worktree → noOp 占位
   await assert.rejects(
     () => manager.start({ task: '隔离任务书', slug: 'wt-missing', worktree: true }, ctx()),
@@ -464,7 +563,26 @@ test('noOpWorktree：worktree=true 报可操作错误，且不产生 record', as
   assert.equal(records.list().length, 0); // 校验先于 create，失败不留悬挂 record
 });
 
-test('start 参数校验：task/slug/cwd 缺失与 agent 未命中均为可操作错误', async () => {
+// ---------------------------------------------------------------------------
+// agent 参数契约（W6b：D-4a 收紧 + D-4 缺省统一）
+// ---------------------------------------------------------------------------
+
+/**
+ * core agent-registry `loadByPath(ref, true)` 的 Invalid agent ref 模板
+ * （报错同源基准，xyz-agent 仓 packages/subagent-core/src/execution/agent-registry.ts）：
+ *   `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files (use <location> from <available_subagents>).`
+ * zsw 侧主句与其逐字同源（尾部括号内恢复指引按 zsw 双出口适配：注入段
+ * location 或 zsw agents 查路径；F12 起查询命令为完整可执行形态）。人工对照
+ * 锚点：本硬编码断言只锁 zsw 侧文案形态（zsw 侧漂移在此暴露）；与 core 源的
+ * 逐字对齐它测不出来（core 侧文案变更不会让本断言失败）——靠 review 对照维护。
+ */
+const CORE_INVALID_AGENT_REF_PREFIX = (ref) =>
+  `Invalid agent ref: ${ref}. Agent refs must be absolute paths to .md files`;
+
+/** F12：指引文案里的 CLI 完整可执行形态（测试进程未设 ZCODE_PLUGIN_ROOT → 仓库内插件根）。 */
+const ZSW_CLI = process.env.ZCODE_PLUGIN_ROOT || path.join(__dirname, '..', 'bin', 'zsw.js');
+
+test('start 参数校验：task/slug/cwd 缺失与 agent 引用非法/未命中均为可操作错误', async () => {
   const { manager } = buildManager();
   const c = ctx();
   await assert.rejects(() => manager.start({ slug: 'x' }, c), /task/);
@@ -473,10 +591,80 @@ test('start 参数校验：task/slug/cwd 缺失与 agent 未命中均为可操�
     () => manager.start({ task: '任务书', slug: 'x' }, { targetSessionId: 'sess_x' }),
     /cwd/,
   );
+  // D-4a：名字形态拒——文案与 core agent-registry 同源（主句逐字一致）；
+  // F12：查询指引为完整可执行 CLI 形态（node "<abs>/bin/zsw.js" agents）
   await assert.rejects(
-    () => manager.start({ task: '任务书', slug: 'x', agent: 'nope' }, c),
-    (e) => /未找到 agent/.test(e.message) && e.message.includes('恢复指引'),
+    () => manager.start({ task: '任务书', slug: 'x', agent: 'reviewer' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('reviewer'))
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
   );
+  // 相对路径与非 .md 引用同拒（core normalizeRef 口径）
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: './reviewer.md' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('./reviewer.md')),
+  );
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/abs/reviewer.txt' }, c),
+    (e) => e.message.startsWith(CORE_INVALID_AGENT_REF_PREFIX('/abs/reviewer.txt')),
+  );
+  // 路径合法但文件不可读：core agent-registry 的 Agent file not found 同款文案
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/fake/missing.md' }, c),
+    (e) => e.message.startsWith('Agent file not found or unreadable: /fake/missing.md.')
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
+  );
+  // `..` 段引用拒（V1a C2 行为变更：复刻版放行，core normalizeRef 拒）——
+  // 消息走 core 工厂 without ".." 分支且带 zsw 恢复指引
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x', agent: '/x/../evil.md' }, c),
+    (e) => e.message.includes('without ".." path segments')
+      && e.message.includes(`node "${ZSW_CLI}" agents`),
+  );
+});
+
+test('slug 长度闸（V1a C11）：超过 SLUG_MAX_LENGTH=35 拒绝且消息含上限与恢复指引；35 字符边界放行', async () => {
+  const { manager, runner, records } = buildManager();
+  const c = ctx();
+  // 消息含上限值（35 字符上限）+ 常量标识 + 恢复指引（缩短后重试）
+  await assert.rejects(
+    () => manager.start({ task: '任务书', slug: 'x'.repeat(36) }, c),
+    /task-slug 超过 35 字符上限（SLUG_MAX_LENGTH）——请缩短后重试/,
+  );
+  // 边界等值：35 字符（上限内）不被长度闸拒——正常起任务
+  const h = await manager.start({ task: '任务书', slug: 'b'.repeat(35) }, c);
+  assert.match(h.subagentId, /^sa-/);
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-slug-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'closed');
+});
+
+test('start agent 缺省：resolveDefault 加载 general-purpose 角色（record.agent 同名 + prompt 含角色正文）', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  const h = await manager.start({ task: '整理任务书', slug: 'gp-default' }, c);
+  await waitFor(() => runner.startCalls.length === 1);
+  // record.agent 从 null 变 general-purpose（D-4 缺省段：与 pi 对齐）
+  assert.equal(records.get(h.subagentId).agent, 'general-purpose');
+  // prompt-builder 消费 agentProfile：角色段注入 general-purpose 正文
+  assert.ok(runner.startCalls[0].prompt.includes('## 角色设定'));
+  assert.ok(runner.startCalls[0].prompt.includes('通用兜底 agent'));
+  // 模型链：缺省角色 frontmatter 无 model → 默认链产物
+  assert.equal(runner.startCalls[0].modelRef, 'fake/default-model');
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-gp-1' });
+  await waitFor(() => records.get(h.subagentId).status === 'closed');
+  // 对照：显式传自定义 .md 路径不走缺省角色（不想要角色的用户出口）
+  const h2 = await manager.start({ task: '任务书', slug: 'explicit', agent: '/fake/reviewer.md' }, ctx());
+  assert.equal(records.get(h2.subagentId).agent, 'reviewer');
+  runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-gp-2' });
+});
+
+test('start agent 路径正例：绝对路径经 resolver 命中（D-4a 唯一合法形态）', async () => {
+  const c = ctx();
+  const { manager, records } = buildManager();
+  const h = await manager.start(
+    { task: '任务书', slug: 'path-hit', agent: '/fake/reviewer.md', model: 'fake/m' },
+    c,
+  );
+  assert.equal(records.get(h.subagentId).agent, 'reviewer');
 });
 
 test('status/list：精简视图与全量查询；polling 档附轮询指引', async () => {
@@ -529,8 +717,8 @@ test('notify 三态（MF6）：mailbox 无 target=none（socket/CLI 面）；mai
     && m2.records.get(pollWithTarget.subagentId).status === 'closed');
 });
 
-test('notify 三态（MF6）：wait=true 路径与 message 续聊句柄同款语义', async () => {
-  const { manager, runner, records } = buildManager();
+test('notify 三态（MF6）：wait=true 路径句柄同款 none 语义', async () => {
+  const { manager, runner } = buildManager();
 
   // wait=true + 无 target → 'none'（结果已同步在手，字段语义仍如实标通道）。
   // FakeRunner 的 done 挂起：先拿 promise、触 finish、再 await（直接 await 会永久挂起）
@@ -540,34 +728,6 @@ test('notify 三态（MF6）：wait=true 路径与 message 续聊句柄同款语
   const fin = await finP;
   assert.equal(fin.status, 'closed');
   assert.equal(fin.notify, 'none');
-
-  // message 续聊：句柄 notify 取 record 的 targetSessionId（create 时落盘）
-  const noT = await manager.start(
-    { task: '无target对话任务书', slug: 'chat-no-target', conversation: true },
-    { cwd: TMP },
-  );
-  await waitFor(() => runner.startCalls.length === 2);
-  runner.finishAll({ status: 'closed', response: '首轮回答' });
-  await waitFor(() => {
-    const r = records.get(noT.subagentId);
-    return r && r.status === 'idle' ? r : null;
-  });
-  const msgNoT = await manager.message(noT.subagentId, '追问');
-  assert.equal(msgNoT.notify, 'none', '无 target 的 conversation 任务，续聊句柄同款 none');
-
-  const c = ctx();
-  const hasT = await manager.start(
-    { task: '有target对话任务书', slug: 'chat-has-target', conversation: true },
-    c,
-  );
-  await waitFor(() => runner.startCalls.length === 3);
-  runner.finishAll({ status: 'closed', response: '首轮回答' });
-  await waitFor(() => {
-    const r = records.get(hasT.subagentId);
-    return r && r.status === 'idle' ? r : null;
-  });
-  const msgHasT = await manager.message(hasT.subagentId, '追问');
-  assert.equal(msgHasT.notify, 'mailbox');
 });
 
 test('close：运行中任务先取消再终态化；worktree 清理被调用', async () => {
@@ -590,33 +750,56 @@ test('close：运行中任务先取消再终态化；worktree 清理被调用', 
 
 // -------------------------------------------- MUST_FIX-3 / SUGGESTION-4
 
-test('timeoutMs 决策链：显式 params.timeoutMs > profile.maxTurns×5min > 全局默认（MUST_FIX-3）', async () => {
+test('timeoutMs 决策链：显式 params.timeoutMs > core maxTurnsToWatchdogMs（floor=30min）> 全局默认（MUST_FIX-3 + V1a C4）', async () => {
   const capped = {
     name: 'capped', description: '限轮任务', filePath: '/fake/capped.md', body: '正文',
     maxTurns: 4, disallowedTools: ['web-search', 'mcp__demo__x'],
   };
-  const cappedResolver = { resolve: (n) => (n === 'capped' ? capped : null) };
+  const cappedResolver = { resolve: (n) => (n === '/fake/capped.md' ? capped : null), resolveDefault: () => null };
   const settle = (records, id) =>
     waitFor(() => ['closed', 'idle'].includes(records.get(id).status));
 
   // ① 显式 timeoutMs 优先于 maxTurns 换算（调用方声明即覆盖 agent 约定）
   {
     const { manager, runner, records } = buildManager({ resolver: cappedResolver });
-    const h = await manager.start({ task: '任务书', slug: 'explicit', agent: 'capped', timeoutMs: 12345 }, ctx());
+    const h = await manager.start({ task: '任务书', slug: 'explicit', agent: '/fake/capped.md', timeoutMs: 12345 }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
     assert.equal(runner.startCalls[0].timeoutMs, 12345);
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-1' });
     await settle(records, h.subagentId);
   }
-  // ② 无显式 → maxTurns × 300_000（对齐 pi watchdog：每 turn 预算 5 分钟）
+  // ② 无显式 → core maxTurnsToWatchdogMs（×5min/turn + floor=30min——V1a C4
+  // 行为变更：旧 MS_PER_TURN 纯线性 4×5min=20min，floor 恢复后抬到 30min）
   {
     const { manager, runner, records } = buildManager({ resolver: cappedResolver });
-    const h = await manager.start({ task: '任务书', slug: 'turns', agent: 'capped' }, ctx());
+    const h = await manager.start({ task: '任务书', slug: 'turns', agent: '/fake/capped.md' }, ctx());
     await waitFor(() => runner.startCalls.length === 1);
-    assert.equal(runner.startCalls[0].timeoutMs, 4 * 300_000);
-    assert.equal(records.get(h.subagentId).timeoutMs, 4 * 300_000); // record 持久化同值
+    assert.equal(runner.startCalls[0].timeoutMs, 1_800_000); // max(30min, 4×5min) = floor 生效
+    assert.equal(records.get(h.subagentId).timeoutMs, 1_800_000); // record 持久化同值
     runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-2' });
     await settle(records, h.subagentId);
+  }
+  // ②b S2① 函数级口径落 manager 挂载面：maxTurns=2（旧口径 2×5min=10min）
+  // 挂载时长 ≥ 30min floor；大 maxTurns 保持线性（floor 不压低大预算）
+  {
+    const profileOf = (maxTurns) => ({ ...capped, maxTurns, filePath: `/fake/turns-${maxTurns}.md` });
+    const resolver = {
+      resolve: (n) => (n === '/fake/turns-2.md' ? profileOf(2) : n === '/fake/turns-8.md' ? profileOf(8) : null),
+      resolveDefault: () => null,
+    };
+    const { manager, runner, records } = buildManager({ resolver });
+    const hMin = await manager.start({ task: '任务书', slug: 'floor-min', agent: '/fake/turns-2.md' }, ctx());
+    await waitFor(() => runner.startCalls.length === 1);
+    assert.ok(runner.startCalls[0].timeoutMs >= 1_800_000,
+      `maxTurns=2 挂载时长不低于 30min floor（实际 ${runner.startCalls[0].timeoutMs}）`);
+    assert.equal(runner.startCalls[0].timeoutMs, 1_800_000); // 2×5min=10min < floor → 抬到 30min
+    assert.equal(records.get(hMin.subagentId).timeoutMs, 1_800_000);
+    const hBig = await manager.start({ task: '任务书', slug: 'floor-linear', agent: '/fake/turns-8.md' }, ctx());
+    await waitFor(() => runner.startCalls.length === 2);
+    assert.equal(runner.startCalls[1].timeoutMs, 8 * 300_000, 'maxTurns=8 → 40min > floor，线性段保持');
+    runner.finishAll({ status: 'closed', response: 'ok', sessionId: 'sess-mt-2b' });
+    await settle(records, hMin.subagentId);
+    await settle(records, hBig.subagentId);
   }
   // ③ 无 profile → 全局默认（config.DEFAULTS.timeoutMs）
   {
@@ -635,16 +818,16 @@ test('profile.disallowedTools 透传 taskCtx（MUST_FIX-3 硬约束上游）；t
     tools: ['read', 'bash'], disallowedTools: ['web-search'],
   };
   const { manager, runner, records } = buildManager({
-    resolver: { resolve: (n) => (n === 'restricted' ? restricted : null) },
+    resolver: { resolve: (n) => (n === '/fake/restricted.md' ? restricted : null), resolveDefault: () => null },
   });
-  const h = await manager.start({ task: '任务书', slug: 'denylist', agent: 'restricted' }, ctx());
+  const h = await manager.start({ task: '任务书', slug: 'denylist', agent: '/fake/restricted.md' }, ctx());
   await waitFor(() => runner.startCalls.length === 1);
   // denylist → taskCtx（runner 层落 --disallowed-tools flag，硬约束）
   assert.deepEqual(runner.startCalls[0].disallowedTools, ['web-search']);
   // 白名单无 flag 通道 → prompt 工具约束段（软约束，prompt-builder 两态见 domain.test.js）
   assert.ok(runner.startCalls[0].prompt.includes('## 工具约束'));
   assert.ok(runner.startCalls[0].prompt.includes('只允许使用以下工具'));
-  // 无 agent（profile=null）不透传
+  // 无 disallowedTools 的 agent（缺省角色走 resolveDefault）不透传
   const { manager: m2, runner: r2 } = buildManager();
   await m2.start({ task: '任务书', slug: 'no-agent' }, ctx());
   await waitFor(() => r2.startCalls.length === 1);
@@ -712,7 +895,8 @@ test('recordType 越界：wf record 不经 zsub 面 status/cancel/close（_mustG
     () => manager.cancel(wf),
     () => manager.close(wf),
   ]) {
-    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message) && /zflow/.test(err.message));
+    await assert.rejects(fn, (err) => /workflow record，不经 zsub/.test(err.message)
+      && err.message.includes(`node "${ZSW_CLI}" workflow --action`));
   }
   // record 未被越界改写（终态化/transition 都没发生）
   assert.equal(records.get(wf).status, 'created');
@@ -727,6 +911,108 @@ test('recover：共享 store 的 workflow record 不进 subagent 探活循环', 
   assert.ok(!rec.dead.includes(wf), 'wf record 不进 dead 名单');
   assert.ok(!rec.orphan.includes(wf));
   assert.equal(records.get(wf).lostReason, undefined, '事件流未被 subagent 语义的 lostReason 污染');
+});
+
+// ------------------------------------- exec 异步回填 pid 持久化（A5 回归）
+
+/**
+ * 模拟 core 引擎形态的 fake runner：start 返回的 exec 无 pid，异步分阶段
+ * 回填 engineId → pid 并回调 hooks.onExec 快照——钉「running 转换事件落盘的
+ * exec 无 pid 时，pid 就绪必须追加 update 事件」的持久化通道（standby 从
+ * 磁盘 rebuild 后 alive 探活的依据；e2e-daemon A5 红 1 的根因形态）。
+ */
+class AsyncExecPidRunner {
+  constructor() {
+    this.startCalls = 0;
+    this.livePids = new Set();
+    this._resolveDone = null;
+    this.exec = null;
+  }
+  capabilities() { return { kind: 'spawn', steering: 'none', coldStartMs: 0 }; }
+  start(taskCtx, hooks = {}) {
+    this.startCalls += 1;
+    const exec = { kind: 'spawn', pid: undefined, sessionId: undefined, engineId: undefined, cwd: taskCtx.cwd };
+    this.exec = exec;
+    // 快照通道契约：record.exec 被 update 快照替换后不再共享本引用——所有
+    // 回填点（含 done 前 sessionId）都必须经 onExec 通知，同真 CoreRunner
+    this._hooks = hooks;
+    const pid = 41000 + this.startCalls;
+    const notify = () => { if (hooks.onExec) hooks.onExec({ ...exec }); };
+    // 引擎异步 prepare（路由）→ spawn 两阶段回填，与 CoreRunner 真实时序同构：
+    // start() 同步返回后 pid 才出现（exec 对象变异）
+    setTimeout(() => { exec.engineId = 'zcode'; notify(); }, 5);
+    setTimeout(() => { exec.pid = pid; this.livePids.add(pid); notify(); }, 15);
+    const done = new Promise((res) => { this._resolveDone = res; });
+    return { exec, cancel: () => this._resolveDone({ status: 'cancelled', response: '' }), done };
+  }
+  /** 对齐 CoreRunner 语义：done 前 sessionId 回填并经 onExec 通知落盘。 */
+  finish(result) {
+    if (result && result.sessionId && this.exec) {
+      this.exec.sessionId = result.sessionId;
+      if (this._hooks && this._hooks.onExec) this._hooks.onExec({ ...this.exec });
+    }
+    this._resolveDone(result);
+  }
+  alive(x) { return Boolean(x && this.livePids.has(x.pid)); }
+}
+
+test('exec 异步回填 pid：running 事件无 pid 时追加 update 事件，磁盘 rebuild 后 alive 可判（A5 回归）', async () => {
+  const c = ctx();
+  const runner = new AsyncExecPidRunner();
+  const { manager, records } = buildManager({ runner });
+  const h = await manager.start({ task: '长任务书', slug: 'async-pid' }, c);
+
+  // running 转换事件已落盘，且其序列化的 exec 无 pid（JSON 丢 undefined——
+  // 与真 core 引擎「transition 先于 spawn」的时序一致，即 A5 红 1 场景）
+  await waitFor(() => records.get(h.subagentId).status === 'running');
+  const events = () => fs.readFileSync(recordsPath(), 'utf8').trim().split('\n')
+    .filter((l) => l !== '').map((l) => JSON.parse(l));
+  const runningEv = events().find((e) => e.type === 'transition' && e.to === 'running');
+  assert.ok(runningEv, 'running 转换事件已落盘');
+  assert.ok(!(runningEv.exec && Number.isInteger(runningEv.exec.pid)),
+    'running 事件序列化时 exec 无 pid（异步 spawn 形态，测试前提成立）');
+
+  // pid 就绪 → 必须追加 update 事件（磁盘获得 pid）
+  await waitFor(() => {
+    const r = records.get(h.subagentId);
+    return r && r.exec && Number.isInteger(r.exec.pid) ? r : null;
+  });
+  assert.ok(events().some((e) => e.type === 'update' && e.exec && Number.isInteger(e.exec.pid)),
+    'pid 就绪后必须追加含 pid 的 update 事件（standby 探活的磁盘依据）');
+
+  // standby 形态：全新 RecordStore 从磁盘 rebuild，fold 后 exec.pid 可判活
+  const store2 = new RecordStore();
+  store2.rebuildFromLog();
+  const rec2 = store2.get(h.subagentId);
+  assert.ok(rec2 && Number.isInteger(rec2.exec && rec2.exec.pid), 'rebuild 后 record.exec.pid 必须存在');
+  assert.equal(runner.alive(rec2.exec), true, 'rebuild 后 alive 判活（orphan/dead 分流前提）');
+
+  // 收尾：任务完成终态化（终态 exec 重写含全字段）
+  runner.finish({ status: 'closed', response: 'ok', sessionId: 'sess-async-pid' });
+  const fin = await waitFor(() => {
+    const r = records.get(h.subagentId);
+    return r && r.status === 'closed' ? r : null;
+  });
+  assert.equal(fin.exec.sessionId, 'sess-async-pid', '终态 exec 重写含 sessionId');
+  assert.equal(fin.exec.pid, 41001, '终态 exec 重写保住 pid');
+});
+
+test('conversation 首轮 wait=true 返回 rounds=1；续聊入口报错不动 record（E3 回归）', async () => {
+  const c = ctx();
+  const { manager, runner, records } = buildManager();
+  setTimeout(() => runner.finishAll({ status: 'closed', response: '首轮回答', sessionId: 'sess-rounds-1' }), 20);
+  const res = await manager.start(
+    { task: '对话任务书', slug: 'chat-rounds', conversation: true, wait: true },
+    c,
+  );
+  assert.equal(res.status, 'idle', 'conversation 首轮完成终态 idle（非 closed）');
+  assert.equal(res.rounds, 1, 'wait=true 投影必须带完成计数（E3 断言面，此前缺字段）');
+
+  // 续聊执行线已移除（P3 回归）：入口即报明确 unavailable——record 停在
+  // idle、rounds 维持 1，「成功完成的轮数」语义不受影响（无轮产生即无计数扰动）
+  await assert.rejects(() => manager.message(res.subagentId, '追问'), /续聊暂不可用/);
+  assert.equal(records.get(res.subagentId).status, 'idle', '入口报错不翻转 record');
+  assert.equal(records.get(res.subagentId).rounds, 1, '报错不计入完成数');
 });
 
 test('排队期 cancel：槽位占满时取消 → 零 spawn 直接终态化', async () => {
@@ -779,7 +1065,6 @@ test('同 id 操作串行化：close 的 await 窗口内并发 message 不越序
   await closeP;
   const rec = records.get(h.subagentId);
   assert.equal(rec.status, 'closed', '终态 closed，未被迟到的 message 再起轮');
-  assert.equal(runner.resumeCalls.length, 0, '迟到 message 未产生 resume 轮');
 });
 
 test('_withLock：同 id 排队按到达序执行，链空自清，不同 id 并行', async () => {
@@ -807,18 +1092,21 @@ function runnerWithKind(kind) {
   return runner;
 }
 
-test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非法跳过 / 未请求不落字段', async () => {
-  // 返回终态 record（不是 boolean）——本测试直接断言返回值的 thinking 字段
+test('thinking 标注矩阵：runner 回填优先 / spawn 单轮降级 / 未请求不落字段', async () => {
+  // 返回终态 record（不是 boolean）——本测试直接断言返回值的 thinking 字段。
+  // 2c 后唯一通道是 core 引擎 spawn 单轮：runner 无 thinking 回填面（appserver
+  // 通道退役），但「RunResult.thinking 回填优先」的字段契约保留（未来引擎
+  // 提供档位回填时零改动生效）
   const settle = (records, id) =>
     waitFor(() => {
       const r = records.get(id);
       return r && ['closed', 'idle'].includes(r.status) ? r : null;
     });
 
-  // ① runner 回填实际档位优先：请求 low，appserver runner 确认生效 high（创建时
-  //    落请求值，终态覆盖为实际生效值——status 查询全程有观测面）
+  // ① runner 回填实际档位优先：请求 low，runner 确认 high（创建时落请求值，
+  //    终态覆盖为实际生效值——status 查询全程有观测面）
   {
-    const runner = runnerWithKind('appserver');
+    const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
     const h = await manager.start({ task: '任务书', slug: 'think-ok', thinking: 'low' }, ctx());
     assert.equal(records.get(h.subagentId).thinking, 'low', '创建时落请求值（运行中可观测）');
@@ -826,27 +1114,18 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.thinking, 'high', 'runner 回填的实际档位优先于请求值');
   }
-  // ② 非 appserver 通道（spawn 回退 / probe 降级翻转）请求了 thinking：runner 无
-  //    回填 → 'null (spawn 降级)'（设计 D5 字面标注）
+  // ② spawn 单轮请求了 thinking：runner 无回填 → 'null (请求未生效：引擎
+  //    通道未映射)'（无 flag 通道的字面标注；appserver 非法跳过的 null 分支
+  //    随通道退役不可达）
   {
     const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
     const h = await manager.start({ task: '任务书', slug: 'think-degraded', thinking: 'low' }, ctx());
     runner.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
-    assert.equal(rec.thinking, 'null (spawn 降级)');
+    assert.equal(rec.thinking, 'null (请求未生效：引擎通道未映射)');
   }
-  // ③ appserver 通道请求了 thinking 但 runner 无回填：null（非法档位被跳过的
-  //    语义——合法生效必有 string 回填）
-  {
-    const runner = runnerWithKind('appserver');
-    const { manager, records } = buildManager({ runner });
-    const h = await manager.start({ task: '任务书', slug: 'think-skip', thinking: 'ultra' }, ctx());
-    runner.finishAll({ status: 'closed', response: 'ok' });
-    const rec = await settle(records, h.subagentId);
-    assert.equal(rec.thinking, null);
-  }
-  // ④ 未请求 thinking：不落字段（undefined），任何通道一致
+  // ③ 未请求 thinking：不落字段（undefined）
   {
     const runner = runnerWithKind('spawn');
     const { manager, records } = buildManager({ runner });
@@ -857,7 +1136,7 @@ test('thinking 标注矩阵：runner 回填优先 / spawn 降级 / appserver 非
   }
 });
 
-test('thinking 标注：resume 轮不改写首轮标注（会话级设置随会话驻留）', async () => {
+test('thinking 标注：conversation 首轮回填值随 idle 终态保留（会话级设置）', async () => {
   const runner = runnerWithKind('appserver');
   const { manager, runner: r, records } = buildManager({ runner });
   const h = await manager.start(
@@ -867,15 +1146,6 @@ test('thinking 标注：resume 轮不改写首轮标注（会话级设置随会�
   r.finishAll({ status: 'closed', response: '首轮', thinking: 'low', sessionId: 'sess-think-1' });
   await waitFor(() => records.get(h.subagentId).status === 'idle');
   assert.equal(records.get(h.subagentId).thinking, 'low');
-
-  // resume 轮无 create 面（thinking 是会话级），result 无 thinking 字段也不得
-  // 把首轮的 'low' 改写成 null
-  await manager.message(h.subagentId, '续聊');
-  const idle2 = await waitFor(() => {
-    const rec = records.get(h.subagentId);
-    return rec && rec.status === 'idle' && rec.rounds === 2 ? rec : null;
-  });
-  assert.equal(idle2.thinking, 'low', 'resume 轮不改写 thinking 标注');
 });
 
 test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 record', async () => {
@@ -896,14 +1166,14 @@ test('errorKind 透传（F1 移交）：protocol-drift 分类以独立字段落 
   assert.equal(rec2.get(res2.subagentId).errorKind, undefined);
 });
 
-test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools → toolsNote；appserver / 未请求 → 不落', async () => {
+test('F4 工具限制未生效标注（G6 对称）：spawn+请求了 allowlist → toolsNote；deny-only / appserver / 未请求 → 不落', async () => {
   const settle = (records, id) =>
     waitFor(() => {
       const r = records.get(id);
       return r && ['closed', 'idle'].includes(r.status) ? r : null;
     });
 
-  // ① spawn 回退通道请求了工具限制：spawn 无 flag 通道 → 静默失效，toolsNote 如实标注
+  // ① spawn 回退通道请求了 allowlist：无白名单 flag 通道 → 静默失效，toolsNote 如实标注
   {
     const runner = runnerWithKind('spawn');
     const { manager, runner: r, records } = buildManager({ runner });
@@ -913,7 +1183,7 @@ test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools 
     );
     r.finishAll({ status: 'closed', response: 'ok' });
     const rec = await settle(records, h.subagentId);
-    assert.equal(rec.toolsNote, 'null (spawn 降级：工具限制未生效)', 'spawn 通道工具限制失效必须可见');
+    assert.equal(rec.toolsNote, 'null (工具限制未生效：引擎通道未映射)', 'allow 白名单失效必须可见');
   }
   // ② appserver 通道请求了工具限制：正常消费（create 面），不落降级标注
   {
@@ -933,6 +1203,16 @@ test('F4 工具限制 spawn 降级标注（G6 对称）：spawn+请求了 tools 
     const rec = await settle(records, h.subagentId);
     assert.equal(rec.toolsNote, undefined, '未请求 tools 不落 toolsNote');
   }
+  // ④ spawn 通道仅请求 denylist：deny 并集在 runner-core 侧去重后落引擎
+  // --disallowed-tools 硬生效，无失效面——落「未生效」标注即失真，不得标
+  {
+    const runner = runnerWithKind('spawn');
+    const { manager, runner: r, records } = buildManager({ runner });
+    const h = await manager.start({ task: '任务书', slug: 'tools-deny-only', denyTools: ['Bash'] }, ctx());
+    r.finishAll({ status: 'closed', response: 'ok' });
+    const rec = await settle(records, h.subagentId);
+    assert.equal(rec.toolsNote, undefined, 'deny-only 硬生效，不得失真标注为未生效');
+  }
 });
 
 test('F4 CLI 工具限制透传 taskCtx（appserver runner 侧做 frontmatter 并集）', async () => {
@@ -951,10 +1231,10 @@ test('F4 CLI 工具限制透传 taskCtx（appserver runner 侧做 frontmatter �
     disallowedTools: ['WebSearch'],
   };
   const { manager: m2, runner: r2 } = buildManager({
-    resolver: { resolve: (n) => (n === 'restricted2' ? restricted : null) },
+    resolver: { resolve: (n) => (n === '/fake/r2.md' ? restricted : null), resolveDefault: () => null },
   });
   await m2.start(
-    { task: '任务书', slug: 'fm-tools', agent: 'restricted2', denyTools: ['Bash'] },
+    { task: '任务书', slug: 'fm-tools', agent: '/fake/r2.md', denyTools: ['Bash'] },
     ctx(),
   );
   await waitFor(() => r2.startCalls.length === 1);

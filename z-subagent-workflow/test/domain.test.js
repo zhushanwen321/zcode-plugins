@@ -1,9 +1,11 @@
 'use strict';
 /**
- * 域层单测：agent-md-resolver / prompt-builder / record-store / output-store。
+ * 域层单测：prompt-builder / record-store / output-store。
+ * （agent 发现与 frontmatter 解析的测试自本文件迁出——W6a 切 core 发现面后
+ * 落 test/agent-discovery.test.js；旧自写 resolver 已退役。）
  *
  * 隔离原则：所有落盘走临时目录（mkdtemp），record/output 经 ZSW_ROOT 指向
- * 临时目录，resolver 经 homeDir 注入临时 HOME——绝不触碰真实 ~/.zcode。
+ * 临时目录——绝不触碰真实 ~/.zcode。
  */
 
 const { test } = require('node:test');
@@ -12,7 +14,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { AgentMdResolver, parseAgentMd } = require('../lib/agent-md-resolver');
 const { buildPrompt } = require('../lib/prompt-builder');
 const { RecordStore } = require('../lib/record-store');
 const outputStore = require('../lib/output-store');
@@ -30,190 +31,9 @@ function setupRoot(t) {
   return root;
 }
 
-/** 在 rootDir 下写一个 agent .md（自动建父目录）。 */
-function mkAgent(rootDir, rel, content) {
-  const file = path.join(rootDir, rel);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, content);
-  return file;
-}
-
 // ---------------------------------------------------------------------------
-// agent-md-resolver
+// agent 发现 + frontmatter 解析：见 test/agent-discovery.test.js（W6a 迁移）
 // ---------------------------------------------------------------------------
-
-test('resolver: 四根优先级 ws/.agents > ws/.zcode > ~/.agents > ~/.zcode', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const ws = path.join(tmp, 'ws');
-  const home = path.join(tmp, 'home');
-  const roots = [
-    path.join(ws, '.agents', 'agents'),
-    path.join(ws, '.zcode', 'agents'),
-    path.join(home, '.agents', 'agents'),
-    path.join(home, '.zcode', 'agents'),
-  ];
-  roots.forEach((r, i) => {
-    mkAgent(r, 'reviewer.md',
-      `---\nname: reviewer\ndescription: from root ${i}\n---\n\nbody-root-${i}\n`);
-  });
-  const resolver = new AgentMdResolver({ homeDir: home });
-
-  // 逐级删除高优先级文件，验证胜出顺序逐级下移
-  for (let i = 0; i < roots.length; i++) {
-    const p = resolver.resolve('reviewer', ws);
-    assert.ok(p, `第 ${i} 级应有 reviewer`);
-    assert.equal(p.description, `from root ${i}`);
-    assert.equal(p.filePath, path.join(roots[i], 'reviewer.md'));
-    assert.equal(p.body.trim(), `body-root-${i}`);
-    fs.rmSync(path.join(roots[i], 'reviewer.md'));
-  }
-  assert.equal(resolver.resolve('reviewer', ws), null, '四根删空应返回 null');
-});
-
-test('resolver: 文件级 symlink 指向根外文件可被发现（引擎扫描会跳过，本模块不能）', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'local.md', '---\nname: local\ndescription: d\n---\n\nlocal body\n');
-  const outside = mkAgent(path.join(tmp, 'lib'), 'impl/coder.md',
-    '---\nname: coder\ndescription: via symlink\n---\n\nsymlinked body\n');
-  fs.symlinkSync(outside, path.join(root, 'coder.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const names = resolver.list(path.join(tmp, 'ws')).map((p) => p.name);
-  assert.deepEqual(names.sort(), ['coder', 'local']);
-  const coder = resolver.resolve('coder', path.join(tmp, 'ws'));
-  assert.equal(coder.description, 'via symlink');
-  assert.equal(coder.body.trim(), 'symlinked body');
-});
-
-test('resolver: 目录级 symlink 递归展开且 realpath 去重不重复收集', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const wsRoot = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(wsRoot, 'own.md', '---\nname: own\ndescription: d\n---\n\nb\n');
-  const libImpl = path.join(tmp, 'lib', 'impl');
-  mkAgent(libImpl, 'deep.md', '---\nname: deep\ndescription: nested\n---\n\nb\n');
-  // 目录链接 + 同一文件的第二个链接（去重验证：deep 只出现一次）
-  fs.symlinkSync(libImpl, path.join(wsRoot, 'sub'));
-  fs.symlinkSync(path.join(libImpl, 'deep.md'), path.join(wsRoot, 'deep-alias.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const profiles = resolver.list(path.join(tmp, 'ws'));
-  const deepOnes = profiles.filter((p) => p.name === 'deep');
-  assert.equal(deepOnes.length, 1, '同一真实文件经多链接只收集一次');
-  assert.equal(profiles.filter((p) => p.name === 'own').length, 1);
-  // 目录链接内的文件可按名字解析
-  assert.equal(resolver.resolve('deep', path.join(tmp, 'ws')).description, 'nested');
-});
-
-test('resolver: symlink 环与 broken link 不挂起不报错', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'ok.md', '---\nname: ok\ndescription: d\n---\n\nb\n');
-  fs.symlinkSync(root, path.join(root, 'loop')); // 指向自身的目录环
-  fs.symlinkSync(path.join(tmp, 'no-such.md'), path.join(root, 'broken.md'));
-
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const names = resolver.list(path.join(tmp, 'ws')).map((p) => p.name);
-  assert.deepEqual(names, ['ok'], '环被剪枝、broken 被跳过、正常文件保留');
-});
-
-test('resolver: 递归子目录收集 + 无 frontmatter 文件按文件名命名', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const root = path.join(tmp, 'ws', '.agents', 'agents');
-  mkAgent(root, 'team/impl-helper.md', '# 只有正文\n\n没有 frontmatter\n');
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-  const p = resolver.resolve('impl-helper', path.join(tmp, 'ws'));
-  assert.equal(p.name, 'impl-helper');
-  assert.equal(p.description, '');
-  assert.ok(p.body.startsWith('# 只有正文'));
-});
-
-test('resolver: resolve 支持绝对路径 / 相对路径 / 名字带 .md 后缀 / 未命中返回 null', (t) => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-res-'));
-  t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-  const ws = path.join(tmp, 'ws');
-  const root = path.join(ws, '.agents', 'agents');
-  const file = mkAgent(root, 'reviewer.md', '---\nname: reviewer\ndescription: d\n---\n\nb\n');
-  const resolver = new AgentMdResolver({ homeDir: path.join(tmp, 'home') });
-
-  assert.equal(resolver.resolve(file, ws).filePath, file); // 绝对路径
-  assert.equal(resolver.resolve('./.agents/agents/reviewer.md', ws).name, 'reviewer'); // 相对路径
-  assert.equal(resolver.resolve('reviewer.md', ws).name, 'reviewer'); // 名字带 .md
-  assert.equal(resolver.resolve('not-exist', ws), null); // 未命中
-  assert.equal(resolver.resolve(path.join(ws, 'nope.md'), ws), null); // 路径不存在
-});
-
-test('frontmatter: 正常全字段（行数组 + 行内数组 + maxTurns 数值化）', () => {
-  const md = [
-    '---',
-    'name: reviewer',
-    'description: "代码审查员"',
-    'model: glm-5.3',
-    'tools:',
-    '  - read',
-    '  - bash',
-    'disallowedTools: [web-search, mcp]',
-    'skills:',
-    '  - /path/to/skill/SKILL.md',
-    'maxTurns: 25',
-    '---',
-    '',
-    '正文内容',
-  ].join('\n');
-  const p = parseAgentMd(md, '/x/reviewer.md');
-  assert.equal(p.name, 'reviewer');
-  assert.equal(p.description, '代码审查员'); // 引号被去除
-  assert.equal(p.model, 'glm-5.3');
-  assert.deepEqual(p.tools, ['read', 'bash']); // 行数组
-  assert.deepEqual(p.disallowedTools, ['web-search', 'mcp']); // 行内数组
-  assert.deepEqual(p.skills, ['/path/to/skill/SKILL.md']);
-  assert.equal(p.maxTurns, 25); // 数值化
-  assert.equal(p.body, '\n正文内容');
-  assert.equal(p.filePath, '/x/reviewer.md');
-});
-
-test('frontmatter: 缺 name 取文件名（去 .md）；maxTurns 字符串数值化', () => {
-  const p = parseAgentMd('---\ndescription: d\nmaxTurns: "8"\n---\n\nb', '/x/impl-helper.md');
-  assert.equal(p.name, 'impl-helper');
-  assert.equal(p.maxTurns, 8);
-  assert.equal(p.tools, undefined);
-  assert.equal(p.disallowedTools, undefined);
-  assert.equal(p.skills, undefined);
-});
-
-test('frontmatter: 无 frontmatter / 围栏未闭合 / maxTurns 非法值', () => {
-  const noFm = parseAgentMd('# hi\n\nbody', '/x/a.md');
-  assert.equal(noFm.name, 'a');
-  assert.equal(noFm.description, '');
-  assert.equal(noFm.body, '# hi\n\nbody');
-
-  // 未闭合围栏：整体当 body（宽容，不抛错）
-  const unclosed = parseAgentMd('---\nname: x\n没有闭合行', '/x/b.md');
-  assert.equal(unclosed.name, 'b');
-  assert.ok(unclosed.body.includes('name: x'));
-
-  const badTurns = parseAgentMd('---\nname: c\nmaxTurns: abc\n---\nb', '/x/c.md');
-  assert.equal(badTurns.maxTurns, undefined, '非法 maxTurns 丢弃');
-});
-
-test('frontmatter: when 字段（「何时用我」索引提示）可选透出', () => {
-  const withWhen = parseAgentMd(
-    '---\nname: reviewer\ndescription: d\nwhen: 代码审查、修复方案验证\n---\n\nb',
-    '/x/reviewer.md',
-  );
-  assert.equal(withWhen.when, '代码审查、修复方案验证');
-  // 缺 when 不造默认值（server 视图统一容忍为空串）
-  const noWhen = parseAgentMd('---\nname: a\ndescription: d\n---\n\nb', '/x/a.md');
-  assert.equal(noWhen.when, undefined);
-  // 非字符串（行数组形态）按消费契约丢弃，不抛错
-  const arrWhen = parseAgentMd('---\nname: b\nwhen:\n  - x\n---\nb', '/x/b.md');
-  assert.equal(arrWhen.when, undefined);
-});
 
 // ---------------------------------------------------------------------------
 // prompt-builder
@@ -236,7 +56,30 @@ test('prompt-builder: 四段固定顺序拼装', () => {
   assert.ok(out.includes('- /s/a/SKILL.md') && out.includes('- /s/b/SKILL.md'));
 });
 
-test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化；空输入为空串', () => {
+test('prompt-builder: 运行环境段恒在场（F6+F7-zsw）——单轮无派发工具/有 WebSearch/任务书自包含', () => {
+  // 有角色、无角色两形态都在场（全部 agent 一致注入，不特判角色）；
+  // 环境事实让 core 角色正文的条件句（「若宿主提供派发工具…」「若环境提供内置
+  // WebSearch…」）稳定落定分支
+  for (const out of [
+    buildPrompt({ agentProfile: { name: 'coder', body: '你是编码助手' }, task: 't' }),
+    buildPrompt({ task: 't' }),
+  ]) {
+    assert.ok(out.includes('## 运行环境'), '环境段在场');
+    assert.ok(out.includes('没有子代理派发工具') && out.includes('直接产出计划/结果文本'), '单轮无派发工具事实（编排任务直接产出文本）');
+    assert.ok(out.includes('内置 WebSearch 类工具'), 'WebSearch 事实（条件检索分支成立）');
+    assert.ok(out.includes('任务书自包含') && out.includes('以任务书与注入段为准'), '任务书自包含事实');
+  }
+  // 段序：角色设定 → 运行环境 → 工具约束 → 任务（环境事实先于约束与任务；
+  // 用 '## 任务' 段头定位——环境段正文含「任务」字样，裸词会误配）
+  const ordered = buildPrompt({
+    agentProfile: { name: 'a', body: 'b', tools: ['read'] },
+    task: 't',
+  });
+  const idx = ['角色设定', '运行环境', '工具约束', '## 任务'].map((s) => ordered.indexOf(s));
+  assert.ok(idx[0] < idx[1] && idx[1] < idx[2] && idx[2] < idx[3], '角色 < 运行环境 < 工具约束 < 任务');
+});
+
+test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化；空输入只剩环境段（F6+F7 起环境段恒在场）', () => {
   const noProfile = buildPrompt({ task: '做点事' });
   assert.ok(!noProfile.includes('角色设定'));
   assert.ok(noProfile.includes('做点事'));
@@ -245,8 +88,12 @@ test('prompt-builder: 无 profile 省略角色段；schema 对象 JSON 序列化
   assert.ok(objSchema.includes('"type": "object"'));
   assert.ok(!objSchema.includes('参考技能'), '无 skillRefs 省略技能段');
 
-  assert.equal(buildPrompt({}), '');
-  assert.equal(buildPrompt(), '');
+  // 旧契约「空输入 → 空串」随 F6+F7 环境段推翻：环境事实必须全 agent 一致在场
+  //（空任务书的裸跑同样要拿到单轮/无派发工具事实），故空输入 = 仅环境段
+  for (const empty of [buildPrompt({}), buildPrompt()]) {
+    assert.ok(empty.includes('## 运行环境'), '空输入仍带环境段');
+    assert.ok(!empty.includes('## 任务') && !empty.includes('角色设定') && !empty.includes('MANDATORY'), '且仅环境段');
+  }
 });
 
 test('prompt-builder: 工具约束段——tools 白名单声明「只允许」+ disallowedTools 重申（MUST_FIX-3）', () => {
@@ -351,7 +198,7 @@ test('record-store: update 补字段；update/patch 不得携带 status；重复
   assert.throws(() => store.create({}), /subagentId/);
 });
 
-test('record-store: list 按 startedAt 倒序 + status/slug 过滤；get 返回副本', (t) => {
+test('record-store: list 按 startedAt 倒序；get 返回副本', (t) => {
   setupRoot(t);
   const store = new RecordStore();
   store.create({ subagentId: 'sa-1', slug: 'a', startedAt: 1000 });
@@ -360,9 +207,6 @@ test('record-store: list 按 startedAt 倒序 + status/slug 过滤；get 返回�
   store.transition('sa-1', 'created', 'running');
 
   assert.deepEqual(store.list().map((r) => r.subagentId), ['sa-2', 'sa-3', 'sa-1']);
-  assert.deepEqual(store.list({ slug: 'a' }).map((r) => r.subagentId), ['sa-2', 'sa-1']);
-  assert.deepEqual(store.list({ status: 'running' }).map((r) => r.subagentId), ['sa-1']);
-  assert.deepEqual(store.list({ status: 'created', slug: 'a' }).map((r) => r.subagentId), ['sa-2']);
 
   const got = store.get('sa-1');
   got.status = 'hacked';
@@ -426,29 +270,77 @@ test('record-store: 无日志文件时 rebuild 返回空库', (t) => {
   assert.equal(store.list().length, 0);
 });
 
+test('record-store: 构造路径参数化——显式 filePath 注入落指定文件（E4/V0a）', (t) => {
+  const root = setupRoot(t); // ZSW_ROOT 指临时目录：即便误回缺省路径也不会触碰真实 HOME
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsub-record-explicit-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'nested', 'ledger.jsonl'); // 父目录不存在，验证建目录时机跟随注入路径
+
+  const store = new RecordStore({ filePath: file });
+  store.create({ subagentId: 'sa-1', slug: 'rev' });
+  store.transition('sa-1', 'created', 'running');
+
+  // 写入落到注入文件（含父目录自动创建），缺省路径零残留
+  assert.equal(fs.existsSync(file), true, '事件流写入注入 filePath');
+  assert.equal(fs.existsSync(require('../lib/config').recordsPath()), false, '缺省 recordsPath 不被触碰');
+
+  // 事件形态与缺省路径一致：{ts, type, ...} jsonl，每行一事件
+  const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
+  assert.equal(lines.length, 2);
+  assert.equal(JSON.parse(lines[0]).type, 'created');
+  assert.equal(JSON.parse(lines[1]).type, 'transition');
+  assert.ok(JSON.parse(lines[0]).ts && JSON.parse(lines[0]).subagentId === 'sa-1');
+
+  // 读路径同样走注入文件：新实例从注入 ledger 重建（running 非终态 → lost）
+  const store2 = new RecordStore({ filePath: file });
+  const stat = store2.rebuildFromLog();
+  assert.deepEqual(stat, { applied: 2, skipped: 0, records: 1 });
+  assert.equal(store2.get('sa-1').status, 'lost');
+});
+
 // ---------------------------------------------------------------------------
 // output-store
 // ---------------------------------------------------------------------------
 
-test('output-store: writeResult/writePatch 落盘正确、目录自动创建、pathFor 一致', (t) => {
+test('output-store: writeResult 落盘正确、目录自动创建、pathFor 一致', (t) => {
   const root = setupRoot(t);
   const file = outputStore.writeResult('sa-1', '# 结果全文\n\n内容');
   assert.equal(file, outputStore.pathFor('sa-1'));
   assert.equal(file, path.join(root, 'outputs', 'sa-1.md'));
   assert.equal(fs.readFileSync(file, 'utf8'), '# 结果全文\n\n内容');
-
-  const patch = outputStore.writePatch('sa-1', 'diff --git a/x b/x\n');
-  assert.equal(patch, path.join(root, 'outputs', 'sa-1.patch'));
-  assert.equal(fs.readFileSync(patch, 'utf8'), 'diff --git a/x b/x\n');
 });
 
 test('output-store: tmp+rename 原子写不留残渣', (t) => {
   const root = setupRoot(t);
   for (let i = 0; i < 3; i++) {
     outputStore.writeResult(`sa-${i}`, `body-${i}`);
-    outputStore.writePatch(`sa-${i}`, `diff-${i}`);
   }
   const entries = fs.readdirSync(path.join(root, 'outputs'));
-  assert.equal(entries.length, 6, '只有最终文件');
+  assert.equal(entries.length, 3, '只有最终文件');
   assert.ok(entries.every((f) => !f.includes('.tmp')), '无 tmp 残留');
+});
+
+test('output-store: 幂等覆盖——同路径重复写以最后一次为准且零残留（C15）', (t) => {
+  const root = setupRoot(t);
+  outputStore.writeResult('sa-idem', 'first');
+  outputStore.writeResult('sa-idem', 'second');
+  outputStore.writeResult('sa-idem', 'final');
+  assert.equal(fs.readFileSync(outputStore.pathFor('sa-idem'), 'utf8'), 'final', '内容 = 最后一次写入');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'outputs')), ['sa-idem.md'], '只有最终文件（无 tmp 残留）');
+});
+
+test('output-store: rename 注入失败 → 报错透传且 core 清理残留 tmp（崩溃残留面，进程级不可模拟故注入）', (t) => {
+  const root = setupRoot(t);
+  const origRename = fs.renameSync;
+  fs.renameSync = () => { throw new Error('injected rename failure'); };
+  try {
+    assert.throws(() => outputStore.writeResult('sa-crash', 'partial'), /injected rename failure/);
+  } finally {
+    fs.renameSync = origRename;
+  }
+  // write 与 rename 之间崩溃的核心风险是残留 tmp 无限累积：core 原语必须在
+  // 失败路径自清（writeAtomicFileSync 失败分支 unlink tmp）
+  const entries = fs.readdirSync(path.join(root, 'outputs'));
+  assert.ok(entries.every((f) => !f.includes('.tmp')), `无 tmp 残留，实际: ${entries.join(', ')}`);
+  assert.ok(!entries.includes('sa-crash.md'), '失败写不产出半截终名文件');
 });

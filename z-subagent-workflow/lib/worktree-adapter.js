@@ -10,33 +10,36 @@
  *
  * 职责拆分（谁写 patch 文件）：S5 的 collectPatch 直接落盘 outputs/<id>.patch
  * 并返回路径（含基线 commit 语义，覆盖已提交+未提交+新增三类改动）；
- * manager 侧因此不再自己 writePatch——patch 的产出方只有一处。
+ * manager 侧不自写 patch 文件——patch 的产出方只有一处。
  */
 
-const { execFile } = require('node:child_process');
 const worktree = require('./worktree');
+const { requireCore } = require('./core-ref');
+// 分支命名空间从 worktree.js 单源引用：错误文案不再字面量镜像 'zsub/'
+const { BRANCH_NS } = worktree;
 
-/** cwd → git 顶层目录。非 git 目录/无 git 时抛可操作错误。 */
-function resolveGitRoot(cwd) {
-  return new Promise((resolve, reject) => {
-    execFile('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { timeout: 5000 }, (err, stdout) => {
-      if (err) {
-        reject(new Error(
-          `worktree 任务需要 cwd 位于 git 仓库内（"${cwd}" 不是 git 工作树）。`
-          + '恢复指引：在 git 仓库内使用 worktree:true，或不传 worktree。'
-        ));
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
+/** cwd → git 顶层目录。非 git 目录/无 git 时抛可操作错误。
+ * git 执行统一走 core.gitRun（超时 30s 缺省 + GitRunError 包装单源；本函数
+ * 原是 A 侧唯一绕开 core 的 git 子进程调用点，私有 5s 超时无注释说明）。
+ * core stdout 保真返回，toplevel 单行输出 trim 取净。 */
+async function resolveGitRoot(cwd) {
+  const core = requireCore();
+  try {
+    const out = await core.gitRun(['-C', cwd, 'rev-parse', '--show-toplevel'], { cwd });
+    return out.trim();
+  } catch (err) {
+    throw new Error(
+      `worktree 任务需要 cwd 位于 git 仓库内（"${cwd}" 不是 git 工作树；git: ${err && err.message ? err.message : err}）。`
+      + '恢复指引：在 git 仓库内使用 worktree:true，或不传 worktree。'
+    );
+  }
 }
 
 /**
  * 创建适配 manager 端口契约的 worktree 实例。
  * 方法签名（manager 消费）：
  *   prepare({slug, subagentId, cwd}) -> {dir, branch, mainRepo}
- *   collectPatch({dir, subagentId})  -> patchFile 路径 | null（无改动）
+ *   collectPatch({dir, subagentId})  -> {patchFile: string|null, patchIncomplete?: true}（降级留痕透传，manager 投影）
  *   cleanup({dir, subagentId, meta}) -> {removed:true}（meta=record.worktreeMeta）
  */
 function createWorktreeAdapter() {
@@ -50,6 +53,9 @@ function createWorktreeAdapter() {
     },
 
     async collectPatch({ dir, subagentId }) {
+      // worktree 层结构化结果（含降级留痕 patchIncomplete）原样透传（V4o
+      // 微调：此前在此收敛为 string|null，manager 拿不到降级信号）。manager
+      // 侧兼容 string 旧形态（ports.js 契约口径 + 测试 fake 直返 string）。
       return worktree.collectPatch({ worktreeDir: dir, subagentId });
     },
 
@@ -57,7 +63,7 @@ function createWorktreeAdapter() {
       if (!meta || !meta.branch || !meta.mainRepo) {
         throw new Error(
           `worktree 清理缺少元数据（${dir}）。`
-          + `恢复指引：手动执行 git worktree remove --force ${dir} && git branch -D zsub/${subagentId}`
+          + `恢复指引：手动执行 git worktree remove --force ${dir} && git branch -D ${BRANCH_NS}${subagentId}`
         );
       }
       return worktree.cleanup({ mainRepo: meta.mainRepo, worktreeDir: dir, branch: meta.branch });

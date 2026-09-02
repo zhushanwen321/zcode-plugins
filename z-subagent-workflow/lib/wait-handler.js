@@ -43,7 +43,9 @@ const WAIT_DONE_STATUSES = new Set([...TERMINAL_STATUSES, 'idle']);
 const isWaitDone = (st) => WAIT_DONE_STATUSES.has(st.status)
   || (st.status === 'lost' && (st.dead === true || st.orphan === true));
 
-/** 轮询兜底间隔：正常路径远小于此（pending promise 事件驱动唤醒）。 */
+/** 轮询兜底间隔：正常路径远小于此（pending promise 事件驱动唤醒）。
+ *  模块内部缺省值，不导出——自引入起零外部消费，间隔个性化走
+ *  createWaitHandler 的 pollFallbackMs 注入。 */
 const DEFAULT_POLL_FALLBACK_MS = 2000;
 
 /** 可取消 sleep：race 输家的 timer 必须清掉，否则挂起 timer 拖住进程退出。 */
@@ -181,4 +183,4 @@ function createWaitHandler({ manager, pollFallbackMs = DEFAULT_POLL_FALLBACK_MS 
   };
 }
 
-module.exports = { createWaitHandler, DEFAULT_POLL_FALLBACK_MS };
+module.exports = { createWaitHandler };

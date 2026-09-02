@@ -1,0 +1,89 @@
+{
+  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
+  "sourceRev": "699a94afc32321022baa8a0c8e99c7d0fae1f783",
+  "sourceDirty": false,
+  "fetchedAt": "2026-09-01T04:20:09.416Z",
+  "capabilities": {
+    "agentsAssets": true,
+    "selfContainedIndex": true
+  },
+  "distMappedFrom": "dist.bundle/",
+  "files": [
+    {
+      "path": "agents/analyst.md",
+      "sha256": "896f2acd7483523e8096afe1d55016e7124298971230773640f54fdc623bdab1"
+    },
+    {
+      "path": "agents/coder.md",
+      "sha256": "f7342caadb74d4458fe663ec3bb17aa259cdc5f4b956a10c28f35cc27e268b9b"
+    },
+    {
+      "path": "agents/debugger.md",
+      "sha256": "48127bffe1c507b60b2d6f754ec7ba7a405d76ca6758baca85e7fcaf38708eb9"
+    },
+    {
+      "path": "agents/doc-reviewer.md",
+      "sha256": "7198ff90921c21718a012a0990605a225faa7628b712b454863ee5a4cbfdb5ad"
+    },
+    {
+      "path": "agents/explorer.md",
+      "sha256": "47137e1b54815358af18b24e372e795c3ac75e3ba77699d5703bf4d70539e2b5"
+    },
+    {
+      "path": "agents/general-purpose.md",
+      "sha256": "d9d3a138dda4bdf4f37436151c5ac1b906ffb7e204da6b23febfdbf1ed4ac087"
+    },
+    {
+      "path": "agents/orchestrator.md",
+      "sha256": "ac9b9cb53f6f7df88442bb2651ed6abb955e05aa14933ef427e2c5da2963fab1"
+    },
+    {
+      "path": "agents/planner.md",
+      "sha256": "b5ce8133993f7cb07c4014bd3fd482d28fa0a32c2eeb1b555a5037351ed58409"
+    },
+    {
+      "path": "agents/researcher.md",
+      "sha256": "6dd72ed1753f7df53e43dd7e690d961d14e369f89b98b235c870bdf5173d77d9"
+    },
+    {
+      "path": "agents/reviewer.md",
+      "sha256": "dc2851ad77b686617e3705f61fb36e52287a189e8d6a822bbf3c9ee84eecaccc"
+    },
+    {
+      "path": "dist/index.cjs",
+      "sha256": "98f443cb79332d85d76d2b5df26f85930ba60078d7cae896385cdab3b5b0cb42"
+    },
+    {
+      "path": "package.json",
+      "sha256": "3b3659ccc8880dced0df3de1a6a7228d11c35b016f2631a68314e08c38165965"
+    },
+    {
+      "path": "workflows/_shared/agent-refs.cjs",
+      "sha256": "c5e2c861fa8d80fcbbdf845a2ddc21dd20abcd4d3a5b45d00fc408b1dfb24282"
+    },
+    {
+      "path": "workflows/chain.js",
+      "sha256": "ecd9eac410c7cf27f867ca9810658b367ddcaaae1240904e5db97acbe1648ba4"
+    },
+    {
+      "path": "workflows/map-reduce.js",
+      "sha256": "04714751dc4fccf83db8955b3a05fce087d5104d4439ed97fedb25d2fe3570e1"
+    },
+    {
+      "path": "workflows/parallel.js",
+      "sha256": "3bc6ebe97b151e89f924913ec2cbca13793405838b79ad4c47d7e38aaea446bd"
+    },
+    {
+      "path": "workflows/review-fix-loop-utils.cjs",
+      "sha256": "b9177b048e6a68c88101d56e33751487f22d9452ce4fece060b943051533d03e"
+    },
+    {
+      "path": "workflows/review-fix-loop.js",
+      "sha256": "8b6fb39ef03f7e19a7ae549366199f4ba49f71385cd5b14eadab990fd7cbd651"
+    },
+    {
+      "path": "workflows/scatter-gather.js",
+      "sha256": "5e0eaaf15374e0d21d423f87ace172f545dbdc2e1e519ab822eed12dd961de2f"
+    }
+  ]
+}

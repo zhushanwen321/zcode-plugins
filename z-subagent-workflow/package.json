@@ -1,7 +1,7 @@
 {
   "name": "@zhushanwen/z-subagent-workflow",
   "version": "1.2.0",
-  "description": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (default daemon thin client; the MCP tool face is offline since 1.0.0): background subagent lifecycle with worktree isolation, schema outputs, conversation follow-ups, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom script:<name> extension. Completion wakeup rides engine-native task-notification (CLI blocking command + Bash run_in_background), no polling.",
+  "description": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (default daemon thin client; the MCP tool face is offline since 1.0.0): background subagent lifecycle with worktree isolation, schema outputs, conversation flag (record-state-only; follow-up resume unavailable) and model routing, plus core-unified agent .md discovery (vendored built-in roles + user roots, absolute-path agent refs shared with the pi platform) and built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) with custom core-contract scripts referenced by absolute .js path — including the script-generate/lint/save/delete creative loop. Completion wakeup rides engine-native task-notification (CLI blocking command + Bash run_in_background), no polling.",
   "type": "commonjs",
   "license": "MIT",
   "bin": {

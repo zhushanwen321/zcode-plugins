@@ -4,16 +4,17 @@
  * bin/zsw-hook.js（SessionStart hook 专用极薄入口，hooks/hooks.json 指向
  * 此处）子进程黑盒测试：覆盖 impl-plan u2 验收条款——嵌套守卫输出 {} 且
  * exit 0（P-nested-guard，双断言防 exit 1 违规形态）、正常路径严格协议
- * JSON（hookEventName + <zsw-resources 块 + 本机默认 provider 名）、
+ * JSON（hookEventName + W7 三段 XML 块 + 本机默认 provider 名）、
  * ZCODE_PROJECT_DIR 项目级 agent 发现（P-cwd 可脚本部分）、v2 config 不可
- * 读整体降级 {}、cli config 缺失时默认标记回退链生效（D3 与 zsw models 同
- * 口径：v2 顶层 model.main / 内置回退，禁止缺席）、入口极薄性守门（require
- * 全在 try 内 + 无 process.exit——防把 bin/zsw.js 的顶层重 require 链搬回
- * hook 入口，D5 降级承诺的静态防线）。
+ * 读整体降级 {}、cli config 缺失时默认模型回退链生效（D3 与 zsw models 同
+ * 口径：v2 顶层 model.main / 内置回退，经 models guide 默认句承载——W7 起
+ * 旧（默认）标记机制退役）、入口极薄性守门（require 全在 try 内 + 无
+ * process.exit——防把 bin/zsw.js 的顶层重 require 链搬回 hook 入口，D5
+ * 降级承诺的静态防线）。
  *
  * 隔离：HOME 指向临时目录——config.js 的 V2_CONFIG_PATH/CLI_CONFIG_PATH 在
- * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME，仓内 workflow-script/
- * driver 同款注释），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
+ * 子进程加载期由 os.homedir() 冻结（POSIX 读 $HOME；路径冻结载体 = lib/config.js
+ * 顶部两条常量定义），测试改 HOME 即注入配置路径；ZCODE_PROJECT_DIR 指向
  * fixture 项目目录（与 lib/hook-source 的 projectDir 解析链对齐：
  * ZCODE_PROJECT_DIR > process.cwd()）。
  */
@@ -72,6 +73,7 @@ function run(extraEnv = {}, opts = {}) {
           ...process.env,
           HOME,
           ZSW_NESTED: '', // 显式清掉宿主可能的标记，用例按需覆盖
+          XYZ_AGENT_SUBAGENT: '', // F03：core 引擎嵌套标记同款清掉（嵌套宿主下跑测试防误拒）
           ZCODE_PROJECT_DIR: PROJECT,
           ...extraEnv,
         },
@@ -115,9 +117,15 @@ test('ZSW_NESTED=1 → stdout 解析为 {} 且 exit code 0（P-nested-guard）',
   assert.deepEqual(JSON.parse(r.stdout), {});
 });
 
+test('XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）→ 同款 {} + exit 0（F03 双标记判定）', async () => {
+  const r = await run({ ZSW_NESTED: '', XYZ_AGENT_SUBAGENT: '1' });
+  assert.equal(r.code, 0, `exit code 须为 0，实际 ${r.code}，stderr: ${r.stderr}`);
+  assert.deepEqual(JSON.parse(r.stdout), {});
+});
+
 // ------------------------------------------- 正常路径（协议 JSON + 快照块）
 
-test('正常路径 → 严格单行协议 JSON：SessionStart + <zsw-resources 块 + 默认 provider 名', async () => {
+test('正常路径 → 严格单行协议 JSON：SessionStart + 三段 XML 块 + 默认 provider 名', async () => {
   const r = await run({}, { cwd: TMP });
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   // stdout 严格单行 JSON（协议通道纪律：唯一换行在末尾）
@@ -126,14 +134,15 @@ test('正常路径 → 严格单行协议 JSON：SessionStart + <zsw-resources �
   assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
   const ctx = out.hookSpecificOutput.additionalContext;
   assert.equal(typeof ctx, 'string');
-  assert.match(ctx, /^<zsw-resources snapshot="/); // 含 <zsw-resources 开块
-  assert.ok(ctx.includes('</zsw-resources>'));
+  // W7 三段 XML（core format 产物，与 pi 同构）；旧单块形态退役
+  for (const tag of ['available_subagents', 'available_workflows', 'available_provider_models']) {
+    assert.ok(ctx.includes(`<${tag}>`), `<${tag}> 段在场`);
+  }
+  assert.ok(!ctx.includes('zsw-resources'), '旧单块形态不得残留');
   assert.ok(ctx.includes(PROVIDER_ID), '含本机默认 provider 名（fixture 写入同款，防硬编码漂移）');
-  assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'cli config model.main → 默认标记链路真实生效');
-  // 硬预算 ≤45 行（设计 D3；探针 P-token-budget 的可脚本承接）
   assert.ok(
-    ctx.split('\n').length <= 45,
-    `注入块行数超硬预算：${ctx.split('\n').length} > 45`,
+    ctx.includes(`Current default model: ${PROVIDER_ID}/GLM-5.3-Flash`),
+    'cli config model.main → models guide 默认句真实生效',
   );
 });
 
@@ -162,7 +171,7 @@ test('v2 config 不可读（HOME 指向空目录）→ {} + exit 0 + stderr 一�
 // （cli.main 可解析 → v2 顶层 model.main → 内置 FALLBACK_DEFAULT_MODEL）生效。
 // 第 1 层已由正常路径用例覆盖（cli.main 可解析），此处分别构造第 2/3 层。
 
-test('cli config 缺失 + v2 顶层 model.main → 标它（回退链第 2 层）', async () => {
+test('cli config 缺失 + v2 顶层 model.main → guide 默认句标它（回退链第 2 层）', async () => {
   const homeV2Main = path.join(TMP, 'home-v2-main');
   fs.mkdirSync(path.join(homeV2Main, '.zcode', 'v2'), { recursive: true });
   fs.writeFileSync(
@@ -175,11 +184,13 @@ test('cli config 缺失 + v2 顶层 model.main → 标它（回退链第 2 层�
   const r = await run({ HOME: homeV2Main }, { cwd: TMP });
   assert.equal(r.code, 0, `stderr: ${r.stderr}`);
   const ctx = JSON.parse(r.stdout).hookSpecificOutput.additionalContext;
-  assert.ok(ctx.includes('GLM-5.3-Flash（默认）'), 'v2 顶层 model.main 应成为默认标记');
-  assert.ok(!ctx.includes('GLM-5.3（默认）'), '内置回退 GLM-5.3 未被标——证明确实走了第 2 层而非第 3 层');
+  // 尾随句点锚定精确匹配（guide 句式 "Current default model: <ref>. Do NOT…"；
+  // 防 GLM-5.3 对 GLM-5.3-Flash 的前缀误判）
+  assert.ok(ctx.includes(`Current default model: ${PROVIDER_ID}/GLM-5.3-Flash.`), 'v2 顶层 model.main 应进 guide 默认句');
+  assert.ok(!ctx.includes(`Current default model: ${PROVIDER_ID}/GLM-5.3.`), '内置回退 GLM-5.3 未被标——证明确实走了第 2 层而非第 3 层');
 });
 
-test('cli config 缺失 + v2 顶层无 model → 标内置回退 GLM-5.3（回退链第 3 层）', async () => {
+test('cli config 缺失 + v2 顶层无 model → guide 默认句标内置回退（回退链第 3 层）', async () => {
   const homeNoCli = path.join(TMP, 'home-no-cli');
   fs.mkdirSync(path.join(homeNoCli, '.zcode', 'v2'), { recursive: true });
   fs.writeFileSync(
@@ -191,7 +202,10 @@ test('cli config 缺失 + v2 顶层无 model → 标内置回退 GLM-5.3（回�
   const out = JSON.parse(r.stdout);
   assert.equal(out.hookSpecificOutput.hookEventName, 'SessionStart');
   const ctx = out.hookSpecificOutput.additionalContext;
-  assert.match(ctx, /^<zsw-resources snapshot="/); // 块照常渲染
+  assert.ok(ctx.includes('<available_provider_models>'), 'models 段照常渲染');
   assert.ok(ctx.includes(PROVIDER_ID));
-  assert.ok(ctx.includes('GLM-5.3（默认）'), '回退链尽头应标内置 FALLBACK_DEFAULT_MODEL 短名');
+  assert.ok(
+    ctx.includes(`Current default model: ${PROVIDER_ID}/GLM-5.3.`),
+    '回退链尽头应标内置 FALLBACK_DEFAULT_MODEL',
+  );
 });

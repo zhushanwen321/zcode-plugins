@@ -1,0 +1,92 @@
+###### daemon 路径（ZSW_SOCK 指隔离 sock）######
+--- list ---
+[zsw] 错误: daemon 未运行（connect /tmp/zsw-baseline/daemon.sock 失败：ENOENT）。恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或加 --local 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。
+exit=1
+--- agents ---
+[zsw] 错误: daemon 未运行（connect /tmp/zsw-baseline/daemon.sock 失败：ENOENT）。恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或加 --local 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。
+exit=0
+--- models ---
+[zsw] 错误: daemon 未运行（connect /tmp/zsw-baseline/daemon.sock 失败：ENOENT）。恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或加 --local 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。
+exit=0
+--- message 拒绝（不存在 id）---
+[zsw] 错误: daemon 未运行（connect /tmp/zsw-baseline/daemon.sock 失败：ENOENT）。恢复指引：稍候重试（多会话下其他实例接管需 1-2s）；仍失败则在任一 zcode 会话确认插件已启用；或加 --local 走本地一次性执行（调试后门：无续聊/限流，CLI 退出即丢执行体）。
+exit=1
+###### --local 路径 ######
+--- list ---
+[]
+exit=0
+--- agents ---
+未知子命令: agents
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+  node bin/zsw.js message --id sa-xxxx --text "补充重点"
+  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法
+  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）
+  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）
+  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）
+  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）
+  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）
+  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）
+  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar
+  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]
+                                                   # daemon 侧挂起等待；部分完成 exit 2
+  node bin/zsw.js list --local                  # 本地一次性执行（调试后门）
+exit=0
+--- models ---
+未知子命令: models
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+  node bin/zsw.js message --id sa-xxxx --text "补充重点"
+  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法
+  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）
+  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）
+  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）
+  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）
+  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）
+  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）
+  node bin/zsw.js start --wait --task "..." --slug x   # start + 挂起等待 sugar
+  node bin/zsw.js wait --id sa-xxxx [--id sa-yyyy] [--timeout-ms 60000]
+exit=0
+--- message 拒绝（不存在 id）---
+[zsw] 错误: subagent "sa-nonexist" 不存在。恢复指引：用 list 查看全部任务 id。
+exit=1
+###### 缺参与未知子命令 ######
+--- start 缺参（daemon 路径 usage）---
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+  node bin/zsw.js message --id sa-xxxx --text "补充重点"
+  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法
+  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）
+  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）
+  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）
+  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）
+  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）
+  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）
+exit=0
+--- start 缺参（--local）---
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+  node bin/zsw.js message --id sa-xxxx --text "补充重点"
+  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法
+  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）
+  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）
+  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）
+  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）
+  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）
+  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）
+exit=0
+--- 未知子命令 ---
+未知子命令: bogus-cmd
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+exit=0

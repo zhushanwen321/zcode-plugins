@@ -3,8 +3,10 @@
 /**
  * lib/cli-client.js 单测（DESIGN-v4 D2，M0）：假 daemon（node:test 内起
  * net.Server 监听临时 unix sock）协议往返、ok:false 透传、connect 失败的
- * 可操作文案、帧宽容性（多余换行/前后空白/无尾换行）。不依赖真 daemon、
- * manager 与 lib/daemon-socket（并行开发中，本层自带最小帧编解码）。
+ * 可操作文案、帧宽容性（多余换行/前后空白/无尾换行）。不依赖真 daemon 与
+ * manager；构帧 import lib/frame-codec 的 encodeFrame（帧语法单源，设计
+ * D1/D2），假 daemon 请求侧解析是测试替身简化（定性见 startFakeDaemon，
+ * D2 豁免类）。
  */
 
 const fs = require('node:fs');
@@ -16,12 +18,18 @@ const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { callDaemon, defaultSockPath } = require('../lib/cli-client');
+const { encodeFrame } = require('../lib/frame-codec');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'zsw-cliclient-'));
 let seq = 0;
 const tmpSock = (name) => path.join(TMP, `${name}-${seq += 1}.sock`);
 
-/** 起假 daemon：onFrame(request) 返回要写回 socket 的原始字符串（帧）。 */
+/**
+ * 起假 daemon：onFrame(request) 返回要写回 socket 的原始字符串（帧）。
+ * 请求侧解析是测试替身对已知输入的简化（一行一解、粘包余帧丢弃、string
+ * 拼接）——CLI 每次调用只发单请求帧，替身不复制协议权威解码，解码一般性
+ * 由 lib/frame-codec 与 daemon-socket 回归锚保证（设计 D2 显式豁免类）。
+ */
 function startFakeDaemon(onFrame) {
   return new Promise((resolve) => {
     const sockPath = tmpSock('daemon');
@@ -40,8 +48,6 @@ function startFakeDaemon(onFrame) {
   });
 }
 
-const frame = (obj) => `${JSON.stringify(obj)}\n`;
-
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
 });
@@ -52,7 +58,7 @@ test('协议往返：请求帧 {id,tool,params,cwd}，响应 ok:true → resolve
   let seen = null;
   const d = await startFakeDaemon((req) => {
     seen = req;
-    return frame({ id: req.id, ok: true, result: { tasks: [], note: 'ok' } });
+    return encodeFrame({ id: req.id, ok: true, result: { tasks: [], note: 'ok' } });
   });
   const r = await callDaemon({ sockPath: d.sockPath, tool: 'zsub', params: { action: 'list' } });
   assert.equal(r.ok, true);
@@ -78,7 +84,7 @@ test('请求帧 cwd：缺省 = CLI 侧 process.cwd()；显式传入可覆盖；�
     let seen = null;
     const d = await startFakeDaemon((req) => {
       seen = req;
-      return frame({ id: req.id, ok: true, result: {} });
+      return encodeFrame({ id: req.id, ok: true, result: {} });
     });
     const r = await callDaemon({ sockPath: d.sockPath, tool: 'zsub', params: { action: 'list' }, cwd: cwdArg });
     assert.equal(r.ok, true);
@@ -89,7 +95,7 @@ test('请求帧 cwd：缺省 = CLI 侧 process.cwd()；显式传入可覆盖；�
 });
 
 test('ok:false 帧 → 正常 resolve {ok:false,error}（业务失败不是传输层异常）', async () => {
-  const d = await startFakeDaemon((req) => frame({
+  const d = await startFakeDaemon((req) => encodeFrame({
     id: req.id,
     ok: false,
     error: { code: -32000, message: '任务 "sa-x" 不存在。恢复指引：先 list 查 id' },
@@ -161,7 +167,7 @@ test('响应帧含多余换行与前后空白 → 仍能解出', async () => {
 
 test('无布尔 ok 字段的 JSON 行（非响应帧）被跳过，取首个合法响应帧', async () => {
   const payload = JSON.stringify({ id: 1, ok: true, result: { fine: 1 } });
-  const d = await startFakeDaemon(() => `${JSON.stringify({ log: 'noise' })}\n${frame({ id: 1 })}${payload}\n`);
+  const d = await startFakeDaemon(() => `${JSON.stringify({ log: 'noise' })}\n${encodeFrame({ id: 1 })}${payload}\n`);
   const r = await callDaemon({ sockPath: d.sockPath, tool: 'zsub', params: { action: 'list' } });
   assert.equal(r.ok, true);
   assert.deepEqual(r.result, { fine: 1 });
@@ -215,7 +221,7 @@ test('defaultSockPath：ZSW_SOCK 覆盖 > ~/.zcode/zsw/daemon.sock', () => {
 // ------------------------------------------- R1：多字节 UTF-8 chunk 边界切开
 
 test('响应帧含中文且被 chunk 边界切开多字节序列 → 仍完整解出（Buffer 累积解码）', async () => {
-  const resp = Buffer.from(`${JSON.stringify({ id: 1, ok: true, result: { note: '任务「审查」完成：中文结果' } })}\n`);
+  const resp = Buffer.from(encodeFrame({ id: 1, ok: true, result: { note: '任务「审查」完成：中文结果' } }));
   // 第一个 >= 0x80 的字节后切开：必落在多字节 UTF-8 序列内或其边界
   let split = -1;
   for (let i = 0; i < resp.length; i++) {
