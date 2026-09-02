@@ -60,19 +60,47 @@ function defaultLog(msg) {
 
 /** 活跃实例的同步清理集：信号/退出钩子遍历执行（模块级一份，多实例共用）。 */
 const LIVE_CLEANUPS = new Set();
+/**
+ * 信号路径的异步收尾集（MF-2）：宿主引擎 dispose（wfHost.shutdown →
+ * runner.shutdown，常驻 appserver 引擎进程的存活锚点）不能在 'exit' 钩子里
+ * 跑（只允许同步操作）。宿主经 registerSignalFinalizer 注入；SIGTERM/SIGINT
+ * 时同步清理后、显式退出前，在 SIGNAL_FINALIZE_TIMEOUT_MS 窗内逐个跑完。
+ */
+const SIGNAL_FINALIZERS = new Set();
+const SIGNAL_FINALIZE_TIMEOUT_MS = 5_000;
 let hooksInstalled = false;
 function installExitHooks() {
   if (hooksInstalled) return;
   hooksInstalled = true;
   const cleanupAll = () => { for (const cleanup of LIVE_CLEANUPS) cleanup(); };
-  // 信号路径：清理是同步的（unlink），先清后显式退出。接线注意：process.exit
-  // 会跳过其后注册的其他同名信号 listener——宿主（dist/mcp/server.js）若有
-  // 自己的 SIGTERM 收尾，需在本模块之前注册或把收尾统一收口到这里。
-  process.on('SIGTERM', () => { cleanupAll(); process.exit(0); });
-  process.on('SIGINT', () => { cleanupAll(); process.exit(0); });
+  const onSignal = () => {
+    cleanupAll();
+    if (SIGNAL_FINALIZERS.size === 0) { process.exit(0); return; }
+    // 异步收尾带短超时强制 exit：收尾挂死（引擎不响应）不把信号退出变成僵尸
+    setTimeout(() => process.exit(0), SIGNAL_FINALIZE_TIMEOUT_MS).unref();
+    Promise.all([...SIGNAL_FINALIZERS].map((f) => Promise.resolve().then(f).catch(() => {})))
+      .then(() => process.exit(0));
+  };
+  // 信号路径：同步清理（unlink）先清；有异步收尾则窗内跑完再退出，否则直接退
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
   // 自然退出路径兜底（如 MCP stdin 关闭后宿主 process.exit）：exit 钩子只允许
   // 同步操作，而退出卫生恰好全是同步 unlink。
   process.on('exit', cleanupAll);
+}
+
+/**
+ * 注册信号路径的异步收尾（MF-2）：返回注销函数。须在 startDaemon 之前（或
+ * 任意时刻——集合是模块级的，信号触发时统一消费）注册；收尾异常被吞（信号
+ * 退出是 best-effort，与 stdin 关闭路径的 shutdown 容错同语义）。
+ * @param {() => void | Promise<void>} finalizer
+ */
+function registerSignalFinalizer(finalizer) {
+  if (typeof finalizer !== 'function') {
+    throw new TypeError('registerSignalFinalizer 需要 finalizer 函数');
+  }
+  SIGNAL_FINALIZERS.add(finalizer);
+  return () => SIGNAL_FINALIZERS.delete(finalizer);
 }
 
 /**
@@ -420,4 +448,4 @@ function startDaemon(opts) {
   return ready;
 }
 
-module.exports = { startDaemon };
+module.exports = { startDaemon, registerSignalFinalizer };

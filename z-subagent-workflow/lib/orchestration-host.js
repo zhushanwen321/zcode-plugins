@@ -19,7 +19,8 @@
  *    硬前提，资产自身 fail-fast 守卫）。
  * 3. 对外面（zflow 九 action = daemon socket 与 CLI workflow 子命令共用；本
  *    对象承接 run / runAndWait / abort / status / list / scripts / lint，
- *    script-* 三 action 创作闭环由 bin/zsw.js 实现经 server handler 消费）
+ *    script-* 三 action 创作闭环收口在 lib/workflow-actions.js，CLI 与
+ *    server handler 两入口共用）
  *    + daemon 生命周期钩子（recoverOrphans / shutdown）。
  *
  * V4o 消费收口（设计 C12/C14/C16）：崩溃恢复线改调 core recoverCrashedRuns
@@ -307,7 +308,25 @@ function coerceValue(propSchemaForFn, key, value) {
   const prop = propSchemaForFn(key);
   const t = prop && prop.type;
   if (t === 'boolean') return bool(value);
-  if (t === 'integer' || t === 'number') return num(value);
+  if (t === 'integer' || t === 'number') {
+    // MF-3：finite 闸（对齐信封层 timeoutMs 的 Number.isFinite 口径）——
+    // Number('abc')=NaN 静默透传 $ARGS 会让脚本侧拿到 NaN 毫无诊断
+    const n = num(value);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `参数 "${key}" 需要${t === 'integer' ? '整数' : '数值'}，无法解析取值 ${JSON.stringify(value) || String(value)}。`
+        + '恢复指引：检查该参数取值（CLI 形态如 --max-rounds 10 须传数字）。',
+      );
+    }
+    // S-10：integer 型还须是整数（schema 声明与实现不漂移，number 型不收窄）
+    if (t === 'integer' && !Number.isInteger(n)) {
+      throw new Error(
+        `参数 "${key}" 需要整数，无法解析取值 ${JSON.stringify(value) || String(value)}。`
+        + '恢复指引：检查该参数取值（CLI 形态如 --max-rounds 10 须传整数）。',
+      );
+    }
+    return n;
+  }
   if (Array.isArray(value)) {
     if (t === 'array' && prop.items && prop.items.type === 'string') return value.map(String);
     return value.join(',');

@@ -43,8 +43,8 @@
  *
  * zflow 管理面（回接 2b：vendored subagent-core orchestration；W8 增创作闭环）：
  * - 九 action（run/abort/status/list/scripts/lint/script-generate/script-save/
- *   script-delete）走 orchestration host（lib/orchestration-host.js）与 bin/zsw.js
- *   的共享创作实现：core runWorkflow/abortRun/FileRunStore + vendored 内置资产
+ *   script-delete）走 orchestration host（lib/orchestration-host.js）与
+ *   lib/workflow-actions.js 的共享创作实现：core runWorkflow/abortRun/FileRunStore + vendored 内置资产
  *   注册 + core generate/save/delete 管线（zsw 目录布局 ~/.zsw/workflows）。run
  *   立即返回 {runId, stateFile}；wait=true 走 runAndWait 同步等终态 +
  *   scriptResult（MCP 30s 超时，主要给测试）。script-delete 的「运行中拒绝」
@@ -52,8 +52,9 @@
  * - 校验/组参权威在 host 的 normalizeRunParams + registry（task/workdir/
  *   workflow 名/脚本发现/$ARGS 映射均它管），server 不重复解析——两处各
  *   解析一份会漂移。workflow 引用契约（D-4/D-E3：script: 拒收；knownNames =
- *   内置 5 + cwd 发现面 saved 名，saved 裸名放行）在入口面校验（bin/zsw.js
- *   的 validateWorkflowRef，CLI 与 socket 面单一来源）。旧
+ *   内置 5 + cwd 发现面 saved 名，saved 裸名放行）在入口面校验
+ *   （lib/workflow-actions.js 的 validateWorkflowRef，CLI 与 socket 面单一
+ *   来源；MF-1 收口）。旧
  *   reviewers sugar 在 host 层显式报错（core 契约批次值 = agent .md 路径）；
  *   maxConcurrent/timeoutMsPerPhase 无 core 对应面，以 warnings 显式说明不静默。
  * - run 状态面 = 内存 runs Map（done 保留 MAX_RETAINED_DONE_RUNS 条）+
@@ -202,13 +203,15 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
         // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
         // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
         // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）。
-        // D-4/D-E3 引用契约入口（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
+        // D-4/D-E3 引用契约入口（socket 面与 CLI 共用 lib/workflow-actions 的单一实现，
         // 防两入口漂移）：script: 拒收；knownNames = 内置 5 + cwd 发现面
         // saved 名（buildKnownWorkflowNames 单一构建函数，cwd 与 ctx.cwd
         // 同源——三入口同一目录集产出同一集，⛔D），saved 裸名放行（D-E3
         // 裁决）。validateWorkflowRef 的单参缺省（内置 5 名）保留为防御性
         // 兜底，正常路径恒传全量 knownNames。
-        const { validateWorkflowRef } = require('../../bin/zsw.js');
+        // MF-1：共享实现收口 lib/workflow-actions.js（此前反向 require CLI 入口
+        // bin/zsw.js 取业务逻辑——入口职责倒挂已修正）
+        const { validateWorkflowRef } = require('../../lib/workflow-actions');
         const { buildKnownWorkflowNames } = require('../../lib/orchestration-host');
         const core = require('../../lib/core-ref').requireCore();
         validateWorkflowRef(runArgs.workflow, await buildKnownWorkflowNames(core, ctx.cwd));
@@ -248,22 +251,23 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
         }
         return await wfHost.lint(args.file);
       }
-      // 创作闭环三 action（W8 / D-6）：实现与 CLI 共用 bin/zsw.js 导出的单一
-      // 来源（core generate/save/delete 管线 + zsw 目录布局）。CLI 面
+      // 创作闭环三 action（W8 / D-6）：实现与 CLI 共用 lib/workflow-actions.js
+      // 导出的单一来源（core generate/save/delete 管线 + zsw 目录布局；MF-1
+      // 收口）。CLI 面
       // script-generate 恒本地、save/delete 默认经 daemon——本 handler 是
       // socket 面（daemon 进程内）权威路径：delete 的「运行中拒绝」在此用
       // daemon 持有的 runs 真实状态裁决，save 后的发现面 invalidate 也落在本
       // 进程。script-generate 分支为 dispatch 表完备性保留（CLI 不经此路）。
       case 'script-generate': {
-        const { scriptGenerateAction } = require('../../bin/zsw.js');
+        const { scriptGenerateAction } = require('../../lib/workflow-actions');
         return scriptGenerateAction(args.name, args.script);
       }
       case 'script-save': {
-        const { scriptSaveAction } = require('../../bin/zsw.js');
+        const { scriptSaveAction } = require('../../lib/workflow-actions');
         return await scriptSaveAction(args.name);
       }
       case 'script-delete': {
-        const { scriptDeleteAction, runningScriptPredicate } = require('../../bin/zsw.js');
+        const { scriptDeleteAction, runningScriptPredicate } = require('../../lib/workflow-actions');
         return scriptDeleteAction(args.name, runningScriptPredicate(wfHost));
       }
       default:
@@ -526,13 +530,28 @@ async function main() {
   // 两处各拼一份会漂移）。
   let daemon = null;
   if (!config.NESTED) {
-    const { startDaemon } = require('../../lib/daemon-socket');
+    const { startDaemon, registerSignalFinalizer } = require('../../lib/daemon-socket');
     const { defaultSockPath } = require('../../lib/cli-client');
     const sockPath = defaultSockPath();
     try {
       // 首次运行 ~/.zcode/zsw 可能不存在：lock 的 O_EXCL 创建与 listen 都要求
-      // 父目录在位（recursive 幂等）
+      // 父目录在（recursive 幂等）
       require('node:fs').mkdirSync(path.dirname(sockPath), { recursive: true });
+      // MF-2：SIGTERM/SIGINT 退出路径的引擎收尾。此前信号路径只做同步 unlink +
+      // process.exit(0)，跳过 wfHost.shutdown → runner.shutdown——常驻 appserver
+      // 引擎进程（惰性表）不 dispose 即泄漏。注册必须在 startDaemon 之前：
+      // process.exit 会跳过其后注册的同名信号 listener，而本收尾是异步的，
+      // 依赖 daemon-socket 的信号钩子在跑完 SIGNAL_FINALIZERS 后才退出（带
+      // 5s 强制 exit 超时）。wfHost.shutdown 已组合 runner.shutdown（assemble
+      // 退出链，引擎实例逐个 dispose + killAllSpawnedChildren 兜底），幂等可
+      // 与 stdin 'end' 路径的 shutdown 任意先后。
+      registerSignalFinalizer(async () => {
+        try {
+          if (wfHost) await wfHost.shutdown();
+        } catch (e) {
+          log(`信号路径 wfHost shutdown 失败（best-effort，下次启动由孤儿恢复收编）: ${e && e.message || e}`);
+        }
+      });
       daemon = await startDaemon({
         sockPath,
         // 单份 handler 表（createServer 已建，闭包同 manager/wfHost），

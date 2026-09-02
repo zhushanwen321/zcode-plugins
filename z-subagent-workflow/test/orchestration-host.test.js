@@ -414,6 +414,21 @@ test('⛔C 对照集：现有全部合法调用参数集在 meta 驱动下零 wa
   assert.equal(rfl.args.maxRounds, 5, 'meta integer → num 归一');
   assert.equal(rfl.args.batch1, '/r.md', 'patternProperties 键数组值 → csv');
   assert.equal(rfl.args.targetType, 'file');
+
+  // MF-4 回归锚点：meta integer/number 参数的非数字取值必须显式报错（修前
+  // Number('abc')=NaN 静默透传 $ARGS，脚本侧拿到 NaN 毫无诊断）
+  const rflMeta = await metaOf('review-fix-loop');
+  assert.throws(
+    () => normalizeRunParams({ workflow: 'review-fix-loop', task: 't', maxRounds: 'abc' }, rflMeta),
+    (e) => /"maxRounds"/.test(e.message) && /恢复指引/.test(e.message) && /整数/.test(e.message),
+    'NaN 取值应报含参数名与恢复指引的错误',
+  );
+  // S-10：integer 型非整数取值（如 1.5）同样显式报错，不静默透传
+  assert.throws(
+    () => normalizeRunParams({ workflow: 'review-fix-loop', task: 't', maxRounds: '1.5' }, rflMeta),
+    (e) => /"maxRounds"/.test(e.message) && /整数/.test(e.message),
+    'integer 型非整数取值应显式报错',
+  );
   const pr = normalizeRunParams({ workflow: 'parallel', target: 'lib/', perspectives: ['a', 'b'] }, await metaOf('parallel'));
   assert.deepEqual(pr.args.perspectives, ['a', 'b'], 'array 型参数保持数组（元素字符串化）');
   const sg = normalizeRunParams({ workflow: 'scatter-gather', task: 't' }, await metaOf('scatter-gather'));

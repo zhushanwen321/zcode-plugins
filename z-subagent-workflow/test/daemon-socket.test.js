@@ -19,7 +19,7 @@ const { once } = require('node:events');
 const { spawn } = require('node:child_process');
 
 const LIB = path.join(__dirname, '..', 'lib', 'daemon-socket.js');
-const { startDaemon } = require(LIB);
+const { startDaemon, registerSignalFinalizer } = require(LIB);
 const { encodeFrame, createFrameDecoder } = require('../lib/frame-codec');
 
 // 帧语法单源在 lib/frame-codec.js（设计 D1，encodeFrame/createFrameDecoder 已
@@ -346,7 +346,44 @@ test('SIGTERM：standby 子进程直接退出，不动 daemon 的 lock/sock', as
   assert.deepStrictEqual(frames[0].result, { who: 'daemon' }, 'daemon 服务照常');
 });
 
-// ------------------------------------------------------ 挂起取消与半包
+// ------------------------------------------------------ 信号 finalizer（MF-2 收尾面）
+
+test('SIGTERM：registerSignalFinalizer 注入的异步收尾在退出前执行（exit 0 + 文件副作用）', async (t) => {
+  const { dir, sockPath } = tmpSock(t);
+  const markerPath = path.join(dir, 'finalized');
+  const script = `
+    const { startDaemon, registerSignalFinalizer } = require(${JSON.stringify(LIB)});
+    registerSignalFinalizer(async () => {
+      await new Promise((r) => setTimeout(r, 50)); // 证明异步收尾真的等得到
+      require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ok');
+    });
+    startDaemon({
+      sockPath: ${JSON.stringify(sockPath)},
+      handlers: { zsub: async () => ({ pong: true }) },
+      log: () => {},
+    }).then(
+      () => process.stderr.write('READY daemon\\n'),
+      (e) => { process.stderr.write('FAIL ' + e.message + '\\n'); process.exit(1); },
+    );
+    setInterval(() => {}, 3600000);
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { child.kill('SIGKILL'); });
+  assert.match(await waitProcReady(child), /^daemon$/);
+
+  child.kill('SIGTERM');
+  const { code, signal } = await waitClose(child);
+  assert.strictEqual(signal, null, '信号被 handler 接住');
+  assert.strictEqual(code, 0, 'finalizer 跑完后显式 exit(0)');
+  assert.strictEqual(fs.readFileSync(markerPath, 'utf8'), 'ok', '异步 finalizer 在退出前完成（文件副作用）');
+});
+
+test('registerSignalFinalizer：非函数入参同步抛 TypeError', () => {
+  assert.throws(() => registerSignalFinalizer('not-a-function'), TypeError);
+  assert.throws(() => registerSignalFinalizer(undefined), TypeError);
+});
+
+
 
 test('客户端断连：连接级 AbortSignal 被 abort，挂起 handler 取消等待，daemon 不受影响', async (t) => {
   const { sockPath } = tmpSock(t);

@@ -116,6 +116,19 @@ after(() => {
 
 // ------------------------------------------------------------- usage / 退出码
 
+// S-11：lib/workflow-actions.js 收口契约锚点（MF-1 搬移后 CLI/MCP 两入口的
+// 共享创作面）——导出形状断言，防止导出面漂移把入口 require 变静默 undefined
+test('lib/workflow-actions 导出面形状（收口契约锚点）', () => {
+  const wa = require('../lib/workflow-actions');
+  for (const name of [
+    'validateWorkflowRef', 'knownWorkflowNames', 'scriptGenerateAction',
+    'scriptSaveAction', 'scriptDeleteAction', 'runningScriptPredicate',
+    'requireScriptActionName',
+  ]) {
+    assert.equal(typeof wa[name], 'function', `导出 ${name} 须为函数`);
+  }
+});
+
 test('无参数 → usage + exit 1', async () => {
   const r = await run([]);
   assert.equal(r.code, 1);
