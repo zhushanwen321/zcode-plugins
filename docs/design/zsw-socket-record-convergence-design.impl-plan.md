@@ -79,7 +79,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 | Unit | 状态(pending/in-progress/committed/blocked) | 轮次 | 证据指针 |
 |---|---|---|---|
 | U0 | committed | 1 | 36/36 绿（frame-codec/daemon-socket/cli-client 三件套重跑核实）；传输层字节级回归锚零改动原样绿；A1 双口径比对 11/11 段 PASS + pre/post 完整输出互 diff 零差异；list 帧与 baseline-frames.txt 逐字节一致；cli-client close 无尾换行宽容语义等价实现（close 补推 \n flush，测试锚定） |
-| U1 | pending | 0 | — |
+| U1 | committed | 1 | 59/59 绿（五文件重跑核实）；A2 grep 手写 encodeFrame/createFrameDecoder 副本零命中；daemon-socket.test.js 回归锚组五用例零改动（仅构帧来源换 import）；server-daemon 内嵌解析判定为协议 replica 类删除（头注自认同形）；三处故意畸形流构造保留（宽容性 fixture，非 replica） |
 | U2 | committed | 1 | 47/47 绿（server + zsub-actions 重跑核实）；P-roundtrip 五类帧逐字节一致；CLI 双路径基线逐字一致（含「未知子命令」16 行 usage 全文）；A4 冒烟过（tools/list 恒空 + tools/call errContent）；A3 真跑 closed/result ok/exit 0（1 次真实模型调用）；A9 非 conversation 路径逐字一致；全量 433/434（1 失败 = HEAD 既有 fixture 误扫，干净态复现，零因果） |
 | U3 | pending | 0 | — |
 

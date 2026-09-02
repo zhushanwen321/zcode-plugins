@@ -16,8 +16,8 @@
  * env 必须在 require server 之前设置（同 test/server.test.js：config 在模块
  * 加载期从 env 冻结路径——ZSW_ROOT / HOME / mailbox 根）。
  * socket 隔离：sockPath 全落 mkdtemp 临时目录，不碰 ~/.zcode/zsw。
- * 帧编解码不 import daemon-socket（其导出面收敛为仅 { startDaemon }）：
- * NDJSON 协议就地内联构帧（JSON.stringify(obj)+'\n'）。
+ * 帧语法单源 import lib/frame-codec（设计 D1/D2）：构帧 encodeFrame、解帧
+ * createFrameDecoder——此前就地内联的第三份 codec 副本已退役。
  */
 
 const fs = require('node:fs');
@@ -36,6 +36,7 @@ fs.mkdirSync(process.env.HOME, { recursive: true });
 // env 隔离完成后才允许 require（见文件头注释）
 const server = require('../dist/mcp/server');
 const { startDaemon } = require('../lib/daemon-socket');
+const { encodeFrame, createFrameDecoder } = require('../lib/frame-codec');
 
 after(() => {
   try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* 尽力清理 */ }
@@ -69,13 +70,14 @@ function canConnect(sockPath) {
 
 /**
  * 单请求 rpc：发一帧收一帧（wait-handler.test / daemon-socket.test 同款形态）。
- * 帧编解码内联（NDJSON：JSON + '\n'；按 0x0A 字节切行防多字节 UTF-8 被 chunk
- * 边界撕裂，空行跳过、坏行丢弃——与 daemon-socket 传输层解码语义同形）。
+ * 构帧/解帧 import 生产 codec（lib/frame-codec）；取首个完整帧即返回是本替身
+ * 对「单请求单响应」已知输入的消费语义（半包缓冲/坏行丢弃/空行跳过由生产
+ * decoder 处理），不复制 client 侧宽容过滤。
  */
 function rpc(sockPath, req, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const sock = net.connect(sockPath);
-    let buf = Buffer.alloc(0);
+    const decoder = createFrameDecoder();
     let done = false;
     const timer = setTimeout(() => fail(new Error('rpc 超时')), timeoutMs);
     const fail = (e) => {
@@ -85,27 +87,15 @@ function rpc(sockPath, req, timeoutMs = 5000) {
       sock.destroy();
       reject(e);
     };
-    sock.on('connect', () => sock.write(`${JSON.stringify(req)}\n`));
+    sock.on('connect', () => sock.write(encodeFrame(req)));
     sock.on('data', (chunk) => {
       if (done) return;
-      buf = Buffer.concat([buf, chunk]);
-      let nl;
-      while ((nl = buf.indexOf(0x0a)) >= 0) {
-        const line = buf.subarray(0, nl).toString('utf8').trim();
-        buf = buf.subarray(nl + 1);
-        if (!line) continue; // 空行不是帧（如结尾 \n 后的尾巴）
-        let frame;
-        try {
-          frame = JSON.parse(line);
-        } catch {
-          continue; // 坏行丢弃，等下一帧
-        }
-        done = true;
-        clearTimeout(timer);
-        sock.end();
-        resolve(frame);
-        return;
-      }
+      const [frame] = decoder.push(chunk);
+      if (frame === undefined) return; // 半包/空行/坏行：等下一 chunk 吐出完整帧
+      done = true;
+      clearTimeout(timer);
+      sock.end();
+      resolve(frame);
     });
     sock.on('error', fail);
     sock.on('close', () => { if (!done) fail(new Error('连接提前关闭')); });

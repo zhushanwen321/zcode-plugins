@@ -20,29 +20,13 @@ const { spawn } = require('node:child_process');
 
 const LIB = path.join(__dirname, '..', 'lib', 'daemon-socket.js');
 const { startDaemon } = require(LIB);
+const { encodeFrame, createFrameDecoder } = require('../lib/frame-codec');
 
-// 帧编解码已收归 daemon-socket 模块内部（对外仅暴露 startDaemon，源码头注 S8
-// 收敛定论）：测试侧内联同款最小编解码仅作响应侧解析；**生产 decoder** 的回归
-// 锚经传输层字节级写入驱动（见「帧编解码回归锚」组）——socket 写入时机即
-// decoder.push 的 chunk 边界，不导出内部函数也可观测真实解码行为。协议契约以
-// lib/cli-client.js 头注为权威。
-const encodeFrame = (obj) => `${JSON.stringify(obj)}\n`;
-function createFrameDecoder() {
-  let buf = Buffer.alloc(0);
-  return {
-    push(chunk) {
-      buf = Buffer.concat([buf, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-      const frames = [];
-      let nl;
-      while ((nl = buf.indexOf(0x0a)) >= 0) {
-        const line = buf.subarray(0, nl).toString('utf8').trim();
-        buf = buf.subarray(nl + 1);
-        if (line) frames.push(JSON.parse(line));
-      }
-      return frames;
-    },
-  };
-}
+// 帧语法单源在 lib/frame-codec.js（设计 D1，encodeFrame/createFrameDecoder 已
+// 随 U0 抽出导出）——本文件此前的手写 replica 已退役（69f71eb 留债清偿），
+// 构帧/解帧一律 import 生产 codec；协议契约以 lib/frame-codec.js 头注为权威。
+// **生产 decoder 回归锚**仍经传输层字节级写入驱动（见「帧编解码回归锚」组）
+// ——socket 写入时机即 decoder.push 的 chunk 边界，锚形态不随 replica 退役而变。
 
 /** 建临时 sock 目录；测试结束整目录删除（残留清理断言失败时也不会泄漏）。 */
 function tmpSock(t) {
@@ -425,10 +409,10 @@ test('socket 层半包：一帧按字节切两半发送，daemon 仍正确解码
 });
 
 // -------------------------------------------- 帧编解码回归锚（驱动生产 decoder）
-// createFrameDecoder 是模块内部函数不导出（改源码暴露面超出本批领地），按本文件
-// 既有 internal 惯例经 startDaemon 传输层回归：请求侧 socket 字节级写入精确复现
-// decoder.push 的输入形态（chunk 边界 / 坏行 / 空行 / 裸值），断言可观测面 =
-// 分发响应 + onBadLine→log 留痕。锚定 HEAD 态 decoder 四行为：行完整后才
+// createFrameDecoder 已随 lib/frame-codec.js 抽出导出（设计 D1/U0，replica 债
+// 清偿），本组锚的传输层字节级驱动形态保持不变：请求侧 socket 字节级写入精确
+// 复现 decoder.push 的输入形态（chunk 边界 / 坏行 / 空行 / 裸值），断言可观测
+// 面 = 分发响应 + onBadLine→log 留痕。锚定 decoder 四行为：行完整后才
 // toString（多字节 UTF-8 跨 chunk 保真）、坏行丢弃不断流、半包字节缓冲、空行跳过。
 
 test('帧编解码·坏行容忍：非 JSON 行丢弃且 onBadLine 留痕，空行/纯空白行静默跳过，后续帧不受影响', async (t) => {

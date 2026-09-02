@@ -31,6 +31,7 @@ const BIN = path.join(__dirname, '..', 'bin', 'zsw.js');
 const NO_DAEMON_SOCK = path.join(TMP, 'no-daemon', 'daemon.sock');
 
 let sockSeq = 0;
+const { encodeFrame } = require('../lib/frame-codec');
 
 function run(args, extraEnv = {}) {
   return new Promise((resolve) => {
@@ -59,7 +60,11 @@ function run(args, extraEnv = {}) {
 
 /**
  * 起假 daemon：记录收到的全部请求帧；onFrame(req) 返回要写回的响应对象
- * （不含 id，这里补上）。CLI 每次调用独立连接，seen 跨用例累积后按序断言。
+ * （不含 id，这里补上）；构响应帧 import 生产 encodeFrame（帧语法单源，设计
+ * D2）。CLI 每次调用独立连接，seen 跨用例累积后按序断言。请求侧解析是测试
+ * 替身对已知输入的简化（一行一解、粘包余帧丢弃、string 拼接）——CLI 每次
+ * 调用只发单请求帧，替身不复制协议权威解码，解码一般性由 lib/frame-codec
+ * 与 daemon-socket 回归锚保证（设计 D2 显式豁免类）。
  */
 function startFakeDaemon(onFrame) {
   return new Promise((resolve) => {
@@ -74,7 +79,7 @@ function startFakeDaemon(onFrame) {
         const req = JSON.parse(buf.slice(0, nl));
         buf = '';
         seen.push(req);
-        conn.write(`${JSON.stringify({ id: req.id, ...onFrame(req) })}\n`);
+        conn.write(encodeFrame({ id: req.id, ...onFrame(req) }));
       });
     });
     server.listen(sockPath, () => resolve({ server, sockPath, seen }));
