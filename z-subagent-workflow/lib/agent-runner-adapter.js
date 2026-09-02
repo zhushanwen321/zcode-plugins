@@ -87,6 +87,119 @@ function abortError() {
 }
 
 /**
+ * agent .md 解析（由 run 拆出，承接「agent .md 解析」段）。
+ *
+ * D-4a 收紧 + D-4 缺省统一，W6b：引用唯一形态 = .md 绝对路径（~/ 展开同 core
+ * normalizeRef 口径）——名字/相对路径/非 .md 抛 invalidAgentRefMessage，路径
+ * 合法但不可读抛 agentFileNotFoundMessage（V2p C3：ref 归一化与报错文案改
+ * 直调 vendored core，不再经 agent-discovery 薄包装；invalidAgentRefMessage
+ * 仍注入 zsw 双出口 howToList，错误消息契约与 V1a 后形态逐字一致——
+ * agent-discovery 与本处的 howToList 同文；其 normalizeAgentRef 薄包装为
+ * 终态常驻的 manager 面契约适配（消费方 = manager.js），非待退役临时物）。
+ * 非 string 防御保留：core normalizeRef/工厂对非 string 抛 TypeError，插件
+ * 契约回落可操作报错（String() 化进工厂，旧 zsw 包装同款）。缺省（opts.agent
+ * 未传）走 resolveDefault = general-purpose 内置角色（与 pi 侧 session-runner
+ * 的 DEFAULT_AGENT_NAME 语义对齐；遮蔽序胜者可覆写）。resolver.resolve 是
+ * async（W6a 起 core discoverResources）；sync 注入的 resolver 经 await 透明
+ * 兼容。找不到直接抛——比带着空角色跑完再发现用错 agent 便宜（manager.start
+ * 同款决策）
+ */
+async function resolveAgentProfile(opts, resolver, cwdBase) {
+  let profile = null;
+  const res = resolver || require('./agent-discovery');
+  if (opts.agent != null && opts.agent !== '') {
+    const core = coreRef.requireCore();
+    const norm = typeof opts.agent === 'string'
+      ? core.normalizeRef(opts.agent, core.AGENT_REF_EXT)
+      : null;
+    if (norm === null) {
+      throw new Error(core.invalidAgentRefMessage(String(opts.agent), {
+        howToList: `<available_subagents>, or run node "${zswCliPath()}" agents to list paths`,
+      }));
+    }
+    profile = await res.resolve(norm, cwdBase);
+    if (!profile) {
+      throw new Error(agentFileNotFoundMessage(norm));
+    }
+  } else {
+    profile = await res.resolveDefault(cwdBase) || null;
+  }
+  return profile;
+}
+
+/** modelRef 取值（由 buildAgentTaskCtx 拆出）：call 级 model 原始透传优先，profile.model 兜底。 */
+function pickModelRef(opts, profile) {
+  return typeof opts.model === 'string' && opts.model.trim() !== ''
+    ? opts.model.trim()
+    : (profile && typeof profile.model === 'string' && profile.model.trim() !== '' ? profile.model.trim() : undefined);
+}
+
+/**
+ * engine 双层取值（由 buildAgentTaskCtx 拆出）：调用参数 engine 最优先
+ * （U4 接线，之前静默不消费）；frontmatter engine 随 profile 透传（agentEngine）。
+ */
+function pickEngines(opts, profile) {
+  return {
+    engine: typeof opts.engine === 'string' && opts.engine.trim() !== '' ? opts.engine.trim() : undefined,
+    agentEngine: profile && typeof profile.engine === 'string' && profile.engine.trim() !== ''
+      ? profile.engine.trim()
+      : undefined,
+  };
+}
+
+/**
+ * taskCtx 组装（由 run 拆出，承接「modelRef + prompt + taskCtx 组装」段）。
+ */
+function buildAgentTaskCtx(opts, profile, cwdBase) {
+  // 三行范式承接（2c 起执行链 = core zcode engine）：模型原始透传（校验归
+  // 引擎 preparer），无环境准备步骤（隔离 HOME 池归引擎）
+  const modelRef = pickModelRef(opts, profile);
+  const prompt = buildPrompt({
+    agentProfile: profile,
+    task: opts.prompt,
+    schema: opts.schema,
+    skillRefs: profile ? profile.skills : undefined,
+  });
+  const engines = pickEngines(opts, profile);
+  return {
+    subagentId: `wfcall-${crypto.randomUUID().slice(0, 8)}`,
+    slug: typeof opts.description === 'string' && opts.description !== '' ? opts.description : 'workflow-agent-call',
+    prompt,
+    cwd: typeof opts.cwd === 'string' && opts.cwd !== '' ? opts.cwd : cwdBase,
+    modelRef,
+    timeoutMs: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : undefined,
+    conversation: false,
+    engine: engines.engine,
+    agentEngine: engines.agentEngine,
+    disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
+  };
+}
+
+/**
+ * 启动 + abort 绑定 + release（由 run 拆出，承接「启动 + abort 绑定 + release」段）。
+ */
+async function awaitRunnerResult(runner, taskCtx, signal) {
+  const handle = runner.start(taskCtx);
+
+  // 契约 2：运行中 abort → handle.cancel()；listener 逐 call 摘除
+  const onAbort = () => handle.cancel();
+  signal && signal.addEventListener('abort', onAbort, { once: true });
+  let result;
+  try {
+    result = await handle.done;
+  } finally {
+    signal && signal.removeEventListener('abort', onAbort);
+    // release 为 no-op（与 runner-core/ports 契约一致）：appserver 会话由
+    // 引擎内部退订，本层无 per-record 释放面——仍按契约统一调用，
+    // best-effort，失败不波及结果映射
+    try {
+      if (typeof runner.release === 'function') await runner.release(handle.exec);
+    } catch { /* best-effort */ }
+  }
+  return result;
+}
+
+/**
  * 构造 core AgentRunner 适配器。
  * @param {object} opts
  * @param {object} opts.runner        zsw RunnerPort（assemble 组装，与 zsub 线共享同一实例）
@@ -118,85 +231,9 @@ function createAgentRunnerAdapter({ runner, resolver, fallbackCwd } = {}) {
       // dispatchCall 预检分支按预期跳过记错）
       if (signal && signal.aborted) throw abortError();
 
-      // agent .md 解析（D-4a 收紧 + D-4 缺省统一，W6b）：引用唯一形态 = .md
-      // 绝对路径（~/ 展开同 core normalizeRef 口径）——名字/相对路径/非 .md 抛
-      // invalidAgentRefMessage，路径合法但不可读抛 agentFileNotFoundMessage
-      // （V2p C3：ref 归一化与报错文案改直调 vendored core，不再经
-      // agent-discovery 薄包装；invalidAgentRefMessage 仍注入 zsw 双出口
-      // howToList，错误消息契约与 V1a 后形态逐字一致——agent-discovery 与
-      // 本处的 howToList 同文；其 normalizeAgentRef 薄包装为终态常驻的
-      // manager 面契约适配（消费方 = manager.js），非待退役临时物）。非 string 防御
-      // 保留：core normalizeRef/工厂对非 string 抛 TypeError，插件契约回落
-      // 可操作报错（String() 化进工厂，旧 zsw 包装同款）。缺省（opts.agent
-      // 未传）走 resolveDefault = general-purpose 内置角色（与 pi 侧
-      // session-runner 的 DEFAULT_AGENT_NAME 语义对齐；遮蔽序胜者可覆写）。
-      // resolver.resolve 是 async（W6a 起 core discoverResources）；sync 注入的
-      // resolver 经 await 透明兼容。找不到直接抛——比带着空角色跑完再发现
-      // 用错 agent 便宜（manager.start 同款决策）
-      let profile = null;
-      const res = resolver || require('./agent-discovery');
-      if (opts.agent != null && opts.agent !== '') {
-        const core = coreRef.requireCore();
-        const norm = typeof opts.agent === 'string'
-          ? core.normalizeRef(opts.agent, core.AGENT_REF_EXT)
-          : null;
-        if (norm === null) {
-          throw new Error(core.invalidAgentRefMessage(String(opts.agent), {
-            howToList: `<available_subagents>, or run node "${zswCliPath()}" agents to list paths`,
-          }));
-        }
-        profile = await res.resolve(norm, cwdBase);
-        if (!profile) {
-          throw new Error(agentFileNotFoundMessage(norm));
-        }
-      } else {
-        profile = await res.resolveDefault(cwdBase) || null;
-      }
-
-      // 三行范式承接（2c 起执行链 = core zcode engine）：模型原始透传（校验归
-      // 引擎 preparer），无环境准备步骤（隔离 HOME 池归引擎）
-      const modelRef = typeof opts.model === 'string' && opts.model.trim() !== ''
-        ? opts.model.trim()
-        : (profile && typeof profile.model === 'string' && profile.model.trim() !== '' ? profile.model.trim() : undefined);
-      const prompt = buildPrompt({
-        agentProfile: profile,
-        task: opts.prompt,
-        schema: opts.schema,
-        skillRefs: profile ? profile.skills : undefined,
-      });
-      const taskCtx = {
-        subagentId: `wfcall-${crypto.randomUUID().slice(0, 8)}`,
-        slug: typeof opts.description === 'string' && opts.description !== '' ? opts.description : 'workflow-agent-call',
-        prompt,
-        cwd: typeof opts.cwd === 'string' && opts.cwd !== '' ? opts.cwd : cwdBase,
-        modelRef,
-        timeoutMs: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : undefined,
-        conversation: false,
-        // core 路由三层：调用参数 engine 最优先（U4 接线，之前静默不消费）；
-        // frontmatter engine 随 profile 透传（agentEngine）
-        engine: typeof opts.engine === 'string' && opts.engine.trim() !== '' ? opts.engine.trim() : undefined,
-        agentEngine: profile && typeof profile.engine === 'string' && profile.engine.trim() !== ''
-          ? profile.engine.trim()
-          : undefined,
-        disallowedTools: profile && Array.isArray(profile.disallowedTools) ? profile.disallowedTools : undefined,
-      };
-      const handle = runner.start(taskCtx);
-
-      // 契约 2：运行中 abort → handle.cancel()；listener 逐 call 摘除
-      const onAbort = () => handle.cancel();
-      signal && signal.addEventListener('abort', onAbort, { once: true });
-      let result;
-      try {
-        result = await handle.done;
-      } finally {
-        signal && signal.removeEventListener('abort', onAbort);
-        // release 为 no-op（与 runner-core/ports 契约一致）：appserver 会话由
-        // 引擎内部退订，本层无 per-record 释放面——仍按契约统一调用，
-        // best-effort，失败不波及结果映射
-        try {
-          if (typeof runner.release === 'function') await runner.release(handle.exec);
-        } catch { /* best-effort */ }
-      }
+      const profile = await resolveAgentProfile(opts, resolver, cwdBase);
+      const taskCtx = buildAgentTaskCtx(opts, profile, cwdBase);
+      const result = await awaitRunnerResult(runner, taskCtx, signal);
       return toAgentResult(result, { schema: opts.schema });
     },
   };

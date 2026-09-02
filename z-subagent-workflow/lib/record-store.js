@@ -27,6 +27,51 @@ const TRANSITIONS = {
   lost: ['running', 'idle', 'closed', 'cancelled', 'error', 'timeout'],
 };
 
+/** 行分组（由 compact 拆出）：created 按事件 subagentId，transition/update 按 id。 */
+function groupLogLineGroups(lines) {
+  const groups = new Map(); // key -> { idxs: number[], lastTs: number }
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i];
+    if (text.trim() === '') continue; // 尾部空串/空行：不属任何组，天然保留
+    let event;
+    try {
+      event = JSON.parse(text);
+    } catch {
+      continue; // 崩溃截断行：无法归属，保守保留
+    }
+    const key = event.subagentId || event.id;
+    if (!key) continue;
+    let g = groups.get(key);
+    if (!g) {
+      g = { idxs: [], lastTs: 0 };
+      groups.set(key, g);
+    }
+    g.idxs.push(i);
+    if (typeof event.ts === 'number') g.lastTs = event.ts;
+  }
+  return groups;
+}
+
+/**
+ * 判态 + keep-N 选择（由 compact 拆出）：内存索引里的终态 run 参与 keep-N
+ * 截断；活跃（含 lost）与孤儿组保留。records 即 store 的内存索引 this.records。
+ * @returns {{dropKeys:Set<string>, keptRuns:number}}
+ */
+function selectTerminalDropKeys(groups, records, keep) {
+  const terminal = [];
+  for (const [key] of groups) {
+    const rec = records.get(key);
+    if (rec === undefined) continue; // 孤儿行组：保守保留
+    if (TERMINAL_STATUSES.has(rec.status)) terminal.push(key);
+  }
+  // 最新在前（ts 降序；tie 用 key 保证确定性——同 ts 的删留不该取决于插入序）
+  terminal.sort((a, b) => groups.get(b).lastTs - groups.get(a).lastTs
+    || (a < b ? -1 : 1));
+  const dropKeys = new Set(terminal.slice(keep)); // 超出 keep 的最旧终态 run
+  const keptRuns = groups.size - dropKeys.size;
+  return { dropKeys, keptRuns };
+}
+
 class RecordStore {
   /**
    * @param {object} [options]
@@ -154,39 +199,8 @@ class RecordStore {
       return { removedRuns: 0, removedLines: 0, keptRuns: 0 }; // 无日志 = 首启空库
     }
     const lines = content.split('\n');
-    // 行分组：created 按事件 subagentId，transition/update 按 id
-    const groups = new Map(); // key -> { idxs: number[], lastTs: number }
-    for (let i = 0; i < lines.length; i++) {
-      const text = lines[i];
-      if (text.trim() === '') continue; // 尾部空串/空行：不属任何组，天然保留
-      let event;
-      try {
-        event = JSON.parse(text);
-      } catch {
-        continue; // 崩溃截断行：无法归属，保守保留
-      }
-      const key = event.subagentId || event.id;
-      if (!key) continue;
-      let g = groups.get(key);
-      if (!g) {
-        g = { idxs: [], lastTs: 0 };
-        groups.set(key, g);
-      }
-      g.idxs.push(i);
-      if (typeof event.ts === 'number') g.lastTs = event.ts;
-    }
-    // 判态：内存索引里的终态 run 参与 keep-N 截断；活跃（含 lost）与孤儿组保留
-    const terminal = [];
-    for (const [key] of groups) {
-      const rec = this.records.get(key);
-      if (rec === undefined) continue; // 孤儿行组：保守保留
-      if (TERMINAL_STATUSES.has(rec.status)) terminal.push(key);
-    }
-    // 最新在前（ts 降序；tie 用 key 保证确定性——同 ts 的删留不该取决于插入序）
-    terminal.sort((a, b) => groups.get(b).lastTs - groups.get(a).lastTs
-      || (a < b ? -1 : 1));
-    const dropKeys = new Set(terminal.slice(n)); // 超出 keep 的最旧终态 run
-    const keptRuns = groups.size - dropKeys.size;
+    const groups = groupLogLineGroups(lines);
+    const { dropKeys, keptRuns } = selectTerminalDropKeys(groups, this.records, n);
     if (dropKeys.size === 0) {
       // 无可删（终态未超 keep——如大量 lost/孤儿在册）：不写 temp 不动文件
       return { removedRuns: 0, removedLines: 0, keptRuns };

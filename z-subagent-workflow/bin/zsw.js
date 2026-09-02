@@ -673,35 +673,8 @@ function workflowDaemonParams(action, args) {
   }
 }
 
-async function runWorkflowCommand(rest) {
-  // MF2：嵌套拒绝（与 runDaemonCommand 共用 ensureNotNested，防文案漂移）
-  ensureNotNested();
-  const args = parseArgs(rest);
-  if (args.help === true) workflowUsage(0);
-
-  const action = typeof args.action === 'string' ? args.action : 'run';
-  if (!WORKFLOW_ACTIONS.includes(action)) {
-    process.stderr.write(`不支持的 --action: ${action || '(未指定)'}，支持: ${WORKFLOW_ACTIONS.join(' / ')}\n`);
-    workflowUsage(1);
-  }
-
-  // MF1：管理面 action 无 --local 时经 daemon（单请求单响应；daemon 不在场的
-  // 报错走 callDaemon 既有的可操作文案）。run/lint 落到下方本地路径。
-  if (args.local !== true) {
-    const daemonParams = workflowDaemonParams(action, args);
-    if (daemonParams) {
-      exitWithDaemonResponse(await callDaemon({ tool: 'zflow', params: daemonParams }));
-    }
-  }
-
-  // 回接 2b：本地路径走 orchestration host（vendored subagent-core）。
-  // 一次性进程不重水合历史 run（内存 runs 空，list 显示为空；历史快照在
-  // <zsw 数据根>/workflow-state/，daemon 启动/接管时由 recoverOrphans 收编）
-  const { wfHost } = await assembleManager();
-  const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
-
-  if (action === 'run') return runWorkflowRun(wfHost, args, cwd);
-
+// workflow 本地 action 分发（由 runWorkflowCommand 拆出；daemon 分流与 run 的先行分流仍在主函数）
+async function dispatchWorkflowLocalAction(wfHost, action, args, cwd) {
   switch (action) {
     case 'abort':
       process.stdout.write(`${JSON.stringify(await wfHost.abort(requireRunIdArg(args)), null, 2)}\n`);
@@ -746,6 +719,38 @@ async function runWorkflowCommand(rest) {
       break;
     }
   }
+}
+
+async function runWorkflowCommand(rest) {
+  // MF2：嵌套拒绝（与 runDaemonCommand 共用 ensureNotNested，防文案漂移）
+  ensureNotNested();
+  const args = parseArgs(rest);
+  if (args.help === true) workflowUsage(0);
+
+  const action = typeof args.action === 'string' ? args.action : 'run';
+  if (!WORKFLOW_ACTIONS.includes(action)) {
+    process.stderr.write(`不支持的 --action: ${action || '(未指定)'}，支持: ${WORKFLOW_ACTIONS.join(' / ')}\n`);
+    workflowUsage(1);
+  }
+
+  // MF1：管理面 action 无 --local 时经 daemon（单请求单响应；daemon 不在场的
+  // 报错走 callDaemon 既有的可操作文案）。run/lint 落到下方本地路径。
+  if (args.local !== true) {
+    const daemonParams = workflowDaemonParams(action, args);
+    if (daemonParams) {
+      exitWithDaemonResponse(await callDaemon({ tool: 'zflow', params: daemonParams }));
+    }
+  }
+
+  // 回接 2b：本地路径走 orchestration host（vendored subagent-core）。
+  // 一次性进程不重水合历史 run（内存 runs 空，list 显示为空；历史快照在
+  // <zsw 数据根>/workflow-state/，daemon 启动/接管时由 recoverOrphans 收编）
+  const { wfHost } = await assembleManager();
+  const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
+
+  if (action === 'run') return runWorkflowRun(wfHost, args, cwd);
+
+  return dispatchWorkflowLocalAction(wfHost, action, args, cwd);
 }
 
 // ------------------------------------------------------ hook 子命令（SessionStart）

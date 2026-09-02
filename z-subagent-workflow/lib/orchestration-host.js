@@ -245,6 +245,188 @@ function workflowRequiredError() {
 }
 
 /**
+ * review-fix-loop 旧 sugar 拦截 + 废弃 flag warnings（由 normalizeRunParams
+ * 拆出，承接「review-fix-loop 旧 sugar + 废弃 flag warnings」段）。
+ */
+function checkRetiredSugarFlags(params, name, warnings) {
+  // review-fix-loop 旧 sugar：无法映射的显式报错（新契约批次值 = agent .md
+  // 路径，旧自由文本维度没有等价物，静默映射会跑错对象）
+  if (name === 'review-fix-loop' && Array.isArray(params.reviewers)) {
+    throw new Error(
+      'review-fix-loop 已不再支持 --reviewers（旧语义 = 自由文本审查维度）。'
+      + '新契约：批次 batch1..batchN，值 = agent .md 绝对路径（逗号分隔多 agent）。'
+      + `恢复指引：node "${config.zswCliPath()}" workflow --workflow review-fix-loop --target-type <t> --target <t> `
+      + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时改用自定义脚本（.js 绝对路径，可经 script-generate 创作）传自由文本维度。'
+    );
+  }
+  for (const key of ['maxConcurrent', 'timeoutMsPerPhase']) {
+    if (params[key] !== undefined) {
+      warnings.push(`--${key === 'maxConcurrent' ? 'max-concurrent' : 'timeout-per-phase'} 已不再支持（core 编排无对应面），已忽略。`);
+    }
+  }
+  if (params.subtaskCount !== undefined) {
+    warnings.push('--subtask-count 已不再支持（scatter-gather 资产自适应拆分），已忽略。');
+  }
+}
+
+/**
+ * 参数 schema 查找（由 normalizeRunParams 拆出，effectiveMeta 参数化形态）：
+ * properties 精确命中优先，patternProperties 兜底（batchN 动态键的类型归一
+ * 依据；非法正则 core argKeysFromMeta 已 warn 跳过）
+ */
+function propSchemaFor(meta, key) {
+  if (!meta) return undefined;
+  const props = meta.properties;
+  if (props && Object.prototype.hasOwnProperty.call(props, key)) return props[key];
+  const pp = meta.patternProperties;
+  if (pp && typeof pp === 'object') {
+    for (const [pat, schema] of Object.entries(pp)) {
+      try { if (new RegExp(pat).test(key)) return schema; } catch { /* 非法正则 */ }
+    }
+  }
+  return undefined;
+}
+
+/** CLI 取值归一（由 normalizeRunParams 拆出的纯函数面）：数值。 */
+function num(v) {
+  return v !== undefined ? Number(v) : undefined;
+}
+
+/** CLI 取值归一（由 normalizeRunParams 拆出的纯函数面）：布尔字符串两态。 */
+function bool(v) {
+  return v === true || v === 'true' ? true : v === false || v === 'false' ? false : undefined;
+}
+
+/**
+ * 内置参数的类型归一（由 normalizeRunParams 拆出，propSchemaForFn 参数化
+ * 形态，调用点语义不变）：boolean/integer 收 CLI 字符串形态；数组值按参数
+ * 类型分流——string 型收数组 = csv 串（CLI csv() 同构），string[] 型数组 =
+ * 元素字符串化（items 旧行为）
+ */
+function coerceValue(propSchemaForFn, key, value) {
+  const prop = propSchemaForFn(key);
+  const t = prop && prop.type;
+  if (t === 'boolean') return bool(value);
+  if (t === 'integer' || t === 'number') return num(value);
+  if (Array.isArray(value)) {
+    if (t === 'array' && prop.items && prop.items.type === 'string') return value.map(String);
+    return value.join(',');
+  }
+  return value;
+}
+
+/**
+ * args 对象基座（pi 宿主语法）+ 平铺拦截（由 normalizeRunParams 拆出，承接
+ * 「args 基座 + flat 拦截」段）：仅 params.args 为对象时走此分支。flat 拦截
+ * 升级为 throw（错误规格表口径）；no_parameter_contract 不透出（契约缺失 =
+ * 不校验，与直参形态同口径，否则旧脚本全量 warning）
+ */
+function buildArgsBase(params, effectiveMeta) {
+  if (params.args !== null && typeof params.args === 'object' && !Array.isArray(params.args)) {
+    const { args: base, warnings: metaWarnings } = coreRef.requireCore().normalizeArgsByMeta(
+      params, effectiveMeta, { reservedKeys: RUN_ENVELOPE_KEYS },
+    );
+    const flat = metaWarnings.find((w) => w && w.code === 'flattened_args');
+    if (flat) {
+      throw new Error(
+        `参数 ${(flat.keys || []).map((k) => `"${k}"`).join('、')} 与 args 对象同时给出且被平铺在调用顶层。`
+        + '子字段请放 args 对象：{"workflow": "...", "args": {"<参数名>": "<值>"}}；'
+        + '或去掉 args 对象改用 zsw 直参形态（--参数名 值），两种形态不混用。',
+      );
+    }
+    return { ...base };
+  }
+  return {};
+}
+
+/** chain/scatter-gather 的 task 必填校验（由 applyBuiltinRequiredArgs 拆出）。 */
+function chainScatterRequiredArgs(name, arg0, setArg) {
+  const taskArg = typeof arg0('task') === 'string' ? arg0('task') : '';
+  if (!taskArg) throw new Error(`${name} 需要 task（自包含任务书）。恢复指引：--task "<描述>"。`);
+  setArg('task', taskArg);
+}
+
+/** parallel 的 target 必填校验（由 applyBuiltinRequiredArgs 拆出）。 */
+function parallelRequiredArgs(task, arg0, coerce, setArg) {
+  const target = arg0('target') !== undefined ? arg0('target') : task;
+  if (!target) throw new Error('parallel 需要 target（分析目标；--target 或 --task 均可作为来源）。');
+  setArg('target', coerce('target', target));
+}
+
+/** map-reduce 的 operation/items 必填校验（由 applyBuiltinRequiredArgs 拆出）。 */
+function mapReduceRequiredArgs(arg0, coerce, setArg) {
+  if (!arg0('operation')) throw new Error('map-reduce 需要 operation（对每个 item 做什么）。');
+  setArg('operation', coerce('operation', arg0('operation')));
+  const items = arg0('items');
+  const itemsJson = arg0('itemsJson');
+  if (Array.isArray(items)) setArg('items', items.map(String));
+  else if (typeof itemsJson === 'string') setArg('itemsJson', itemsJson);
+  else throw new Error('map-reduce 需要 items（字符串数组）。恢复指引：--items \'["a","b"]\' 或 a,b。');
+}
+
+/** review-fix-loop 的 target/targetType 必填校验（由 applyBuiltinRequiredArgs 拆出）。 */
+function reviewFixLoopRequiredArgs(task, arg0, coerce, setArg) {
+  const target = arg0('target') !== undefined ? arg0('target')
+    : arg0('reviewTarget') !== undefined ? arg0('reviewTarget')
+      : task;
+  if (!target) {
+    throw new Error(
+      'review-fix-loop 需要 target（审查目标）。恢复指引：--target <目标>（配 --target-type git-diff 时传 base ref 如 main）。'
+    );
+  }
+  setArg('targetType', arg0('targetType') !== undefined ? arg0('targetType') : 'text');
+  setArg('target', coerce('target', target));
+}
+
+/**
+ * 内置 sugar/required 校验 + 用户脚本 task 并入（由 normalizeRunParams 拆出，
+ * 承接「sugar/required 层」段；特制文案原样保留）。arg0/setArg/coerce 是
+ * normalizeRunParams 的闭包工具，作参数传入。
+ */
+function applyBuiltinRequiredArgs(name, task, args, arg0, coerce, setArg) {
+  if (BUILTIN_WORKFLOW_NAMES.includes(name)) {
+    if (name === 'chain' || name === 'scatter-gather') {
+      chainScatterRequiredArgs(name, arg0, setArg);
+    } else if (name === 'parallel') {
+      parallelRequiredArgs(task, arg0, coerce, setArg);
+    } else if (name === 'map-reduce') {
+      mapReduceRequiredArgs(arg0, coerce, setArg);
+    } else if (name === 'review-fix-loop') {
+      reviewFixLoopRequiredArgs(task, arg0, coerce, setArg);
+    }
+  } else if (task) {
+    // 用户脚本：task 并入（脚本侧 $ARGS.task 直接可用）
+    args.task = task;
+  }
+}
+
+/**
+ * 通用组装层（由 normalizeRunParams 拆出，meta 驱动白名单）：ctx 携带
+ * { isKnownArg, coerce, handled, isBuiltin, name, effectiveMeta, exact, patterns }。
+ */
+function assembleMetaArgs(params, args, ctx, warnings) {
+  const { isKnownArg, coerce, handled, isBuiltin, name, effectiveMeta, exact, patterns } = ctx;
+  for (const [key, value] of Object.entries(params)) {
+    if (RUN_ENVELOPE_KEYS.has(key) || handled.has(key) || value === undefined) continue;
+    if (!isKnownArg(key)) {
+      if (isBuiltin && effectiveMeta) {
+        // 内置 + 有契约：未知键前置拦截，消费键清单从 meta 生成（比资产白名单
+        // 报错更可操作）
+        const knownList = [...exact].join('/')
+          + (patterns.length > 0 ? ` 及 ${patterns.map((p) => p.source).join('/')}` : '');
+        warnings.push(`参数 "${key}" 不被内置 workflow "${name}" 消费（消费键：${knownList} 或见 scripts action 的 meta），已忽略。`);
+        continue;
+      }
+      // 无契约（用户脚本/内置资产缺 parameters 声明）：透传，资产侧运行时
+      // 白名单兜底——契约缺失不校验（现状等值：用户脚本白名单外全透传）
+      args[key] = value;
+      continue;
+    }
+    args[key] = isBuiltin ? coerce(key, value) : value;
+  }
+}
+
+/**
  * zflow run params → { scriptRef, args($ARGS), model, budgetTimeMs, warnings }。
  *
  * C16：参数白名单段退役，改 core args-meta 三件套 meta 驱动——meta = 脚本
@@ -280,140 +462,30 @@ function normalizeRunParams(params, meta) {
   const model = typeof params.model === 'string' && params.model !== '' ? params.model : undefined;
   const budgetTimeMs = Number.isFinite(params.timeoutMs) && params.timeoutMs > 0 ? params.timeoutMs : undefined;
 
-  // review-fix-loop 旧 sugar：无法映射的显式报错（新契约批次值 = agent .md
-  // 路径，旧自由文本维度没有等价物，静默映射会跑错对象）
-  if (name === 'review-fix-loop' && Array.isArray(params.reviewers)) {
-      throw new Error(
-        'review-fix-loop 已不再支持 --reviewers（旧语义 = 自由文本审查维度）。'
-        + '新契约：批次 batch1..batchN，值 = agent .md 绝对路径（逗号分隔多 agent）。'
-        + `恢复指引：node "${config.zswCliPath()}" workflow --workflow review-fix-loop --target-type <t> --target <t> `
-        + '--batch1 "/abs/path/reviewer.md"；无 agent .md 时改用自定义脚本（.js 绝对路径，可经 script-generate 创作）传自由文本维度。'
-      );
-  }
-  for (const key of ['maxConcurrent', 'timeoutMsPerPhase']) {
-    if (params[key] !== undefined) {
-      warnings.push(`--${key === 'maxConcurrent' ? 'max-concurrent' : 'timeout-per-phase'} 已不再支持（core 编排无对应面），已忽略。`);
-    }
-  }
-  if (params.subtaskCount !== undefined) {
-    warnings.push('--subtask-count 已不再支持（scatter-gather 资产自适应拆分），已忽略。');
-  }
+  checkRetiredSugarFlags(params, name, warnings);
 
   // ── C16 meta 驱动面（core args-meta 单源）────────────────────────
   const core = coreRef.requireCore();
   const effectiveMeta = meta && typeof meta === 'object' ? meta : undefined;
   const { exact, patterns } = core.argKeysFromMeta(effectiveMeta, { reservedKeys: RUN_ENVELOPE_KEYS });
   const isKnownArg = (key) => exact.has(key) || patterns.some((re) => re.test(key));
-  // 参数 schema 查找：properties 精确命中优先，patternProperties 兜底
-  // （batchN 动态键的类型归一依据；非法正则 core argKeysFromMeta 已 warn 跳过）
-  const propSchemaFor = (key) => {
-    if (!effectiveMeta) return undefined;
-    const props = effectiveMeta.properties;
-    if (props && Object.prototype.hasOwnProperty.call(props, key)) return props[key];
-    const pp = effectiveMeta.patternProperties;
-    if (pp && typeof pp === 'object') {
-      for (const [pat, schema] of Object.entries(pp)) {
-        try { if (new RegExp(pat).test(key)) return schema; } catch { /* 非法正则 */ }
-      }
-    }
-    return undefined;
-  };
 
-  // args 对象基座（pi 宿主语法）+ 平铺拦截：仅 params.args 为对象时走此分支。
-  // flat 拦截升级为 throw（错误规格表口径）；no_parameter_contract 不透出
-  // （契约缺失 = 不校验，与直参形态同口径，否则旧脚本全量 warning）
-  let args;
-  if (params.args !== null && typeof params.args === 'object' && !Array.isArray(params.args)) {
-    const { args: base, warnings: metaWarnings } = core.normalizeArgsByMeta(
-      params, effectiveMeta, { reservedKeys: RUN_ENVELOPE_KEYS },
-    );
-    const flat = metaWarnings.find((w) => w && w.code === 'flattened_args');
-    if (flat) {
-      throw new Error(
-        `参数 ${(flat.keys || []).map((k) => `"${k}"`).join('、')} 与 args 对象同时给出且被平铺在调用顶层。`
-        + '子字段请放 args 对象：{"workflow": "...", "args": {"<参数名>": "<值>"}}；'
-        + '或去掉 args 对象改用 zsw 直参形态（--参数名 值），两种形态不混用。',
-      );
-    }
-    args = { ...base };
-  } else {
-    args = {};
-  }
+  const args = buildArgsBase(params, effectiveMeta);
 
   // ── sugar/required 层（特制文案原样保留；取值统一直参优先、args 基座兜底）──
   const arg0 = (key) => (params[key] !== undefined ? params[key] : args[key]);
   const handled = new Set();
   const setArg = (key, value) => { args[key] = value; handled.add(key); };
-  const num = (v) => (v !== undefined ? Number(v) : undefined);
-  const bool = (v) => (v === true || v === 'true' ? true : v === false || v === 'false' ? false : undefined);
-  // 内置参数的类型归一（meta 类型驱动）：boolean/integer 收 CLI 字符串形态；
-  // 数组值按参数类型分流——string 型收数组 = csv 串（CLI csv() 同构），
-  // string[] 型数组 = 元素字符串化（items 旧行为）
-  const coerce = (key, value) => {
-    const prop = propSchemaFor(key);
-    const t = prop && prop.type;
-    if (t === 'boolean') return bool(value);
-    if (t === 'integer' || t === 'number') return num(value);
-    if (Array.isArray(value)) {
-      if (t === 'array' && prop.items && prop.items.type === 'string') return value.map(String);
-      return value.join(',');
-    }
-    return value;
-  };
+  const coerce = (key, value) => coerceValue((k) => propSchemaFor(effectiveMeta, k), key, value);
 
-  if (isBuiltin) {
-    if (name === 'chain' || name === 'scatter-gather') {
-      const taskArg = typeof arg0('task') === 'string' ? arg0('task') : '';
-      if (!taskArg) throw new Error(`${name} 需要 task（自包含任务书）。恢复指引：--task "<描述>"。`);
-      setArg('task', taskArg);
-    } else if (name === 'parallel') {
-      const target = arg0('target') !== undefined ? arg0('target') : task;
-      if (!target) throw new Error('parallel 需要 target（分析目标；--target 或 --task 均可作为来源）。');
-      setArg('target', coerce('target', target));
-    } else if (name === 'map-reduce') {
-      if (!arg0('operation')) throw new Error('map-reduce 需要 operation（对每个 item 做什么）。');
-      setArg('operation', coerce('operation', arg0('operation')));
-      const items = arg0('items');
-      const itemsJson = arg0('itemsJson');
-      if (Array.isArray(items)) setArg('items', items.map(String));
-      else if (typeof itemsJson === 'string') setArg('itemsJson', itemsJson);
-      else throw new Error('map-reduce 需要 items（字符串数组）。恢复指引：--items \'["a","b"]\' 或 a,b。');
-    } else if (name === 'review-fix-loop') {
-      const target = arg0('target') !== undefined ? arg0('target')
-        : arg0('reviewTarget') !== undefined ? arg0('reviewTarget')
-          : task;
-      if (!target) {
-        throw new Error(
-          'review-fix-loop 需要 target（审查目标）。恢复指引：--target <目标>（配 --target-type git-diff 时传 base ref 如 main）。'
-        );
-      }
-      setArg('targetType', arg0('targetType') !== undefined ? arg0('targetType') : 'text');
-      setArg('target', coerce('target', target));
-    }
-  } else if (task) {
-    // 用户脚本：task 并入（脚本侧 $ARGS.task 直接可用）
-    args.task = task;
-  }
+  applyBuiltinRequiredArgs(name, task, args, arg0, coerce, setArg);
 
   // ── 通用组装层（meta 驱动白名单）─────────────────────────────────
-  for (const [key, value] of Object.entries(params)) {
-    if (RUN_ENVELOPE_KEYS.has(key) || handled.has(key) || value === undefined) continue;
-    if (!isKnownArg(key)) {
-      if (isBuiltin && effectiveMeta) {
-        // 内置 + 有契约：未知键前置拦截，消费键清单从 meta 生成（比资产白名单
-        // 报错更可操作）
-        const knownList = [...exact].join('/')
-          + (patterns.length > 0 ? ` 及 ${patterns.map((p) => p.source).join('/')}` : '');
-        warnings.push(`参数 "${key}" 不被内置 workflow "${name}" 消费（消费键：${knownList} 或见 scripts action 的 meta），已忽略。`);
-        continue;
-      }
-      // 无契约（用户脚本/内置资产缺 parameters 声明）：透传，资产侧运行时
-      // 白名单兜底——契约缺失不校验（现状等值：用户脚本白名单外全透传）
-      args[key] = value;
-      continue;
-    }
-    args[key] = isBuiltin ? coerce(key, value) : value;
-  }
+  assembleMetaArgs(
+    params, args,
+    { isKnownArg, coerce, handled, isBuiltin, name, effectiveMeta, exact, patterns },
+    warnings,
+  );
 
   return { scriptRef: workflow, args, model, budgetTimeMs, warnings };
 }
