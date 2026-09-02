@@ -815,8 +815,9 @@ function ensureNotNested() {
 /**
  * --local 的可用子命令白名单（D3 效果段：--local 查表但保持现状 6-action
  * 子集）：执行面查 lib/zsub-actions 表（与 daemon 同一单源），能力面维持
- * 既有差异——agents/models/wait 无 --local 形态（wait 是 daemon 内存挂起，
- * agents/models 是 daemon 端口面），维持「未知子命令」现状输出。
+ * 既有差异——agents/models 无 --local 形态（daemon 端口面），维持
+ * 「未知子命令」现状输出；wait 亦无 --local 形态（daemon 内存挂起），
+ * 但走 main 早段 wait 检查的专属精确报错，先于本白名单过滤。
  */
 const LOCAL_SUBCOMMANDS = new Set(['start', 'list', 'status', 'message', 'cancel', 'close']);
 
@@ -1033,9 +1034,10 @@ async function main() {
   };
 
   // --local 6-action 子集（D3 效果段 + impl-plan 偏差表）：执行查 zsub-actions
-  // 表（与 daemon 入口同一单源），但能力面维持现状子集——agents/models/wait
+  // 表（与 daemon 入口同一单源），但能力面维持现状子集——agents/models
   // 在 --local 维持「未知子命令」现状输出（两入口能力面差异是既有现状，
-  // 零行为变化基准下不收口），过滤在查表之前。
+  // 零行为变化基准下不收口）；wait 不落入此文案——main 早段的 wait
+  // 专属精确报错先于此过滤生效，过滤在查表之前。
   if (!LOCAL_SUBCOMMANDS.has(cmd)) {
     process.stderr.write(`未知子命令: ${cmd}\n`);
     usage();

@@ -4,7 +4,7 @@
  * V0d fixture：workflow-state 历史文件种子脚本（设计 zsw-sink-adoption-design.md
  * §4 S5② 验收场景用）。
  *
- * 用法：node test/fixtures/make-legacy-state-files.js <outDir> [--v]
+ * 用法：node verification/make-legacy-state-files.js <outDir> [--v]
  *   无 --v：在 <outDir>/workflow-state/ 生成 10 个「改造前格式」文件（无版本标记）
  *   带 --v：生成全部 25 个（10 无 v + 15 带 wf-run-v2 版本标记）
  *
@@ -208,7 +208,7 @@ function buildSnapshot(entry, i, withV) {
     budgetTimeMs: 600000,
     scriptName: entry.script,
     // scriptPath 对齐 vendored 内置资产真实路径形态
-    scriptPath: path.join(__dirname, '..', '..', 'lib', 'vendor', 'subagent-core', 'workflows', `${entry.script}.js`),
+    scriptPath: path.join(__dirname, '..', 'lib', 'vendor', 'subagent-core', 'workflows', `${entry.script}.js`),
     description: `fixture seeded legacy run of ${entry.script}`,
     parameters: undefined,
   };
@@ -227,10 +227,10 @@ function main() {
   const positional = argv.filter((a) => !a.startsWith('--'));
   if (positional.length !== 1 || !positional[0]) {
     process.stderr.write(
-      '用法: node test/fixtures/make-legacy-state-files.js <outDir> [--v]\n'
+      '用法: node verification/make-legacy-state-files.js <outDir> [--v]\n'
       + '  <outDir>  目标根目录，将在其下创建/重建 workflow-state/\n'
       + '  --v       额外生成 15 个带 wf-run-v2 版本标记的文件（共 25 个）\n'
-      + '示例: node test/fixtures/make-legacy-state-files.js /tmp/v0d-check --v\n'
+      + '示例: node verification/make-legacy-state-files.js /tmp/v0d-check --v\n'
     );
     process.exit(2);
   }

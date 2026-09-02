@@ -74,7 +74,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 | U2 实施发现：`--local` 的 status/cancel/close/message 不带 `--id` 时错误消息从 manager 层 `subagent "undefined" 不存在` 变为表内前置校验「缺少必填参数 subagentId…」（与 daemon 现状一致） | 合理（D3 前置校验随 exec 迁表的结构必然；消息从劣质 undefined 拼接变为可操作文案；两入口一致即目标 2 方向） | 已固化设计 D4 效果段「已声明的边缘对齐」；zsub-actions.test.js 缺 subagentId 全文断言锚定 |
 | U2 全量测试发现：`node --test` 无参全量会误扫 test/fixtures/make-legacy-state-files.js（fixture 生成器无参 exit 2 被当测试执行）——HEAD 干净态复现同样失败，非本次引入 | 合理（认知外既有问题，不在任何单元领地） | 登记残留风险第 5 条；收尾阶段单独修复（不混入单元 commit） |
 | U3 实施发现：compact 需同步收缩内存索引（records.delete），且读文件改「先 stat 后 read」消除静默丢行子窗口——D8 未明说的必要补全 | 合理（A5 list 可见性的隐含要求；D9② 检测面加固） | 已固化设计 D8「实施期固化的两处规格补全」段 |
-| U3 实施发现：同 ts 并列的终态 run 用 runId 字典序定序（tie-break）——D8 未规定 | 合理（删留集确定性；Map 键唯一保证全序） | 已固化设计 D8 采用段（「实施期固化规格」标注） |
+| U3 实施发现：同 ts 并列的终态 run 用分组键（subagentId/id）字典序定序（tie-break）——D8 未规定 | 合理（删留集确定性；Map 键唯一保证全序） | 已固化设计 D8 采用段（「实施期固化规格」标注） |
 | 一致性审查区 C：A8 真实场景降级为单元版（gen-fixture 无 lost/中部放置能力） | 合理（单元 fixture 形态等价：中部活跃+lost+前后终态；A5 已覆盖真实 daemon 活跃保真；缺口仅「真实 daemon 下 lost run 中部保真」） | 登记本条；后续如需可扩 gen-fixture lost/中部参数 |
 | 一致性审查区 A+B：收口前行为基线录制了但未落盘（仅存易失 /tmp），「逐字节一致」声称不可第三方回溯 | 不合理（流程缺口） | 已修：三个基线 txt 归档 test/fixtures/baseline/（.txt 不在 node --test 扫描面），本表证据指针同步补路径 |
 | 一致性审查区 C：验收资产（gen-fixture/acceptance）在 /tmp 无仓库锚点 | 不合理（产物自包含缺口） | 已修：归档 z-subagent-workflow/verification/（不入 npm files 白名单），README 说明用途与重跑注意 |
@@ -96,7 +96,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 2. D9③ compact 残余微窗（复查点与 rename 间）：设计层面接受；若实施期构造出真实丢失行复现，升级回设计重议。
 3. A9 busy/续聊真实场景不可稳定构造（`--local` 视角状态域不含 busy）——缺口已声明，P3 冷续聊回归时补。
 4. zsw 版本未 bump：本计划全部改动在 files 白名单内，收尾时 `node scripts/check-release-needed.js` 将提示待发版——发版与 push 等用户授权（不在本计划内）。
-5. `node --test` 无参全量误扫 `test/fixtures/make-legacy-state-files.js`（HEAD 既有，U2 期间发现）——收尾阶段单独修复，Gate A 全量绿以此为前置。
+5. ~~`node --test` 无参全量误扫 `test/fixtures/make-legacy-state-files.js`（HEAD 既有，U2 期间发现）~~ **已解决**（一致性审查修复批次 9e01787：迁 verification/ 消除扫描面，唯一引用方 19/19 绿，全量 442/442）。
 
 | 日期 | 事件 |
 |---|---|
