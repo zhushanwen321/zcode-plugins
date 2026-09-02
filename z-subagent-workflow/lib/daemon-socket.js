@@ -20,18 +20,10 @@
  * listen 完」的启动窗口（正常是毫秒级），避免误清活锁；3 次退避仍不可达才
  * 判定持有者死亡或从未完成启动，清残留重竞选。
  *
- * 帧协议（D2，NDJSON；MF7 扩展 cwd 字段）：
- *   请求 {id, tool:"zsub"|"zflow", params:{...}, cwd?}
- *     cwd：string，可选——调用方进程目录。多 worktree 下 agent 发现 / worktree
- *     定位依赖发起方 cwd（daemon 宿主 cwd 会用错目录），故随帧传导。传输层
- *     仅做类型守卫：非 string 忽略（req.cwd = undefined），存在性校验留给
- *     handler 层（workdir/resolver 已有，协议层不重复）。
- *   响应 {id, ok:true, result} | {id, ok:false, error:{message}}
- *   帧编解码（encodeFrame/createFrameDecoder）是模块内部函数，不导出——
- *   对外仅暴露 startDaemon；CLI thin client（lib/cli-client.js）不复用它——
- *   自带一份最小编解码（S8 收敛定论：两份最小实现并存、语义兼容，帧语法
- *   变更须两文件同步改），帧协议契约以 cli-client.js 头注为权威（互指维护）。
- *   每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
+ * 帧协议（D2，NDJSON；MF7 扩展 cwd 字段）：帧语法单源在 lib/frame-codec.js
+ * （encodeFrame/createFrameDecoder，NDJSON 契约与 cwd 传导语义见其头注）。
+ * 本模块只留传输层职责（listen/accept/锁竞选/看门狗），编解码经 import 消费。
+ * 每连接一个 AbortSignal（§7 要点 2）：连接断开即 abort，wait 类
  *   挂起 handler 据此取消等待（不影响任务执行体）；handler throw 统一映射为
  *   ok:false 帧。本层只管传输，zsub/zflow 语义由调用方注入的 handler 表定义。
  *
@@ -50,6 +42,9 @@
 const fs = require('node:fs');
 const net = require('node:net');
 
+// 帧语法单源（D1）：encodeFrame/createFrameDecoder 见 lib/frame-codec.js
+const { encodeFrame, createFrameDecoder } = require('./frame-codec');
+
 // 探活原语单一源（V5e 收口）：core-ref 模块本身轻量（fs/path），barrel 在
 // requireCore() 调用时才加载——probeLockHolder 是看门狗触发路径的低频探测
 const coreRef = require('./core-ref');
@@ -61,46 +56,6 @@ const SOCKET_MODE = 0o600; // D2 安全边界：仅本用户可 connect
 /** 人读日志缺省实现（与 assemble.js 同款纪律：走 stderr，不碰协议通道）。 */
 function defaultLog(msg) {
   process.stderr.write(`[zsub-daemon] ${new Date().toISOString()} ${msg}\n`);
-}
-
-/** NDJSON 编码：对象 → 单行 JSON + '\n'。协议出口统一走这里，client 复用。 */
-function encodeFrame(obj) {
-  return `${JSON.stringify(obj)}\n`;
-}
-
-/**
- * 流式 NDJSON 解码器：按行分割 + JSON.parse，半包缓冲跨 chunk 拼接。
- * 内部按字节（0x0A）找行边界、行完整后才 toString——多字节 UTF-8 被 chunk
- * 边界切开时逐 chunk 解码会产生替换字符，帧含中文（任务书/错误消息）必坏。
- * 坏行（JSON.parse 失败）丢弃并回调 onBadLine（传 log 即可观测），单行损坏
- * 不中断后续解码；解析成功的裸值（数字/字符串）原样吐出，由分发层把关形态。
- *
- * @param {(badLine: string) => void} [onBadLine]
- * @returns {{ push(chunk: string|Buffer): object[] }} 每次吃进一个 chunk，吐出其中的完整帧
- */
-function createFrameDecoder(onBadLine) {
-  let buf = Buffer.alloc(0);
-  return {
-    push(chunk) {
-      buf = Buffer.concat([
-        buf,
-        Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8'),
-      ]);
-      const frames = [];
-      let nl;
-      while ((nl = buf.indexOf(0x0a)) >= 0) {
-        const line = buf.subarray(0, nl).toString('utf8').trim();
-        buf = buf.subarray(nl + 1);
-        if (!line) continue; // 空行不是帧（如结尾 \n 后的尾巴）
-        try {
-          frames.push(JSON.parse(line));
-        } catch {
-          if (onBadLine) onBadLine(line);
-        }
-      }
-      return frames;
-    },
-  };
 }
 
 /** 活跃实例的同步清理集：信号/退出钩子遍历执行（模块级一份，多实例共用）。 */

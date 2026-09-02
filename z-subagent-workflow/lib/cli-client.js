@@ -6,17 +6,13 @@
  * NDJSON 帧往返。请求 `{id, tool, params, cwd}\n`，响应 `{id, ok:true, result}
  * | {id, ok:false, error:{code,message}}\n`。
  *
- * 帧协议契约（与 lib/daemon-socket.js 头注同源维护）：
- *   cwd  string，可选；调用方进程目录（多 worktree 下 agent 发现 / worktree
- *       定位依赖发起方 cwd，daemon 宿主 cwd 会用错目录）。缺省 CLI 侧
- *       process.cwd()；daemon 侧仅接受非空 string，其余忽略（MF7）。
+ * 帧协议契约单源在 lib/frame-codec.js 头注（NDJSON 语法与 cwd 传导语义见彼处）。
  *
- * 为什么自带一份最小帧编解码而不复用 lib/daemon-socket.js（S8 收敛定论）：
- * 那是服务端传输层（listen/accept/锁竞选/看门狗），客户端只需「encode 一行
- * JSON + 按行读到首个含布尔 ok 的合法 JSON 帧」——单请求单响应场景两端帧
- * 语法相同但状态机完全不同。集成后两边各留一份最小实现（语义兼容，帧语法
- * 变更须两文件同步改）；帧协议契约以本头注「帧协议契约」段为权威，
- * daemon-socket.js 头注互指于此。
+ * 帧编解码复用 lib/frame-codec.js（encodeFrame 构请求帧 + createFrameDecoder
+ * 作解码基座——字节级缓冲、行完整后才 toString 保 UTF-8 跨 chunk、坏行容忍
+ * 都由基座保证）；「单请求单响应」的 client 语义留在本层包装——宽容过滤
+ * （跳过无布尔 ok 的行、取首个响应帧）与对端 close 后无尾换行尾巴的兜底
+ * 解出是 client 侧消费语义，不是帧语法，不进 frame-codec（收敛设计 D1）。
  *
  * sockPath 解析收口在这层：ZSW_SOCK 覆盖 > ~/.zcode/zsw/daemon.sock
  * （与 config.js 的既有 env 覆盖模式同款，测试隔离用）。
@@ -26,35 +22,20 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
+const { encodeFrame, createFrameDecoder } = require('./frame-codec');
+
 /** daemon sock 缺省路径（DESIGN-v4 D2）。 */
 function defaultSockPath() {
   return process.env.ZSW_SOCK || path.join(os.homedir(), '.zcode', 'zsw', 'daemon.sock');
 }
 
 /**
- * 从累积 Buffer 中解出首个响应帧。宽容点（防御 daemon 侧不规范写出，不
- * 改变协议本身）：跳过空行/纯空白行/非 JSON 行/无布尔 ok 字段的 JSON 行。
- * 返回 {resp} 或 null（帧未到齐，等下一段 data / close 兜底）。
- *
- * 累积必须按 Buffer、行完整后才 toString（与 daemon 侧 createFrameDecoder
- * 同款语义）：多字节 UTF-8 序列（中文任务结果/错误消息）被 chunk 边界切开
- * 时，逐 chunk toString 会产生替换字符，整行 JSON.parse 失败、帧被当坏行
- * 跳过——任务成功却报「连接中断」。
+ * decoder 吐出的帧里挑首个响应帧（client 侧宽容过滤，D1）：跳过裸值与无
+ * 布尔 ok 字段的 JSON 行——单请求单响应场景只认 {ok:boolean} 形态。返回
+ * 响应帧或 null（帧未到齐，等下一段 data / close 兜底）。
  */
-function extractResponseFrame(buffer) {
-  let start = 0;
-  for (;;) {
-    const nl = buffer.indexOf(0x0a, start);
-    const line = buffer.subarray(start, nl === -1 ? undefined : nl).toString('utf8').trim();
-    if (line !== '') {
-      try {
-        const obj = JSON.parse(line);
-        if (obj && typeof obj === 'object' && typeof obj.ok === 'boolean') return { resp: obj };
-      } catch { /* 半截帧或坏行：等下一段 data / 跳过 */ }
-    }
-    if (nl === -1) return null;
-    start = nl + 1;
-  }
+function firstResponseFrame(frames) {
+  return frames.find((f) => f && typeof f === 'object' && typeof f.ok === 'boolean') || null;
 }
 
 /** 响应帧 → 对外返回形态：剥 id，保留 {ok, result?, error?}。 */
@@ -78,11 +59,11 @@ function toResult(resp) {
 async function callDaemon({ sockPath, tool, params, cwd } = {}) {
   const sock = sockPath || defaultSockPath();
   const frameCwd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
-  const request = `${JSON.stringify({ id: 1, tool, params, cwd: frameCwd })}\n`;
+  const request = encodeFrame({ id: 1, tool, params, cwd: frameCwd });
 
   return new Promise((resolve, reject) => {
     const socket = net.connect(sock);
-    let buffer = Buffer.alloc(0);
+    const decoder = createFrameDecoder();
     let settled = false;
 
     // 无 connect 超时（2026-08-29 超时取消决策）：unix socket 的常态失败
@@ -112,17 +93,18 @@ async function callDaemon({ sockPath, tool, params, cwd } = {}) {
       settle(() => reject(err));
     });
     socket.on('data', (chunk) => {
-      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
-      const frame = extractResponseFrame(buffer);
-      if (!frame) return; // 半截帧：等下一段 data
-      settle(() => resolve(toResult(frame.resp)));
+      const resp = firstResponseFrame(decoder.push(chunk));
+      if (!resp) return; // 半截帧/无 ok 噪音行：等下一段 data
+      settle(() => resolve(toResult(resp)));
       socket.end();
     });
     socket.on('close', () => {
-      // 对端关闭：残留里还有完整帧（无尾换行的宽容形态）照常解出；否则 =
-      // 未收到响应即断连（典型：wait 挂起期间 daemon 随宿主会话死亡）
-      const frame = extractResponseFrame(buffer);
-      if (frame) settle(() => resolve(toResult(frame.resp)));
+      // 对端关闭：给 decoder 补一个换行，把无尾换行的残余尾巴按行 flush
+      // （daemon 侧不规范写出的宽容形态；close 后不会再有 data，尾巴一次
+      // 成行、无跨 chunk 切分）；仍无响应帧 = 未收到响应即断连（典型：wait
+      // 挂起期间 daemon 随宿主会话死亡）
+      const resp = firstResponseFrame(decoder.push('\n'));
+      if (resp) settle(() => resolve(toResult(resp)));
       else settle(() => reject(new Error(
         `daemon 连接中断，未收到响应帧（sock ${sock}）——任务执行体随 daemon 终止。`
         + '恢复指引：稍候重试（其他实例接管需 1-2s）；任务状态稍后用 status --id 查询'

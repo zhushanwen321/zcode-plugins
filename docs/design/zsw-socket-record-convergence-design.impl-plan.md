@@ -76,7 +76,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 
 | Unit | 状态(pending/in-progress/committed/blocked) | 轮次 | 证据指针 |
 |---|---|---|---|
-| U0 | pending | 0 | — |
+| U0 | committed | 1 | 36/36 绿（frame-codec/daemon-socket/cli-client 三件套重跑核实）；传输层字节级回归锚零改动原样绿；A1 双口径比对 11/11 段 PASS + pre/post 完整输出互 diff 零差异；list 帧与 baseline-frames.txt 逐字节一致；cli-client close 无尾换行宽容语义等价实现（close 补推 \n flush，测试锚定） |
 | U1 | pending | 0 | — |
 | U2 | pending | 0 | — |
 | U3 | pending | 0 | — |
