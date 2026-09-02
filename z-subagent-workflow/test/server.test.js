@@ -73,10 +73,11 @@ function callTool(srv, args, extraParams = {}) {
 /**
  * handler 直调入口（1.0.0 起业务分发用例的测试入口）：MCP 面 tools/call 恒
  * 拒绝（D1 终态），handler 表是 socket 分发的数据源（buildDaemonHandlers
- * 包装后由 daemon-socket 分发）——直调 handler = socket 面真实路径。
+ * 适配后由 daemon-socket 分发）——直调 handler = socket 面真实路径。
  * 签名对齐 handler(params, env)：params = {arguments}，env = {cwd?, signal?}
- * （socket 面透传形态）。返回 MCP content 包装（okContent/errContent），
- * 与旧 dispatchToolCall 层一致。
+ * （socket 面透传形态）。返回业务对象、错误 throw（D5 收口：content 包装
+ * 对已拆除，throw 由 daemon-socket dispatch 统一映射 ok:false 帧——错误
+ * 断言用 assert.rejects）。
  */
 function callHandler(srv, name, args, env) {
   return srv.toolHandlers[name]({ name, arguments: args }, env);
@@ -135,9 +136,7 @@ test('handler 直调 start：cwd 取 ZCODE_PROJECT_DIR，ctx 不带会话定向�
     const fake = makeFakeManager();
     const srv = server.createServer({ manager: fake, nested: false });
     const result = await callHandler(srv, 'zsub', { action: 'start', task: '任务书', slug: 's1' });
-    assert.equal(result.isError, undefined);
-    const payload = JSON.parse(result.content[0].text);
-    assert.equal(payload.subagentId, 'sa-x');
+    assert.equal(result.subagentId, 'sa-x');
     assert.equal('targetSessionId' in fake.calls[0].ctx, false); // ctx 无会话定向，mailbox 自然降级
     assert.equal(fake.calls[0].ctx.cwd, '/proj/demo');
     assert.equal(fake.calls[0].params.slug, 's1');
@@ -150,30 +149,35 @@ test('handler 直调：无 _meta 上下文不报错（mailbox 自然降级）', 
   const fake = makeFakeManager();
   const srv = server.createServer({ manager: fake, nested: false });
   const result = await callHandler(srv, 'zsub', { action: 'list' });
-  assert.equal(result.isError, undefined);
+  assert.deepEqual(result, []);
   assert.deepEqual(fake.calls[0], { action: 'list' });
   const noMeta = await callHandler(srv, 'zsub', { action: 'status', subagentId: 'sa-1' });
-  assert.equal(JSON.parse(noMeta.content[0].text).subagentId, 'sa-1');
+  assert.equal(noMeta.subagentId, 'sa-1');
 });
 
-test('handler 直调：bad action / 缺 subagentId / manager 异常 → isError 可操作文案', async () => {
+test('handler 直调：bad action / 缺 subagentId / manager 异常 → throw 可操作文案（dispatch 统一映射 ok:false 帧）', async () => {
   const srv = server.createServer({ manager: makeFakeManager(), nested: false });
 
-  const badAction = await callHandler(srv, 'zsub', { action: 'explode' });
-  assert.equal(badAction.isError, true);
-  assert.match(badAction.content[0].text, /不支持的 action/);
-  assert.match(badAction.content[0].text, /恢复指引/);
+  await assert.rejects(
+    callHandler(srv, 'zsub', { action: 'explode' }),
+    (e) => {
+      // 「不支持的 action」表生成全文（D3：与收口前 server.js 逐字一致——zsub-actions.test.js 另有全文锚）
+      assert.match(e.message, /不支持的 action "explode"/);
+      assert.match(e.message, /start \| list \| status \| cancel \| message \| close \| agents \| models \| wait/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
 
-  const noId = await callHandler(srv, 'zsub', { action: 'status' });
-  assert.equal(noId.isError, true);
-  assert.match(noId.content[0].text, /subagentId/);
+  await assert.rejects(callHandler(srv, 'zsub', { action: 'status' }), /缺少必填参数 subagentId/);
 
   const boom = makeFakeManager();
   boom.status = () => { throw new Error('未知模型 "GLM-9"。恢复指引：改用 GLM-5.3。'); };
   const srv2 = server.createServer({ manager: boom, nested: false });
-  const err = await callHandler(srv2, 'zsub', { action: 'status', subagentId: 'sa-1' });
-  assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /恢复指引/); // manager 错误原样透传
+  await assert.rejects(
+    callHandler(srv2, 'zsub', { action: 'status', subagentId: 'sa-1' }),
+    (e) => { assert.match(e.message, /恢复指引/); return true; }, // manager 错误原样透传
+  );
 });
 
 test('tools/call 恒拒绝（1.0.0 终态 D1）：正常档与 NESTED 档同文案，不触达 manager', async () => {
@@ -188,12 +192,13 @@ test('tools/call 恒拒绝（1.0.0 终态 D1）：正常档与 NESTED 档同文�
   }
 });
 
-test('handler 直调：message 缺 text → isError', async () => {
+test('handler 直调：message 缺 text → throw（前置校验在表项内，D4 保留）', async () => {
   const fake = makeFakeManager();
   const srv = server.createServer({ manager: fake, nested: false });
-  const result = await callHandler(srv, 'zsub', { action: 'message', subagentId: 'sa-1' });
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /text/);
+  await assert.rejects(
+    callHandler(srv, 'zsub', { action: 'message', subagentId: 'sa-1' }),
+    (e) => { assert.match(e.message, /text/); return true; },
+  );
   assert.equal(fake.calls.length, 0);
 });
 
@@ -226,8 +231,8 @@ test('tools/call agents：core 发现面（lib/agent-discovery），vendored 内
     { name: 'zsub', arguments: { action: 'agents' } },
     { cwd: ws },
   );
-  assert.equal(result.isError, undefined);
-  const rows = JSON.parse(result.content[0].text);
+  assert.ok(Array.isArray(result));
+  const rows = result;
   // 四根标签一一对应（source 不再按路径推断——core 发现面自带槽位标签）
   const byName = new Map(rows.map((r) => [r.name, r]));
   assert.deepEqual(
@@ -279,9 +284,9 @@ test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；
     { name: 'zsub', arguments: { action: 'agents' } },
     { cwd: '/proj/ag' },
   );
-  assert.equal(result.isError, undefined);
+  assert.ok(Array.isArray(result));
   assert.deepEqual(seenCwd, ['/proj/ag']); // cwd 原样透传给 resolver.list
-  const rows = JSON.parse(result.content[0].text);
+  const rows = result;
   assert.equal(rows[0].description, '长'.repeat(200)); // 超 200 截断
   assert.equal(rows[0].when, '何'.repeat(200)); // when 同样截 200
   assert.equal(rows[0].source, 'user-zcode', 'core 槽位标签 user-pi → 面上标签 user-zcode');
@@ -291,10 +296,14 @@ test('tools/call agents：cwd 透传 resolver.list；description/when 截 200；
 
   // resolver 缺失（异常组装防御）：可操作错误而非 TypeError 被 catch 吞
   const broken = server.buildToolHandlers({ manager: makeFakeManager(), nested: false });
-  const err = await broken.zsub({ name: 'zsub', arguments: { action: 'agents' } });
-  assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /resolver/);
-  assert.match(err.content[0].text, /恢复指引/);
+  await assert.rejects(
+    broken.zsub({ name: 'zsub', arguments: { action: 'agents' } }),
+    (e) => {
+      assert.match(e.message, /resolver/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
 });
 
 // ------------------------------------------- models action（模型清单按需查询）
@@ -324,9 +333,7 @@ test('tools/call models：真实 ModelRouter + 临时 v2 config，返回清单 +
   const ModelRouter = require('../lib/model-router');
   const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
   const handlers = server.buildToolHandlers({ manager, nested: false });
-  const result = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
-  assert.equal(result.isError, undefined);
-  const payload = JSON.parse(result.content[0].text);
+  const payload = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
   assert.equal(payload.provider, 'builtin:bigmodel-coding-plan');
   // 结构化条目：短名 + 可选维度（无 label 不造默认值）+ 默认标记
   assert.deepEqual(payload.models, [
@@ -348,18 +355,26 @@ test('tools/call models：清单不可读可操作错误；modelRouter 缺失可
   const ModelRouter = require('../lib/model-router');
   const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
   const handlers = server.buildToolHandlers({ manager, nested: false });
-  const err = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
-  assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /模型清单/);
-  assert.match(err.content[0].text, /恢复指引/);
+  await assert.rejects(
+    handlers.zsub({ name: 'zsub', arguments: { action: 'models' } }),
+    (e) => {
+      assert.match(e.message, /模型清单/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
   fs.rmSync(v2Path, { force: true });
 
   // modelRouter 未注入（异常组装防御）：可操作错误而非 TypeError 炸穿
   const broken = server.buildToolHandlers({ manager: makeFakeManager(), nested: false });
-  const noPort = await broken.zsub({ name: 'zsub', arguments: { action: 'models' } });
-  assert.equal(noPort.isError, true);
-  assert.match(noPort.content[0].text, /modelRouter/);
-  assert.match(noPort.content[0].text, /恢复指引/);
+  await assert.rejects(
+    broken.zsub({ name: 'zsub', arguments: { action: 'models' } }),
+    (e) => {
+      assert.match(e.message, /modelRouter/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
 });
 
 test('tools/call models --all：全 provider 视图（凭据+非空清单筛、全名、default 按 provider 感知）', async (t) => {
@@ -387,9 +402,7 @@ test('tools/call models --all：全 provider 视图（凭据+非空清单筛、�
   const ModelRouter = require('../lib/model-router');
   const manager = { ...makeFakeManager(), modelRouter: new ModelRouter() };
   const handlers = server.buildToolHandlers({ manager, nested: false });
-  const result = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
-  assert.equal(result.isError, undefined);
-  const payload = JSON.parse(result.content[0].text);
+  const payload = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
   assert.equal(payload.all, true);
   // 无凭据 / 清单空两组被筛掉，只剩合格两 provider（fixture 字面序）
   assert.deepEqual(payload.providers.map((p) => p.provider), [
@@ -408,15 +421,18 @@ test('tools/call models --all：全 provider 视图（凭据+非空清单筛、�
   // 合格 provider 零个（config 可读但无条目）→ 空 providers 成功响应（合法状态）
   fs.writeFileSync(v2Path, JSON.stringify({ provider: {} }));
   const empty = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
-  assert.equal(empty.isError, undefined);
-  assert.deepEqual(JSON.parse(empty.content[0].text).providers, []);
+  assert.deepEqual(empty.providers, []);
 
   // v2 config 不可读 → 可操作错误（与默认视图失败口径一致，不静默回空）
   fs.rmSync(v2Path, { force: true });
-  const err = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
-  assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /模型清单/);
-  assert.match(err.content[0].text, /恢复指引/);
+  await assert.rejects(
+    handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } }),
+    (e) => {
+      assert.match(e.message, /模型清单/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
 });
 
 test('tools/call models --all：modelRouter 缺 allProviders 实现 → 可操作错误而非 TypeError（端口守卫与 listModels 同口径）', async () => {
@@ -424,13 +440,16 @@ test('tools/call models --all：modelRouter 缺 allProviders 实现 → 可操�
   //（契约声明见 lib/ports.js ModelRouterPort），缺省视图（listModels）不受影响
   const manager = { ...makeFakeManager(), modelRouter: { listModels: () => [{ name: 'stub-model' }] } };
   const handlers = server.buildToolHandlers({ manager, nested: false });
-  const noAll = await handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } });
-  assert.equal(noAll.isError, true);
-  assert.match(noAll.content[0].text, /allProviders/);
-  assert.match(noAll.content[0].text, /恢复指引/);
+  await assert.rejects(
+    handlers.zsub({ name: 'zsub', arguments: { action: 'models', all: true } }),
+    (e) => {
+      assert.match(e.message, /allProviders/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
   const defaults = await handlers.zsub({ name: 'zsub', arguments: { action: 'models' } });
-  assert.equal(defaults.isError, undefined);
-  assert.deepEqual(JSON.parse(defaults.content[0].text).models, [{ name: 'stub-model' }]);
+  assert.deepEqual(defaults.models, [{ name: 'stub-model' }]);
 });
 
 // ------------------------------------------- 多 tool 注册表形态（结构化改造）
@@ -471,16 +490,31 @@ test('注册表隔离：zsub handler 可脱离 dispatch 单独调用（buildTool
     },
     { cwd: '/proj/iso' }, // env 显式注入：证明 ctx 组装封装在 handler 内，不依赖 dispatch
   );
-  assert.equal(result.isError, undefined);
-  assert.equal(JSON.parse(result.content[0].text).subagentId, 'sa-x');
+  assert.equal(result.subagentId, 'sa-x');
   assert.equal(fake.calls[0].ctx.cwd, '/proj/iso');
 
-  // 嵌套门禁也在 handler 内：直接调用同样拒绝且不触达 manager
+  // 嵌套门禁在 handler 入口包装层（D3 归属表：先于查表）：直接调用同样拒绝
+  // 且不触达 manager——门禁丢失（改为查表直通）时本断言必须红（守卫保留锚）
   const nestedHandlers = server.buildToolHandlers({ manager: fake, nested: true });
-  const rejected = await nestedHandlers.zsub({ name: 'zsub', arguments: { action: 'list' } });
-  assert.equal(rejected.isError, true);
-  assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
+  await assert.rejects(
+    nestedHandlers.zsub({ name: 'zsub', arguments: { action: 'list' } }),
+    (e) => {
+      assert.match(e.message, /嵌套调用已拒绝/);
+      return true;
+    },
+  );
   assert.equal(fake.calls.length, 1); // 仅上面的 start，嵌套档零触达
+
+  // manager 未初始化守卫同样在入口包装层（D3 归属表：表 exec 的契约前提）
+  // ——守卫丢失时本断言必须红（TypeError 而非可操作消息）
+  const noManager = server.buildToolHandlers({ nested: false });
+  await assert.rejects(
+    noManager.zsub({ name: 'zsub', arguments: { action: 'list' } }),
+    (e) => {
+      assert.match(e.message, /server 未初始化编排运行时/);
+      return true;
+    },
+  );
 });
 
 // ---------------------------------------- zflow 九 action 面（orchestration-host + bin/zsw.js 共享创作实现）
@@ -527,12 +561,10 @@ test('zflow run：action 剥离后透传 host.run，env.cwd 组装 ctx，立即�
   const { wfm, srv } = makeWfServer();
   process.env.ZCODE_PROJECT_DIR = '/proj/wf';
   try {
-    const result = await callHandler(srv, 'zflow', {
+    const payload = await callHandler(srv, 'zflow', {
       action: 'run', workflow: 'chain', task: '接线冒烟', workdir: TMP,
       model: 'GLM-4.7-Flash', timeoutMs: 12345, wait: false,
     });
-    assert.equal(result.isError, undefined);
-    const payload = JSON.parse(result.content[0].text);
     assert.equal(payload.runId, 'wf-fake1');
     assert.equal(payload.status, 'running');
     assert.equal(wfm.calls.length, 1);
@@ -547,11 +579,9 @@ test('zflow run：action 剥离后透传 host.run，env.cwd 组装 ctx，立即�
 
 test('zflow run wait=true：走 host.runAndWait（同步等终态面）', async () => {
   const { wfm, srv } = makeWfServer();
-  const result = await callHandler(srv, 'zflow', {
+  const payload = await callHandler(srv, 'zflow', {
     action: 'run', workflow: 'chain', task: 't', workdir: TMP, wait: true,
   });
-  assert.equal(result.isError, undefined);
-  const payload = JSON.parse(result.content[0].text);
   assert.equal(payload.reason, 'completed');
   assert.deepEqual(payload.scriptResult, { ok: 1 });
   assert.equal(wfm.calls[0].action, 'runAndWait');
@@ -561,27 +591,26 @@ test('zflow：abort/status/list 分发与 runId 必填校验', async () => {
   const { wfm, srv } = makeWfServer();
   const call = (args) => callHandler(srv, 'zflow', args);
 
-  const noId = await call({ action: 'status' });
-  assert.equal(noId.isError, true);
-  assert.match(noId.content[0].text, /runId/);
+  await assert.rejects(call({ action: 'status' }), (e) => {
+    assert.match(e.message, /runId/);
+    return true;
+  });
 
   const st = await call({ action: 'status', runId: 'wf-1' });
-  assert.equal(JSON.parse(st.content[0].text).stateFile.includes('wf-1'), true);
+  assert.equal(st.stateFile.includes('wf-1'), true);
   assert.deepEqual(wfm.calls.at(-1), { action: 'status', runId: 'wf-1' });
 
   const ab = await call({ action: 'abort', runId: 'wf-1' });
-  assert.equal(JSON.parse(ab.content[0].text).aborted, true);
+  assert.equal(ab.aborted, true);
 
   const ls = await call({ action: 'list' });
-  assert.equal(JSON.parse(ls.content[0].text).length, 1);
+  assert.equal(ls.length, 1);
   assert.deepEqual(wfm.calls.at(-1), { action: 'list' });
 });
 
 test('zflow scripts：内置 vendored + 用户脚本合并输出，cwd 透传发现层', async () => {
   const { wfm, srv } = makeWfServer();
-  const result = await callHandler(srv, 'zflow', { action: 'scripts' }, { cwd: '/proj/scripts-cwd' });
-  assert.equal(result.isError, undefined);
-  const payload = JSON.parse(result.content[0].text);
+  const payload = await callHandler(srv, 'zflow', { action: 'scripts' }, { cwd: '/proj/scripts-cwd' });
   assert.deepEqual(payload.builtin.map((b) => b.name), ['chain']);
   assert.deepEqual(payload.scripts.map((s) => s.name), ['my-wf']);
   assert.deepEqual(wfm.calls[0], { action: 'scripts', cwd: '/proj/scripts-cwd' });
@@ -591,11 +620,12 @@ test('zflow lint：file 必填 + host.lint 透传', async () => {
   const { wfm, srv } = makeWfServer();
   const call = (args) => callHandler(srv, 'zflow', args);
 
-  const noFile = await call({ action: 'lint' });
-  assert.equal(noFile.isError, true);
-  assert.match(noFile.content[0].text, /file/);
+  await assert.rejects(call({ action: 'lint' }), (e) => {
+    assert.match(e.message, /file/);
+    return true;
+  });
 
-  const ok = JSON.parse((await call({ action: 'lint', file: '/tmp/good.js' })).content[0].text);
+  const ok = await call({ action: 'lint', file: '/tmp/good.js' });
   assert.deepEqual(ok, { valid: true, findings: [] });
   assert.deepEqual(wfm.calls.at(-1), { action: 'lint', file: '/tmp/good.js' });
 });
@@ -607,32 +637,35 @@ test('zflow script-generate/save/delete：handler 分发 + core 管线真跑 + d
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
   const call = (args) => callHandler(srv, 'zflow', args);
 
-  // name 必填（共享实现的入口守卫，经 handler catch 转 isError 可操作文案）
-  const noName = await call({ action: 'script-save' });
-  assert.equal(noName.isError, true);
-  assert.match(noName.content[0].text, /需要 name/);
+  // name 必填（共享实现的入口守卫，throw 由 dispatch 统一映射 ok:false 帧）
+  await assert.rejects(call({ action: 'script-save' }), (e) => {
+    assert.match(e.message, /需要 name/);
+    return true;
+  });
   // 非法名（路径形态）：core 拼 `${name}.js` 会写到落盘目录之外，入口拦下
-  const evil = await call({ action: 'script-generate', name: '../evil', script: 'x' });
-  assert.equal(evil.isError, true);
-  assert.match(evil.content[0].text, /非法脚本名/);
+  await assert.rejects(call({ action: 'script-generate', name: '../evil', script: 'x' }), /非法脚本名/);
 
   // ESM 拒（五道闸第一闸，文案与 pi 侧 core 管线逐字同源）
-  const esm = await call({
-    action: 'script-generate', name: 'w8-srv',
-    script: 'import x from "y";\nconst r = await agent({ prompt: "p" });\nreturn r;\n',
-  });
-  assert.equal(esm.isError, true);
-  assert.match(esm.content[0].text, /ESM 'import' syntax/);
+  await assert.rejects(
+    call({
+      action: 'script-generate', name: 'w8-srv',
+      script: 'import x from "y";\nconst r = await agent({ prompt: "p" });\nreturn r;\n',
+    }),
+    (e) => {
+      assert.match(e.message, /ESM 'import' syntax/);
+      return true;
+    },
+  );
 
   // 合法源 → tmp 落盘（zsw 布局 <HOME>/.zsw/workflows/.tmp）
   const valid = '/* @pi-meta\nname: w8-srv\ndescription: d\nphases: [run]\n*/\nconst r = await agent({ prompt: "p" });\nreturn r;\n';
-  const gen = JSON.parse((await call({ action: 'script-generate', name: 'w8-srv', script: valid })).content[0].text);
+  const gen = await call({ action: 'script-generate', name: 'w8-srv', script: valid });
   const tmpPath = path.join(process.env.HOME, '.zsw', 'workflows', '.tmp', 'w8-srv.js');
   assert.equal(gen.path, tmpPath);
   assert.ok(fs.existsSync(tmpPath));
 
   // save → 固化 + tmp 消失（rename 语义）
-  const saved = JSON.parse((await call({ action: 'script-save', name: 'w8-srv' })).content[0].text);
+  const saved = await call({ action: 'script-save', name: 'w8-srv' });
   const savedPath = path.join(process.env.HOME, '.zsw', 'workflows', 'w8-srv.js');
   assert.equal(saved.savedPath, savedPath);
   assert.ok(fs.existsSync(savedPath));
@@ -644,13 +677,17 @@ test('zflow script-generate/save/delete：handler 分发 + core 管线真跑 + d
     _runs: new Map([['wf-r1', { spec: { scriptName: 'w8-srv' }, state: { status: 'running' } }]]),
   };
   const srvRunning = server.createServer({ manager: makeFakeManager(), wfHost: fakeRunning, nested: false });
-  const refused = await callHandler(srvRunning, 'zflow', { action: 'script-delete', name: 'w8-srv' });
-  assert.equal(refused.isError, true);
-  assert.match(refused.content[0].text, /currently running/);
+  await assert.rejects(
+    callHandler(srvRunning, 'zflow', { action: 'script-delete', name: 'w8-srv' }),
+    (e) => {
+      assert.match(e.message, /currently running/);
+      return true;
+    },
+  );
   assert.ok(fs.existsSync(savedPath), '拒绝删除时文件必须原位');
 
   // delete（非运行）→ 删除成功
-  const del = JSON.parse((await call({ action: 'script-delete', name: 'w8-srv' })).content[0].text);
+  const del = await call({ action: 'script-delete', name: 'w8-srv' });
   assert.match(del.message, /Deleted workflow 'w8-srv'/);
   assert.equal(fs.existsSync(savedPath), false);
 });
@@ -659,10 +696,11 @@ test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost �
   const { wfm, srv } = makeWfServer();
   const call = (args) => callHandler(srv, 'zflow', args);
 
-  const bad = await call({ action: 'explode' });
-  assert.equal(bad.isError, true);
-  assert.match(bad.content[0].text, /不支持的 action/);
-  assert.match(bad.content[0].text, /run \| abort \| status \| list \| scripts \| lint \| script-generate \| script-save \| script-delete/);
+  await assert.rejects(call({ action: 'explode' }), (e) => {
+    assert.match(e.message, /不支持的 action/);
+    assert.match(e.message, /run \| abort \| status \| list \| scripts \| lint \| script-generate \| script-save \| script-delete/);
+    return true;
+  });
 
   // host 抛的都是含恢复指引的可操作错误，原样透传（D-4 后用路径 ref 触达 host 层）
   const wfm2 = makeFakeWfHost();
@@ -670,17 +708,25 @@ test('zflow：bad action / host 可操作错误透传 / NESTED 拒绝 / wfHost �
     throw new Error('workflow 脚本不可用（meta 解析失败或文件不可读）: /tmp/fancy.js。恢复指引：core 契约脚本需带 /* @pi-meta name/description */ 块。');
   };
   const srv2 = server.createServer({ manager: makeFakeManager(), wfHost: wfm2, nested: false });
-  const err = await callHandler(srv2, 'zflow', { action: 'run', workflow: '/tmp/fancy.js', task: 't', workdir: TMP });
-  assert.equal(err.isError, true);
-  assert.match(err.content[0].text, /不可用/);
-  assert.match(err.content[0].text, /恢复指引/);
+  await assert.rejects(
+    callHandler(srv2, 'zflow', { action: 'run', workflow: '/tmp/fancy.js', task: 't', workdir: TMP }),
+    (e) => {
+      assert.match(e.message, /不可用/);
+      assert.match(e.message, /恢复指引/);
+      return true;
+    },
+  );
 
   // NESTED 档：拒绝且零触达（防递归第二重在 handler 内，对两个 tool 一视同仁）
   const wfmNested = makeFakeWfHost();
   const nestedSrv = server.createServer({ manager: makeFakeManager(), wfHost: wfmNested, nested: true });
-  const rejected = await callHandler(nestedSrv, 'zflow', { action: 'list' });
-  assert.equal(rejected.isError, true);
-  assert.match(rejected.content[0].text, /嵌套调用已拒绝/);
+  await assert.rejects(
+    callHandler(nestedSrv, 'zflow', { action: 'list' }),
+    (e) => {
+      assert.match(e.message, /嵌套调用已拒绝/);
+      return true;
+    },
+  );
   assert.equal(wfmNested.calls.length, 0);
 
   // wfHost 缺失（异常组装防御）：handler throw 直接透出（daemon-socket 统一映射
@@ -712,28 +758,29 @@ async function waitForAsync(fn, timeoutMs = 5000, stepMs = 20) {
   }
 }
 
-test('zflow run：校验权威在 orchestration-host + 入口契约（D-4/D-E3：script:/未知裸名拒收；缺 task / reviewers 废弃 → isError 可操作）', async () => {
+test('zflow run：校验权威在 orchestration-host + 入口契约（D-4/D-E3：script:/未知裸名拒收；缺 task / reviewers 废弃 → throw 可操作）', async () => {
   const wfm = buildRealWfHost({ async run() { return { content: '', parsedOutput: { ok: 1 } }; } });
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
   const call = (args) => callHandler(srv, 'zflow', { action: 'run', ...args });
 
-  const noTask = await call({ workflow: 'chain', workdir: TMP });
-  assert.equal(noTask.isError, true);
-  assert.match(noTask.content[0].text, /task/);
+  await assert.rejects(call({ workflow: 'chain', workdir: TMP }), (e) => {
+    assert.match(e.message, /task/);
+    return true;
+  });
 
   // D-4 契约在入口面（socket 面与 CLI 共用 bin/zsw.js 的 validateWorkflowRef）
-  const bare = await call({ workflow: 'fancy', task: 't', workdir: TMP });
-  assert.equal(bare.isError, true);
-  assert.match(bare.content[0].text, /Invalid workflow ref/);
-  assert.match(bare.content[0].text, /绝对路径/);
-  const prefixed = await call({ workflow: 'script:fancy', task: 't', workdir: TMP });
-  assert.equal(prefixed.isError, true);
-  assert.match(prefixed.content[0].text, /script: 前缀/);
+  await assert.rejects(call({ workflow: 'fancy', task: 't', workdir: TMP }), (e) => {
+    assert.match(e.message, /Invalid workflow ref/);
+    assert.match(e.message, /绝对路径/);
+    return true;
+  });
+  await assert.rejects(call({ workflow: 'script:fancy', task: 't', workdir: TMP }), /script: 前缀/);
 
   // reviewers 废弃（core 契约批次值 = agent .md 路径）：显式报错不静默
-  const rev = await call({ workflow: 'review-fix-loop', task: 't', workdir: TMP, reviewers: ['correctness'] });
-  assert.equal(rev.isError, true);
-  assert.match(rev.content[0].text, /不再支持 --reviewers/);
+  await assert.rejects(
+    call({ workflow: 'review-fix-loop', task: 't', workdir: TMP, reviewers: ['correctness'] }),
+    /不再支持 --reviewers/,
+  );
 });
 
 test('zflow run（D-E3 socket 面）：saved 裸名按名 run 成功（knownNames 全量传入）；未知裸名仍拒收', async () => {
@@ -754,17 +801,19 @@ test('zflow run（D-E3 socket 面）：saved 裸名按名 run 成功（knownName
 
   // cwd 口径 = handler ctx.cwd（此处显式给空目录：knownNames = 内置 5 + HOME saved 根，
   // 与 CLI 入口 buildWorkflowRunParams 的 cwd 同源，⛔D 断言在 orchestration-host.test.js）
-  const fin = await call({ workflow: 'srv-saved-probe', task: '探针', workdir: TMP, wait: true }, { cwd: TMP });
-  assert.equal(fin.isError, undefined, `content: ${fin.content[0].text}`);
-  const h = JSON.parse(fin.content[0].text);
+  const h = await call({ workflow: 'srv-saved-probe', task: '探针', workdir: TMP, wait: true }, { cwd: TMP });
   assert.equal(h.reason, 'completed');
   assert.equal(h.scriptResult.params.task, '探针');
 
-  // 反向：未知裸名（knownNames 不含）仍拒收，isError 可操作文案
-  const unknown = await call({ workflow: 'no-such-wf-name', task: 't', workdir: TMP }, { cwd: TMP });
-  assert.equal(unknown.isError, true);
-  assert.match(unknown.content[0].text, /Invalid workflow ref/);
-  assert.match(unknown.content[0].text, /不是内置名或已保存脚本名/);
+  // 反向：未知裸名（knownNames 不含）仍拒收，throw 可操作文案
+  await assert.rejects(
+    call({ workflow: 'no-such-wf-name', task: 't', workdir: TMP }, { cwd: TMP }),
+    (e) => {
+      assert.match(e.message, /Invalid workflow ref/);
+      assert.match(e.message, /不是内置名或已保存脚本名/);
+      return true;
+    },
+  );
 });
 
 test('zflow 后台冒烟（真实 orchestration-host + fake runner）：run 立即返句柄 → status 轮询至 done → scriptResult 可查 → list 可见', async () => {
@@ -777,18 +826,15 @@ test('zflow 后台冒烟（真实 orchestration-host + fake runner）：run 立�
   });
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
 
-  const result = await callHandler(srv, 'zflow', {
+  const h = await callHandler(srv, 'zflow', {
     action: 'run', workflow: 'chain', task: '后台冒烟', workdir: TMP,
   });
-  assert.equal(result.isError, undefined);
-  const h = JSON.parse(result.content[0].text);
   assert.match(h.runId, /^wf-/);
   assert.equal(h.status, 'running');
 
   // 轮询走 handler status action（socket 面同款分发链，非直连 host）
   const fin = await waitForAsync(async () => {
-    const r = await callHandler(srv, 'zflow', { action: 'status', runId: h.runId });
-    const rec = JSON.parse(r.content[0].text);
+    const rec = await callHandler(srv, 'zflow', { action: 'status', runId: h.runId });
     return rec.status === 'done' ? rec : null;
   });
   assert.equal(fin.reason, 'completed', `终态: ${fin.error || ''}`);
@@ -797,7 +843,7 @@ test('zflow 后台冒烟（真实 orchestration-host + fake runner）：run 立�
   assert.equal(typeof fin.scriptResult, 'object');
   assert.match(fin.stateFile, /workflow-state/);
 
-  const listed = JSON.parse((await callHandler(srv, 'zflow', { action: 'list' })).content[0].text);
+  const listed = await callHandler(srv, 'zflow', { action: 'list' });
   assert.ok(listed.some((r) => r.runId === h.runId && r.status === 'done'));
 });
 
@@ -813,19 +859,19 @@ test('zflow abort（真实 orchestration-host）：hanging runner → abort 落 
   });
   const srv = server.createServer({ manager: makeFakeManager(), wfHost: wfm, nested: false });
 
-  const h = JSON.parse((await callHandler(srv, 'zflow', {
+  const h = await callHandler(srv, 'zflow', {
     action: 'run', workflow: 'chain', task: '中止冒烟', workdir: TMP,
-  })).content[0].text);
+  });
   assert.equal(h.status, 'running');
 
-  const ab = JSON.parse((await callHandler(srv, 'zflow', {
+  const ab = await callHandler(srv, 'zflow', {
     action: 'abort', runId: h.runId,
-  })).content[0].text);
+  });
   assert.equal(ab.aborted, true);
 
-  const fin = JSON.parse((await callHandler(srv, 'zflow', {
+  const fin = await callHandler(srv, 'zflow', {
     action: 'status', runId: h.runId,
-  })).content[0].text);
+  });
   assert.equal(fin.status, 'done');
   assert.equal(fin.reason, 'aborted');
 });
@@ -935,7 +981,5 @@ test('handler 直调：manager.message 为 async → 返回完整句柄而非 "{
   };
   const srv = server.createServer({ manager: fake, nested: false });
   const result = await callHandler(srv, 'zsub', { action: 'message', subagentId: 'sa-1', text: '追问' });
-  assert.equal(result.isError, undefined);
-  const parsed = JSON.parse(result.content[0].text);
-  assert.deepEqual(parsed, { subagentId: 'sa-1', status: 'running', round: 2, notify: 'none' });
+  assert.deepEqual(result, { subagentId: 'sa-1', status: 'running', round: 2, notify: 'none' });
 });

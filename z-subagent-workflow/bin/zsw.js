@@ -82,6 +82,7 @@ const { isNestedEnv, zswCliPath } = require('../lib/config');
 const { assembleManager } = require('../lib/assemble');
 const { callDaemon } = require('../lib/cli-client');
 const { TERMINAL_STATUSES } = require('../lib/record-store');
+const { execZsubAction } = require('../lib/zsub-actions');
 const coreRef = require('../lib/core-ref');
 const { BUILTIN_WORKFLOW_NAMES, buildKnownWorkflowNames, ensureConfigured } = require('../lib/orchestration-host');
 
@@ -812,6 +813,14 @@ function ensureNotNested() {
 }
 
 /**
+ * --local 的可用子命令白名单（D3 效果段：--local 查表但保持现状 6-action
+ * 子集）：执行面查 lib/zsub-actions 表（与 daemon 同一单源），能力面维持
+ * 既有差异——agents/models/wait 无 --local 形态（wait 是 daemon 内存挂起，
+ * agents/models 是 daemon 端口面），维持「未知子命令」现状输出。
+ */
+const LOCAL_SUBCOMMANDS = new Set(['start', 'list', 'status', 'message', 'cancel', 'close']);
+
+/**
  * daemon 路径（DESIGN-v4 D5/D7）：组 zsub 的 action params 后经
  * lib/cli-client 的 callDaemon 单请求单响应往返（帧协议 D2）。执行体由
  * daemon 持有，CLI 退出不丢——start 默认异步启动（与 --local 模式的强制
@@ -1023,7 +1032,20 @@ async function main() {
     targetSessionId: typeof args.targetSession === 'string' ? args.targetSession : undefined,
   };
 
-  let result;
+  // --local 6-action 子集（D3 效果段 + impl-plan 偏差表）：执行查 zsub-actions
+  // 表（与 daemon 入口同一单源），但能力面维持现状子集——agents/models/wait
+  // 在 --local 维持「未知子命令」现状输出（两入口能力面差异是既有现状，
+  // 零行为变化基准下不收口），过滤在查表之前。
+  if (!LOCAL_SUBCOMMANDS.has(cmd)) {
+    process.stderr.write(`未知子命令: ${cmd}\n`);
+    usage();
+  }
+
+  // CLI flag → zsub params 翻译（argv 组参是 CLI 特有职责，D3 保留——与
+  // daemon 路径 runDaemonCommand 的组参 switch 对称）。start 的 wait 有意
+  // 分叉（D3 显式保留项）：--local 恒 true（CLI 进程活着才有后台执行体），
+  // daemon 路径不传（执行体由 daemon 持有）——分叉在调用点可见，exec 单一。
+  let params;
   switch (cmd) {
     case 'start': {
       if (!args.task || !args.slug) usage();
@@ -1041,7 +1063,7 @@ async function main() {
         process.exit(1);
       }
       const schema = schemaArg(args.schema);
-      result = await manager.start({
+      params = {
         task: args.task,
         slug: args.slug,
         agent: args.agent,
@@ -1052,38 +1074,41 @@ async function main() {
         wait: true, // CLI 进程活着才有后台执行体（无 --no-wait，见文件头注）
         timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
         ...startCapabilityArgs(args), // F4：与 daemon 形态同款参数面（防漂移）
-      }, ctx);
+      };
       break;
     }
     case 'list':
-      result = manager.list();
+      params = {};
       break;
     case 'status':
-      result = manager.status(args.id);
+      params = { subagentId: args.id };
       break;
-    case 'message': {
-      result = await manager.message(args.id, args.text);
-      if (result && result.busy) break; // busy：本轮未投递，无执行体可等
-      // 等本轮完成再退出（与 start 的 wait 语义对齐）：CLI 若在启动 resume
-      // 轮后立即退出，执行体变孤儿、record 卡 running、outputs/通知永不产生。
-      // manager.pending 是执行体 promise（cancel 的同款等待路径）；失败原因
-      // 已落 record（error 终态），这里不再重报。极快完成的轮可能已从
-      // pending 清除——此时 status 本就直接是终态，结果同样正确。
-      const pending = manager.pending.get(args.id);
-      if (pending) await pending.catch(() => {});
-      result = { subagentId: args.id, round: result.round, notify: result.notify, final: manager.status(args.id) };
+    case 'message':
+      // message 的 busy 早退与 await pending 内联段已删（D6）：--local rebuild
+      // 后非终态全标 lost（busy 闸要求 running/created，永不命中），续聊执行
+      // 线已移除（manager.message 恒 throw）——该入口 message 收敛为纯错误
+      // 路径（id 不存在 / 非 conversation / 状态非 idle），由表 exec 直返。
+      // P3 冷续聊回归时的 wait 语义统一走 lib/wait-handler（daemon 面）
+      params = { subagentId: args.id, text: args.text };
       break;
-    }
     case 'cancel':
-      result = await manager.cancel(args.id);
+      params = { subagentId: args.id };
       break;
     case 'close':
-      result = await manager.close(args.id);
+      params = { subagentId: args.id };
       break;
     default:
-      process.stderr.write(`未知子命令: ${cmd}\n`);
-      usage();
+      break; // 白名单已过滤，不可达
   }
+
+  // 查表执行（与 daemon handler 同一 action 表单源，D3）；错误 throw 由
+  // main catch 打印 [zsw] 错误 + exit 1（与收口前 --local 直调链同输出形态）
+  const result = await execZsubAction(cmd, params, ctx, {
+    manager,
+    // --local 无 wait 形态（wait 无本地模式，上方子集过滤在先）：不注入
+    // waitHandler；agents/models 同理不可达，ports 仅为结构一致而组装
+    ports: { agentResolver: manager.resolver, modelRouter: manager.modelRouter },
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   // --local 一次性进程的引擎收口（与 zflow run 同根因：start/message 跑完
   // 任务后 appserver 常驻子进程的 stdio 挂住事件循环，防 CLI 无法退出）

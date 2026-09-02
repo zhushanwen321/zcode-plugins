@@ -240,7 +240,7 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 - **采用**：现状三层各自服务不同失败面，全部原样保留：① CLI `usage()`（`bin/zsw.js:828/:1029`，argv 层快速用法提示——缺参时打印用法，不组装 manager 即可报错）；② daemon 面 handler 前置校验（`server.js:173-175` message text 等，迁移后随 exec 原样保留在对应表项内）；③ manager 入口校验（`manager.js:117-142/:343-388`，业务权威层）。**收敛的是增量**：新增 action 的业务校验只加 manager 层（一处），action 表与两入口不加自己的校验副本——「加 action 只动一处 + manager」由结构保证。
 - **被否**：删除 `:828/:1029` 或 `:173-175`（本设计 R1 前版本的方案）——`:828/:1029` 正是「缺参打印 usage」的实现，删除后缺参输出从 usage 变 manager throw 消息，是使用者可见的输出变化，直接违反 §1 目标 4「零行为变化」基准（A1 逐行比对会 FAIL）。该方案被「零回归优先于校验去重」的基准击穿，记入被否谱系。
 - **证据**：`bin/zsw.js:828`（`if (!args.task || !args.slug) usage();`）与 manager 校验消息原文（§2.2 引述）；两入口缺参输出现状即 A1 基线的组成部分。
-- **效果**：校验不增不减（现状保留、增量单点）；错误消息零变化；「重复校验」的漂移面在增量维度关闭。
+- **效果**：校验不增不减（现状保留、增量单点）；错误消息零变化；「重复校验」的漂移面在增量维度关闭。**已声明的边缘对齐**：`--local` 的 status/cancel/close/message 不带 `--id` 时，错误消息从收口前的 manager 层劣质形态（`subagent "undefined" 不存在`——undefined 被拼进用户消息）变为表内前置校验的可操作形态（「缺少必填参数 subagentId…」，与 daemon 路径现状逐字一致）——这是 D3「前置校验随 exec 保留在表项内」的结构必然，两入口语义对齐正是目标 2 的达成方向，属有意变化非回归。
 
 **D5：删除 okContent/unwrapContentResult 对，handler 直返业务对象（选定）**
 - **采用**：`buildToolHandlers` 的 zsub/zflow 各分支直接 `return` 业务对象（错误直接 throw，由 daemon-socket dispatch 统一映射 `ok:false` 帧——该映射现状已存在，`daemon-socket.js:371-372`）；`buildDaemonHandlers` 的 unwrap 包装层随之删除（两函数合并为单一 daemon handler 构建）。`errContent` **保留**：MCP 面 `dispatchToolCall` 拒绝路径（server.js:437-441）仍消费它。`okContent` 删除（唯一消费者是 unwrap）。

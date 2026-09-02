@@ -36,9 +36,10 @@
  * W8 / D-6）。
  *
  * daemon socket 面（M0 接线）：buildDaemonHandlers() 把 handler 表适配成
- * daemon-socket 要的 (req:{tool,params}, meta:{signal}) 形态，并解包 MCP
- * content 包装——CLI 对侧（bin/zsw.js）直接消费业务字段（如 wait 的
- * partial 决定 exit code），content 包装形态对 CLI 是泄漏。
+ * daemon-socket 要的 (req:{tool,params}, meta:{signal}) 形态。handler 直返
+ * 业务对象、错误直接 throw（content 包装对已拆除——CLI 对侧 bin/zsw.js 直接
+ * 消费业务字段（如 wait 的 partial 决定 exit code），MCP content 包装对 CLI
+ * 是泄漏；throw 由 daemon-socket dispatch 统一映射 ok:false 帧）。
  *
  * zflow 管理面（回接 2b：vendored subagent-core orchestration；W8 增创作闭环）：
  * - 九 action（run/abort/status/list/scripts/lint/script-generate/script-save/
@@ -69,7 +70,7 @@
 
 const path = require('node:path');
 const config = require('../../lib/config');
-const { PROVIDER_ID } = require('../../lib/model-router');
+const { execZsubAction } = require('../../lib/zsub-actions');
 
 // S5：版本与 package.json 同源（require 缓存 + 发版流程统一 bump，防止
 // SERVER_INFO 手抄漂移——修复前 0.1.0 vs 实际 0.0.1 已然漂移）
@@ -101,9 +102,9 @@ function createFrameDecoder(onLine) {
   };
 }
 
-const okContent = (value) => ({
-  content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }],
-});
+// errContent 仅剩一个消费者：MCP 面 dispatchToolCall 的 zero-tool 拒绝
+// （okContent/unwrap 包装对已随 socket 面收口拆除——D5：handler 直返业务
+// 对象，socket 帧负载本就是业务裸 result）
 const errContent = (text) => ({ content: [{ type: 'text', text }], isError: true });
 
 /**
@@ -122,17 +123,20 @@ function createManager(opts = {}) {
  *   原型链属性名（如 "constructor"）被误当 handler 命中——注册表键必须
  *   精确匹配（改造前 `name !== TOOL_NAME` 严格比较的等价行为）。
  * - 嵌套门禁在各自 handler 内而非分发层：拒绝文案按 tool 定制。
+ * - 返回形态（D5 收口）：handler 直返业务对象、错误直接 throw——daemon-socket
+ *   dispatch 统一映射 ok:false 帧；MCP content 包装对（okContent/unwrap）已
+ *   拆除，唯一残留 errContent 服务 MCP 面 dispatchToolCall 的 zero-tool 拒绝。
  * - wfHost 参数：orchestration host 注入点（assembleManager 组装真实现 =
  *   vendored subagent-core orchestration 的 zsw 宿主），测试传 fake 即可
  *   全链路冒烟（manager 同款模式）。
- * - agents action 的 resolver 经 manager.resolver 取（公开端口字段，构造
- *   直存）而非 server 再传一份：assembleManager 组装进 manager 的必然是
- *   同一实例，两份 resolver 会漂移（opts.resolver 注入时尤其如此）。
+ * - zsub 的 action 分发查 lib/zsub-actions 表（D3：与 CLI --local 同一执行
+ *   单源）。本函数保留两类入口包装层守卫（先于查表）：嵌套门禁（进程级
+ *   防递归，丢失即违规）与 manager 就绪检查（表 exec 的契约前提）。
  * - waitHandler：wait action 的执行体（lib/wait-handler 工厂）。显式注入
  *   供测试；缺省 lazy 从 manager 创建（首次 wait 调用时才建——构造期建会
- *   让没有 pending 端口的 fake manager 在无关 action 上也无谓炸穿）。
- *   env.signal 透传（daemon socket 面的连接级取消；MCP 面恒 undefined =
- *   无取消，同步挂到终态或超时）。
+ *   让没有 pending 端口的 fake manager 在无关 action 上也无谓炸穿），
+ *   经 deps.waitHandler 包装函数进表。env.signal 透传为 ctx.signal
+ *   （daemon socket 面的连接级取消；MCP 面恒 undefined = 无取消）。
  */
 function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}) {
   let wait = waitHandler || null;
@@ -140,10 +144,24 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
     if (!wait) wait = require('../../lib/wait-handler').createWaitHandler({ manager });
     return wait;
   }
+  // deps 装配（D3 归属表）：agents/models 的端口从 manager 公开端口字段取
+  // （assembleManager 组装进 manager 的必然是同一实例，两份会漂移），经
+  // ports 进表；waitHandler 用包装函数保 lazy
+  const deps = {
+    manager,
+    waitHandler: (waitParams, waitMeta) => getWaitHandler()(waitParams, waitMeta),
+    ports: {
+      agentResolver: manager ? manager.resolver : undefined,
+      modelRouter: manager ? manager.modelRouter : undefined,
+    },
+  };
   const handlers = Object.create(null);
   handlers[TOOL_NAME] = async (params, env = {}) => {
+    // 嵌套门禁与 manager 就绪守卫留在入口包装层（D3 归属表）：进程级门禁
+    // 先于 action 查表。throw（而非 errContent 包装）——socket 面由
+    // daemon-socket dispatch 统一映射 ok:false 帧
     if (nested) {
-      return errContent(
+      throw new Error(
         '嵌套调用已拒绝：嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）下 zsub 不提供编排（防递归第二重门禁，D10）。'
         + '恢复指引：这是预期行为，subagent 会话内不要调用 zsub。'
       );
@@ -152,109 +170,17 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
       throw new Error('server 未初始化编排运行时');
     }
     const args = params.arguments || {};
-    const action = args.action;
-    try {
-      // socket 面无会话定向语义（D6）：ctx 不带 targetSessionId，mailbox 侧
-      // 自然降级（manager 定向链保留，CLI 的 --target-session 后门走 start params）
-      const ctx = {
-        cwd: env.cwd || process.env.ZCODE_PROJECT_DIR || process.cwd(),
-      };
-      switch (action) {
-        case 'start':
-          return okContent(await manager.start(args, ctx));
-        case 'list':
-          return okContent(manager.list());
-        case 'status':
-          return okContent(manager.status(requireSubagentId(args)));
-        case 'cancel':
-          return okContent(await manager.cancel(requireSubagentId(args)));
-        case 'message': {
-          const id = requireSubagentId(args);
-          if (typeof args.text !== 'string' || args.text.trim() === '') {
-            return errContent('message 需要 text（非空字符串，续聊消息内容）。');
-          }
-          // 必须 await：manager.message 是 async，不 await 会把 Promise 序列化
-          // 成 '{}'——socket/CLI 面拿不到 round/notify 句柄（R4）
-          return okContent(await manager.message(id, args.text));
-        }
-        case 'close':
-          return okContent(await manager.close(requireSubagentId(args)));
-        case 'wait':
-          // 语义在 lib/wait-handler（DESIGN-v4 D4：终态立即收、运行中挂
-          // pending promise 事件驱动唤醒、轮询兜底、abort 只取消等待不碰执行体）
-          return okContent(await getWaitHandler()(args, { signal: env.signal }));
-        case 'agents': {
-          // 按需查询版 agent 索引：pi 的 <available_subagents> 每 turn 常驻
-          // 注入在 zcode 平台做不到（进程内 extension API 才有），等价物是
-          // 本 action——Z1 结论：MCP tool 常驻注入贵，按需查询零常驻成本。
-          // resolver 取 manager.resolver（lib/assemble.js 组装进 manager 的
-          // 公开端口字段，构造直存）：server 不再注入第二份，必然同一实例。
-          // W6a 起数据源 = core 发现面（lib/agent-discovery，async list——
-          // vendored 内置 10 角色 + 四根 + 目录 symlink 展开）。
-          const resolver = manager.resolver;
-          if (!resolver || typeof resolver.list !== 'function') {
-            return errContent(
-              'agents 需要 resolver 端口（agent .md 发现），当前 manager 未注入。'
-              + '恢复指引：其他 action 不受影响；agents 排障查 lib/assemble.js 的 resolver 组装。'
-            );
-          }
-          return okContent(await agentListView(resolver, ctx.cwd));
-        }
-        case 'models': {
-          // 模型清单按需查询（与 agents 同理：常驻注入贵，按需零成本）。
-          // 模型集随 v2 config 变化（桌面端启停即变），description/skill 里
-          // 硬编码模型名会过时——路由决策前先查本 action。modelRouter 同样
-          // 取 manager 公开端口字段（与 resolver 同一理由：单一实例防漂移）。
-          const router = manager.modelRouter;
-          if (!router || typeof router.listModels !== 'function') {
-            return errContent(
-              'models 需要 modelRouter 端口（v2 config 模型清单），当前 manager 未注入。'
-              + '恢复指引：其他 action 不受影响；models 排障查 lib/assemble.js 的 modelRouter 组装。'
-            );
-          }
-          // --all（跨 provider 兜底链闭合）：默认 provider 不可用时模型路由
-          // 仍可走其他带凭据 provider，但查询面此前只有默认 provider 视图，
-          // 兜底链在「查」这一环断头。--all 出全 provider 视图；缺省行为
-          // （默认 provider 单视图）完全不变，既有消费方零感知。
-          // --all 数据源 = router.allProviders()（下沉后的单一实现，本入口
-          // 零复制）；清单不可读的可操作错误由外层 catch 原样透传。
-          if (args.all === true) {
-            // allProviders 端口守卫（与 listModels 同口径）：换实现缺该方法时给
-            // 可操作错误，而非 TypeError 崩溃（契约声明见 lib/ports.js ModelRouterPort）
-            if (typeof router.allProviders !== 'function') {
-              return errContent(
-                'models --all 需要 modelRouter 端口实现 allProviders()（跨 provider 模型清单），当前实现未提供。'
-                + '恢复指引：缺省 models（不带 all）仍可查默认 provider 视图；排障查 lib/model-router.js 的 allProviders 与 lib/assemble.js 的 modelRouter 组装。'
-              );
-            }
-            return okContent({
-              all: true,
-              providers: router.allProviders(),
-              guidance: '跨 provider 引用必须用全名 <provider>/<model> 传 model；default 标记 = 该 provider 的默认模型。',
-            });
-          }
-          // listModels 抛的清单不可读错误是可操作错误（含恢复指引），
-          // 由外层 catch 原样透传
-          return okContent({
-            provider: PROVIDER_ID,
-            models: router.listModels(),
-            guidance: '选择指引：重量任务（设计/架构/深调研/复杂修复）省略 model 用默认（default 标记）；简单任务（探索/计数/格式转换/测试）传轻量模型短名降成本。',
-          });
-        }
-        default:
-          return errContent(
-            `不支持的 action "${String(action)}"。支持：start | list | status | cancel | message | close | agents | models | wait。`
-            + '恢复指引：action 必须取 inputSchema 中的枚举值。'
-          );
-      }
-    } catch (e) {
-      // manager 抛的都是可操作错误（含恢复指引），原样回给主 agent
-      return errContent(String(e && e.message || e));
-    }
+    // socket 面无会话定向语义（D6）：ctx 不带 targetSessionId，mailbox 侧
+    // 自然降级（manager 定向链保留，CLI 的 --target-session 后门走 start params）
+    const ctx = {
+      cwd: env.cwd || process.env.ZCODE_PROJECT_DIR || process.cwd(),
+      signal: env.signal,
+    };
+    return execZsubAction(args.action, args, ctx, deps);
   };
   handlers[RUN_WORKFLOW_TOOL_NAME] = async (params, env = {}) => {
     if (nested) {
-      return errContent(
+      throw new Error(
         '嵌套调用已拒绝：嵌套环境（ZSW_NESTED=1 或 XYZ_AGENT_SUBAGENT=1）下不提供 zflow（防递归第二重门禁，D10）。'
         + '恢复指引：这是预期行为，workflow 阶段会话内不要调用 zflow。'
       );
@@ -269,96 +195,91 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
     const ctx = {
       cwd: env.cwd || process.env.ZCODE_PROJECT_DIR || process.cwd(),
     };
-    try {
-      switch (action) {
-        case 'run': {
-          // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
-          // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
-          // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）。
-          // D-4/D-E3 引用契约入口（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
-          // 防两入口漂移）：script: 拒收；knownNames = 内置 5 + cwd 发现面
-          // saved 名（buildKnownWorkflowNames 单一构建函数，cwd 与 ctx.cwd
-          // 同源——三入口同一目录集产出同一集，⛔D），saved 裸名放行（D-E3
-          // 裁决）。validateWorkflowRef 的单参缺省（内置 5 名）保留为防御性
-          // 兜底，正常路径恒传全量 knownNames。
-          const { validateWorkflowRef } = require('../../bin/zsw.js');
-          const { buildKnownWorkflowNames } = require('../../lib/orchestration-host');
-          const core = require('../../lib/core-ref').requireCore();
-          validateWorkflowRef(runArgs.workflow, await buildKnownWorkflowNames(core, ctx.cwd));
-          if (args.wait === true) {
-            return okContent(await wfHost.runAndWait(runArgs, ctx, { signal: env.signal }));
-          }
-          return okContent(await wfHost.run(runArgs, ctx));
+    switch (action) {
+      case 'run': {
+        // 校验/组参权威在 orchestration-host（normalizeRunParams + registry
+        // 解析），抛的都是含恢复指引的可操作错误。wait=true 走同步
+        // runAndWait（scriptResult 直返；MCP 30s 超时，测试用）。
+        // D-4/D-E3 引用契约入口（socket 面与 CLI 共用 bin/zsw.js 的单一实现，
+        // 防两入口漂移）：script: 拒收；knownNames = 内置 5 + cwd 发现面
+        // saved 名（buildKnownWorkflowNames 单一构建函数，cwd 与 ctx.cwd
+        // 同源——三入口同一目录集产出同一集，⛔D），saved 裸名放行（D-E3
+        // 裁决）。validateWorkflowRef 的单参缺省（内置 5 名）保留为防御性
+        // 兜底，正常路径恒传全量 knownNames。
+        const { validateWorkflowRef } = require('../../bin/zsw.js');
+        const { buildKnownWorkflowNames } = require('../../lib/orchestration-host');
+        const core = require('../../lib/core-ref').requireCore();
+        validateWorkflowRef(runArgs.workflow, await buildKnownWorkflowNames(core, ctx.cwd));
+        if (args.wait === true) {
+          return await wfHost.runAndWait(runArgs, ctx, { signal: env.signal });
         }
-        case 'abort':
-          return okContent(await wfHost.abort(requireRunId(args)));
-        case 'status':
-          return okContent(wfHost.status(requireRunId(args)));
-        case 'list':
-          return okContent(wfHost.list());
-        case 'scripts': {
-          // vendored 内置 5 + core 发现面 + .zsw 根用户脚本；发现根 =
-          // workspace cwd（ctx 组装同 zsub）。builtin/scripts 均以 host 返回
-          // 为单一来源（host 内置表与 registry 同源——server 不再持第二份
-          // 内置清单，防两处漂移）
-          const found = await wfHost.scripts(ctx.cwd);
-          return okContent({
-            builtin: found.builtin,
-            scripts: found.scripts.map((s) => ({
-              name: s.name,
-              description: s.description || '',
-              path: s.path,
-              available: s.available,
-              source: s.source,
-            })),
-          });
-        }
-        case 'lint': {
-          if (typeof args.file !== 'string' || args.file.trim() === '') {
-            return errContent(
-              'lint 需要 file（脚本文件路径）。恢复指引：先 scripts 查看已发现脚本的 path 字段，或直接给绝对路径。'
-            );
-          }
-          return okContent(await wfHost.lint(args.file));
-        }
-        // 创作闭环三 action（W8 / D-6）：实现与 CLI 共用 bin/zsw.js 导出的单一
-        // 来源（core generate/save/delete 管线 + zsw 目录布局）。CLI 面
-        // script-generate 恒本地、save/delete 默认经 daemon——本 handler 是
-        // socket 面（daemon 进程内）权威路径：delete 的「运行中拒绝」在此用
-        // daemon 持有的 runs 真实状态裁决，save 后的发现面 invalidate 也落在本
-        // 进程。script-generate 分支为 dispatch 表完备性保留（CLI 不经此路）。
-        case 'script-generate': {
-          const { scriptGenerateAction } = require('../../bin/zsw.js');
-          return okContent(scriptGenerateAction(args.name, args.script));
-        }
-        case 'script-save': {
-          const { scriptSaveAction } = require('../../bin/zsw.js');
-          return okContent(await scriptSaveAction(args.name));
-        }
-        case 'script-delete': {
-          const { scriptDeleteAction, runningScriptPredicate } = require('../../bin/zsw.js');
-          return okContent(scriptDeleteAction(args.name, runningScriptPredicate(wfHost)));
-        }
-        default:
-          return errContent(
-            `不支持的 action "${String(action)}"。支持：run | abort | status | list | scripts | lint | script-generate | script-save | script-delete。`
-            + '恢复指引：action 必须取 inputSchema 中的枚举值。'
-          );
+        return await wfHost.run(runArgs, ctx);
       }
-    } catch (e) {
-      // wfHost 抛的都是可操作错误（含恢复指引），原样回给主 agent
-      return errContent(String(e && e.message || e));
+      case 'abort':
+        return await wfHost.abort(requireRunId(args));
+      case 'status':
+        return wfHost.status(requireRunId(args));
+      case 'list':
+        return wfHost.list();
+      case 'scripts': {
+        // vendored 内置 5 + core 发现面 + .zsw 根用户脚本；发现根 =
+        // workspace cwd（ctx 组装同 zsub）。builtin/scripts 均以 host 返回
+        // 为单一来源（host 内置表与 registry 同源——server 不再持第二份
+        // 内置清单，防两处漂移）
+        const found = await wfHost.scripts(ctx.cwd);
+        return {
+          builtin: found.builtin,
+          scripts: found.scripts.map((s) => ({
+            name: s.name,
+            description: s.description || '',
+            path: s.path,
+            available: s.available,
+            source: s.source,
+          })),
+        };
+      }
+      case 'lint': {
+        if (typeof args.file !== 'string' || args.file.trim() === '') {
+          throw new Error(
+            'lint 需要 file（脚本文件路径）。恢复指引：先 scripts 查看已发现脚本的 path 字段，或直接给绝对路径。'
+          );
+        }
+        return await wfHost.lint(args.file);
+      }
+      // 创作闭环三 action（W8 / D-6）：实现与 CLI 共用 bin/zsw.js 导出的单一
+      // 来源（core generate/save/delete 管线 + zsw 目录布局）。CLI 面
+      // script-generate 恒本地、save/delete 默认经 daemon——本 handler 是
+      // socket 面（daemon 进程内）权威路径：delete 的「运行中拒绝」在此用
+      // daemon 持有的 runs 真实状态裁决，save 后的发现面 invalidate 也落在本
+      // 进程。script-generate 分支为 dispatch 表完备性保留（CLI 不经此路）。
+      case 'script-generate': {
+        const { scriptGenerateAction } = require('../../bin/zsw.js');
+        return scriptGenerateAction(args.name, args.script);
+      }
+      case 'script-save': {
+        const { scriptSaveAction } = require('../../bin/zsw.js');
+        return await scriptSaveAction(args.name);
+      }
+      case 'script-delete': {
+        const { scriptDeleteAction, runningScriptPredicate } = require('../../bin/zsw.js');
+        return scriptDeleteAction(args.name, runningScriptPredicate(wfHost));
+      }
+      default:
+        throw new Error(
+          `不支持的 action "${String(action)}"。支持：run | abort | status | list | scripts | lint | script-generate | script-save | script-delete。`
+          + '恢复指引：action 必须取 inputSchema 中的枚举值。'
+        );
     }
   };
   return handlers;
 }
 
 /**
- * daemon socket 面适配器（DESIGN-v4 D2 / §7：M0 接线）。
+ * daemon socket 面适配器（DESIGN-v4 D2 / §7：M0 接线；D5 收口后纯形态适配）。
  *
  * 形态转换两端：
  * - 入参：socket 帧 {tool, params, cwd?} 的 params 是业务参数本体（CLI
- *   bin/zsw.js 组的 {action, ...}），而 MCP handler 吃 {arguments} 形态——
+ *   bin/zsw.js 组的 {action, ...}），而 handler 吃 {arguments} 形态——
  *   这里包一层 {arguments: params}。socket 面无会话定向语义（D6）：ctx 不带
  *   targetSessionId，mailbox 侧自然降级（CLI 的 --target-session 后门走
  *   start params，不经此处）。
@@ -366,49 +287,27 @@ function buildToolHandlers({ manager, wfHost, nested = false, waitHandler } = {}
  *   非空 string 时透传为 handler 第二参 env.cwd——handler 内既有
  *   `env.cwd || ZCODE_PROJECT_DIR || process.cwd()` 链自然取到发起方目录
  *   （多 worktree 下 agent 发现 / worktree 定位不再落到 daemon 宿主 cwd）。
- * - 出参：MCP handler 返回 okContent/errContent 包装，socket 帧的 result
- *   必须是业务对象——CLI 直接消费业务字段（如 wait 的 partial 决定 exit
- *   code、start 的 subagentId 供 --wait sugar 追发），content 包装对 CLI
- *   是泄漏。isError 包装解包为 throw（daemon-socket 统一映射成 ok:false 帧，
- *   CLI 侧 exit 1 + stderr 打印，与 MCP 面 isError 语义等价）。
+ * - 出参：handler 直返业务对象 / throw（原 MCP content 包装-拆包弯路已拆
+ *   除）——dispatch 组 {id, ok:true, result} | {id, ok:false, error} 帧，
+ *   CLI 直接消费业务字段（如 wait 的 partial 决定 exit code、start 的
+ *   subagentId 供 --wait sugar 追发）。
  * - env.signal 原样透传：连接级 AbortSignal（CLI 断连取消挂起的 wait，
  *   不碰执行体，lib/wait-handler 的 abort 语义）。
  */
 function buildDaemonHandlers(toolHandlers) {
   const table = Object.create(null);
   for (const name of Object.keys(toolHandlers)) {
-    table[name] = async (req, meta = {}) => {
-      const wrapped = await toolHandlers[name](
-        { arguments: req && req.params },
-        {
-          signal: meta.signal,
-          // 非空 string 才透传（帧协议安全边界：cwd 不校验存在性——handler 层
-          // workdir/resolver 已有存在性校验——但 daemon 侧仅接受 string 类型）
-          cwd: typeof req.cwd === 'string' && req.cwd !== '' ? req.cwd : undefined,
-        },
-      );
-      return unwrapContentResult(wrapped);
-    };
+    table[name] = (req, meta = {}) => toolHandlers[name](
+      { arguments: req && req.params },
+      {
+        signal: meta.signal,
+        // 非空 string 才透传（帧协议安全边界：cwd 不校验存在性——handler 层
+        // workdir/resolver 已有存在性校验——但 daemon 侧仅接受 string 类型）
+        cwd: typeof req.cwd === 'string' && req.cwd !== '' ? req.cwd : undefined,
+      },
+    );
   }
   return table;
-}
-
-/** MCP content 包装 → socket 帧业务 result（见 buildDaemonHandlers 头注）。 */
-function unwrapContentResult(wrapped) {
-  const text = wrapped && Array.isArray(wrapped.content)
-  && wrapped.content[0] && typeof wrapped.content[0].text === 'string'
-    ? wrapped.content[0].text
-    : '';
-  if (wrapped && wrapped.isError) {
-    throw new Error(text || 'handler 返回未知错误形态（content 包装缺失）');
-  }
-  // okContent 对非 string 值走 JSON.stringify——parse 还原业务对象；string
-  // 值（理论不可达，manager 各 action 都返回对象）parse 失败则原样回退
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
 }
 
 /**
@@ -490,16 +389,10 @@ function createServer({ manager, wfHost, nested = false, log = () => {} } = {}) 
  * models action 的 --all 全 provider 视图数据源已整体下沉为
  * ModelRouter#allProviders（lib/model-router.js，「合格 provider 判定 + 全
  * provider 模型视图」的单一实现，SessionStart 注入块同口径）：v2 config 读取、
- * 资格过滤（带凭据且清单非空）、全名升格都不在本入口层复制——平台配置结构
- * 知识只活在端口实现内，server 只经 router 端口消费。
+ * 资格过滤（带凭据且清单非空）、全名升格都不在入口层复制——平台配置结构
+ * 知识只活在端口实现内，入口只经 router 端口消费（D3 后消费点 =
+ * lib/zsub-actions.js 的 models 表项）。
  */
-
-function requireSubagentId(args) {
-  if (typeof args.subagentId !== 'string' || args.subagentId.trim() === '') {
-    throw new Error('缺少必填参数 subagentId（start 返回的任务 id）。恢复指引：先用 list 查全部任务 id。');
-  }
-  return args.subagentId;
-}
 
 function requireRunId(args) {
   if (typeof args.runId !== 'string' || args.runId.trim() === '') {
@@ -508,43 +401,8 @@ function requireRunId(args) {
   return args.runId;
 }
 
-/**
- * agents action 的来源标签映射：core 发现面（lib/agent-discovery）在 profile
- * 上带 core 槽位标签（profile.source），此处映射为 zsw 面向用户的来源根标签
- * ——四根标签与旧版一致（project-zcode/project-agents/user-zcode/user-agents），
- * 新增 vendored 内置（core-vendored）与 pi 生态透传源（project-pi/npm-dev/
- * user-extension-paths，zsw 用户目录里通常缺席）。
- */
-function agentSourceLabel(coreSource) {
-  switch (coreSource) {
-    case 'user-pi': return 'user-zcode';
-    case 'user-agents': return 'user-agents';
-    case 'npm': return 'core-vendored';
-    case 'project-host': return 'project-zcode';
-    case 'project-agents': return 'project-agents';
-    default: return coreSource; // project-pi / npm-dev / user-extension-paths 等透传
-  }
-}
-
-/**
- * agents action 的精简视图：只透出索引字段——name / description（截
- * 200，索引不是正文）/ when（「何时用我」提示，截 200）/ source（来源根
- * 标签）/ location（.md 绝对路径，D-4a 契约下 start 的 agent 参数唯一合法
- * 形态；file 为同值兼容字段，旧消费方与 lint 指引沿用）。body/model/
- * tools 等 profile 字段不透出：索引的价值在省 token，正文按 location
- * 路径按需读。list 是 async（core 发现链），handler 侧 await。
- */
-async function agentListView(resolver, cwd) {
-  const agents = await resolver.list(cwd);
-  return agents.map((p) => ({
-    name: p.name,
-    description: typeof p.description === 'string' ? p.description.slice(0, 200) : '',
-    when: typeof p.when === 'string' ? p.when.slice(0, 200) : '',
-    source: agentSourceLabel(p.source || ''),
-    location: p.filePath,
-    file: p.filePath, // 兼容旧字段名（D-4a 前 start 按名/路径双形态时的指引用）
-  }));
-}
+// agents/models/requireSubagentId（zsub 表项）已随 D3 收口迁入
+// lib/zsub-actions.js——server 不再持第二份，防两处漂移。
 
 // ----------------------------------------------------------------- 主循环
 
