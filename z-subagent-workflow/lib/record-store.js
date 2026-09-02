@@ -114,6 +114,116 @@ class RecordStore {
   }
 
   /**
+   * 台账压缩（socket-record 收口 D8：keep-N 整 run 截断 + temp/rename 原子重写）。
+   *
+   * 删行后文件 = 原事件流的行子集，仍是完全合法的事件流——任何版本代码重放
+   * 子集文件得到的就是索引子集（零新语法、零迁移，C1 裁决依据）：
+   *   - 活跃态 run（status 非 TERMINAL_STATUSES，含 lost——可被探活纠正回）
+   *     的行全部保留；终态 run 按组内最后事件 ts 降序取前 keep 个保留，
+   *     其余整 run 删行；
+   *   - 不在内存索引的行组（created 行损坏导致重放全 skipped 的孤儿行）
+   *     保守保留：无法判态，删错 = 丢可能在跑的 run（占比极小，D8 显式裁决）；
+   *   - 无法归属的行（空行/坏行/缺 id）同理保守保留。
+   *
+   * 调用前提：本方法依赖 this.records 判态（调用前应已 rebuildFromLog——
+   * daemon 侧挂点在角色确定后调用，索引已建好）。并发防护（D9②）：读文件前
+   * stat 记基准 size，rename 前复查原文件 size 不变——不等（并发 append 变大
+   * 或他者 compact rename 缩小）即放弃本次（删 temp、stderr 留痕、返回
+   * skipped:true），下次启动再试；残余微窗（复查与 rename 间的新 append）
+   * 设计层面接受（D9③ 诚实声明）。
+   *
+   * @param {object} [opts]
+   * @param {number} [opts.keep] 终态 run 保留上限（正整数；解析权威在
+   *   config.resolveRecordKeep，本方法只做输入校验不回落——两处回落会漂移）
+   * @returns {{removedRuns:number, removedLines:number, keptRuns:number, skipped?:boolean}}
+   *   skipped=true 表示并发放弃（文件未动，全部 run 仍在文件与索引中）
+   */
+  compact({ keep } = {}) {
+    const n = Number(keep);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(`record-store: compact 需要 { keep: 正整数 }（收到 ${JSON.stringify(keep)}）。👉 keep 由 config.resolveRecordKeep() 解析后传入`);
+    }
+    let sizeBefore;
+    let content;
+    try {
+      // 先 stat 后 read：stat..read 间的并发 append 会让复查变大而放弃（保守
+      // 方向安全），不存在「读到更多却复查相等」的静默丢行窗口
+      sizeBefore = fs.statSync(this.filePath).size;
+      content = fs.readFileSync(this.filePath, 'utf8');
+    } catch {
+      return { removedRuns: 0, removedLines: 0, keptRuns: 0 }; // 无日志 = 首启空库
+    }
+    const lines = content.split('\n');
+    // 行分组：created 按事件 subagentId，transition/update 按 id
+    const groups = new Map(); // key -> { idxs: number[], lastTs: number }
+    for (let i = 0; i < lines.length; i++) {
+      const text = lines[i];
+      if (text.trim() === '') continue; // 尾部空串/空行：不属任何组，天然保留
+      let event;
+      try {
+        event = JSON.parse(text);
+      } catch {
+        continue; // 崩溃截断行：无法归属，保守保留
+      }
+      const key = event.subagentId || event.id;
+      if (!key) continue;
+      let g = groups.get(key);
+      if (!g) {
+        g = { idxs: [], lastTs: 0 };
+        groups.set(key, g);
+      }
+      g.idxs.push(i);
+      if (typeof event.ts === 'number') g.lastTs = event.ts;
+    }
+    // 判态：内存索引里的终态 run 参与 keep-N 截断；活跃（含 lost）与孤儿组保留
+    const terminal = [];
+    for (const [key] of groups) {
+      const rec = this.records.get(key);
+      if (rec === undefined) continue; // 孤儿行组：保守保留
+      if (TERMINAL_STATUSES.has(rec.status)) terminal.push(key);
+    }
+    // 最新在前（ts 降序；tie 用 key 保证确定性——同 ts 的删留不该取决于插入序）
+    terminal.sort((a, b) => groups.get(b).lastTs - groups.get(a).lastTs
+      || (a < b ? -1 : 1));
+    const dropKeys = new Set(terminal.slice(n)); // 超出 keep 的最旧终态 run
+    const keptRuns = groups.size - dropKeys.size;
+    if (dropKeys.size === 0) {
+      // 无可删（终态未超 keep——如大量 lost/孤儿在册）：不写 temp 不动文件
+      return { removedRuns: 0, removedLines: 0, keptRuns };
+    }
+    let removedLines = 0;
+    const dropIdx = new Set();
+    for (const key of dropKeys) {
+      for (const i of groups.get(key).idxs) {
+        dropIdx.add(i);
+        removedLines++;
+      }
+    }
+    // 剩余行按原文件顺序写 temp（同目录保证同文件系统 rename 原子；pid 后缀
+    // 防多进程 temp 互踩）→ size 复查 → 原子替换
+    const tmp = `${this.filePath}.compact-${process.pid}.tmp`;
+    fs.writeFileSync(tmp, lines.filter((_, i) => !dropIdx.has(i)).join('\n'));
+    let sizeNow = -1;
+    try {
+      sizeNow = fs.statSync(this.filePath).size;
+    } catch { /* 原文件消失按已变更处理，走放弃路径 */ }
+    if (sizeNow !== sizeBefore) {
+      try {
+        fs.unlinkSync(tmp);
+      } catch { /* ENOENT = 已清理 */ }
+      process.stderr.write(
+        `[zsub] record compact 放弃：台账文件在读取后被并发变更（size ${sizeBefore} → ${sizeNow}），`
+        + '已清理临时文件，本次不替换，下次启动再试\n',
+      );
+      return { removedRuns: 0, removedLines: 0, keptRuns: groups.size, skipped: true };
+    }
+    fs.renameSync(tmp, this.filePath);
+    // 内存索引同步收缩（被删 run 不再可见——与文件一致；重放等价性见 P-compact-equiv）
+    for (const key of dropKeys) this.records.delete(key);
+    return { removedRuns: dropKeys.size, removedLines, keptRuns };
+  }
+
+  /**
    * 从 jsonl 重放重建内存索引（server 重启入口）。
    * 终态照抄；非终态（created/running/idle）标 lost 交由调用方探活纠正。
    * lost 标记只改内存不落盘：日志是权威，下次重启会重新推断，幂等收敛。

@@ -73,6 +73,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 | 基线录制发现：`--local` 现状不支持 agents/models/wait（报「未知子命令」），而 zsub-actions 表含全集——若 `--local` 查表开放全集即行为变化 | doc_error（设计缺口，非实现偏差） | 已修设计 D3 效果段：`--local` 查表但保持 6-action 子集，agents/models/wait 维持「未知子命令」现状（入口侧过滤） |
 | U2 实施发现：`--local` 的 status/cancel/close/message 不带 `--id` 时错误消息从 manager 层 `subagent "undefined" 不存在` 变为表内前置校验「缺少必填参数 subagentId…」（与 daemon 现状一致） | 合理（D3 前置校验随 exec 迁表的结构必然；消息从劣质 undefined 拼接变为可操作文案；两入口一致即目标 2 方向） | 已固化设计 D4 效果段「已声明的边缘对齐」；zsub-actions.test.js 缺 subagentId 全文断言锚定 |
 | U2 全量测试发现：`node --test` 无参全量会误扫 test/fixtures/make-legacy-state-files.js（fixture 生成器无参 exit 2 被当测试执行）——HEAD 干净态复现同样失败，非本次引入 | 合理（认知外既有问题，不在任何单元领地） | 登记残留风险第 5 条；收尾阶段单独修复（不混入单元 commit） |
+| U3 实施发现：compact 需同步收缩内存索引（records.delete），且读文件改「先 stat 后 read」消除静默丢行子窗口——D8 未明说的必要补全 | 合理（A5 list 可见性的隐含要求；D9② 检测面加固） | 已固化设计 D8「实施期固化的两处规格补全」段 |
 
 ## 6 状态表
 
@@ -81,7 +82,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 | U0 | committed | 1 | 36/36 绿（frame-codec/daemon-socket/cli-client 三件套重跑核实）；传输层字节级回归锚零改动原样绿；A1 双口径比对 11/11 段 PASS + pre/post 完整输出互 diff 零差异；list 帧与 baseline-frames.txt 逐字节一致；cli-client close 无尾换行宽容语义等价实现（close 补推 \n flush，测试锚定） |
 | U1 | committed | 1 | 59/59 绿（五文件重跑核实）；A2 grep 手写 encodeFrame/createFrameDecoder 副本零命中；daemon-socket.test.js 回归锚组五用例零改动（仅构帧来源换 import）；server-daemon 内嵌解析判定为协议 replica 类删除（头注自认同形）；三处故意畸形流构造保留（宽容性 fixture，非 replica） |
 | U2 | committed | 1 | 47/47 绿（server + zsub-actions 重跑核实）；P-roundtrip 五类帧逐字节一致；CLI 双路径基线逐字一致（含「未知子命令」16 行 usage 全文）；A4 冒烟过（tools/list 恒空 + tools/call errContent）；A3 真跑 closed/result ok/exit 0（1 次真实模型调用）；A9 非 conversation 路径逐字一致；全量 433/434（1 失败 = HEAD 既有 fixture 误扫，干净态复现，零因果） |
-| U3 | pending | 0 | — |
+| U3 | committed | 1 | 9/9 单元（P-compact-equiv 含孤儿行组/P-occ 双检测面/P-keep-env/A8 单元版）+ 79/79 回归（server/config/manager）+ 终跑 42/42 重跑核实；A5（收敛 101 run/removedRuns=950/list 101）A6（重建等价）A7（--local 文件不变）P-mount（首竞选 daemon 日志 + standby 零日志 + kill 接管路径 takeover compact）真实场景全 PASS；挂点两处正确（role==='daemon' :569 + onTakeover :552，未挂 main recover 后） |
 
 ## 7 残留风险与变更历史
 

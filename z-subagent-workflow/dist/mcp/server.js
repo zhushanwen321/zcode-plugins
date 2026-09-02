@@ -414,6 +414,36 @@ function writeFrame(msg) {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
 
+/**
+ * record compact 触发（socket-record 收口 D8/D9：keep-N 整 run 截断，台账
+ * 收敛「活跃全量 + 最近 N 终态」，恢复成本与磁盘封顶）。
+ *
+ * 单属主由挂点结构保证——只在 daemon 角色确定后调用（main 的 startDaemon
+ * ready 判 role==='daemon'，与 onTakeover 再 recover 之后两处）；⛔ 不挂
+ * main 序列 manager.recover() 之后（standby 实例同样跑那段——挂此 = standby
+ * 并发 compact）。`--local` 的 rebuild 只读不 compact（A7 负面锚）。
+ * run 总数 ≤ keep 时秒级跳过（不触文件）；结果/放弃一行 stderr 日志；失败
+ * 不炸启动（compact 是旁路维护，下次启动幂等再试）。
+ * @param {object} manager 已 recover 的 manager（records = RecordStore，索引已建）
+ * @param {string} phase 日志定位（'startup' | 'takeover'）
+ * @param {(msg: string) => void} log
+ */
+function compactRecords(manager, phase, log) {
+  try {
+    const keep = config.resolveRecordKeep();
+    const total = manager.records.records.size;
+    if (total <= keep) return; // 零成本跳过：总数不超 keep 则终态必不超
+    const r = manager.records.compact({ keep });
+    if (r.skipped) {
+      log(`record compact 放弃（台账被并发变更，下次启动再试）：phase=${phase} runs=${total} keep=${keep}`);
+    } else {
+      log(`record compact 完成：phase=${phase} removedRuns=${r.removedRuns} removedLines=${r.removedLines} keptRuns=${r.keptRuns} keep=${keep}`);
+    }
+  } catch (e) {
+    log(`record compact 失败（不影响服务，下次启动再试）: ${e && e.message || e}`);
+  }
+}
+
 async function main() {
   log(`mcp server starting (pid=${process.pid})`);
   let manager = null;
@@ -516,6 +546,10 @@ async function main() {
           } catch (e) {
             log(`接管后 recover 失败（继续服务，record 功能可能受限）: ${e && e.message || e}`);
           }
+          // compact 挂点 2（D8 接管路径）：recover 重建索引之后再截断——
+          // 与挂点 1 不会双触发（standby 的 role 快照永不回填，main 的
+          // role==='daemon' 判定只在首竞选 daemon 命中）
+          compactRecords(manager, 'takeover', log);
           try {
             const rec = await wfHost.recoverOrphans();
             log(`接管后 workflow 孤儿恢复：重水合 ${rec.rehydrated} 条，running 遗留 ${rec.orphaned} 条标 failed（执行体随旧 daemon 消亡）`);
@@ -529,6 +563,10 @@ async function main() {
       // 工具面恒空（1.0.0 起），standby 与 daemon 在 MCP 面无行为差异；
       // manager 保留供本实例看门狗接管成为 daemon 后服务 socket 面
       log(`daemon 竞选完成：role=${daemon.role}（pid=${process.pid}，sock=${sockPath}）`);
+      // compact 挂点 1（D8 角色确定后）：仅首竞选 daemon 走到这（索引已由
+      // main 序列 recover 建好）；standby 跳过，接管路径由 onTakeover 覆盖。
+      // ⛔ 不得挂在 main 序列 manager.recover() 之后——standby 也执行那段
+      if (daemon.role === 'daemon') compactRecords(manager, 'startup', log);
     } catch (e) {
       // MCP 协议层是进程存活锚点（引擎 spawn/kill），socket 面挂了不拒绝
       // 启动——CLI 调用方会拿到 connect 失败的可操作指引（cli-client 文案）
@@ -585,4 +623,5 @@ module.exports = {
   buildDaemonHandlers,
   createFrameDecoder,
   createServer,
+  compactRecords,
 };

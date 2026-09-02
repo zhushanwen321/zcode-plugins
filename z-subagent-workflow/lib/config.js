@@ -21,6 +21,8 @@
  *                          zcode 子进程统一注入此标记并剥离 ZSW_NESTED
  *                          （nesting-guard），嵌套会话内再起的 zsw 进程只看得到它
  *   ZSW_MAX_CONCURRENT     并发槽位上限覆盖（正整数；非法值忽略并警告，缺省 3）
+ *   ZSW_RECORD_KEEP        records.jsonl 终态 run 保留上限（正整数；非法值忽略
+ *                          并警告，缺省 1000）——仅 daemon 角色确定后 compact 消费
  */
 
 const os = require('node:os');
@@ -91,6 +93,29 @@ function resolveMaxConcurrent() {
   return 3;
 }
 
+/** record 台账终态 run 保留上限缺省值（socket-record 收口 D8）。 */
+const RECORD_KEEP_DEFAULT = 1000;
+
+/**
+ * ZSW_RECORD_KEEP 解析（socket-record 收口 D8；家族语义对齐 assemble.js 的
+ * resolveStateKeep）：正整数生效；未设/空回落缺省 1000；非法值 stderr 警告
+ * 一次并回落缺省。函数形态带 env 注入（与 resolveMaxConcurrent 的加载期
+ * 求值不同——消费点是 daemon 侧 compact 挂点的调用期，函数形态便于单测注入）。
+ * @param {object} [env] 缺省 process.env（测试注入）
+ * @returns {number}
+ */
+function resolveRecordKeep(env = process.env) {
+  const raw = env.ZSW_RECORD_KEEP;
+  if (raw === undefined || raw === '') return RECORD_KEEP_DEFAULT;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) return n;
+  process.stderr.write(
+    `[zsub] ZSW_RECORD_KEEP=${JSON.stringify(raw)} 非法（需正整数），已忽略，回落缺省 ${RECORD_KEEP_DEFAULT}。`
+    + '恢复指引：设为正整数，如 ZSW_RECORD_KEEP=200，然后重启进程生效。\n',
+  );
+  return RECORD_KEEP_DEFAULT;
+}
+
 const DEFAULTS = {
   timeoutMs: null,          // 不设超时限制（用户可按需填写）
   maxConcurrent: resolveMaxConcurrent(), // D11；ZSW_MAX_CONCURRENT env 覆盖（MF5）
@@ -111,6 +136,7 @@ module.exports = {
   mailboxEnabled,
   isNestedEnv,
   zswCliPath,
+  resolveRecordKeep,
   DEFAULTS,
   NESTED,
 };
