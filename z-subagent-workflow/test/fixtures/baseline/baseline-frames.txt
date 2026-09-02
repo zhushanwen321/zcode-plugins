@@ -1,0 +1,15 @@
+=== list 响应帧 ===
+{"id":1,"ok":true,"result":[]}
+
+=== 不支持的 action ===
+{"id":1,"ok":false,"error":{"message":"不支持的 action \"bogus\"。支持：start | list | status | cancel | message | close | agents | models | wait。恢复指引：action 必须取 inputSchema 中的枚举值。"}}
+
+=== message 缺 text ===
+{"id":1,"ok":false,"error":{"message":"message 需要 text（非空字符串，续聊消息内容）。"}}
+
+=== status 缺 id ===
+{"id":1,"ok":false,"error":{"message":"缺少必填参数 subagentId（start 返回的任务 id）。恢复指引：先用 list 查全部任务 id。"}}
+
+=== 未知 tool ===
+{"id":2,"ok":false,"error":{"message":"unknown tool: \"bogus\"（已注册: zsub, zflow）。👉 检查 tool 字段拼写"}}
+

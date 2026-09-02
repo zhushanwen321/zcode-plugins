@@ -177,11 +177,11 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 
 | 方案 | 长期架构 | 短期成本 | 风险 | 裁决 |
 |---|---|---|---|---|
-| **A1：独立 `lib/frame-codec.js`**（encodeFrame + createFrameDecoder 导出；daemon-socket / cli-client / 测试 import） | 语法单源；传输层职责（listen/accept/锁/看门狗）留在 daemon-socket 不动——S8 的职责分离保持，只是「语法」从「传输层」里拆出来成为可 import 的最小面 | 新文件 ~80 行（从两处搬运合并）+ 两个生产文件接线 + 测试 replica 替换；同步更新两处头注的互指段 | 低：纯搬运合并，行为锚（半包/坏行/UTF-8 切分）已有现成回归测试 | ✅ |
-| A2：daemon-socket 扩展导出（`module.exports = { startDaemon, encodeFrame, createFrameDecoder }`） | 不新建文件；但语法仍寄生在传输层模块上——client import daemon-socket 即拖入其 require 闭包；「测试 import 生产模块」的粒度也粗（测试只为 codec 却要面对整个模块面） | 最小（改一行导出 + 测试 import） | 低；但 S8 头注当初不导出的表述（「对外仅暴露 startDaemon」）被直接推翻而非精化，模块边界叙事变差 | ❌ |
-| A3：维持现状，仅测试侧约定 replica 必须逐字复制 | 零改动 | 零 | 失败模式 A 原样保留；且「约定」无机械保障，69f71eb 已经演示过 replica 会语义漂移（丢半包） | ❌ |
+| **F1：独立 `lib/frame-codec.js`**（encodeFrame + createFrameDecoder 导出；daemon-socket / cli-client / 测试 import） | 语法单源；传输层职责（listen/accept/锁/看门狗）留在 daemon-socket 不动——S8 的职责分离保持，只是「语法」从「传输层」里拆出来成为可 import 的最小面 | 新文件 ~80 行（从两处搬运合并）+ 两个生产文件接线 + 测试 replica 替换；同步更新两处头注的互指段 | 低：纯搬运合并，行为锚（半包/坏行/UTF-8 切分）已有现成回归测试 | ✅ |
+| F2：daemon-socket 扩展导出（`module.exports = { startDaemon, encodeFrame, createFrameDecoder }`） | 不新建文件；但语法仍寄生在传输层模块上——client import daemon-socket 即拖入其 require 闭包；「测试 import 生产模块」的粒度也粗（测试只为 codec 却要面对整个模块面） | 最小（改一行导出 + 测试 import） | 低；但 S8 头注当初不导出的表述（「对外仅暴露 startDaemon」）被直接推翻而非精化，模块边界叙事变差 | ❌ |
+| F3：维持现状，仅测试侧约定 replica 必须逐字复制 | 零改动 | 零 | 失败模式 A 原样保留；且「约定」无机械保障，69f71eb 已经演示过 replica 会语义漂移（丢半包） | ❌ |
 
-**A2 被否的代价可感知化**：若用 A2，§3.1 第一个走查场景变成「改 daemon-socket.js 内的 codec」——语法演进仍与传输层同文件，`cli-client.js` import 传输层模块的关系与 S8 头注「客户端不复用它」直接冲突，头注叙事要改成「复用但只用 codec 符号」，依赖面比 A1 的独立最小模块宽。
+**F2 被否的代价可感知化**：若用 F2，§3.1 第一个走查场景变成「改 daemon-socket.js 内的 codec」——语法演进仍与传输层同文件，`cli-client.js` import 传输层模块的关系与 S8 头注「客户端不复用它」直接冲突，头注叙事要改成「复用但只用 codec 符号」，依赖面比 F1 的独立最小模块宽。
 
 #### 线 B：zsub action 面收口
 
@@ -208,8 +208,8 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 ### 3.3 关键决策与权衡
 
 **D1：帧 codec 以独立最小模块 `lib/frame-codec.js` 落地（选定）**
-- **采用**：`encodeFrame(obj)` + `createFrameDecoder({ onBadLine })` 从 `daemon-socket.js` 原样迁出（Buffer 版完整状态机为唯一实现）；`daemon-socket.js` / `cli-client.js` / 构帧测试全部 import。`cli-client.js` 的宽容过滤（跳过无 `ok` 行、取首个响应帧）**留在 client 侧**——那是「单请求单响应」的 client 语义，不是帧语法。
-- **被否**：A2（daemon-socket 扩展导出——语法仍寄生传输层，client 依赖面变宽）；A3（维持现状——失败模式 A 保留）。
+- **采用**：`encodeFrame(obj)` + `createFrameDecoder(onBadLine)` 从 `daemon-socket.js` 原样迁出（Buffer 版完整状态机为唯一实现）；`daemon-socket.js` / `cli-client.js` / 构帧测试全部 import。`cli-client.js` 的宽容过滤（跳过无 `ok` 行、取首个响应帧）**留在 client 侧**——那是「单请求单响应」的 client 语义，不是帧语法。
+- **被否**：F2（daemon-socket 扩展导出——语法仍寄生传输层，client 依赖面变宽）；F3（维持现状——失败模式 A 保留）。方案编号用 F 前缀，避免与 §4 场景编号 A1-A9 混淆（B/C 线方案编号无冲突故保留）。
 - **证据**：S8 定论原文两处头注（§2.1 引述）；`daemon-socket.test.js:427-432` 自认留债注释；回归锚测试（半包 :401 起 / 坏行 :434 起 / 粘包三切 :458 起）已存在，迁移后直接复用。
 - **效果**：目标 1 成立；S8 的「帧语法变更须两文件同步改」代价句被消除，「传输层 vs 客户端最小实现」的职责分离叙事保持（头注改写为「传输层留在本模块，帧语法单源在 frame-codec」）。
 
@@ -234,16 +234,16 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 
 - **被否**：B2（只提校验——漂移面保留）；B3（收进 bin/zsw.js——反向 require 加厚，与候选「zflow 面抽出」方向相撞）。
 - **证据**：D-4/D-E3 对 zflow 线的同类裁决先例（「防两入口漂移」目标一致，但落点选 lib 避免反向 require）；三份 switch 现状（§2.2）。
-- **效果**：目标 2 成立；`start` 的 wait 参数两入口有意分叉（daemon 不传 / `--local` 恒 true）**显式保留**——分叉点从「两处实现各自写」变为「两入口各传各的参数、exec 单一」，有意分叉在调用点可见。**`--local` 入口查表但保持现状可用的 action 子集**（start/list/status/message/cancel/close）——agents/models/wait 在 `--local` 维持「未知子命令」现状输出（两入口能力面差异是既有现状，零行为变化基准下不收口；由入口侧在查表前过滤实现）。
+- **效果**：目标 2 成立；`start` 的 wait 参数两入口有意分叉（daemon 不传 / `--local` 恒 true）**显式保留**——分叉点从「两处实现各自写」变为「两入口各传各的参数、exec 单一」，有意分叉在调用点可见。**`--local` 入口查表但保持现状可用的 action 子集**（start/list/status/message/cancel/close）——agents/models 在 `--local` 维持「未知子命令」现状输出、wait 维持其专属精确报错（「wait 无本地模式」，发生在白名单过滤与查表之前）现状输出（两入口能力面差异是既有现状，零行为变化基准下不收口；由入口侧在查表前过滤实现）。
 
 **D4：校验分层归属声明——现状三层全保留，新增 action 的校验单点进 manager 层（选定）**
 - **采用**：现状三层各自服务不同失败面，全部原样保留：① CLI `usage()`（`bin/zsw.js:828/:1029`，argv 层快速用法提示——缺参时打印用法，不组装 manager 即可报错）；② daemon 面 handler 前置校验（`server.js:173-175` message text 等，迁移后随 exec 原样保留在对应表项内）；③ manager 入口校验（`manager.js:117-142/:343-388`，业务权威层）。**收敛的是增量**：新增 action 的业务校验只加 manager 层（一处），action 表与两入口不加自己的校验副本——「加 action 只动一处 + manager」由结构保证。
 - **被否**：删除 `:828/:1029` 或 `:173-175`（本设计 R1 前版本的方案）——`:828/:1029` 正是「缺参打印 usage」的实现，删除后缺参输出从 usage 变 manager throw 消息，是使用者可见的输出变化，直接违反 §1 目标 4「零行为变化」基准（A1 逐行比对会 FAIL）。该方案被「零回归优先于校验去重」的基准击穿，记入被否谱系。
 - **证据**：`bin/zsw.js:828`（`if (!args.task || !args.slug) usage();`）与 manager 校验消息原文（§2.2 引述）；两入口缺参输出现状即 A1 基线的组成部分。
-- **效果**：校验不增不减（现状保留、增量单点）；错误消息零变化；「重复校验」的漂移面在增量维度关闭。**已声明的边缘对齐**：`--local` 的 status/cancel/close/message 不带 `--id` 时，错误消息从收口前的 manager 层劣质形态（`subagent "undefined" 不存在`——undefined 被拼进用户消息）变为表内前置校验的可操作形态（「缺少必填参数 subagentId…」，与 daemon 路径现状逐字一致）——这是 D3「前置校验随 exec 保留在表项内」的结构必然，两入口语义对齐正是目标 2 的达成方向，属有意变化非回归。
+- **效果**：校验不增不减（现状保留、增量单点）；错误消息零变化；「重复校验」的漂移面在增量维度关闭。**已声明的边缘对齐**：`--local` 的 status/cancel/close/message 不带 `--id` 时，错误消息从收口前的 manager 层劣质形态（`subagent "undefined" 不存在`——undefined 被拼进用户消息）变为表内前置校验的可操作形态（「缺少必填参数 subagentId…」，与 daemon 路径现状逐字一致）——这是 D3「前置校验随 exec 保留在表项内」的结构必然，两入口语义对齐正是目标 2 的达成方向，属有意变化非回归。**同类的 text 维度**：`--local` message 带 id 不带 text 且该 id 非 conversation/非 idle 时，错误从状态类消息变为「message 需要 text…」——前置校验序随表迁移对齐 daemon 面（A9 三类场景均带合法 text，不受影响）。
 
 **D5：删除 okContent/unwrapContentResult 对，handler 直返业务对象（选定）**
-- **采用**：`buildToolHandlers` 的 zsub/zflow 各分支直接 `return` 业务对象（错误直接 throw，由 daemon-socket dispatch 统一映射 `ok:false` 帧——该映射现状已存在，`daemon-socket.js:371-372`）；`buildDaemonHandlers` 的 unwrap 包装层随之删除（两函数合并为单一 daemon handler 构建）。`errContent` **保留**：MCP 面 `dispatchToolCall` 拒绝路径（server.js:437-441）仍消费它。`okContent` 删除（唯一消费者是 unwrap）。
+- **采用**：`buildToolHandlers` 的 zsub/zflow 各分支直接 `return` 业务对象（错误直接 throw，由 daemon-socket dispatch 统一映射 `ok:false` 帧——该映射现状已存在，基线快照 `daemon-socket.js:371-372`、U0 后现行 :326-327）；`buildDaemonHandlers` 的 unwrap 包装层随之删除（buildDaemonHandlers 保留纯形态适配职责：参数包装 + cwd 守卫 + signal 透传，不再做 MCP 包装/拆包）。`errContent` **保留**：MCP 面 `dispatchToolCall` 拒绝路径（server.js:437-441）仍消费它。`okContent` 删除（唯一消费者是 unwrap）。
 - **被否**：保留包装对「以备 MCP 面复活」——MCP zero-tool 是 D1 终态决策，为已死协议保留管道违反减法原则；真要复活时 content 包装属于 MCP 传输层适配，届时在 MCP 面边界重新引入才是对的层。
 - **证据**：帧负载已是业务裸 result 的两端代码证据（§2.2：server.js:390 unwrap 在落帧前 + cli-client.js:60-63 只剥 id）；适配器头注自认「content 包装对 CLI 是泄漏」。
 - **效果**：失败模式 C 消除；daemon 内部管道少两跳；**socket 线上协议零变化**（帧形态前后逐字节一致——验收 A1 帧级比对）。
@@ -261,7 +261,7 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 - **效果**：scope 收敛；「统一 run 台账」与「zflow 面抽出」落地时若确需统一再评估。
 
 **D8：record compact = keep-N 整 run 截断 + temp/rename 原子重写（选定）**
-- **采用**：`RecordStore.compact({ keep })`：按 `subagentId`（事件首字段 `subagentId` 或 `id`）分组 → 活跃态（非 `TERMINAL_STATUSES`，含 `lost`）run 的行**全部保留** → 终态 run 按组内最后事件 `ts` 降序取前 `keep` 个保留 → 其余 run 的行删除 → 剩余行按原文件顺序写 `${filePath}.compact-${process.pid}.tmp`（同目录保证同文件系统，pid 后缀防多进程 temp 互踩）→ `fs.renameSync` 原子替换 → 返回 `{ removedRuns, removedLines, keptRuns }`。**不在内存索引的行组**（created 行损坏导致重放全 skipped 的孤儿行）：保守保留并跳过（无法判态，删错 = 丢可能在跑的 run；占比极小）。**触发点 = daemon 角色确定后**：`server.js` main 序列的 `manager.recover()`（:581）位于 startDaemon 竞选（:646）**之前**且 standby 实例同样执行——compact **不得**挂在 recover 之后；正确挂点是「startDaemon 角色确定后判 `role==='daemon'`」与「`onTakeover`（:656，再 recover 之后）」两处（实施期按 startDaemon 实际回调形态接线，索引此时已由前面的 recover/rebuild 建好）。`ZSW_RECORD_KEEP` env（正整数，缺省/非法回落 `1000`，非法值 stderr 警告——对齐 `ZSW_STATE_KEEP` 的 `resolveStateKeep` 家族语义）。**实施期固化的两处规格补全（U3）**：① compact 成功 rename 后同步收缩内存索引（`records.delete` 被删 run）——否则 daemon 生命周期内 list 仍可见已被文件层截断的 run；② 读文件用「先 stat 后 read」顺序（stat 记录 size 再 read），消除「读到更多行却复查相等」的静默丢行子窗口（D9② 检测面的加固）。
+- **采用**：`RecordStore.compact({ keep })`：按 `subagentId`（事件首字段 `subagentId` 或 `id`）分组 → 活跃态（非 `TERMINAL_STATUSES`，含 `lost`）run 的行**全部保留** → 终态 run 按组内最后事件 `ts` 降序取前 `keep` 个保留（同 `ts` 并列按 runId 字典序定序，保证删留集跨重启/跨进程确定——实施期固化规格） → 其余 run 的行删除 → 剩余行按原文件顺序写 `${filePath}.compact-${process.pid}.tmp`（同目录保证同文件系统，pid 后缀防多进程 temp 互踩）→ `fs.renameSync` 原子替换 → 返回 `{ removedRuns, removedLines, keptRuns }`。**不在内存索引的行组**（created 行损坏导致重放全 skipped 的孤儿行）：保守保留并跳过（无法判态，删错 = 丢可能在跑的 run；占比极小）。**触发点 = daemon 角色确定后**：`server.js` main 序列的 `manager.recover()`（:581）位于 startDaemon 竞选（:646）**之前**且 standby 实例同样执行——compact **不得**挂在 recover 之后；正确挂点是「startDaemon 角色确定后判 `role==='daemon'`」与「`onTakeover`（:656，再 recover 之后）」两处（实施期按 startDaemon 实际回调形态接线，索引此时已由前面的 recover/rebuild 建好）。`ZSW_RECORD_KEEP` env（正整数，缺省/非法回落 `1000`，非法值 stderr 警告——对齐 `ZSW_STATE_KEEP` 的 `resolveStateKeep` 家族语义）。**实施期固化的两处规格补全（U3）**：① compact 成功 rename 后同步收缩内存索引（`records.delete` 被删 run）——否则 daemon 生命周期内 list 仍可见已被文件层截断的 run；② 读文件用「先 stat 后 read」顺序（stat 记录 size 再 read），消除「读到更多行却复查相等」的静默丢行子窗口（D9② 检测面的加固）。
 - **被否**：C2 快照折叠（新语法 + 升级窗口行为分叉 + 生成出错面，§3.2 已否）；C3 显式子命令（封顶责任外推，目标 3 打折）；挂在 `manager.recover()` 后（本设计 R1 前版本的方案）——被 server.js 实际结构击穿：该调用在竞选前且 standby 也跑，挂此 = standby 并发 compact（temp 互踩 + 复查盲区），或挂 onTakeover 则首竞选 daemon 永不 compact，两处字面挂点均不成立，记入被否谱系。
 - **证据**：截断子集的合法性 by construction（每行独立 JSON，删任意行集不影响保留行重放）；`pruneWorkflowState` 先例（同族 keep-N 语义、单调用点论证）；server.js main 序列与 standby 初始化的实际顺序（审查 R1 核实）。
 - **效果**：目标 3 成立；`~/.zcode/zsw/records.jsonl` 稳态 ≤（活跃 + lost 遗留 + 1000 终态）× 每任务事件数。**已知缺口声明**：lost 态 run 属活跃语义（可能被探活纠正回）永不淘汰，而 `manager.recover` 每次重启为每条 lost run 追加 update 落盘（manager.js:492-506）——崩溃遗留的 lost run 行数随重启次数线性增长且不在 keep-N 控制内。接受理由：产生前提是「崩溃遗留 + 用户不清理」，正常使用不产生，量级远小于终态主项；lost 语义的重构属于候选「统一 run 台账」（`zsw-manager-convergence.md` 立案）的范围，本设计不越界处理 manager 侧写入行为。interface（create/transition/update/append/get/list/rebuildFromLog）零变化——D-E4「暂不下沉」裁决完好。

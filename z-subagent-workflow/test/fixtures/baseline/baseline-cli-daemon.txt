@@ -1,0 +1,70 @@
+###### daemon 路径 ######
+--- list ---
+[]
+exit=0
+--- agents ---
+[
+  {
+    "name": "analyst",
+    "description": "深度项目分析 agent（只读，产出给人读的报告，CSIO 分层，设计决策标 Inferred）",
+    "when": "深度分析某项目/repo 架构、选型对比、学习借鉴、产出给人读的技术报告",
+    "source": "core-vendored",
+    "location": "/Users/zhushanwen/Code/zcode-plugin-workspace/feat-app-server-refactor/z-subagent-workflow/lib/vendor/subagent-core/agents/analyst.md",
+    "file": "/Users/zhushanwen/Code/zcode-plugin-workspace/feat-app-server-refactor/z-subagent-workflow/lib/vendor/subagent-core/agents/analyst.md"
+  },
+  {
+    "name": "coder",
+    "description": "代码实现、修改与测试 agent（可改文件，唯一改代码的角色，最小变更，改前先读）",
+    "when": "写新功能/重构/修 bug/写测试/跑测试（唯一改代码的角色）",
+    "source": "core-vendored",
+    "location": "/Users/zhushanwen/Code/zcode-plugin-workspace/feat-app-server-refactor/z-subagent-workflow/lib/vendor/subagent-core/agents/coder.md",
+    "file": "/Users/zhushanwen/Code/zcode-plugin-workspace/feat-app-server-refactor/z-subagent-workflow/lib/vendor/subagent-core/agents/coder.md"
+  },
+  {
+    "name": "context-builder",
+    "description": "需求分析与元提示生成",
+    "when": "",
+    "source": "user-zcode",
+    "location": "/Users/zhushanwen/.zcode/agents/context-builder.md",
+    "file": "/Users/zhushanwen/.zcode/agents/context-builder.md"
+  },
+  {
+    "name": "debugger",
+    "description": "运行时故障诊断 agent（假设驱动，产出根因+证据链+修复方向，不改业务代码）",
+    "when": "运行时故障诊断（查 bug 根因/追堆栈/定位测试失败原因/性能瓶颈/偶发问题）",
+    "source": "core-vendored",
+exit=0
+--- models ---
+{
+  "provider": "builtin:bigmodel-coding-plan",
+  "models": [
+    {
+      "name": "GLM-5.3",
+      "contextWindow": 1000000,
+      "reasoning": {
+        "variants": [
+          "low",
+          "high",
+          "max"
+        ],
+        "defaultVariant": "max"
+      }
+    },
+exit=0
+--- message 拒绝（不存在 id）---
+[zsw] daemon 错误: subagent "sa-nonexist" 不存在。恢复指引：用 list 查看全部任务 id。
+exit=1
+--- start 缺参 usage ---
+用法见文件头注。示例：
+  node bin/zsw.js start --task "审查 README" --slug review
+  node bin/zsw.js list
+  node bin/zsw.js status --id sa-xxxx
+  node bin/zsw.js message --id sa-xxxx --text "补充重点"
+  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法
+  node bin/zsw.js workflow --action list      # 管理面默认走 daemon（--local 本地）
+  node bin/zsw.js list                          # 默认走常驻 daemon（socket thin client）
+  node bin/zsw.js agents                        # 可用 agent .md 清单（vendored 内置 + 四根；start 只收路径，先查 location/file 列）
+  node bin/zsw.js models                        # 可用模型清单（默认 provider，路由决策前查）
+  node bin/zsw.js models --all                  # 全 provider 视图（模型为全名 <provider>/<model>）
+  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）
+exit=0

@@ -496,7 +496,7 @@ test('C12 种子夹具恢复实测：25 历史快照经 recoverCrashedRuns 路�
   const root = freshRoot();
   // 种子脚本只读/执行消费（领地外文件不改）：生成 25 文件（10 无 v + 15 带 wf-run-v2）
   execFileSync(process.execPath, [
-    path.join(__dirname, 'fixtures', 'make-legacy-state-files.js'), root, '--v',
+    path.join(__dirname, '..', 'verification', 'make-legacy-state-files.js'), root, '--v',
   ], { encoding: 'utf8' });
   const stateDir = path.join(root, 'workflow-state');
   const seedFiles = fs.readdirSync(stateDir).filter((f) => f.endsWith('.jsonl'));
