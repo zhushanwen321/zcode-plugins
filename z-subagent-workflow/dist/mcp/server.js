@@ -126,7 +126,8 @@ function createManager(opts = {}) {
  * - 嵌套门禁在各自 handler 内而非分发层：拒绝文案按 tool 定制。
  * - 返回形态（D5 收口）：handler 直返业务对象、错误直接 throw——daemon-socket
  *   dispatch 统一映射 ok:false 帧；MCP content 包装对（okContent/unwrap）已
- *   拆除，唯一残留 errContent 服务 MCP 面 dispatchToolCall 的 zero-tool 拒绝。
+ *   拆除，残留 errContent 服务 MCP 面 dispatchToolCall 的 zero-tool 拒绝
+ *   （handleMessage catch 兜底为防御性复用——口径同 errContent 定义处注释）。
  * - wfHost 参数：orchestration host 注入点（assembleManager 组装真实现 =
  *   vendored subagent-core orchestration 的 zsw 宿主），测试传 fake 即可
  *   全链路冒烟（manager 同款模式）。

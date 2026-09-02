@@ -906,7 +906,7 @@ function exitWithDaemonResponse(resp) {
   process.exit(1);
 }
 
-/** error 帧字段（{code,message} 对象）的可读化；异常形态兜底 JSON 序列化。 */
+/** error 载荷可读化（协议 error 仅含 message；error.code 为防御性读取，存在时附注）；异常形态兜底 JSON 序列化。 */
 function daemonErrorMessage(error) {
   if (error && typeof error === 'object') {
     const msg = error.message || JSON.stringify(error);
