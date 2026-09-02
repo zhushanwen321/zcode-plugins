@@ -234,7 +234,7 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 
 - **被否**：B2（只提校验——漂移面保留）；B3（收进 bin/zsw.js——反向 require 加厚，与候选「zflow 面抽出」方向相撞）。
 - **证据**：D-4/D-E3 对 zflow 线的同类裁决先例（「防两入口漂移」目标一致，但落点选 lib 避免反向 require）；三份 switch 现状（§2.2）。
-- **效果**：目标 2 成立；`start` 的 wait 参数两入口有意分叉（daemon 不传 / `--local` 恒 true）**显式保留**——分叉点从「两处实现各自写」变为「两入口各传各的参数、exec 单一」，有意分叉在调用点可见。
+- **效果**：目标 2 成立；`start` 的 wait 参数两入口有意分叉（daemon 不传 / `--local` 恒 true）**显式保留**——分叉点从「两处实现各自写」变为「两入口各传各的参数、exec 单一」，有意分叉在调用点可见。**`--local` 入口查表但保持现状可用的 action 子集**（start/list/status/message/cancel/close）——agents/models/wait 在 `--local` 维持「未知子命令」现状输出（两入口能力面差异是既有现状，零行为变化基准下不收口；由入口侧在查表前过滤实现）。
 
 **D4：校验分层归属声明——现状三层全保留，新增 action 的校验单点进 manager 层（选定）**
 - **采用**：现状三层各自服务不同失败面，全部原样保留：① CLI `usage()`（`bin/zsw.js:828/:1029`，argv 层快速用法提示——缺参时打印用法，不组装 manager 即可报错）；② daemon 面 handler 前置校验（`server.js:173-175` message text 等，迁移后随 exec 原样保留在对应表项内）；③ manager 入口校验（`manager.js:117-142/:343-388`，业务权威层）。**收敛的是增量**：新增 action 的业务校验只加 manager 层（一处），action 表与两入口不加自己的校验副本——「加 action 只动一处 + manager」由结构保证。
