@@ -4,7 +4,7 @@
  *
  * 职责：CLI（bin/zsw.js 默认形态）与常驻 daemon 之间的单请求单响应
  * NDJSON 帧往返。请求 `{id, tool, params, cwd}\n`，响应 `{id, ok:true, result}
- * | {id, ok:false, error:{code,message}}\n`。
+ * | {id, ok:false, error:{message}}\n`（bin 侧对 error.code 的读取是防御性，协议不产生 code）。
  *
  * 帧协议契约单源在 lib/frame-codec.js 头注（NDJSON 语法与 cwd 传导语义见彼处）。
  *

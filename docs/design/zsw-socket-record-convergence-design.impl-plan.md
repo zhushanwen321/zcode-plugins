@@ -28,7 +28,7 @@ Out-of-scope：统一 run 台账（`zsw-manager-convergence.md` 立案线）；z
 | Unit | 职责 | 领地（精确文件路径） | 依赖 | 隔离(plain/worktree) | 验收条款 |
 |---|---|---|---|---|---|
 | U0（u-foundation） | 帧 codec 单源：`lib/frame-codec.js` 抽出（encodeFrame + createFrameDecoder 从 daemon-socket 原样迁出）+ daemon-socket/cli-client 接线（cli-client 宽容过滤留 client 侧包装，D1）+ 两处头注 S8 段改写 + 单元锚 | `z-subagent-workflow/lib/frame-codec.js`（新）、`z-subagent-workflow/lib/daemon-socket.js`、`z-subagent-workflow/lib/cli-client.js`、`z-subagent-workflow/test/frame-codec.test.js`（新） | 无 | plain | P-frame：既有 daemon-socket.test.js 回归锚（半包/坏行/UTF-8/粘包）原样绿 + 新 frame-codec 单元锚绿（decoder 直接 push：跨 chunk UTF-8/坏行/裸值/半包）；A1 基线比对：`zsw list`/`agents`/`models` 双路径（daemon + `--local`）输出与收口前逐行一致 |
-| U1 | 测试构帧 replica 退役：协议 replica 删（daemon-socket.test / server-daemon.test 改 import frame-codec）；假 daemon 构帧 import `encodeFrame`（三个 CLI 侧测试）；替身简化解析保留 + 注释定性（D2） | `z-subagent-workflow/test/daemon-socket.test.js`、`z-subagent-workflow/test/server-daemon.test.js`、`z-subagent-workflow/test/cli-client.test.js`、`z-subagent-workflow/test/cli-daemon-zsub.test.js`、`z-subagent-workflow/test/cli-workflow-daemon.test.js` | U0（import 其导出） | plain | A2：五个测试文件绿；`grep -rn "function encodeFrame\|createFrameDecoder" test/` 手写副本清零（替身简化解析的注释定性除外）；daemon-socket.test.js 的传输层字节级回归锚形态不退（锚组原样在） |
+| U1 | 测试构帧 replica 退役：协议 replica 删（daemon-socket.test / server-daemon.test 改 import frame-codec）；假 daemon 构帧 import `encodeFrame`（三个 CLI 侧测试）；替身简化解析保留 + 注释定性（D2） | `z-subagent-workflow/test/daemon-socket.test.js`、`z-subagent-workflow/test/server-daemon.test.js`、`z-subagent-workflow/test/cli-client.test.js`、`z-subagent-workflow/test/cli-daemon-zsub.test.js`、`z-subagent-workflow/test/cli-workflow-daemon.test.js` | U0（import 其导出） | plain | A2：五个测试文件绿；`grep -rn "function encodeFrame\|function createFrameDecoder" test/` 手写副本清零（替身简化解析的注释定性除外）；daemon-socket.test.js 的传输层字节级回归锚形态不退（锚组原样在） |
 | U2 | zsub action 面收口：`lib/zsub-actions.js` action 表（D3 归属表：nested 门禁/未初始化检查留 server 入口包装层，agents/models 经 deps.ports）+ `--local` 查表 + message 不可达内联整段删（D6）+ okContent/unwrap 拆除 handler 直返（D5，zflow 返回形态同步）+ usage 与前置校验原样保留（D4）+「不支持的 action」表生成逐字一致（含尾句） | `z-subagent-workflow/lib/zsub-actions.js`（新）、`z-subagent-workflow/bin/zsw.js`、`z-subagent-workflow/dist/mcp/server.js`、`z-subagent-workflow/test/server.test.js`、`z-subagent-workflow/test/zsub-actions.test.js`（新） | 无（与 U0/U1 领地互斥；action 面不碰帧语法） | plain | P-roundtrip：收口前后同命令帧捕获比对逐字节一致；A3：两入口（`--local`/daemon）start(`--wait` 真跑)/status/cancel/close/message 拒绝路径输出一致 + 缺参输出仍 usage +「不支持的 action」逐字一致；A4：MCP 冒烟（tools/list 恒空、tools/call errContent 拒绝）；server.test.js 绿 + nested 门禁/未初始化守卫保留断言；A9 单测锚部分：三类可达错误消息逐字一致 |
 | U3 | record compact：`RecordStore.compact({keep})`（D8：keep-N 整 run 截断/活跃与 lost 全保/孤儿行组保守保留/pid 后缀 temp + rename/size 双向复查放弃）+ server.js 挂点接线（startDaemon ready 判 role==='daemon' + onTakeover，不挂 main recover 后）+ `ZSW_RECORD_KEEP` 解析 | `z-subagent-workflow/lib/record-store.js`、`z-subagent-workflow/dist/mcp/server.js`（仅 compact 接线段）、`z-subagent-workflow/lib/config.js`、`z-subagent-workflow/test/record-compact.test.js`（新） | U2（同文件共改 dist/mcp/server.js，串行） | plain | P-mount：超阈值台账下双 MCP server 并发启动仅 daemon 出 compact 日志 + kill daemon 接管路径也触发；P-compact-equiv（含孤儿行组 fixture）：compact 后 rebuild 与保留子集索引逐字段一致；P-occ（双向复查两面）：放弃路径 + temp 清理 + 日志留痕；P-keep-env：正整数/回落/警告；A5-A8 真实场景（fixture 生成器 + 临时 ZSW_ROOT）：文件收敛 101 run、重启等价、`--local` 不触发、活跃/lost run 保真 |
 
@@ -75,6 +75,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 | U2 全量测试发现：`node --test` 无参全量会误扫 test/fixtures/make-legacy-state-files.js（fixture 生成器无参 exit 2 被当测试执行）——HEAD 干净态复现同样失败，非本次引入 | 合理（认知外既有问题，不在任何单元领地） | 登记残留风险第 5 条；收尾阶段单独修复（不混入单元 commit） |
 | U3 实施发现：compact 需同步收缩内存索引（records.delete），且读文件改「先 stat 后 read」消除静默丢行子窗口——D8 未明说的必要补全 | 合理（A5 list 可见性的隐含要求；D9② 检测面加固） | 已固化设计 D8「实施期固化的两处规格补全」段 |
 | U3 实施发现：同 ts 并列的终态 run 用分组键（subagentId/id）字典序定序（tie-break）——D8 未规定 | 合理（删留集确定性；Map 键唯一保证全序） | 已固化设计 D8 采用段（「实施期固化规格」标注） |
+| sync 审查 F4：设计 §5 U2 承诺的「两入口行为比对测试」未按字面建成自动化（对照 runDaemonCommand 组参产物需从 bin 导出内部符号，超领地） | contested（suggestion 级，默认 doc-right；取折中） | 落地组合替代：zsub-actions.test.js 新增「两入口同源结构锚」（白名单 ⊆ 表键 + handler 经 execZsubAction + 无包装调用残留——漂移防护自动化）+ A3 全行为比对由 Gate B 主 agent 亲执（证据在 §8）；设计 §5 措辞同步（R5 行） |
 | 一致性审查区 C：A8 真实场景降级为单元版（gen-fixture 无 lost/中部放置能力） | 合理（单元 fixture 形态等价：中部活跃+lost+前后终态；A5 已覆盖真实 daemon 活跃保真；缺口仅「真实 daemon 下 lost run 中部保真」） | 登记本条；后续如需可扩 gen-fixture lost/中部参数 |
 | 一致性审查区 A+B：收口前行为基线录制了但未落盘（仅存易失 /tmp），「逐字节一致」声称不可第三方回溯 | 不合理（流程缺口） | 已修：三个基线 txt 归档 test/fixtures/baseline/（.txt 不在 node --test 扫描面），本表证据指针同步补路径 |
 | 一致性审查区 C：验收资产（gen-fixture/acceptance）在 /tmp 无仓库锚点 | 不合理（产物自包含缺口） | 已修：归档 z-subagent-workflow/verification/（不入 npm files 白名单），README 说明用途与重跑注意 |
@@ -92,12 +93,12 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 
 **残留风险（承接设计，实施期盯防）**：
 
-1. P-roundtrip 帧逐字节比对依赖基线先行（收口前录）——漏录则该探针失效。
+1. ~~P-roundtrip 帧逐字节比对依赖基线先行（收口前录）——漏录则该探针失效~~ **已解决**（基线归档 test/fixtures/baseline/baseline-frames.txt；Gate B P-roundtrip 双向 diff 零差异）。
 2. D9③ compact 残余微窗（复查点与 rename 间）：设计层面接受；若实施期构造出真实丢失行复现，升级回设计重议。
 3. A9 busy/续聊真实场景不可稳定构造（`--local` 视角状态域不含 busy）——缺口已声明，P3 冷续聊回归时补。
 4. zsw 版本未 bump：本计划全部改动在 files 白名单内，收尾时 `node scripts/check-release-needed.js` 将提示待发版——发版与 push 等用户授权（不在本计划内）。
-6. e2e-daemon.test.js:153 模型配额条件门禁（认知外既有）：CI 无凭据环境模型场景静默 skip 为刻意设计，与本计划零容忍口径存在张力——本轮 skipped=0 未触发；Gate A 验收者建议上级裁量，暂维持现状（不在本设计范围）。
 5. ~~`node --test` 无参全量误扫 `test/fixtures/make-legacy-state-files.js`（HEAD 既有，U2 期间发现）~~ **已解决**（一致性审查修复批次 9e01787：迁 verification/ 消除扫描面，唯一引用方 19/19 绿，全量 442/442）。
+6. e2e-daemon.test.js:153 模型配额条件门禁（认知外既有）：CI 无凭据环境模型场景静默 skip 为刻意设计，与本计划零容忍口径存在张力——本轮 skipped=0 未触发；Gate A 验收者建议上级裁量，暂维持现状（不在本设计范围）。
 
 | 日期 | 事件 |
 |---|---|
@@ -106,7 +107,7 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 
 ## 8 双级验收结论（2026-09-02）
 
-**Gate A：绿。** `node --test`（无参，插件目录）442/444 全绿——442 pass / 0 fail / 0 skip / 0 todo，e2e 真实模型 14 用例全部真跑（172.3s）；node --check 17 文件全过；check-sync 双插件一致；覆盖矩阵无认领缺口。唯一零容忍 grep 命中为 `e2e-daemon.test.js:153` 模型配额条件门禁（认知外既有代码、非本次交付触达面、本轮 skipped=0 未触发）——裁量为环境门禁而非测试绕过，登记残留风险第 6 条。
+**Gate A：绿。** `node --test`（无参，插件目录）442/442 全绿——442 pass / 0 fail / 0 skip / 0 todo（node:test summary 的 tests 计数），e2e 真实模型 14 用例全部真跑（172.3s）；node --check 17 文件全过；check-sync 双插件一致；覆盖矩阵无认领缺口。唯一零容忍 grep 命中为 `e2e-daemon.test.js:153` 模型配额条件门禁（认知外既有代码、非本次交付触达面、本轮 skipped=0 未触发）——裁量为环境门禁而非测试绕过，登记残留风险第 6 条。
 
 **Gate B：16/16 PASS**（主 agent 亲执逐行签收；Gate B 首派 subagent 因模型配额窗口用尽中断，恢复后为节约配额改主 agent 机械执行，全部命令与输出可复核）：
 

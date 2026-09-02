@@ -102,7 +102,8 @@ function createFrameDecoder(onLine) {
   };
 }
 
-// errContent 仅剩一个消费者：MCP 面 dispatchToolCall 的 zero-tool 拒绝
+// errContent 的活跃消费者是 MCP 面 dispatchToolCall 的 zero-tool 拒绝
+// （handleMessage catch 的「内部错误」兜底帧为防御性复用，常态不可达）
 // （okContent/unwrap 包装对已随 socket 面收口拆除——D5：handler 直返业务
 // 对象，socket 帧负载本就是业务裸 result）
 const errContent = (text) => ({ content: [{ type: 'text', text }], isError: true });

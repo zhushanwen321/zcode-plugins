@@ -274,3 +274,21 @@ test('models：缺省视图（provider/models/guidance）与 --all 视图（port
   assert.deepEqual(all.providers, [{ provider: 'p1', models: [{ name: 'p1/m1' }] }]);
   assert.match(all.guidance, /全名/);
 });
+
+test('两入口同源结构锚（A3 自动化防漂移面）：bin --local 白名单 ⊆ action 表键，daemon handler 经 execZsubAction 查表', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const binSrc = fs.readFileSync(path.join(__dirname, '..', 'bin', 'zsw.js'), 'utf8');
+  const srvSrc = fs.readFileSync(path.join(__dirname, '..', 'dist', 'mcp', 'server.js'), 'utf8');
+  const tableKeys = new Set(Object.keys(zsubActions));
+  const m = binSrc.match(/LOCAL_SUBCOMMANDS\s*=\s*new Set\(\[([^\]]*)\]/);
+  assert.ok(m, 'bin/zsw.js 应保留 LOCAL_SUBCOMMANDS 白名单（D3：--local 6-action 子集）');
+  const names = [...m[1].matchAll(/'([a-z-]+)'/g)].map((x) => x[1]);
+  assert.ok(names.length >= 6, `白名单应覆盖 --local 可用子命令（实际 ${names.length} 个）`);
+  for (const n of names) {
+    assert.ok(tableKeys.has(n), `白名单 action "${n}" 必须在 zsub-actions 表中（两入口查同一张表）`);
+  }
+  assert.ok(srvSrc.includes('execZsubAction'), 'daemon zsub handler 应经 execZsubAction 查表（D3 归属表）');
+  assert.ok(!srvSrc.includes('okContent(') && !srvSrc.includes('unwrapContentResult('),
+    'daemon 内不应残留 MCP content 包装的调用形态（D5 终态；注释中的历史说明不算）');
+});

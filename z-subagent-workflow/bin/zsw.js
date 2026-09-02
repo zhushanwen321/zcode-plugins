@@ -11,7 +11,8 @@
  *      「下次活动才注入」边界在此通道不复存在。
  *
  * 与 --local 模式的差异（如实声明；--local = 本地一次性执行，调试后门）：
- * --local 下 CLI 是一次性进程，start 与 message 一律阻塞到本轮完成再退出——
+ * --local 下 CLI 是一次性进程，start 阻塞到本轮完成再退出（message 续聊执行线
+ * 暂不可用，见下方 message 用法行说明）——
  * 进程退出即丢失后台执行体（轮死、record 卡 running、outputs/通知永不产生），
  * 且无常驻组件会接管 --local 启动的任务（server 的 recover 只在启动时跑，
  * 只会把 running 标成孤儿，不会收尾）。日常用法（默认，即 daemon 模式）执行体
@@ -38,7 +39,7 @@
  *         partial 结果，exit 2）
  *   node bin/zsw.js list
  *   node bin/zsw.js status --id <subagentId>
- *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（投递即回，完成经 wait 收）
+ *   node bin/zsw.js message --id <subagentId> --text "<续聊消息>"（续聊执行线暂不可用——冷续聊回归已登记 P3；调用会收到明确不可用错误）
  *   node bin/zsw.js cancel --id <subagentId>
  *   node bin/zsw.js close --id <subagentId>
  *   node bin/zsw.js workflow [--action <run|abort|status|list|scripts|lint|script-generate|script-save|script-delete>]

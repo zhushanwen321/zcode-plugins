@@ -278,7 +278,7 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 | ID | 验证的行为 | 探针 | 状态 | 失败时的降级路径 |
 |---|---|---|---|---|
 | P-frame | codec 迁移后 daemon/client 往返行为不变（半包/坏行/UTF-8 切分/粘包） | 既有回归锚（daemon-socket.test.js 传输层字节级驱动组）迁移后原样跑绿 + 新增 frame-codec 单元锚（decoder 直接 push 驱动） | ⛔ U1 完成前 | 失败 → 迁移回退（git revert 单元），对照 diff 找语义漂移点 |
-| P-roundtrip | D5 后 socket 帧逐字节一致（业务对象 → 帧） | 收口前后同命令帧捕获比对（`--local` 与 daemon 各跑一遍，diff 帧文本） | ⛔ U2 完成前 | 失败 → 定位 handler 返回形态差异（如 undefined 字段往返语义），修正后重比 |
+| P-roundtrip | D5 后 socket 帧逐字节一致（业务对象 → 帧） | daemon 路径同命令收口前后各捕帧一遍，diff 帧文本（`--local` 不经 socket 无帧语义，双路径输出比对归 A1 管辖） | ⛔ U2 完成前 | 失败 → 定位 handler 返回形态差异（如 undefined 字段往返语义），修正后重比 |
 | P-compact-equiv | compact 后 rebuild 等价（保留 run 的索引/顺序一致） | 预置混合台账（活跃+终态>keep）→ compact → rebuild → 与 compact 前的保留子集索引逐字段比对 | ⛔ U3 完成前 | 失败 → compact 行分组/排序逻辑修正；不影响其他单元 |
 | P-occ | D9② 放弃路径真实可走（含双向复查：并发 append 变大 + 他者 compact rename 缩小两种检测面） | 测试内双进程（或同进程模拟并发 fd）：compact 读文件后、复查前追加一行 → 断言放弃 + temp 清理 + 日志留痕；再造「复查前他者已 rename 缩小文件」形态 → 同样放弃 | ⛔ U3 完成前 | 失败 → 放弃路径修复；若 stat 复查粒度不够（mtimeNs 需要），升级为 size+mtime 双检 |
 | P-mount | D8 挂点单属主：standby 实例不触发 compact、首竞选 daemon 与接管路径都触发 | 预置超阈值台账（临时 ZSW_ROOT）后双 MCP server 进程并发启动，观察 stderr：仅 daemon 角色出现 compact 日志行；随后 kill daemon 进程 → standby 看门狗接管（onTakeover）→ 超阈值场景下接管路径同样出现 compact 日志行 | ⛔ U3 完成前 | 失败 → 挂点接线错位，回到 startDaemon ready 判 role 处重接 |
@@ -317,7 +317,7 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 - 新建 `lib/zsub-actions.js`：action 表（start/list/status/cancel/message/close/agents/models/wait——wait 挂 wait-handler；start 等直调 deps.manager，agents/models 消费 deps.ports——D3 归属表；「不支持的 action」表驱动消息与现状逐字一致）。
 - `bin/zsw.js`：`--local` switch（:1027-1086）改查表；message 内联段（busy 早退 + await pending）整段删除（D6）；usage() 与组参校验原样保留（D4）。
 - `dist/mcp/server.js`：zsub handler 的 **nested 门禁（:145-149）与 manager 未初始化检查（:151-153）留在入口包装层**（D3 归属表——进程级门禁先于查表）；`buildToolHandlers` zsub 分支（:162-249）改查表（分支内校验随 exec 原样保留，D4）；`okContent` 删除、`unwrapContentResult`/`buildDaemonHandlers` 包装层拆除，handler 直返业务对象（zflow 分支 :255-352 同步改返回形态，zflow 逻辑不动——scope 边界）；`errContent` 保留（MCP 拒绝面）。
-- 测试：`server.test.js` 相关面调整（handler 表新入口形态 + nested 门禁/未初始化守卫的保留断言——丢了守卫测试仍绿是 D3 归属表的验收点）；`zsw` CLI 两入口行为比对测试（A3 场景的自动化版本：同一 action 两入口输出一致断言）。
+- 测试：`server.test.js` 相关面调整（handler 表新入口形态 + nested 门禁/未初始化守卫的保留断言——丢了守卫测试仍绿是 D3 归属表的验收点）；`zsw` CLI 两入口一致性防漂移锚（实施期定形：zsub-actions.test.js 结构锚——bin 白名单 ⊆ 表键 + daemon handler 经 execZsubAction + 无包装调用残留；A3 全行为比对由双级验收 Gate B 主 agent 亲执，对照 bin 内部符号导出会超单元领地，偏差登记 impl-plan §5）。
 - 验收锚：P-roundtrip + A1 + A3 + A4。
 - justification：单独成单元是因为它触两入口主干，「行为零变化」的比对验收要独立成立；与 U1 解耦（action 面不碰帧语法）。
 
@@ -361,5 +361,6 @@ status/list 消费: 内存索引（rebuild + 运行时 fold 维护）──> CLI
 | 2026-09-02 | 初稿（三线收口：帧 codec / zsub action 面 / record 生命周期；来源为会话内架构审查的三候选，本文档自包含其问题定义） |
 | 2026-09-02 | R1 修订（对抗审查 4 must-fix + 3 suggestion 全修）：①D6 修正——`--local` 视角 busy 早退同样不可达（rebuild 标 lost），整段内联一并删除；②D8/D9 修正——compact 挂点从「recover 后」改为「daemon 角色确定后 + onTakeover」（main 序列 recover 在竞选前且 standby 也跑），temp 加 pid 后缀、复查改 size 双向；③D4 重写——现状三层校验全保留（删 `:828/:1029` 会使缺参输出从 usage 变 manager 消息，违反零行为变化基准），收敛改为「增量单点进 manager 层」；④D3 补被接管段逐段归属表（nested 门禁/未初始化检查留入口包装层，agents/models 经 deps.ports 承载）；⑤D8 补 lost run 上界缺口声明与孤儿行组保守保留规则；⑥新增 P-mount 探针、A8 扩 lost run、A9 改三类可达错误实测 |
 | 2026-09-02 | R2 修订（复审 1 must-fix + 3 suggestion 全修，R1 四项修复经源码核实闭合）：①§5 文件改动地图两行「校验删」改为「原样保留」（R1-D4 重写的执行层联动遗漏）；②D3「不支持的 action」生成式补现状尾句「恢复指引：action 必须取 inputSchema 中的枚举值。」并声明文案修订不属本设计（零行为变化基准）；③候选编号残留 5 处全改描述性；④P-mount 补 kill daemon 构造 onTakeover 接管步骤、P-atomic temp 路径带 pid 后缀 |
-| 2026-09-02 | R4 修订（dev-flow 一致性审查三区 + 定向复审，7 doc_errors 全修）：D1 解码器签名笔误（位置参数）、线 A 方案编号改 F1-F3（与场景编号 A1-A9 命名空间分离）、D3 效果段 wait 措辞修正（专属精确报错非「未知子命令」）、D5「两函数合并」过度指定改「保留纯形态适配」+ 行号双锚点、D4 边缘对齐补 text 维度、D8 补 tie-break 规格（分组键字典序）。同批：行为基线归档 test/fixtures/baseline/、验收脚本归档 verification/、make-legacy 误扫迁移修复 |
 | 2026-09-02 | R3 修订（复审 0 must-fix + 1 suggestion + 2 info 全修，设计就绪）：①P-mount 第一段补「预置超阈值台账」前提（否则 compact 零成本跳过无日志，断言无从观测）；②「§3-C」锚点两处改「§3.2 线 C」；③「角色回调」措辞三处改实装形态（startDaemon ready 返回值判 role + onTakeover）。审查循环 3 轮收敛：4+3 → 1+3 → 0+1 |
+| 2026-09-02 | R4 修订（dev-flow 一致性审查三区 + 定向复审，7 doc_errors 全修）：D1 解码器签名笔误（位置参数）、线 A 方案编号改 F1-F3（与场景编号 A1-A9 命名空间分离）、D3 效果段 wait 措辞修正（专属精确报错非「未知子命令」）、D5「两函数合并」过度指定改「保留纯形态适配」+ 行号双锚点、D4 边缘对齐补 text 维度、D8 补 tie-break 规格（分组键字典序）。同批：行为基线归档 test/fixtures/baseline/、验收脚本归档 verification/、make-legacy 误扫迁移修复 |
+| 2026-09-02 | R5 修订（design-code-sync 终态全量对照，0 must-fix + 3 suggestion + 7 info 当轮全修）：cli-client 头注帧形态对齐契约单源（error:{message}，code 为 bin 防御性读取）、bin 头注与 usage 的 message 续聊描述对齐「暂不可用 P3」现状、errContent 消费者表述精确化（活跃 1 + 防御性兜底 1）、P-roundtrip 探针步骤去 --local 口径、变更历史 R3/R4 行序恢复、§5 U2 的 A3 自动化比对承诺以「结构锚测试 + Gate B 亲执」组合落地并登记偏差 |
