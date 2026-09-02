@@ -96,8 +96,33 @@ Wave1 内 U0/U2 领地互斥且无数据依赖，可并行派发（并发 2 ≤5
 2. D9③ compact 残余微窗（复查点与 rename 间）：设计层面接受；若实施期构造出真实丢失行复现，升级回设计重议。
 3. A9 busy/续聊真实场景不可稳定构造（`--local` 视角状态域不含 busy）——缺口已声明，P3 冷续聊回归时补。
 4. zsw 版本未 bump：本计划全部改动在 files 白名单内，收尾时 `node scripts/check-release-needed.js` 将提示待发版——发版与 push 等用户授权（不在本计划内）。
+6. e2e-daemon.test.js:153 模型配额条件门禁（认知外既有）：CI 无凭据环境模型场景静默 skip 为刻意设计，与本计划零容忍口径存在张力——本轮 skipped=0 未触发；Gate A 验收者建议上级裁量，暂维持现状（不在本设计范围）。
 5. ~~`node --test` 无参全量误扫 `test/fixtures/make-legacy-state-files.js`（HEAD 既有，U2 期间发现）~~ **已解决**（一致性审查修复批次 9e01787：迁 verification/ 消除扫描面，唯一引用方 19/19 绿，全量 442/442）。
 
 | 日期 | 事件 |
 |---|---|
 | 2026-09-02 | 计划创建（基线 c633091：设计文档 + 审查报告 commit） |
+| 2026-09-02 | 双级验收双绿：Gate A 442/442（e2e 真跑）；Gate B 16/16 PASS（A8 降级形态在案）。终态 commit 序列：U0 5c71e35 → U2 2fc167c → U1 ebfc5e1 → U3 6340226 → 一致性 R1 9e01787 → R2 78234ba |
+
+## 8 双级验收结论（2026-09-02）
+
+**Gate A：绿。** `node --test`（无参，插件目录）442/444 全绿——442 pass / 0 fail / 0 skip / 0 todo，e2e 真实模型 14 用例全部真跑（172.3s）；node --check 17 文件全过；check-sync 双插件一致；覆盖矩阵无认领缺口。唯一零容忍 grep 命中为 `e2e-daemon.test.js:153` 模型配额条件门禁（认知外既有代码、非本次交付触达面、本轮 skipped=0 未触发）——裁量为环境门禁而非测试绕过，登记残留风险第 6 条。
+
+**Gate B：16/16 PASS**（主 agent 亲执逐行签收；Gate B 首派 subagent 因模型配额窗口用尽中断，恢复后为节约配额改主 agent 机械执行，全部命令与输出可复核）：
+
+| 场景 | verdict | 关键证据 |
+|---|---|---|
+| A1 双路径基线比对 | pass | 9/9 段内容逐行一致（agents/models/usage 的管道段 exit 行为录制格式差异，已剔除并说明；非管道段连 exit 一起一致） |
+| A2 replica 清零 | pass | 六测试文件 68/68；grep encodeFrame/createFrameDecoder 手写副本零命中；回归锚组 15 用例在位 |
+| A3 两入口一致 | pass | daemon 启动真任务（sa-549eba3c closed）后双入口 status/cancel/close 输出逐字一致；message 同文案（前缀「daemon 错误」差异为既有呈现）；start wait 分叉保持；缺参 usage 双入口一致 |
+| A4 MCP 冒烟 | pass | tools/list `{"tools":[]}`；tools/call errContent 拒绝含 CLI 指引 |
+| A5 封顶 | pass | 归档脚本 101 run 收敛 / removedRuns=950 / list 101 / status 边界一致 |
+| A6 重启等价 | pass | applied=202=保留行数；list 101 顺序不乱 |
+| A7 --local 不触发 | pass | mtime/size 不变 |
+| A8 活跃/lost 保真 | pass（降级形态，偏差表登记） | 单元版：中部活跃+lost+前后终态不被删 |
+| A9 三类可达错误 | pass | id 不存在 / 非 conversation（双入口同文案）/ 状态非 idle（cancelled fixture）；wait-handler 14/14 |
+| P-frame | pass | 68/68 含传输层字节级锚组 |
+| P-roundtrip | pass | 五类帧重录与 baseline-frames.txt 逐字节 diff 零差异 |
+| P-compact-equiv / P-occ / P-keep-env | pass | 单元 9/9（含孤儿行组 fixture、OCC 双检测面、env 家族） |
+
+**交付判定：双绿，设计 §1 四目标全部达成。**
