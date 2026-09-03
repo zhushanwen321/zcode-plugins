@@ -63,7 +63,8 @@ const SUBAGENTS_GUIDE =
   + ` When starting one via node "${ZSW_CLI}" start, pass the <location> path (absolute .md path) as the`
   + ' --agent param — bare names are rejected. If no agent matches your task, omit --agent'
   + ' (a general-purpose agent is used) and put all role-specific instructions in the task text.'
-  + ' Blocking calls (`start --wait` / `wait`) MUST run via the Bash tool with run_in_background=true:'
+  + ' Blocking calls (start / workflow run — both synchronous until completion) MUST run via the'
+  + ' Bash tool with run_in_background=true:'
   + ' a foreground Bash call is killed by the tool timeout and loses the result, while a background'
   + ' task wakes you via task-notification on completion (no polling). Instant queries'
   + ' (status/list/agents/models) may run in the foreground.';

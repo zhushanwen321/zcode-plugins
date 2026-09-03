@@ -196,8 +196,9 @@ async function assembleManager(opts = {}) {
     runner,
     resolver: opts.resolver || resolver,
   });
-  // 退出链组合（W6a2）：daemon 退出的唯一生产 shutdown 钩子是 wfHost.shutdown
-  // （MCP server stdin 关闭面，dist/mcp/server.js 不在本层领地）——runner 的
+  // 退出链组合（W6a2）：2.0 一次性 CLI 的唯一生产 shutdown 钩子是
+  // bin/zsw.js 的 exitAfterEngineShutdown（成功路径与 main catch 错误出口都
+  // 收口，dist/mcp/server.js 已随 MCP 壳退役不再存在）——runner 的
   // 进程收割面（appserver 常驻引擎 dispose + spawn 子进程 killAll 兜底）没有
   // 独立生产调用点，组合进同一钩子：先 terminate workflow runs（record 卫生），
   // 再收 runner（常驻进程回收，dispose 的 close 帧先于 SIGTERM）。注入 fake
@@ -218,9 +219,14 @@ async function assembleManager(opts = {}) {
   // （dataRoot 就绪，FileRunStore.stateDir 可解析）
   pruneWorkflowState();
   // records.jsonl 收敛（compactRecords 头注）：同样 fire-and-forget 旁路维护。
-  // 注意时序：调用方（CLI main）在组装后还会 rebuildFromLog——compact 动文件
-  // 不动内存索引，rebuild 读到 compact 前后任一形态的合法事件流均一致（D9②
-  // 并发防护保证 rename 原子性）
+  // MF-1 时序修复：compact 判定依赖内存索引的终态数，而 RecordStore 构造不
+  // 读盘——组装点先 rebuildFromLog（只建内存索引，不动文件），否则 total 恒 0
+  // 恒早退、compact 在组装路径永不执行。调用方（CLI main）随后的二次 rebuild
+  // 幂等无冲突；compact 动文件不动内存索引，rebuild 读到 compact 前后任一
+  // 形态的合法事件流均一致（D9② 并发防护保证 rename 原子性）
+  if (records && typeof records.rebuildFromLog === 'function') {
+    try { records.rebuildFromLog(); } catch (e) { log(`record 重建失败（跳过 compact 判定）: ${e && e.message || e}`); }
+  }
   compactRecords(manager, 'cli', log);
   return { manager, wfHost, notifier };
 }

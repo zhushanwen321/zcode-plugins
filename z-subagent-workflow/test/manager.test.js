@@ -447,17 +447,15 @@ test('cancel（有句柄）：杀进程 + record 落 cancelled + 不发通知', 
   assert.equal(again.cancelled, false);
 });
 
-test('cancel（重启后无句柄）：running record 直接标 cancelled 并注明进程可能残留', async () => {
+test('cancel（重启后无句柄）：running/lost record 拒绝终态化——执行体在对端进程（MF-2）', async () => {
   const { manager, records } = buildManager();
   records.create({ subagentId: 'sa-stale-1', slug: 'stale', exec: { kind: 'fake', pid: 999999 } });
   records.transition('sa-stale-1', 'created', 'running');
-  const out = await manager.cancel('sa-stale-1');
-  assert.equal(out.cancelled, true);
-  assert.equal(out.status, 'cancelled');
-  const rec = records.get('sa-stale-1');
-  assert.equal(rec.status, 'cancelled');
-  assert.match(rec.closedReason, /句柄丢失/);
-  assert.match(rec.closedReason, /残留/);
+  await assert.rejects(
+    () => manager.cancel('sa-stale-1'),
+    (e) => /执行体不在本进程/.test(e.message) && /TaskStop/.test(e.message),
+  );
+  assert.equal(records.get('sa-stale-1').status, 'running', 'record 不被本进程终态化（由对端收口）');
 });
 
 test('recover：死 pid → lost 落因，活 pid → 保留 + 孤儿标记', async () => {

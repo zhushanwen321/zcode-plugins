@@ -280,6 +280,21 @@ test('server.compactRecords: 超阈值执行并出结果日志；失败不外抛
   assert.ok(logs2[0].includes('disk full'));
 });
 
+test('server.compactRecords: compact 返回 skipped → 出放弃日志（并发变更让位，S-3）', () => {
+  const fake = {
+    records: {
+      records: { size: 1500 },
+      compact() { return { skipped: true }; },
+    },
+  };
+  const logs = [];
+  compactRecords(fake, 'cli', (m) => logs.push(m));
+  assert.equal(logs.length, 1);
+  assert.ok(logs[0].includes('record compact 放弃'), '放弃留痕');
+  assert.ok(logs[0].includes('phase=cli'));
+  assert.ok(logs[0].includes('runs=1500') && logs[0].includes('keep=1000'));
+});
+
 test('compact 输入校验: keep 非正整数抛可操作错误且不落盘', (t) => {
   const store = tmpStore(t, termRun('term-1', 1000));
   store.rebuildFromLog();

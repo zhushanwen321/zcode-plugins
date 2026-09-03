@@ -1,7 +1,7 @@
 # z-subagent-workflow — zcode subagent 编排 + workflow 插件
 
 > 两条能力线，统一走 CLI（`node bin/zsw.js`；2.0.0 起纯本地一次性执行，无常驻 daemon——历史 MCP 壳/socket 面已整体退役）：
-> **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、structured JSON 输出（仅保证可解析 JSON 对象提取，无 schema 校验——见「已知边界」）、agent .md 发现（core 发现面：vendored 内置 10 角色 + 项目/HOME 用户根，与 pi 生态同源）、per-start 模型路由、跨窗口 record。agent 参数只收 .md 绝对路径（与 pi 平台契约统一），缺省加载 `general-purpose` 内置角色；conversation 续聊暂不可用（多轮需求拆多次 start，见「已知边界」）。
+> **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/agents/models，2.0 起八 action——`wait` 已随 daemon 退役）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、structured JSON 输出（仅保证可解析 JSON 对象提取，无 schema 校验——见「已知边界」）、agent .md 发现（core 发现面：vendored 内置 10 角色 + 项目/HOME 用户根，与 pi 生态同源）、per-start 模型路由、跨窗口 record。agent 参数只收 .md 绝对路径（与 pi 平台契约统一），缺省加载 `general-purpose` 内置角色；conversation 续聊暂不可用（多轮需求拆多次 start，见「已知边界」）。
 > **zflow** — 确定性多步编排（`zsw workflow` 子命令，九 action：run/abort/status/list/scripts/lint + 创作闭环 script-generate/script-save/script-delete）。回接 2b 起 workflow 运行时整体替换为 vendored `@zhushanwen/subagent-core` orchestration：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop，资产来自 core `workflows/`）+ core 契约自定义脚本（`@pi-meta` + top-level `agent()`，按 .js 绝对路径引用；`script-generate → lint → save → run → delete` 创作闭环全链 CLI 可用，W8/D-6）；run 同步阻塞出 scriptResult（配 Bash run_in_background 即完成原生唤醒）。**契约统一是行为 break——迁移对照见「subagent-core 收口 break 变更」节。**
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
 
@@ -37,7 +37,7 @@ core 资产消费形态：对 npm 包 `@zhushanwen/subagent-core` 的消费（�
 
 ## 使用
 
-agent 与人类都走 CLI `node bin/zsw.js`（zsub 面九 action：start/list/status/cancel/message/close/wait/agents/models；下例为常用子集）。本节 `node bin/zsw.js` 为示意路径（cwd = 插件目录）；zcode 会话内实际执行以 SessionStart 注入段给出的 `node "<绝对路径>/bin/zsw.js"` 形态为准：
+agent 与人类都走 CLI `node bin/zsw.js`（zsub 面八 action：start/list/status/cancel/message/close/agents/models——`wait` 已移除，start 恒阻塞；下例为常用子集）。本节 `node bin/zsw.js` 为示意路径（cwd = 插件目录）；zcode 会话内实际执行以 SessionStart 注入段给出的 `node "<绝对路径>/bin/zsw.js"` 形态为准：
 
 ```bash
 node bin/zsw.js start --task "审查 src/ 的错误处理" --slug review-1 --model <模型短名>   # 传未知模型名会在报错中列出可用清单
@@ -262,13 +262,13 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
 
 ## 已知边界（如实声明）
 
-- **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI daemon）任务的完成唤醒唯一路径 = CLI 阻塞进程（`wait` / `start --wait`）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
+- **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI）任务的完成唤醒唯一路径 = CLI 阻塞进程（start 恒阻塞，`--wait` 兼容形态无差异）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
 - **执行通道 = core zcode engine：单一 app-server 常驻 + 会话句柄，共享宿主 HOME（2026-09 引擎 0.5.0 起；1.x 宿主私连通道已退役，迁移对照见「回接 2c break 变更」节）**：`zsw start` 派发经 core `routeEngine` 真探（binary + version + golden 干跑，引擎实例内缓存——进程存活期不重探，CLI 升级后重启进程/首任务即暴露漂移；探针失败/协议漂移直接报可操作错误，无降级兜底），命中即走常驻 app-server（exec 形态恒 `'appserver'`、pid 恒 undefined，sessionRef 进 record 且 dbPath 为绝对路径 `~/.zcode/cli/db/db.sqlite`），常驻引擎进程跨任务复用，workflow 的 agent() 轮走同一引擎。引擎共享宿主 HOME（spawn env 不覆写 HOME）：直接消费宿主 `~/.zcode/v2/config.json` 凭据与模型配置，会话写真实 `~/.zcode/cli/db/db.sqlite`（与 zcode GUI 共写同一 SQLite，WAL 并发安全）；未知模型/缺凭据在任务启动时报含可用清单的可操作错误；登录态轮换后常驻连接仍用旧凭据，引擎进程重启后生效。取消/超时 = AbortSignal → core 杀链（SIGTERM→5s→SIGKILL）。
 - **conversation 续聊暂不可用（core EnginePort 面无 resume 入口）**：conversation 任务首轮照常（完成置 idle），`message` 续聊明确报可操作错误（含「重新 start」指引）；resume 缺口属 EnginePort 契约边界——P3 常驻已回归但入口未透出，1.x 的 `--resume` 冷续聊让渡（见「回接 2c break 变更」节）。busy 语义不变：running 中投递返回 busy 结果。多轮需求拆多次 start，上轮结论/结果路径写进下一轮 task。
 - **structured 输出仅保证「可解析 JSON 对象」，不校验 schema 符合性（zsw 壳层）**：schema 经 prompt MANDATORY 契约段约束 + `extractJsonObject` 三级容错提取，无 ajv 校验、无强化重试——模型输出违规 JSON 时仍以 structured 成功面返回（`parsedOutput` 为提取结果，提取失败则该字段缺省）。引擎侧差异：pi 引擎为 native 校验、core zcode 引擎为 emulated 校验+重试，zsw 壳层不透传 schema 到引擎。消费方对关键字段自行校验（workflow 脚本内对 `parsedOutput` 做类型/必填检查后再用）。
 - **workflow 中止语义**：`--action abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；在飞 agent() 轮经 runner-core 的 AbortSignal → 引擎杀链立停（AbortSignal 直达引擎杀链）。2.0 起执行体 = CLI 进程本身，`workflow run` 的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的 run 用引擎 TaskStop（一次性进程无跨进程 runs 表，abort 只作用于本进程视图内的 run）。
 - **`ZSW_RUNNER` 已退役（2c）**：'spawn' = 兼容 no-op（告警一次后忽略）；'appserver' / 未知值 = 启动即报错。引擎已是单一 app-server 形态，无模式钉扎 env（2026-09 引擎 0.5.0 起，见「回接 2c break 变更」节）。
-- **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
+- **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（承载 start 的后台任务完成即 task-notification 唤醒）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
 - **工具黑名单是引擎级硬拦截（两来源并集去重），白名单只有 prompt 软约束一层**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`，并集去重后落引擎 `--disallowed-tools` flag（2c 起两来源等价生效）。frontmatter `tools` 白名单经 prompt 工具约束段生效（软约束——只能约束意图不能拦截行为）；CLI `--allow-tools` 当前不进 prompt 也不进引擎通道（zcode CLI 无 allowlist flag，`--allowed-tools` 拒收），唯一效果是终态 record `toolsNote` 标注（请求未生效提示）——工具软约束一律经 agent .md frontmatter `tools` 字段声明。
 - **subagent 并发池与 workflow 并发治理已分治（回接 2b 后）**：subagent 池默认 3（`ZSW_MAX_CONCURRENT` 可调）仅约束 zsub start 线；workflow 线的 agent() 并发**不受 core 配额池约束**（core 的 maxConcurrent=6 挂在 pi 宿主 SubagentService，zsw workflow 线绕过该池）——为全并发派发（引擎层仍有序调度），大批量 `--items`/`--perspectives` 时注意 token 消耗与机器负载。zsw 侧不再有独立 workflow 槽位池，`--max-concurrent` 已废弃。
 - **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
@@ -299,7 +299,7 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
 | M1 | 原生唤醒 | GUI 会话让 agent 用 Bash `run_in_background=true` 跑 `node bin/zsw.js start --wait --task "数一下 README 有多少行" --slug count`，随后让 agent 结束 turn | 会话被 `<task-notification>` 自动唤醒（无需用户发言），agent 读取结果并转达 |
 | M2 | 跨会话可见 | 窗口 A start（异步），窗口 B `node bin/zsw.js list` / `status --id` | B 能看到 A 派的任务与状态（record 同盘共享） |
 | M3 | 降级 | 不设 mailbox env（polling 档，legacy 通道不启用），同样 start（异步） | 返回含轮询指引（时间预期 + CLI 等待姿势）；status 能拿到终态 |
-| M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt` 后 wait | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
+| M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt`（阻塞到完成） | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
 | M5 | 执行通道与续聊降级 | 不设任何 env 跑 `node bin/zsw.js start --wait`（单轮任务）；再跑 conversation 任务 + `message` | record.runnerKind='spawn'、record.engine='zcode' 留痕；conversation 首轮 idle、message 续聊报「无 resume 入口」可操作错误（2c 契约，见「回接 2c break 变更」节） |
 
 无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）；支持单场景入口 `node test/e2e.test.js --name E1`。1.x 私连通道的专有场景（E9 apc-smoke 冒烟 / E10 多会话并发）已随通道退役删除；常驻形态的覆盖由 exec 形态分支断言承担（E4 cancel 按 ps 命令行 `zcode.cjs app-server --cwd <ZSW_ROOT>` 锚定核对收割——共享宿主 HOME 形态无 pidfile；E6 recover 对 appserver 形态保守 orphan 分流；E7 engine 留痕 + exec 形态断言：kind 恒 `'appserver'`、pid 恒 undefined、sessionRef.dbPath 为绝对路径），E3/E7 的「message 续聊报退役错误」断言对单一引擎形态有效。

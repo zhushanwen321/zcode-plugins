@@ -233,3 +233,33 @@ test('启动路径冒烟（C13）：assembleManager（daemon/CLI 共用装配面
     spy.mock.restore();
   }
 });
+
+test('compactRecords 组装接线（MF-1/S-4）：超 keep 终态 run → 组装时实际收缩文件', async () => {
+  ensureConfigured();
+  const lines = [];
+  for (let i = 1; i <= 5; i++) {
+    lines.push(JSON.stringify({ ts: 1000 + i, type: 'created', subagentId: `sa-mfc-${i}`, task: 't', slug: `s${i}` }));
+    lines.push(JSON.stringify({ ts: 1001 + i, type: 'transition', id: `sa-mfc-${i}`, from: 'created', to: 'cancelled', closedReason: 'fixture' }));
+  }
+  const recFile = path.join(config.zswRoot(), 'records.jsonl');
+  fs.writeFileSync(recFile, `${lines.join('\n')}\n`);
+  const before = fs.readFileSync(recFile, 'utf8');
+
+  let stderr = '';
+  const origWrite = process.stderr.write;
+  process.stderr.write = (s) => { stderr += String(s); return true; };
+  try {
+    process.env.ZSW_RECORD_KEEP = '2';
+    await assembleManager();
+    await new Promise((r) => setImmediate(r)); // 冲刷 fire-and-forget 链路
+  } finally {
+    process.stderr.write = origWrite;
+    delete process.env.ZSW_RECORD_KEEP;
+  }
+  assert.ok(stderr.includes('record compact 完成') && stderr.includes('phase=cli'), '组装出 compact 完成日志');
+  const after = fs.readFileSync(recFile, 'utf8');
+  assert.ok(after.length < before.length, `文件实际收缩（${before.length} → ${after.length}）`);
+  assert.ok(!after.includes('sa-mfc-1'), '最旧终态 run 被移除');
+  assert.ok(after.includes('sa-mfc-5'), '最新终态 run 保留');
+  fs.rmSync(recFile, { force: true }); // 不污染同文件其他用例的 ZSW_ROOT
+});

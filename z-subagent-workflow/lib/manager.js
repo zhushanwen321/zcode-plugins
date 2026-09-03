@@ -408,13 +408,20 @@ class SubagentManager {
       if (pending) await pending.catch(() => {});
       return { subagentId: id, status: this.records.get(id).status, cancelled: true };
     }
-    // 无句柄：created（排队中）/ idle（轮间无进程）/ lost | running（server 重启后，
-    // record 仍在 running 但句柄随进程内存丢失——两者都要注明进程可能残留）
+    // 无句柄：created（排队中）/ idle（轮间无进程）可本进程直接终态化；
+    // running / lost = 执行体在另一 CLI 进程内（2.0 多进程共享 records.jsonl，
+    // 本进程无句柄可杀）——直接终态化会让对端 done 落 CAS 拒绝、台账与本进程
+    // 视图矛盾，且执行体照跑 token 照烧，必须报错（MF-2）
+    if (rec.status === 'running' || rec.status === 'lost') {
+      throw new Error(
+        `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
+        + '本进程无法取消：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
+        + 'record 由持有执行体的对端进程终态化。恢复指引：zsw list 复查状态。',
+      );
+    }
     const note = rec.status === 'created'
       ? '排队中被取消，进程未启动'
-      : (rec.status === 'idle'
-        ? 'idle 会话无进程，直接终态化'
-        : '句柄丢失（server 重启），进程可能残留；确认请 ps 检查后手工清理');
+      : 'idle 会话无进程，直接终态化';
     this.records.transition(id, rec.status, 'cancelled', { closedReason: note });
     return { subagentId: id, status: 'cancelled', cancelled: true, note };
   }

@@ -139,8 +139,8 @@ test('F8-zsw：workflows guide 声明脚本头 usage 为 pi 宿主语法、zsw C
 
 test('blocking-call 纪律：两段 guide 均要求阻塞式调用经 Bash run_in_background=true（防工具超时）', () => {
   const ctx = render();
-  assert.ok(ctx.includes('Blocking calls (`start --wait` / `wait`) MUST run via the Bash tool with run_in_background=true'),
-    'subagents guide 含阻塞调用 background 纪律');
+  assert.ok(ctx.includes('Blocking calls (start / workflow run — both synchronous until completion) MUST run via the Bash tool with run_in_background=true'),
+    'subagents guide 含阻塞调用 background 纪律（仅 start/workflow run，wait 已退役）');
   assert.ok(ctx.includes('a foreground Bash call is killed by the tool timeout and loses the result'),
     'subagents guide 含前台超时后果说明');
   assert.ok(ctx.includes('(status/list/agents/models) may run in the foreground'),

@@ -76,6 +76,10 @@ const {
   requireScriptActionName,
 } = require('../lib/workflow-actions');
 
+// MF-4：本进程已组装的 wfHost 引用——main catch 错误出口的引擎收口依据
+// （runWorkflowCommand 与 main 各自组装后回填；未组装即失败时为 null，收口 no-op）
+let activeWfHost = null;
+
 function usage(exitCode = 1) {
   process.stderr.write(
     '用法见文件头注。示例：\n'
@@ -486,6 +490,7 @@ async function runWorkflowCommand(rest) {
   // 一次性进程不重水合历史 run（内存 runs 空，list 显示为空；历史快照在
   // <zsw 数据根>/workflow-state/，可直读）
   const { wfHost } = await assembleManager();
+  activeWfHost = wfHost; // main catch 错误出口的引擎收口依据（MF-4）
   const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
 
   if (action === 'run') return runWorkflowRun(wfHost, args, cwd);
@@ -496,9 +501,26 @@ async function runWorkflowCommand(rest) {
 // workflow 本地 action 分发
 async function dispatchWorkflowLocalAction(wfHost, action, args, cwd) {
   switch (action) {
-    case 'abort':
-      process.stdout.write(`${JSON.stringify(await wfHost.abort(requireRunIdArg(args)), null, 2)}\n`);
+    case 'abort': {
+      const id = requireRunIdArg(args);
+      // MF-3：一次性进程内存 runs 只有本进程创建的视图——run 不在本进程时
+      // core.abortRun 必 throw not found（跨进程执行体本进程无法终止）。如实
+      // 返回指引而非让调用方吃无上下文的报错：kill 承载 run 的后台 Bash 任务
+      // （引擎 TaskStop），stateFile 快照可直读对端终态
+      const local = Array.isArray(wfHost.list()) && wfHost.list().some((r) => r && r.runId === id);
+      if (!local) {
+        process.stderr.write(
+          `[zsw] run ${id} 不在本进程（一次性 CLI 无跨进程 runs 表，无法代为中止）。`
+          + '恢复指引：用引擎 TaskStop kill 承载该 workflow run 的后台 Bash 任务；'
+          + '终态快照在 <zsw 数据根>/workflow-state/ 直读。\n',
+        );
+        process.stdout.write(`${JSON.stringify({ runId: id, aborted: false, reason: 'not-in-process' }, null, 2)}\n`);
+        process.exitCode = 1;
+        break;
+      }
+      process.stdout.write(`${JSON.stringify(await wfHost.abort(id), null, 2)}\n`);
       break;
+    }
     case 'status':
       process.stdout.write(`${JSON.stringify(wfHost.status(requireRunIdArg(args)), null, 2)}\n`);
       break;
@@ -534,7 +556,9 @@ async function dispatchWorkflowLocalAction(wfHost, action, args, cwd) {
     }
     case 'script-delete': {
       // --local 一次性进程无 runs 视图：runningScriptPredicate 对空 runs Map 恒
-      // false（如实声明——「运行中拒绝」的真实裁决只在 daemon 面）
+      // false（如实声明——「运行中拒绝」的真实裁决只在 daemon 面）。S-2：无法
+      // 检测其他进程正在运行该脚本（跨进程无 runs 表），stderr 告警而非静默
+      process.stderr.write('[zsw] 提示：本进程无法检测其他 CLI 进程正在运行该脚本（一次性进程无跨进程 runs 视图），删除前请自行确认无并发 run。\n');
       process.stdout.write(`${JSON.stringify(scriptDeleteAction(args.name, runningScriptPredicate(wfHost)), null, 2)}\n`);
       break;
     }
@@ -645,6 +669,7 @@ async function main() {
   ensureNotNested();
 
   const { manager, wfHost } = await assembleManager();
+  activeWfHost = wfHost; // main catch 错误出口的引擎收口依据（MF-4）
   // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
   // list/status 看到历史。刻意不走探活——探活会对其他进程正在跑的任务误标
   // orphan 落盘。副作用如实声明：非终态 record 在 CLI 视角显示 lost（CLI 无法
@@ -736,6 +761,11 @@ async function main() {
     ports: { agentResolver: manager.resolver, modelRouter: manager.modelRouter },
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  // MF-5：start 的 exit code 契约（头注声明 cancelled/error/timeout/lost → 1）。
+  // 终态取 result.record.status：closed / idle（conversation 轮完成）→ 0，其余 → 1
+  if (cmd === 'start' && result && result.record && typeof result.record.status === 'string') {
+    process.exitCode = (result.record.status === 'closed' || result.record.status === 'idle') ? 0 : 1;
+  }
   // 一次性进程的引擎收口（start/message 跑完任务后 appserver 常驻子进程的
   // stdio 挂住事件循环，防 CLI 无法退出）
   await exitAfterEngineShutdown(wfHost);
@@ -760,6 +790,10 @@ module.exports = {
 if (require.main === module) {
   main().catch((e) => {
     process.stderr.write(`[zsw] 错误: ${e && e.message || e}\n`);
-    process.exit(1);
+    // MF-4：错误出口同样收口引擎——runAndWait/execZsubAction 中途 throw 时
+    // appserver 常驻子进程不能变孤儿。exitAfterEngineShutdown 内部自吞错误并
+    // 以 process.exitCode（此处恒 1）调度兜底退出
+    process.exitCode = 1;
+    exitAfterEngineShutdown(activeWfHost);
   });
 }
