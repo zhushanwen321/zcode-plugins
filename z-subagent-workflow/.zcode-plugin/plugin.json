@@ -5,7 +5,7 @@
     "en": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (pure local one-shot processes since 2.0.0 — no resident daemon): subagent lifecycle with worktree isolation, schema outputs, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom core-contract scripts referenced by absolute .js path. Long tasks are carried by Bash run_in_background (completion rides engine-native task-notification), no polling.",
     "zh-CN": "zcode 的 subagent 编排与确定性多阶段 workflow，统一走 zsw CLI（2.0.0 起纯本地一次性执行，无常驻 daemon）：subagent 生命周期管理（worktree 隔离、schema 结构化输出、模型路由、四根 agent .md 发现）+ 内置 workflow（chain/parallel/map-reduce/scatter-gather/review-fix-loop）与自定义 core 契约脚本扩展（按 .js 绝对路径引用）。长任务由 Bash run_in_background 承载（完成唤醒借引擎原生 task-notification），零轮询。"
   },
-  "version": "2.0.0",
+  "version": "2.1.0",
   "author": {
     "name": "zhushanwen",
     "url": "https://github.com/zhushanwen321"

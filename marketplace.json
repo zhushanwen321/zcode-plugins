@@ -10,7 +10,7 @@
     {
       "name": "z-subagent-workflow",
       "source": "./z-subagent-workflow",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "description": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (pure local one-shot processes since 2.0.0 — no resident daemon): subagent lifecycle with worktree isolation, schema outputs, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom core-contract scripts referenced by absolute .js path. Long tasks are carried by Bash run_in_background (completion rides engine-native task-notification), no polling.",
       "description_i18n": {
         "en": "Subagent orchestration + deterministic multi-phase workflows for zcode via the zsw CLI (pure local one-shot processes since 2.0.0 — no resident daemon): subagent lifecycle with worktree isolation, schema outputs, model routing and four-root agent .md discovery, plus built-in workflows (chain/parallel/map-reduce/scatter-gather/review-fix-loop) and custom core-contract scripts referenced by absolute .js path. Long tasks are carried by Bash run_in_background (completion rides engine-native task-notification), no polling.",
