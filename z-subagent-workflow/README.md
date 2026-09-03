@@ -199,6 +199,7 @@ vendored `@zhushanwen/subagent-core` 自 0.4.0 刷新至 0.5.0，zcode 引擎行
 
 - **CLI spawn 降级链删除**：`zcode --json --prompt` 单轮回退、probe 冒烟门控、protocol-drift 首败降级、引擎模式钉扎 env 全部移除——引擎只剩 app-server 常驻一条路，协议漂移不再降级兜底，直接报可操作错误（探针仍做 binary + version + golden 真探，失败即报错含恢复指引）。
 - **共享宿主 HOME**：引擎 spawn env 不覆写 HOME，app-server 直接消费宿主 `~/.zcode/` 的凭据/模型配置/会话 db；会话写入真实 `~/.zcode/cli/db/db.sqlite`（与 zcode GUI 共写同一 SQLite，WAL 并发安全）。隔离 HOME 池/目录锁/pidfile/孤儿回收/派生目录全废弃（旧目录残留处置见上方「引擎数据布局」段）。journal 落 `<ZSW_ROOT>/engines/zcode/shared/journal-*.jsonl`（poolKey 恒 `'shared'`）。附带收益：pnpm store 随 HOME 翻转类问题根治。
+- **凭据供数 = fs 拦截 wrapper**（core `appserver-launcher`）：CLI 形态的 app-server 只从 `$HOME/.zcode/cli/config.json` 的 provider 字段读凭据（bundle 实测：GUI 内嵌走 modelConfig 直传，外部进程无 env/argv/协议注入通道），而 GUI 从不往该文件写凭据（登录态在 v2）。引擎 spawn 的实际是落盘于 `<ZSW_ROOT>/engines/zcode/appserver-launcher.cjs` 的 wrapper：patch `fs.readFileSync/fsPromises.readFile` 把该精确路径的读取重定向为「真实文件 + v2 provider 注入」的内存合并结果，再以原 argv 启动 zcode.cjs——GUI 传参的进程外等价复刻。漂移面：zcode 升级改配置读取路径 → `missing baseURL` 明确报错（与协议漂移同级姿态）。
 - **exec/record 面**：handle/exec 的 sessionRef.dbPath 恒为绝对路径（`~/.zcode/cli/db/db.sqlite`）；exec.kind 恒 `'appserver'`、pid 恒 undefined、onChildSpawned 通路删除。
 - **凭据刷新机制删除**：登录态轮换后常驻连接仍用旧凭据，引擎进程重启后生效。
 - **已接受代价一览**：GUI 会话列表可见 headless 会话（同库共写）；凭据轮换需重启引擎进程才生效；协议漂移直接报错（无降级兜底）。

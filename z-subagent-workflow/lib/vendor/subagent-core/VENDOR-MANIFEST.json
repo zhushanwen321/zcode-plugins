@@ -1,8 +1,8 @@
 {
   "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/refactor-zcode-engine-shared-home/packages/subagent-core@0.5.0",
-  "sourceRev": "9520e5294f25178a3ec1035f6279df55bf81e597",
-  "sourceDirty": false,
-  "fetchedAt": "2026-09-03T12:06:46.988Z",
+  "sourceRev": "fcb5bad2e6efa633a483f0a894f27c226d13f2ed",
+  "sourceDirty": true,
+  "fetchedAt": "2026-09-03T13:44:35.760Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
@@ -51,7 +51,7 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "fb8dd27d243791b79fbb4695c212a5029b6f4e1788d5054c976515088427703e"
+      "sha256": "58f0d54d5e9ee644defd055e730b1ba73663123dc17b6c0ab764fd41c160e744"
     },
     {
       "path": "package.json",

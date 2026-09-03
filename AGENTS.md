@@ -69,8 +69,10 @@ zcode plugins list                               # 应见 <name>@inline [enabled
   不得声明 dependencies 的红线不变。流程与升级路径见 docs/standards.md「vendored 核心包消费」节。
   **zcode 引擎语义（core 0.5.0 起，2026-09 拍板）**：只走 app-server RPC（无 CLI spawn
   降级链，协议漂移直接报错）；共享宿主 HOME（不覆写 HOME，会话写真实
-  `~/.zcode/cli/db/db.sqlite`，与 GUI 共写——WAL 并发安全）；无 HOME 池/pidfile；
-  poolKey 恒 `'shared'`。详规见 standards.md「zcode 引擎单一 app-server 形态」节。
+  `~/.zcode/cli/db/db.sqlite`，与 GUI 共写——WAL 并发安全）；凭据供数 = fs 拦截
+  wrapper（appserver-launcher 拦 cli/config.json 读取注入 v2 provider）；无 HOME
+  池/pidfile；poolKey 恒 `'shared'`。详规见 standards.md「zcode 引擎单一
+  app-server 形态」节。
 - 插件 manifest 必需字段仅 `name`（`^[a-z0-9][a-z0-9._-]{0,127}$`）；`agents` 字段当前「记录不执行」。
   字段规范见 development-guide。
 - MCP server 的 **stdout 是 JSON-RPC 通道**：人读日志/进度一律走 stderr 并落盘
