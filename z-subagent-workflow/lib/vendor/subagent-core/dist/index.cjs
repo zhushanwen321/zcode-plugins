@@ -11779,13 +11779,13 @@ var require_core = __commonJS({
     }, warn() {
     }, error() {
     } };
-    function getLogger2(logger35) {
-      if (logger35 === false)
+    function getLogger2(logger36) {
+      if (logger36 === false)
         return noLogs;
-      if (logger35 === void 0)
+      if (logger36 === void 0)
         return console;
-      if (logger35.log && logger35.warn && logger35.error)
-        return logger35;
+      if (logger36.log && logger36.warn && logger36.error)
+        return logger36;
       throw new Error("logger must implement log, warn and error methods");
     }
     var KEYWORD_NAME = /^[a-z_$][a-z0-9_$:-]*$/i;
@@ -14360,14 +14360,14 @@ var require_graceful_fs = __commonJS({
         return close;
       })(fs25.close);
       fs25.closeSync = (function(fs$closeSync) {
-        function closeSync5(fd) {
+        function closeSync4(fd) {
           fs$closeSync.apply(fs25, arguments);
           resetQueue();
         }
-        Object.defineProperty(closeSync5, previousSymbol, {
+        Object.defineProperty(closeSync4, previousSymbol, {
           value: fs$closeSync
         });
-        return closeSync5;
+        return closeSync4;
       })(fs25.closeSync);
       if (/\bgfs4\b/i.test(process.env.NODE_DEBUG || "")) {
         process.on("exit", function() {
@@ -15700,13 +15700,6 @@ var DEFAULT_RECOVERY_HINTS = {
 };
 function truncate(text, max) {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
-}
-function promptTooLargeError(actualBytes, limitBytes) {
-  return new EngineError(
-    "prompt_too_large",
-    `estimated argv size ${actualBytes} bytes exceeds the ${limitBytes}-byte budget`,
-    DEFAULT_RECOVERY_HINTS.prompt_too_large
-  );
 }
 var STDOUT_TAIL_ECHO_CHARS = 2e3;
 function engineTimeoutDetail(stdoutTail) {
@@ -17420,8 +17413,8 @@ var RunRuntime = class {
   /** per-running-segment AbortController（一次性，无法复用——G3-001）。 */
   controller;
   /** Run 级墙钟时间预算计时器（spec.budgetTimeMs > 0 时由 lifecycle 调度，
-    * 到期 abortRun time_limited）。release 时清理，避免 abort/replaceRuntime
-    * 后孤儿计时器仍触发（rebuildRuntime 会重排一个全新的计时器，旧的不应残留）。 */
+   * 到期 abortRun time_limited）。release 时清理，避免 abort/replaceRuntime
+   * 后孤儿计时器仍触发（rebuildRuntime 会重排一个全新的计时器，旧的不应残留）。 */
   timeBudgetTimer;
   /**
   * 本 runtime 代际是否已收到 worker 的终态消息（return / error）。
@@ -17482,6 +17475,8 @@ var RETRY_BACKOFF_BASE_MS = 1e3;
 var EXPONENTIAL_BACKOFF_BASE = 2;
 var MAX_ERROR_LOGS = 500;
 var MALFORMED_MSG_LOG_PREVIEW_CHARS = 200;
+var IN_FLIGHT_CALL_CANCELLED_MSG = "Cancelled: run reached terminal state while this call was in flight";
+var REBUILD_FAILURE_INJECT_ENV = "XYZ_SUBAGENT_TEST_INJECT_REBUILD_FAILURE";
 var WORKER_EXITED_WITHOUT_RESULT_MSG = "worker exited before delivering a result (return value may not be structured-cloneable)";
 function isTerminal(run) {
   return run.state.status === "done";
@@ -17508,6 +17503,48 @@ function delay2(ms) {
     timer.unref();
   });
 }
+function emitPendingUnregister(run, deps, context) {
+  try {
+    deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
+    deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
+    deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err);
+    logger4.error(`[workflow] pending:unregister emit failed (${context}): ${m}`);
+  }
+}
+function emitTerminalSideEffects(run, deps, context) {
+  emitPendingUnregister(run, deps, context);
+  try {
+    deps.onRunDone?.(run);
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err);
+    logger4.error(`[workflow] onRunDone failed (${context}): ${m}`);
+  }
+}
+var rebuildRuntimeInvocationCount = 0;
+var rebuildFailureHookWarned = false;
+function resolveRebuildFailureInjectionThreshold() {
+  const raw = process.env[REBUILD_FAILURE_INJECT_ENV];
+  if (raw === void 0 || raw === "") return void 0;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!rebuildFailureHookWarned) {
+      rebuildFailureHookWarned = true;
+      logger4.warn(
+        `[workflow] ${REBUILD_FAILURE_INJECT_ENV}="${raw}" is not a positive integer \u2014 test hook INACTIVE, no rebuild failure will be injected`
+      );
+    }
+    return void 0;
+  }
+  if (!rebuildFailureHookWarned) {
+    rebuildFailureHookWarned = true;
+    logger4.warn(
+      `[workflow] ${REBUILD_FAILURE_INJECT_ENV}=${raw} ACTIVE \u2014 rebuildRuntime invocations #${parsed} and later will throw (S-D test hook; NEVER set in production)`
+    );
+  }
+  return parsed;
+}
 function discardInFlightCalls(run) {
   const inFlight = [];
   for (const [callId, call] of run.state.calls) {
@@ -17516,6 +17553,29 @@ function discardInFlightCalls(run) {
   for (const callId of inFlight) {
     run.state.calls.delete(callId);
     run.state.trace.removeByStepIndex(callId);
+  }
+  return inFlight.sort((a, b) => a - b);
+}
+function closeOutInFlightCalls(run) {
+  const inFlight = [];
+  for (const [callId, call] of run.state.calls) {
+    if (call.status !== "done") inFlight.push(callId);
+  }
+  const completedAt = (/* @__PURE__ */ new Date()).toISOString();
+  for (const callId of inFlight) {
+    const call = run.state.calls.get(callId);
+    if (!call) continue;
+    if (call.status === "pending") call.markRunning();
+    if (call.status === "running") {
+      call.markDone({ content: "", error: IN_FLIGHT_CALL_CANCELLED_MSG });
+    }
+    call.traceNode.live = void 0;
+    run.state.trace.update(callId, {
+      status: "failed",
+      result: { content: "", error: IN_FLIGHT_CALL_CANCELLED_MSG },
+      error: IN_FLIGHT_CALL_CANCELLED_MSG,
+      completedAt
+    });
   }
   return inFlight.sort((a, b) => a - b);
 }
@@ -17540,14 +17600,18 @@ async function finalizeTimeBudgetExhausted(run, deps) {
     void te;
   }
   if (!transitioned) return;
-  await deps.store.save(run).catch((e) => {
-    const m = e instanceof Error ? e.message : String(e);
-    logger4.error(`[workflow] store.save failed (time budget exhausted): ${m}`);
-  });
-  deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "time_limited" });
-  deps.onRunDone?.(run);
+  closeOutInFlightCalls(run);
+  await saveRunBestEffort(run, deps, "finalizeTimeBudgetExhausted (done,time_limited)");
+  emitTerminalSideEffects(run, deps, "finalizeTimeBudgetExhausted (done,time_limited)");
 }
 function rebuildRuntime(run, deps, handlers) {
+  rebuildRuntimeInvocationCount += 1;
+  const injectThreshold = resolveRebuildFailureInjectionThreshold();
+  if (injectThreshold !== void 0 && rebuildRuntimeInvocationCount >= injectThreshold) {
+    throw new Error(
+      `[S-D test hook] injected rebuildRuntime failure (invocation #${rebuildRuntimeInvocationCount}, ${REBUILD_FAILURE_INJECT_ENV}>=${injectThreshold})`
+    );
+  }
   deps.log?.("debug", "workflow:error-recovery", "runtime rebuild start", {
     runId: run.runId,
     budgetTimeMs: run.spec.budgetTimeMs
@@ -17599,7 +17663,31 @@ async function handleWorkerMessage(run, raw, deps, handlers) {
         handlers
       );
       return;
+    case "log":
+      handleWorkerLog(run, msg, deps);
+      return;
+    default:
+      logger4.warn(
+        `[workflow] unknown worker message type dropped (runId=${run.runId}): ${JSON.stringify(msg.type)}`
+      );
+      deps.log?.("warn", "workflow:error-recovery", "unknown worker message type", {
+        runId: run.runId,
+        type: msg.type
+      });
+      return;
   }
+}
+function handleWorkerLog(run, msg, deps) {
+  const message = typeof msg.message === "string" ? msg.message : String(msg.message);
+  run.state.errorLogs.push({ level: "log", message });
+  if (run.state.errorLogs.length > MAX_ERROR_LOGS) {
+    run.state.errorLogs = run.state.errorLogs.slice(-MAX_ERROR_LOGS);
+  }
+  deps.log?.("debug", "workflow:error-recovery", "worker log", {
+    runId: run.runId,
+    phase: msg.phase,
+    message
+  });
 }
 function dispatchAgentCall(run, msg, deps) {
   if (typeof msg.callId !== "number" || !Number.isFinite(msg.callId) || typeof msg.opts !== "object" || msg.opts === null || typeof msg.opts.prompt !== "string") {
@@ -17701,20 +17789,13 @@ function dispatchAgentCall(run, msg, deps) {
         void te;
       }
       if (transitioned) {
+        closeOutInFlightCalls(run);
         deps.store.save(run).catch((e) => {
           const m = e instanceof Error ? e.message : String(e);
           logger4.error(`[workflow] store.save failed (budget done): ${m}`);
         });
         deps.log?.("debug", "workflow:error-recovery", "run saved after budget done", { runId: run.runId, reason: run.state.reason });
-        try {
-          deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
-          deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-          deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
-          deps.onRunDone?.(run);
-        } catch (err) {
-          const m = err instanceof Error ? err.message : String(err);
-          logger4.error(`[workflow] onRunDone/emit failed (budget done): ${m}`);
-        }
+        emitTerminalSideEffects(run, deps, "budget done");
       }
     }
   }).catch((err) => {
@@ -17830,12 +17911,10 @@ async function handleReturn(run, msg, deps) {
   }
   run.state.scriptResult = msg.result;
   run.transition("done", "completed");
+  closeOutInFlightCalls(run);
   await saveRunBestEffort(run, deps, "handleReturn (done,completed)");
   deps.log?.("debug", "workflow:error-recovery", "run saved after return", { runId: run.runId, reason: run.state.reason });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
-  deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
-  deps.onRunDone?.(run);
+  emitTerminalSideEffects(run, deps, "handleReturn (done,completed)");
 }
 async function handleWorkerError(run, err, deps, handlers) {
   if (isTerminal(run)) return;
@@ -17850,12 +17929,10 @@ async function handleWorkerError(run, err, deps, handlers) {
   run.state.error = err.message;
   deps.log?.("debug", "workflow:error-recovery", "handleWorkerError retries exceeded, transition done", { runId: run.runId, count });
   run.transition("done", "failed");
+  closeOutInFlightCalls(run);
   await saveRunBestEffort(run, deps, "handleWorkerError (done,failed)");
   deps.log?.("debug", "workflow:error-recovery", "run saved after worker error", { runId: run.runId, reason: run.state.reason });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
-  deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
-  deps.onRunDone?.(run);
+  emitTerminalSideEffects(run, deps, "handleWorkerError (done,failed)");
 }
 async function handleWorkerExit(run, code, handle, deps, handlers) {
   if (!handle.isCurrent) return;
@@ -17865,12 +17942,10 @@ async function handleWorkerExit(run, code, handle, deps, handlers) {
     deps.log?.("debug", "workflow:error-recovery", "worker exited without terminal message, transition done", { runId: run.runId });
     run.state.error = WORKER_EXITED_WITHOUT_RESULT_MSG;
     run.transition("done", "failed");
+    closeOutInFlightCalls(run);
     await saveRunBestEffort(run, deps, "handleWorkerExit (done,failed, no terminal message)");
     deps.log?.("debug", "workflow:error-recovery", "run saved after exit without result", { runId: run.runId, reason: run.state.reason });
-    deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
-    deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-    deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
-    deps.onRunDone?.(run);
+    emitTerminalSideEffects(run, deps, "handleWorkerExit (done,failed, no terminal message)");
     return;
   }
   await handleWorkerError(
@@ -17897,12 +17972,10 @@ async function handleScriptError(run, errorMsg, workerLogs, deps, handlers) {
   run.state.error = `Workflow failed after ${MAX_WORKER_RETRIES} retries: ${errorMsg}`;
   deps.log?.("debug", "workflow:error-recovery", "handleScriptError retries exceeded, transition done", { runId: run.runId, count });
   run.transition("done", "failed");
+  closeOutInFlightCalls(run);
   await saveRunBestEffort(run, deps, "handleScriptError (done,failed)");
   deps.log?.("debug", "workflow:error-recovery", "run saved after script error", { runId: run.runId, reason: run.state.reason });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister", { runId: run.runId, reason: run.state.reason });
-  deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-  deps.log?.("debug", "workflow:error-recovery", "emit pending:unregister done", { runId: run.runId });
-  deps.onRunDone?.(run);
+  emitTerminalSideEffects(run, deps, "handleScriptError (done,failed)");
 }
 async function scheduleRebuild(run, deps, handlers) {
   const retryIndex = Math.max(
@@ -17916,7 +17989,30 @@ async function scheduleRebuild(run, deps, handlers) {
     await finalizeTimeBudgetExhausted(run, deps);
     return;
   }
-  rebuildRuntime(run, deps, handlers);
+  try {
+    rebuildRuntime(run, deps, handlers);
+  } catch (err) {
+    await handleRebuildStartFailure(run, err, deps, handlers);
+  }
+}
+async function handleRebuildStartFailure(run, err, deps, handlers) {
+  if (isTerminal(run)) return;
+  const message = err instanceof Error ? err.message : String(err);
+  const count = (run.meta.workerErrorCount ?? 0) + 1;
+  run.meta.workerErrorCount = count;
+  logger4.error(
+    `[workflow] rebuildRuntime failed (runId=${run.runId}, attempt ${count}/${MAX_WORKER_RETRIES}): ${message}`
+  );
+  if (count <= MAX_WORKER_RETRIES) {
+    await scheduleRebuild(run, deps, handlers);
+    return;
+  }
+  run.state.error = `Runtime rebuild failed after ${MAX_WORKER_RETRIES} retries: ${message}`;
+  deps.log?.("debug", "workflow:error-recovery", "rebuild retries exhausted, transition done", { runId: run.runId, count });
+  run.transition("done", "failed");
+  closeOutInFlightCalls(run);
+  await saveRunBestEffort(run, deps, "handleRebuildStartFailure (done,failed)");
+  emitTerminalSideEffects(run, deps, "handleRebuildStartFailure (done,failed)");
 }
 
 // src/orchestration/models/budget.ts
@@ -18277,16 +18373,40 @@ var MAX_RETAINED_DONE_RUNS = 20;
 function generateRunId() {
   return `wf-${Date.now()}-${Math.random().toString(RUNID_RADIX).slice(RUNID_SLICE_START, RUNID_SLICE_END)}`;
 }
+var signalAbortDisposers = /* @__PURE__ */ new WeakMap();
+function disposeSignalAbortListener(run) {
+  const dispose = signalAbortDisposers.get(run);
+  if (!dispose) return;
+  signalAbortDisposers.delete(run);
+  dispose();
+}
+function broadcastAbortToWorker(run, reason) {
+  try {
+    run.runtime?.worker.postMessage({ type: "abort", reason });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger5.debug(
+      `[workflow] abort broadcast to worker failed (runId=${run.runId}, worker likely already exited): ${msg}`
+    );
+  }
+}
 function makeHandlers(run, deps) {
+  const depsWithTerminalCleanup = {
+    ...deps,
+    onRunDone: (doneRun) => {
+      disposeSignalAbortListener(run);
+      deps.onRunDone?.(doneRun);
+    }
+  };
   const handlers = {
     async onMessage(raw) {
-      await handleWorkerMessage(run, raw, deps, handlers);
+      await handleWorkerMessage(run, raw, depsWithTerminalCleanup, handlers);
     },
     async onError(err) {
-      await handleWorkerError(run, err, deps, handlers);
+      await handleWorkerError(run, err, depsWithTerminalCleanup, handlers);
     },
     async onExit(code, handle) {
-      await handleWorkerExit(run, code, handle, deps, handlers);
+      await handleWorkerExit(run, code, handle, depsWithTerminalCleanup, handlers);
     }
   };
   return handlers;
@@ -18304,17 +18424,18 @@ function scheduleTimeBudget(runId, deps, budgetTimeMs) {
   timer.unref();
   return timer;
 }
-async function runWorkflow(spec, deps, signal) {
-  validateRunArgs(spec);
-  const runId = generateRunId();
+function injectRunId(spec, runId) {
   if (spec.args && typeof spec.args === "object") {
     spec.args._runId = runId;
   }
-  deps.log?.("debug", "workflow:lifecycle", "runWorkflow start", { runId, scriptName: spec.scriptName });
+}
+function assertSignalNotAborted(signal) {
   if (signal?.aborted) {
     throw new Error("Workflow run aborted before start");
   }
-  const run = new WorkflowRun(
+}
+function createRunningRun(runId, spec) {
+  return new WorkflowRun(
     runId,
     spec,
     {
@@ -18329,33 +18450,56 @@ async function runWorkflow(spec, deps, signal) {
     },
     { startedAt: (/* @__PURE__ */ new Date()).toISOString() }
   );
-  if (signal) {
-    signal.addEventListener(
-      "abort",
-      () => {
-        void abortRun(runId, deps, "External signal aborted").catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          logger5.error(`[workflow] abortRun on signal failed: ${msg}`);
-        });
-      },
-      { once: true }
-    );
+}
+function armTimeBudgetTimer(runId, deps, spec) {
+  return spec.budgetTimeMs && spec.budgetTimeMs > 0 ? scheduleTimeBudget(runId, deps, spec.budgetTimeMs) : void 0;
+}
+function startWorkerGuarded(spec, deps, handlers, timeBudgetTimer) {
+  try {
+    return deps.workerHost.start(spec, spec.args, handlers);
+  } catch (err) {
+    if (timeBudgetTimer) clearTimeout(timeBudgetTimer);
+    throw err;
   }
-  const handlers = makeHandlers(run, deps);
-  const controller = new AbortController();
-  const worker = deps.workerHost.start(spec, spec.args, handlers);
-  const timeBudgetTimer = spec.budgetTimeMs && spec.budgetTimeMs > 0 ? scheduleTimeBudget(runId, deps, spec.budgetTimeMs) : void 0;
-  const runtime = new RunRuntime(worker, controller, timeBudgetTimer);
-  run.assignRuntime(runtime);
-  deps.runs.set(runId, run);
-  await deps.store.save(run);
-  deps.log?.("debug", "workflow:lifecycle", "run saved", { runId, status: run.state.status });
-  deps.log?.("debug", "workflow:lifecycle", "emit pending:register", { runId });
+}
+function registerSignalAbortListener(run, runId, deps, signal) {
+  if (!signal) return;
+  const onAbort = () => {
+    disposeSignalAbortListener(run);
+    void abortRun(runId, deps, "External signal aborted").catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger5.error(`[workflow] abortRun on signal failed: ${msg}`);
+    });
+  };
+  signal.addEventListener("abort", onAbort);
+  signalAbortDisposers.set(run, () => signal.removeEventListener("abort", onAbort));
+}
+function emitPendingRegister(runId, deps, spec) {
   deps.eventBus?.emit("pending:register", {
     id: runId,
     type: "workflow",
     name: spec.slug || spec.scriptName || runId
   });
+}
+async function runWorkflow(spec, deps, signal) {
+  validateRunArgs(spec);
+  const runId = generateRunId();
+  injectRunId(spec, runId);
+  deps.log?.("debug", "workflow:lifecycle", "runWorkflow start", { runId, scriptName: spec.scriptName });
+  assertSignalNotAborted(signal);
+  const run = createRunningRun(runId, spec);
+  const handlers = makeHandlers(run, deps);
+  const controller = new AbortController();
+  const timeBudgetTimer = armTimeBudgetTimer(runId, deps, spec);
+  const worker = startWorkerGuarded(spec, deps, handlers, timeBudgetTimer);
+  const runtime = new RunRuntime(worker, controller, timeBudgetTimer);
+  run.assignRuntime(runtime);
+  deps.runs.set(runId, run);
+  registerSignalAbortListener(run, runId, deps, signal);
+  await deps.store.save(run);
+  deps.log?.("debug", "workflow:lifecycle", "run saved", { runId, status: run.state.status });
+  deps.log?.("debug", "workflow:lifecycle", "emit pending:register", { runId });
+  emitPendingRegister(runId, deps, spec);
   deps.log?.("debug", "workflow:lifecycle", "emit pending:register done", { runId });
   return runId;
 }
@@ -18372,13 +18516,13 @@ async function abortRun(runId, deps, reason, doneReason = "aborted") {
   if (reason) {
     run.state.error = reason;
   }
+  broadcastAbortToWorker(run, reason ?? `Workflow aborted (${doneReason})`);
   run.transition("done", doneReason);
+  disposeSignalAbortListener(run);
+  closeOutInFlightCalls(run);
   await deps.store.save(run);
   deps.log?.("debug", "workflow:lifecycle", "abortRun transition done", { runId, reason: run.state.reason });
-  deps.log?.("debug", "workflow:lifecycle", "emit pending:unregister", { runId, reason: run.state.reason });
-  deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: run.state.reason ?? "completed" });
-  deps.log?.("debug", "workflow:lifecycle", "emit pending:unregister done", { runId });
-  deps.onRunDone?.(run);
+  emitTerminalSideEffects(run, deps, `abortRun (done,${doneReason})`);
 }
 async function terminateRunningRuns(deps, reason) {
   for (const run of deps.runs.values()) {
@@ -18386,9 +18530,12 @@ async function terminateRunningRuns(deps, reason) {
     try {
       deps.log?.("debug", "workflow:lifecycle", "terminateRunningRuns", { runId: run.runId, reason });
       run.state.error = reason;
+      broadcastAbortToWorker(run, reason);
       run.transition("done", "failed");
+      disposeSignalAbortListener(run);
+      closeOutInFlightCalls(run);
       await deps.store.save(run);
-      deps.eventBus?.emit("pending:unregister", { id: run.runId, reason: "failed" });
+      emitPendingUnregister(run, deps, "terminateRunningRuns");
       deps.log?.("debug", "workflow:lifecycle", "run terminated", { runId: run.runId, reason: run.state.reason });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -18416,6 +18563,7 @@ async function recoverCrashedRuns(store, runs, reason, hooks) {
     if (run.state.status === "running") {
       run.state.error = reason;
       run.transition("done", "failed");
+      closeOutInFlightCalls(run);
       recovered += 1;
       try {
         hooks?.onRunRecovered?.({ id: run.runId, reason: "failed" });
@@ -18799,6 +18947,8 @@ var WORKER_TEMPLATE_PRE = [
   "      const pending = _pendingCalls.get(msg.callId);",
   "      if (pending) {",
   "        _pendingCalls.delete(msg.callId);",
+  "        // [OR-3] \u7ED3\u679C\u5DF2\u5230\uFF0C\u6E05\u9664 per-call \u8D85\u65F6 timer\uFF08\u6709 timer \u624D\u6E05\uFF0C\u9632\u5FA1\u65E7 pending \u65E0\u8BE5\u5B57\u6BB5\uFF09",
+  "        if (pending.timer) { clearTimeout(pending.timer); }",
   '        if (typeof msg.result !== "undefined") {',
   "          _callCache.set(msg.callId, msg.result);",
   "        }",
@@ -18835,11 +18985,16 @@ var WORKER_TEMPLATE_PRE = [
   "      const pending = _pendingCalls.get(msg.callId);",
   "      if (pending) {",
   "        _pendingCalls.delete(msg.callId);",
+  "        // [OR-3] \u7ED3\u679C\u5DF2\u5230\uFF0C\u6E05\u9664 per-call \u8D85\u65F6 timer\uFF08workflow() \u5F53\u524D\u4E0D\u6302 timer\uFF0C\u9632\u5FA1\u6027\u5BF9\u79F0\u6E05\u7406\uFF09",
+  "        if (pending.timer) { clearTimeout(pending.timer); }",
   "        pending.resolve(msg.result);",
   "      }",
   '    } else if (msg.type === "abort") {',
+  "      // [OR-3] \u4E3B\u7EBF\u7A0B abortRun/terminateRunningRuns \u7684\u4F18\u96C5\u89E3\u963B\u5E7F\u64AD\uFF1A\u5168\u90E8 pending",
+  "      // reject\uFF08\u811A\u672C catch WorkflowAbortedError \u53EF\u611F\u77E5\u53D6\u6D88\uFF09+ \u6E05\u7406 timer + \u6E05 Map\u3002",
+  "      // \u540E\u7EED\u8FDF\u5230\u7ED3\u679C\u547D\u4E2D\u7A7A Map\uFF08no-op\uFF09\uFF0C\u4E0D\u4EA7\u4E3B\u7EBF\u7A0B unhandledRejection\u3002",
   "      const err = new WorkflowAbortedError(msg.reason);",
-  "      _pendingCalls.forEach((p) => { p.reject(err); });",
+  "      _pendingCalls.forEach((p) => { if (p.timer) { clearTimeout(p.timer); } p.reject(err); });",
   "      _pendingCalls.clear();",
   '    } else if (msg.type === "budget-update" && msg.budget) {',
   "      _budgetData._spentTokens = msg.budget.usedTokens ?? _budgetData._spentTokens;",
@@ -18854,7 +19009,11 @@ var WORKER_TEMPLATE_PRE = [
   "",
   // ── log global ──
   "  function log(msg) {",
-  '    try { parentPort.postMessage({ type: "log", phase: _currentPhase, message: String(msg) }); } catch(e) { /* swallow */ }',
+  "    var _logText = String(msg);",
+  '    // [B-3] \u5355\u901A\u8DEF\uFF1A\u53EA\u53D1\u72EC\u7ACB {type:"log"} \u6D88\u606F\uFF0C\u4E3B\u7EBF\u7A0B handleWorkerLog \u5373\u65F6\u6D88\u8D39',
+  "    //\uFF08push \u8FDB errorLogs\uFF09\u3002\u4E0D\u518D\u540C\u65F6\u8BB0\u5165 _workerLogs\u2014\u2014\u65E7\u53CC\u901A\u8DEF\u8BA9\u540C\u4E00\u65E5\u5FD7\u968F",
+  "    // return/error \u7684 workerLogs \u518D\u5E26\u56DE\u4E00\u4EFD\uFF0CerrorLogs \u5360\u4E24\u683C\u3001TUI \u53CC\u4EFD\u3002",
+  '    try { parentPort.postMessage({ type: "log", phase: _currentPhase, message: _logText }); } catch(e) { /* swallow */ }',
   "  }",
   "",
   // ── agent global — CC-compatible multi-signature ──
@@ -18870,6 +19029,9 @@ var WORKER_TEMPLATE_PRE = [
   '        thinkingLevel: (secondArg && typeof secondArg === "object" && secondArg.thinkingLevel) || $THINKING_LEVEL,',
   "        // step \u7EA7 turn \u4E0A\u9650\uFF08turn limiter\uFF1B\u663E\u5F0F 0/\u8D1F = \u663E\u5F0F\u4E0D\u9650\uFF0C\u538B\u8FC7 spawn watchdog env \u5151\u5E95\uFF0CSP-6\uFF09\n        // ?? \u8BED\u4E49\u4FDD\u771F\uFF1A\u4EC5 null/undefined \u5F52 undefined\uFF08\u8D70 env \u5151\u5E95\uFF09\uFF0C\u663E\u5F0F 0 \u4FDD\u7559\uFF08U5 \u53C2\u6570 > env\uFF09",
   '        maxTurns: (secondArg && typeof secondArg === "object" ? secondArg.maxTurns : undefined) ?? undefined,',
+  "        // [OR-3] per-call timeoutMs \u900F\u4F20\uFF08string \u5206\u652F\u6B64\u524D\u4E22\u5F03\u8BE5\u5B57\u6BB5\u2014\u2014\u5BF9\u8C61\u5206\u652F\u5DF2\u6709\uFF1B",
+  "        // worker pending \u6D88\u606F\u5C42\u8D85\u65F6\u4F9D\u8D56\u5B83\u6D41\u5230 agent-call \u6D88\u606F\uFF09",
+  '        timeoutMs: (secondArg && typeof secondArg === "object" ? secondArg.timeoutMs : undefined),',
   "        // P4 D9\u2462\uFF1Astep \u7EA7 engine \u663E\u5F0F\u6307\u5B9A\uFF08\u4EC5\u9650\u5FC5\u987B\u67D0\u5F15\u64CE\u72EC\u6709\u80FD\u529B\u7684\u573A\u666F\uFF09",
   '        engine: (secondArg && typeof secondArg === "object" && secondArg.engine) || undefined,',
   "      };",
@@ -18942,7 +19104,32 @@ var WORKER_TEMPLATE_PRE = [
   '      return Promise.reject(new Error("postMessage failed for agent-call (callId=" + callId + "): see workerLogs"));',
   "    }",
   "    return new Promise((resolve, reject) => {",
-  "      _pendingCalls.set(callId, { resolve, reject, returnMeta: opts.returnMeta === true });",
+  "      const _pending = { resolve: resolve, reject: reject, returnMeta: opts.returnMeta === true, timer: undefined };",
+  "      // [OR-3] per-call timeoutMs\uFF1A\u6D88\u606F\u5C42\u81EA\u5DF1\u7684\u8D85\u65F6\u2014\u2014\u4E3B\u7EBF\u7A0B\u5BF9 agent-call \u6C38\u4E0D\u56DE\u8BDD",
+  "      //\uFF08\u7578\u5F62\u6D88\u606F\u4E22\u5F03 / postMessage \u53CC\u91CD\u5931\u8D25 / runner \u4E0D settle\uFF09\u65F6 pending \u4E0D\u518D\u6C38\u6302",
+  "      //\uFF08\u65E7\u5B9E\u73B0\u96F6\u8D85\u65F6 \u2192 agent() \u6C38\u6302 \u2192 worker \u4E0D\u9000\u51FA \u2192 run \u6C38\u4E45 running\uFF09\u3002",
+  "      // \u8D85\u65F6\u4EE5\u9519\u8BEF resolve\uFF08\u5BF9\u9F50 agent-result \u5931\u8D25\u5BB9\u9519\u7B56\u7565\uFF1A\u4E0D reject\u3001\u4E0D\u628A\u5355\u70B9\u8D85\u65F6",
+  "      // \u653E\u5927\u6210\u811A\u672C error \u2192 rebuild\uFF09\uFF0C\u5E76\u8BB0\u5165 _workerLogs \u7559\u8BCA\u65AD\u3002\u4EC5\u663E\u5F0F timeoutMs > 0",
+  "      // \u542F\u7528\uFF08\u7F3A\u7701\u4E0D\u9650\uFF0C\u4E0E runner \u4FA7 per-call timeout \u8BED\u4E49\u4E00\u81F4\uFF09\u3002timer unref\uFF1A\u811A\u672C",
+  "      // \u5DF2 return \u65F6\u6B8B\u7559 timer \u4E0D\u5EF6\u8FDF worker \u81EA\u7136\u9000\u51FA\u3002",
+  '      if (typeof opts.timeoutMs === "number" && opts.timeoutMs > 0) {',
+  "        _pending.timer = setTimeout(() => {",
+  "          if (!_pendingCalls.delete(callId)) { return; }",
+  '          const _timeoutMsg = "agent call timed out after " + opts.timeoutMs + "ms (callId=" + callId + ") \u2014 no agent-result received from main thread";',
+  '          _pushWorkerLog("warn", ["[workflow] " + _timeoutMsg]);',
+  "          if (opts.returnMeta === true) {",
+  '            _pending.resolve({ value: "", error: _timeoutMsg });',
+  "          } else {",
+  "            // [B-5] \u975E returnMeta \u8D85\u65F6 resolve \u5355\u503C\u9519\u8BEF\u6D88\u606F\u5B57\u7B26\u4E32\uFF08\u5BF9\u9F50 agent-result",
+  "            // \u5931\u8D25\u8DEF\u5F84 resolve \u5355\u503C _value = parsedOutput ?? content \u7684\u5F62\u6001\uFF09\u2014\u2014",
+  '            // \u65E7\u5B9E\u73B0 resolve {content:"", error} \u5BF9\u8C61\uFF0C\u5B57\u7B26\u4E32\u6D88\u8D39\u578B\u811A\u672C\uFF08r.trim() \u7C7B\uFF09',
+  "            // \u5728\u8D85\u65F6\u8DEF\u5F84 TypeError\u3002",
+  "            _pending.resolve(_timeoutMsg);",
+  "          }",
+  "        }, opts.timeoutMs);",
+  '        if (_pending.timer && typeof _pending.timer.unref === "function") { _pending.timer.unref(); }',
+  "      }",
+  "      _pendingCalls.set(callId, _pending);",
   "    });",
   "  }",
   "",
@@ -19796,33 +19983,33 @@ var WorkflowScriptRegistryImpl = class {
   }
   config;
   /**
-   * 扫描所有 workflow 脚本（project + user + tmp），按 tmp>project>user 优先级
-   * 去重，返回 WorkflowScript 实体数组（含 available=false 的解析失败项）。
-   *
-   * 60s TTL 缓存——同 workspace 60s 内重复调用走缓存。
-   */
+  * 扫描所有 workflow 脚本（project + user + tmp），按 tmp>project>user 优先级
+  * 去重，返回 WorkflowScript 实体数组（含 available=false 的解析失败项）。
+  *
+  * 60s TTL 缓存——同 workspace 60s 内重复调用走缓存。
+  */
   async loadAll() {
     const metas = this.config ? await discoverWorkflows(this.config) : await loadWorkflows();
     return metas.map((m) => this.toScript(m));
   }
   /**
-   * 按名查单个脚本。精确匹配。
-   * 返回 undefined 当 name 不存在。
-   *
-   * 注：fuzzy 匹配由 Interface 层 tool-workflow负责——registry 只做精确查。
-   *
-   * 性能注记：无 config（生产路径）时走 getWorkflow 的 60s TTL 单条缓存。
-   * 有 config（测试隔离）时退化为每次 discoverWorkflows 全扫——测试场景
-   * 可接受，生产路径不受影响。
-   */
+  * 按名查单个脚本。精确匹配。
+  * 返回 undefined 当 name 不存在。
+  *
+  * 注：fuzzy 匹配由 Interface 层 tool-workflow负责——registry 只做精确查。
+  *
+  * 性能注记：无 config（生产路径）时走 getWorkflow 的 60s TTL 单条缓存。
+  * 有 config（测试隔离）时退化为每次 discoverWorkflows 全扫——测试场景
+  * 可接受，生产路径不受影响。
+  */
   async get(name) {
     const meta = this.config ? (await discoverWorkflows(this.config)).find((w) => w.name === name) : await getWorkflow(name);
     return meta ? this.toScript(meta) : void 0;
   }
   /**
-   * 按绝对路径加载单个脚本（S2 路径统一）。任意路径（不限扫描源）。
-   * 供 workflow tool 的 run/info（name 参数 = workflowRef）。
-   */
+  * 按绝对路径加载单个脚本（S2 路径统一）。任意路径（不限扫描源）。
+  * 供 workflow tool 的 run/info（name 参数 = workflowRef）。
+  */
   async getPath(ref) {
     const meta = await getWorkflowByPath(ref);
     return meta ? this.toScript(meta) : void 0;
@@ -19923,56 +20110,68 @@ function deleteWorkflow(name, isRunning, options) {
 }
 
 // src/orchestration/script-generate.ts
-function generateWorkflowScript(name, script, options) {
+function checkRequiredParams(name, script) {
   if (!name || !script) {
-    return { ok: false, error: "generate requires 'name' and 'script' parameters" };
+    return "generate requires 'name' and 'script' parameters";
   }
-  const stripped = script.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  return void 0;
+}
+function checkEsamSyntax(stripped) {
   if (/\bimport\s+(?:type\s+)?[\w{*]/.test(stripped)) {
-    return {
-      ok: false,
-      error: "Script uses ESM 'import' syntax. Workflow scripts run in a CJS Worker \u2014 use require() instead."
-    };
+    return "Script uses ESM 'import' syntax. Workflow scripts run in a CJS Worker \u2014 use require() instead.";
   }
   const hasExportMeta = /\bexport\s+const\s+meta\s*=/.test(stripped);
   const otherExports = stripped.match(/\bexport\s+(?:const|let|var|function|default|\{)/g);
   if (otherExports && !hasExportMeta) {
-    return {
-      ok: false,
-      error: "Script uses ESM 'export' (non-meta). Use 'const meta = {...}' at top level instead."
-    };
+    return "Script uses ESM 'export' (non-meta). Use 'const meta = {...}' at top level instead.";
   }
-  const hasPiMeta = /\/\*\s*@pi-meta\s*\n/.test(script);
+  return void 0;
+}
+function checkMetaDeclaration(script, hasPiMeta) {
   const hasLegacyMeta = script.includes("const meta") || script.includes("export const meta");
   if (!hasPiMeta && !hasLegacyMeta) {
-    return {
-      ok: false,
-      error: "Script must contain a meta declaration: a /* @pi-meta */ YAML block comment (preferred) or legacy const meta = { ... }. The block has the form: a block comment starting with /* @pi-meta followed by YAML (name/description/phases/parameters?/usage?), closed by */ on its own line."
-    };
+    return "Script must contain a meta declaration: a /* @pi-meta */ YAML block comment (preferred) or legacy const meta = { ... }. The block has the form: a block comment starting with /* @pi-meta followed by YAML (name/description/phases/parameters?/usage?), closed by */ on its own line.";
   }
+  return void 0;
+}
+function checkAgentUsage(stripped) {
   if (!/\bagent\s*\(/.test(stripped)) {
-    return {
-      ok: false,
-      error: "Script does not contain any agent() calls. A workflow must call agent() at least once."
-    };
+    return "Script does not contain any agent() calls. A workflow must call agent() at least once.";
   }
+  return void 0;
+}
+function checkSyntax(script) {
   const cjsScript = script.replace(/\bexport\s+const\s+meta\b/, "const meta");
   try {
     new Function(`(async () => { ${cjsScript} })();`);
+    return void 0;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Syntax error in script: ${msg}` };
+    return `Syntax error in script: ${msg}`;
   }
-  if (hasPiMeta) {
-    const detailed = parseResourceMetaDetailed(script, "workflow");
-    if (!detailed.ok) {
-      const loc = "linePos" in detailed && detailed.linePos ? ` (line ${detailed.linePos.line}, col ${detailed.linePos.col})` : "";
-      return {
-        ok: false,
-        error: `Generated /* @pi-meta */ YAML cannot be parsed${loc}: ${detailed.error}. Common causes: YAML indent errors, patternProperties regex must use double backslash (\\d not d), or a stray star-slash inside the YAML body. Fix the meta block and retry.`
-      };
-    }
-  }
+}
+function checkMetaRoundTrip(script, hasPiMeta) {
+  if (!hasPiMeta) return void 0;
+  const detailed = parseResourceMetaDetailed(script, "workflow");
+  if (detailed.ok) return void 0;
+  const loc = "linePos" in detailed && detailed.linePos ? ` (line ${detailed.linePos.line}, col ${detailed.linePos.col})` : "";
+  return `Generated /* @pi-meta */ YAML cannot be parsed${loc}: ${detailed.error}. Common causes: YAML indent errors, patternProperties regex must use double backslash (\\d not d), or a stray star-slash inside the YAML body. Fix the meta block and retry.`;
+}
+function generateWorkflowScript(name, script, options) {
+  const paramError = checkRequiredParams(name, script);
+  if (paramError) return { ok: false, error: paramError };
+  const stripped = script.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const esamError = checkEsamSyntax(stripped);
+  if (esamError) return { ok: false, error: esamError };
+  const hasPiMeta = /\/\*\s*@pi-meta\s*\n/.test(script);
+  const metaError = checkMetaDeclaration(script, hasPiMeta);
+  if (metaError) return { ok: false, error: metaError };
+  const agentError = checkAgentUsage(stripped);
+  if (agentError) return { ok: false, error: agentError };
+  const syntaxError = checkSyntax(script);
+  if (syntaxError) return { ok: false, error: syntaxError };
+  const roundTripError = checkMetaRoundTrip(script, hasPiMeta);
+  if (roundTripError) return { ok: false, error: roundTripError };
   const tmpDir = (0, import_node_path6.resolve)(options?.tmpDir ?? DEFAULT_WORKFLOW_TMP_DIR);
   (0, import_node_fs2.mkdirSync)(tmpDir, { recursive: true });
   const filePath = (0, import_node_path6.resolve)(tmpDir, `${name}.js`);
@@ -20025,44 +20224,62 @@ function toRunSnapshot(run) {
     meta: run.meta
   };
 }
+function isPresentObject(v) {
+  return !!v && typeof v === "object";
+}
+function isValidSnapshotShape(s) {
+  if (s.v !== SNAPSHOT_VERSION) return false;
+  if (typeof s.runId !== "string" || !s.runId) return false;
+  if (!isPresentObject(s.spec)) return false;
+  const st = s.state;
+  if (!isPresentObject(st)) return false;
+  if (st.status !== "running" && st.status !== "done") return false;
+  if (!isPresentObject(st.budget)) return false;
+  if (!Array.isArray(st.calls) || !Array.isArray(st.trace)) return false;
+  if (!isPresentObject(s.meta)) return false;
+  return true;
+}
+function linkTraceNode(c, trace) {
+  return trace.toArray().find((n) => n.stepIndex === c.traceNode?.stepIndex) ?? (c.traceNode ? { ...c.traceNode } : void 0);
+}
+function rehydrateCall(c, trace) {
+  if (c === null || typeof c !== "object" || typeof c.id !== "number") return void 0;
+  const linked = linkTraceNode(c, trace);
+  if (!linked) return void 0;
+  const call = new AgentCall(c.id, c.opts, linked);
+  call.status = c.status;
+  call.attempts = c.attempts;
+  if (c.result !== void 0) call.result = c.result;
+  if (c.sessionId !== void 0) call.sessionId = c.sessionId;
+  if (c.sessionFile !== void 0) call.sessionFile = c.sessionFile;
+  return call;
+}
+function rehydrateCalls(snapshots, trace) {
+  const calls = /* @__PURE__ */ new Map();
+  for (const c of snapshots) {
+    const call = rehydrateCall(c, trace);
+    if (call) calls.set(c.id, call);
+  }
+  return calls;
+}
 function fromRunSnapshot(snap) {
   if (snap === null || typeof snap !== "object") return void 0;
   const s = snap;
-  if (s.v !== SNAPSHOT_VERSION) return void 0;
-  if (typeof s.runId !== "string" || !s.runId) return void 0;
-  if (!s.spec || typeof s.spec !== "object") return void 0;
-  const st = s.state;
-  if (!st || typeof st !== "object") return void 0;
-  if (st.status !== "running" && st.status !== "done") return void 0;
-  if (!st.budget || typeof st.budget !== "object") return void 0;
-  if (!Array.isArray(st.calls) || !Array.isArray(st.trace)) return void 0;
-  if (!s.meta || typeof s.meta !== "object") return void 0;
-  const trace = Trace.fromArray(st.trace);
-  const calls = /* @__PURE__ */ new Map();
-  for (const c of st.calls) {
-    if (c === null || typeof c !== "object" || typeof c.id !== "number") continue;
-    const linked = trace.toArray().find((n) => n.stepIndex === c.traceNode?.stepIndex) ?? (c.traceNode ? { ...c.traceNode } : void 0);
-    if (!linked) continue;
-    const call = new AgentCall(c.id, c.opts, linked);
-    call.status = c.status;
-    call.attempts = c.attempts;
-    if (c.result !== void 0) call.result = c.result;
-    if (c.sessionId !== void 0) call.sessionId = c.sessionId;
-    if (c.sessionFile !== void 0) call.sessionFile = c.sessionFile;
-    calls.set(c.id, call);
-  }
+  if (!isValidSnapshotShape(s)) return void 0;
+  const trace = Trace.fromArray(s.state.trace);
+  const calls = rehydrateCalls(s.state.calls, trace);
   return WorkflowRun.reconstruct(
     s.runId,
     s.spec,
     {
-      status: st.status,
-      reason: st.reason,
-      budget: new Budget(st.budget),
+      status: s.state.status,
+      reason: s.state.reason,
+      budget: new Budget(s.state.budget),
       calls,
       trace,
-      errorLogs: Array.isArray(st.errorLogs) ? st.errorLogs : [],
-      error: st.error,
-      scriptResult: st.scriptResult
+      errorLogs: Array.isArray(s.state.errorLogs) ? s.state.errorLogs : [],
+      error: s.state.error,
+      scriptResult: s.state.scriptResult
     },
     s.meta
   );
@@ -20072,6 +20289,8 @@ function fromRunSnapshot(snap) {
 var logger7 = getLogger("file-run-store");
 var STATE_DIR_NAME = "workflow-state";
 var STATE_FILE_GLOB = /^wf-.*\.jsonl$/;
+var DEFAULT_STATE_MAX_RUNS = 50;
+var DEFAULT_SAVE_MIN_INTERVAL_MS = 6e4;
 function isEnoentError(err) {
   return typeof err === "object" && err !== null && "code" in err && err.code === "ENOENT";
 }
@@ -20081,13 +20300,48 @@ var FileRunStore = class {
   stateDir() {
     return (0, import_node_path7.join)(getHostServices().dataRoot(), STATE_DIR_NAME);
   }
+  /** save 节流最小间隔（ms），0 = 禁用。 */
+  saveMinIntervalMs;
+  /**
+   * per-runId 上次实际落盘时刻（节流判据）。终态落盘成功即删（终态后 runId 不再
+   * save）；残留条目只出现在「running 中 run 消失（崩溃/宿主弃用）」场景，单条
+   * ~100B 可忽略（对齐 jsonl-run-store chains「每 runId 残留 settled Promise」
+   * 的取舍先例）。时间源 Date.now()（fake timers 下可推进，测试友好）。
+   */
+  lastSavedAt = /* @__PURE__ */ new Map();
+  constructor(opts) {
+    this.saveMinIntervalMs = Math.max(0, opts?.saveMinIntervalMs ?? DEFAULT_SAVE_MIN_INTERVAL_MS);
+  }
   stateFilePath(runId) {
     return (0, import_node_path7.join)(this.stateDir(), `${runId}.jsonl`);
   }
+  /**
+   * 快照落盘（OR-5 ⑥a 节流后）：
+   * - 首写（该 runId 尚无落盘记录）永不节流——保证新 run 至少一条快照，
+   *   loadAll 重水合可发现；
+   * - 终态（status 非 running）永不节流——最终状态必落盘，末行即终态快照；
+   * - running 中间态距上次落盘不足 {@link saveMinIntervalMs} → 跳过本次 append
+   *   （状态仍在调用方内存 runs Map，下次落盘带全量最新快照；本文件最后一条
+   *   快照因此最多落后真实状态一个节流窗口——崩溃语义与 jsonl-run-store 去抖
+   *   同源：未落盘的 running 尾部丢失，等价崩溃链由恢复路径收编）。
+   *
+   * 节流判据在落盘成功后才更新（IO 失败不吞下一次重试机会）。
+   */
   async save(run) {
+    const isTerminal2 = run.state.status !== "running";
+    const now = Date.now();
+    const last = this.lastSavedAt.get(run.runId);
+    if (!isTerminal2 && last !== void 0 && now - last < this.saveMinIntervalMs) {
+      return;
+    }
     await (0, import_promises2.mkdir)(this.stateDir(), { recursive: true });
     const line = JSON.stringify(toRunSnapshot(run));
     await (0, import_promises2.appendFile)(this.stateFilePath(run.runId), line + "\n", "utf8");
+    if (isTerminal2) {
+      this.lastSavedAt.delete(run.runId);
+    } else {
+      this.lastSavedAt.set(run.runId, now);
+    }
   }
   async loadAll() {
     let files;
@@ -20165,38 +20419,44 @@ var FileRunStore = class {
     return run;
   }
   /**
-   * 把 workflow-state 目录裁剪到上限个最新 state 文件（mtime 升序删最旧，C1）。
-   *
-   * 语义对齐 pi jsonl-run-store.pruneStateFilesBeyondCap（逐段同构）：
-   * - 只删本目录内命中 {@link STATE_FILE_GLOB} 的文件；任何失败都不抛（清理是
-   *   旁路维护，不能拖垮持久化主链路）：readdir 失败静默放弃本轮（ENOENT =
-   *   从未持久化，正常态），单个 unlink 失败（非 ENOENT）warn 留证后继续删
-   *   其余——ENOENT 视为并发删除竞态下的已达成目标，不告警；
-   * - stat 全集取 mtime，allSettled 部分降级——单文件 stat 失败（并发删除
-   *   ENOENT 等）静默跳过该文件，不阻断本轮裁剪。
-   *
-   * 上限解析（envName 通道，对齐 pi getEnvStateMaxRuns 解析规则）：
-   * - `envName` 提供 → opt-in 通道：`process.env[envName]` 未设/空/非有限数/≤0
-   *   → no-op（**默认关**，pi B1 opt-in 语义）；设了有限正数 → 上限 = env 值
-   *   （env 值即上限，对齐 pi env 语义）；
-   * - `envName` 缺省 → 无 env 通道，直接按 `max` 参数裁剪（上限 = max，调用方
-   *   自管启用时机）。
-   *
-   * 本方法只做磁盘裁剪，不动内存 runs Map（内存侧淘汰归
-   * lifecycle.evictDoneRunsBeyondCap，两域独立）。
-   *
-   * @param max 上限（envName 缺省时生效；env 通道启用时被 env 值覆盖）
-   * @param envName opt-in 开关 + 上限覆盖 env 变量名（可选；pi 先例
-   *   `XYZ_SUBAGENT_STATE_MAX_RUNS`）
-   */
+    * 把 workflow-state 目录裁剪到上限个最新 state 文件（mtime 升序删最旧，C1）。
+    *
+    * 语义对齐 pi jsonl-run-store.pruneStateFilesBeyondCap（逐段同构）：
+    * - 只删本目录内命中 {@link STATE_FILE_GLOB} 的文件；任何失败都不抛（清理是
+    *   旁路维护，不能拖垮持久化主链路）：readdir 失败静默放弃本轮（ENOENT =
+    *   从未持久化，正常态），单个 unlink 失败（非 ENOENT）warn 留证后继续删
+    *   其余——ENOENT 视为并发删除竞态下的已达成目标，不告警；
+    * - stat 全集取 mtime，allSettled 部分降级——单文件 stat 失败（并发删除
+    *   ENOENT 等）静默跳过该文件，不阻断本轮裁剪。
+    *
+  * 上限解析（envName 通道，OR-5 ⑥b 默认开；显式非法值 opt-out 对齐 pi 解析风格）：
+  * - `envName` 提供 → env 通道：`process.env[envName]` 未设/空 → 按默认上限
+  *   {@link DEFAULT_STATE_MAX_RUNS} 裁剪（**默认开**——OR-5 修复前的 opt-in
+  *   「默认关」正是跨 run 无界累积缺陷本身）；设了有限正数 → 上限 = env 值
+  *   （env 值即上限）；设了非法值（非有限数/≤0）→ 不清理（显式 opt-out 通道：
+  *   用户意图不明时不动磁盘——对齐本方法 readdir/stat 失败一律放弃的保守哲学，
+  *   宿主如需自管保留可设足够大的正数值）；
+  * - `envName` 缺省 → 无 env 通道，直接按 `max` 参数裁剪（上限 = max，调用方
+  *   自管启用时机）。
+    *
+    * 本方法只做磁盘裁剪，不动内存 runs Map（内存侧淘汰归
+    * lifecycle.evictDoneRunsBeyondCap，两域独立）。
+    *
+    * @param max 上限（envName 缺省时生效；env 通道启用时被 env 值覆盖）
+    * @param envName opt-in 开关 + 上限覆盖 env 变量名（可选；pi 先例
+    *   `XYZ_SUBAGENT_STATE_MAX_RUNS`）
+    */
   async pruneStateFilesBeyondCap(max, envName) {
     let cap = max;
     if (envName !== void 0) {
       const raw = process.env[envName];
-      if (!raw) return;
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed <= 0) return;
-      cap = parsed;
+      if (raw === void 0 || raw === "") {
+        cap = DEFAULT_STATE_MAX_RUNS;
+      } else {
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed) || parsed <= 0) return;
+        cap = parsed;
+      }
     }
     const stateDir = this.stateDir();
     let names;
@@ -20254,12 +20514,11 @@ function defaultWarn(msg) {
 
 // src/execution/engine/engines/zcode/constants.ts
 var ZCODE_ENGINE_ID = "zcode";
-var ZCODE_ADAPTER_VERSION = "1.0.0";
+var ZCODE_ADAPTER_VERSION = "2.0.0";
 var ZCODE_CLI_DEFAULT_PATH = "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs";
 var ZCODE_V2_CONFIG_PATH_SUFFIX = [".zcode", "v2", "config.json"];
-var ZCODE_POOL_CONFIG_SUFFIX = [".zcode", "cli", "config.json"];
-var ZCODE_POOL_DB_RELATIVE_PATH = ".zcode/cli/db/db.sqlite";
 var ZCODE_FALLBACK_DEFAULT_MODEL = "builtin:bigmodel-coding-plan/GLM-5.3";
+var ZCODE_HOST_DB_SUFFIX = [".zcode", "cli", "db", "db.sqlite"];
 var ZCODE_KILL_GRACE_MS = 5e3;
 var ZCODE_ERROR_TAIL_CHARS = 2e3;
 var ZCODE_APPSERVER_REQUEST_TIMEOUT_MS = 15e3;
@@ -20268,25 +20527,18 @@ var ZCODE_APPSERVER_STDERR_TAIL_BUFFER_CHARS = 2048;
 var ZCODE_APPSERVER_TURN_READ_TIMEOUT_MS = 5e3;
 var ZCODE_APPSERVER_TURN_CLOSE_TIMEOUT_MS = 1500;
 var ZCODE_APPSERVER_TURN_DEFAULT_TIMEOUT_MS = 3e5;
-var ZCODE_APPSERVER_POOL_KEY = "home-appserver";
-var ZCODE_APPSERVER_LOCKFILE_NAME = "lockfile";
-var ZCODE_APPSERVER_PIDFILE_NAME = "appserver.pid";
-var ZCODE_APPSERVER_LOCK_HEARTBEAT_MS = 3e4;
-var ZCODE_APPSERVER_MAX_DERIVED_HOMES = 8;
+var ZCODE_SHARED_POOL_KEY = "shared";
 var ZCODE_APPSERVER_STOP_TIMEOUT_MS = 3e3;
 var ZCODE_APPSERVER_ABORT_GRACE_MS = 3e3;
-var ZCODE_APPSERVER_PIDFILE_GRACE_MS = 2e3;
-var ZCODE_MODE_ENV_VAR = "XYZ_ZCODE_MODE";
 var ZCODE_APPSERVER_ERR_MODEL_CONFIG_MISSING = -32603;
-var ZCODE_APPSERVER_PROBE_BUDGET_MS = 1e4;
-var ZCODE_APPSERVER_DRIFT_RPC_CODES = [-32601, -32602];
-var ZCODE_APPSERVER_PROBE_CONN_ENV = "ZCODE_APPSERVER_PROBE_CONN";
+var ZCODE_APPSERVER_ERR_BUSY_SESSION = -32010;
 var ZCODE_APPSERVER_HARVEST_GRACE_MS = 1e3;
 
 // src/execution/engine/engines/zcode/zcode-engine.ts
-var import_node_child_process4 = require("child_process");
+var import_node_child_process2 = require("child_process");
 var fs6 = __toESM(require("fs"), 1);
-var path5 = __toESM(require("path"), 1);
+var os2 = __toESM(require("os"), 1);
+var path4 = __toESM(require("path"), 1);
 
 // src/execution/engine/common/schema-emulation.ts
 var import_ajv2 = __toESM(require_ajv(), 1);
@@ -20418,19 +20670,6 @@ var DEFAULT_ARGV_BUDGET_BYTES = (
   // eslint-disable-next-line no-magic-numbers -- 128KB = 128 * 1024 bytes 预算换算常数
   128 * 1024
 );
-function estimateArgvBytes(argv) {
-  let total = 0;
-  for (const arg of argv) {
-    total += Buffer.byteLength(arg, "utf8") + 1;
-  }
-  return total;
-}
-function assertArgvBudget(argv, limitBytes = DEFAULT_ARGV_BUDGET_BYTES) {
-  const actual = estimateArgvBytes(argv);
-  if (actual > limitBytes) {
-    throw promptTooLargeError(actual, limitBytes);
-  }
-}
 
 // src/execution/engine/common/event-journal.ts
 var import_promises3 = require("fs/promises");
@@ -20672,188 +20911,7 @@ function resolveJournalPath(dataDir, engineId, poolKey, taskId) {
   return (0, import_node_path9.join)(resolvePoolDir(dataDir, engineId, poolKey), `journal-${sanitizeSeg(taskId)}.jsonl`);
 }
 
-// src/execution/engine/engines/zcode/golden-sample.ts
-var ZCODE_GOLDEN_STDOUT = `{
-  "sessionId": "sess_35852a0f-1302-4e20-9e48-87f47527abe3",
-  "traceId": "9fffaebd-749e-468b-af3f-2a89e3347785",
-  "turnId": "turn_99879260-1c9b-4e97-afe1-c2e7abeaf5b9",
-  "response": "ok",
-  "usage": {
-    "source": "provider",
-    "modelRequestCount": 1,
-    "inputTokens": 12599,
-    "outputTokens": 17,
-    "totalTokens": 12616,
-    "cacheReadTokens": 512,
-    "cacheWriteTokens": 0,
-    "reasoningTokens": 0,
-    "webFetchRequests": 0,
-    "webSearchRequests": 0
-  },
-  "eventCount": 17,
-  "projection": {
-    "status": "idle",
-    "turnCount": 1,
-    "totalTokenCount": 12616,
-    "contextUsed": 12616,
-    "contextWindow": 1000000
-  }
-}
-`;
-
-// src/execution/engine/engines/zcode/launcher.ts
-var import_node_child_process = require("child_process");
-var import_node_stream = require("stream");
-
-// src/execution/engine/common/nesting-guard.ts
-var NESTED_SPAWN_ENV = "XYZ_AGENT_SUBAGENT";
-var NATIVE_NESTED_KEYS = ["CLAUDECODE", "ZSW_NESTED"];
-var NATIVE_NESTED_PREFIXES = ["PI_SUBAGENT_"];
-function buildNestedSpawnEnv(baseEnv) {
-  const env = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
-    if (NATIVE_NESTED_KEYS.includes(key)) continue;
-    if (NATIVE_NESTED_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-    env[key] = value;
-  }
-  env[NESTED_SPAWN_ENV] = "1";
-  return env;
-}
-
-// src/execution/engine/engines/zcode/launcher.ts
-function buildZcodeArgv(spec) {
-  const args = ["--json", "--cwd", spec.cwd, "--mode", "yolo"];
-  const disallowed = (spec.denyTools ?? []).filter((t) => typeof t === "string" && t.trim() !== "");
-  if (disallowed.length > 0) args.push("--disallowed-tools", disallowed.join(","));
-  if (spec.resumeSessionId) args.push("--resume", String(spec.resumeSessionId));
-  args.push("--prompt", String(spec.prompt));
-  return args;
-}
-function assertZcodeArgvBudget(nodeBin, cliPath, args) {
-  assertArgvBudget([nodeBin, cliPath, ...args]);
-}
-function buildZcodeEnv(homeDir, baseEnv = process.env) {
-  return { ...buildNestedSpawnEnv(baseEnv), HOME: homeDir };
-}
-function launchZcodeProcess(opts) {
-  const nodeBin = opts.nodeBin ?? "node";
-  const child = (0, import_node_child_process.spawn)(nodeBin, [opts.cliPath, ...opts.args], {
-    env: opts.env,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  let exited = false;
-  let killTriggered = false;
-  const emptyStream = () => import_node_stream.Readable.from([]);
-  const stdoutStream = child.stdout ?? emptyStream();
-  const stderrStream = child.stderr ?? emptyStream();
-  const exitedPromise = new Promise((resolve6) => {
-    child.once("close", (code, signal) => {
-      exited = true;
-      resolve6({ code, signal: signal ?? void 0 });
-    });
-    child.once("error", () => {
-      exited = true;
-      resolve6({ code: null, signal: void 0 });
-    });
-  });
-  const abort = (graceMs = ZCODE_KILL_GRACE_MS) => {
-    if (!killTriggered && !exited) {
-      killTriggered = true;
-      void killChain(child, { graceMs });
-    }
-    return exitedPromise.then(() => void 0);
-  };
-  return {
-    child,
-    pid: child.pid ?? -1,
-    stdout: stdoutStream,
-    stderr: stderrStream,
-    abort,
-    exited: exitedPromise,
-    killedByUs: () => killTriggered
-  };
-}
-
 // src/execution/engine/engines/zcode/parser.ts
-var DEFAULT_HEAD_BYTES = 4096;
-var DEFAULT_TAIL_BYTES = 64 * 1024;
-function createBoundedLineBuffer(opts = {}) {
-  const headLimit = opts.headLimit ?? DEFAULT_HEAD_BYTES;
-  const tailLimit = opts.tailLimit ?? DEFAULT_TAIL_BYTES;
-  let pending = "";
-  let head = "";
-  let headFull = false;
-  const tailLines = [];
-  let tailBytes = 0;
-  let droppedBytes = 0;
-  function addLine(line) {
-    if (!headFull) {
-      if (head.length + line.length <= headLimit) {
-        head += line;
-        return;
-      }
-      headFull = true;
-    }
-    tailLines.push(line);
-    tailBytes += line.length;
-    while (tailBytes > tailLimit && tailLines.length > 1) {
-      const dropped = tailLines.shift();
-      tailBytes -= dropped.length;
-      droppedBytes += dropped.length;
-    }
-    if (tailBytes > tailLimit && tailLines.length === 1) {
-      const over = tailBytes - tailLimit;
-      tailLines[0] = tailLines[0].slice(over);
-      tailBytes -= over;
-      droppedBytes += over;
-    }
-  }
-  return {
-    push(chunk) {
-      pending += chunk;
-      let nl;
-      while ((nl = pending.indexOf("\n")) >= 0) {
-        addLine(pending.slice(0, nl + 1));
-        pending = pending.slice(nl + 1);
-      }
-    },
-    flush() {
-      if (pending !== "") {
-        addLine(pending);
-        pending = "";
-      }
-    },
-    text() {
-      this.flush();
-      const mid = droppedBytes > 0 ? `
-[zcode-engine] \u8F93\u51FA\u8FC7\u957F\uFF0C\u5934\u5C3E\u4E4B\u95F4\u5DF2\u4E22\u5F03 ${droppedBytes} \u5B57\u8282
-` : "";
-      return head + mid + tailLines.join("");
-    },
-    tail(n) {
-      const t = this.text();
-      return t.length > n ? t.slice(t.length - n) : t;
-    }
-  };
-}
-function parseZcodeStdoutJson(stdout) {
-  const trimmed = stdout.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch (err) {
-    void err;
-  }
-  const first = trimmed.indexOf("{");
-  const last = trimmed.lastIndexOf("}");
-  if (first >= 0 && last > first) {
-    try {
-      return JSON.parse(trimmed.slice(first, last + 1));
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
 function finiteOr(v, fallback) {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -20885,75 +20943,6 @@ function firstFinite(...vals) {
   }
   return 0;
 }
-function parseZcodeTerminal(stdout) {
-  const parsed = parseZcodeStdoutJson(stdout);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { ok: false, reason: "stdout \u4E0D\u662F JSON \u5BF9\u8C61" };
-  }
-  const obj = parsed;
-  if (typeof obj.response !== "string") {
-    return { ok: false, reason: "\u7EC8 JSON \u7F3A string \u578B response \u5B57\u6BB5\uFF08zcode \u683C\u5F0F\u6F02\u79FB\u5ACC\u7591\uFF09" };
-  }
-  const usage = mapZcodeUsage(obj.usage);
-  const projection = typeof obj.projection === "object" && obj.projection !== null ? obj.projection : void 0;
-  const outcomeUsage = mapZcodeOutcomeUsage(obj.usage, projection);
-  const turnCountRaw = projection?.turnCount;
-  return {
-    ok: true,
-    payload: {
-      response: obj.response,
-      ...typeof obj.sessionId === "string" ? { sessionId: obj.sessionId } : {},
-      ...usage !== void 0 ? { usage } : {},
-      ...outcomeUsage !== void 0 ? { outcomeUsage } : {},
-      ...typeof turnCountRaw === "number" && Number.isFinite(turnCountRaw) ? { turnCount: turnCountRaw } : {}
-    }
-  };
-}
-var DRAIN_TIMEOUT_MS = 1e3;
-function drainReadable(stream) {
-  return new Promise((resolve6) => {
-    if (stream.readableEnded || stream.destroyed) {
-      resolve6();
-      return;
-    }
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      stream.removeListener("end", finish);
-      stream.removeListener("close", finish);
-      stream.removeListener("error", finish);
-      clearTimeout(timer);
-      resolve6();
-    };
-    stream.once("end", finish);
-    stream.once("close", finish);
-    stream.once("error", finish);
-    const timer = setTimeout(finish, DRAIN_TIMEOUT_MS);
-    if (typeof timer.unref === "function") timer.unref();
-  });
-}
-async function collectZcodeOutput(proc) {
-  const outBuf = createBoundedLineBuffer();
-  const errBuf = createBoundedLineBuffer({ headLimit: 0, tailLimit: DEFAULT_TAIL_BYTES });
-  proc.stdout.on("data", (d) => {
-    outBuf.push(typeof d === "string" ? d : d.toString("utf8"));
-  });
-  proc.stderr.on("data", (d) => {
-    errBuf.push(typeof d === "string" ? d : d.toString("utf8"));
-  });
-  const { code, signal } = await proc.exited;
-  await drainReadable(proc.stdout);
-  await drainReadable(proc.stderr);
-  outBuf.flush();
-  errBuf.flush();
-  return {
-    exitCode: code,
-    ...signal !== void 0 ? { signal } : {},
-    stdoutText: outBuf.text(),
-    stderrTail: errBuf.text()
-  };
-}
 function synthesizeCoarseEvents(response, usage) {
   return [
     // usage 给不出完整形状时显式缺省整个字段，不给残缺对象（不变量 2）
@@ -20961,237 +20950,11 @@ function synthesizeCoarseEvents(response, usage) {
     { type: "turn_end" }
   ];
 }
-var STDERR_TAIL_IN_MSG_CHARS = 500;
-var LLM_API_FAILURE_SIGNATURE = "APICallError";
-function isLlmTurnFailure(stderrTail) {
-  if (stderrTail === void 0) return false;
-  return stderrTail.includes(LLM_API_FAILURE_SIGNATURE) || stderrTail.includes("Turn execution failed");
-}
-function extractHttpStatus(stderrTail) {
-  if (stderrTail === void 0) return "";
-  const m = stderrTail.match(/statusCode:\s*(\d{3})/);
-  if (m === null) return "";
-  const code = m[1];
-  const meaning = {
-    "401": "\u2014\u2014\u51ED\u636E\u65E0\u6548\u6216\u8FC7\u671F\uFF08apiKey \u88AB\u4E0A\u6E38\u62D2\u7EDD\uFF09",
-    "403": "\u2014\u2014\u51ED\u636E\u65E0\u6743\u9650\uFF08apiKey \u6709\u6548\u4F46\u65E0\u8BE5\u6A21\u578B/\u8D44\u6E90\u6743\u9650\uFF09",
-    "404": "\u2014\u2014\u6A21\u578B\u6216\u8DEF\u5F84\u4E0D\u5B58\u5728\uFF08\u6838\u5BF9\u6A21\u578B\u540D\u4E0E baseURL\uFF09",
-    "429": "\u2014\u2014\u9650\u6D41/\u914D\u989D\u8017\u5C3D"
-  };
-  return `\uFF0CHTTP ${code}${meaning[code] ?? ""}`;
-}
-function compactStderrObjectNoise(tail) {
-  const OBJECT_LINE = /^(\[Object\][,\s]*)+$/;
-  const lines = tail.split("\n");
-  const out = [];
-  let run = 0;
-  const flush = () => {
-    if (run > 0) {
-      out.push(`[Object]\xD7${run}`);
-      run = 0;
-    }
-  };
-  for (const line of lines) {
-    if (OBJECT_LINE.test(line.trim())) {
-      run++;
-      continue;
-    }
-    flush();
-    out.push(line);
-  }
-  flush();
-  return out.join("\n");
-}
-function buildRunFailedMessage(opts) {
-  const parts = [];
-  if (opts.parseReason !== void 0) {
-    parts.push(`\u89E3\u6790\u5931\u8D25\uFF1A${opts.parseReason}\u3002`);
-  }
-  parts.push(`exit code: ${opts.exitCode ?? "null\uFF08\u88AB\u4FE1\u53F7\u6740\u6B7B\uFF09"}\u3002`);
-  if (opts.stderrTail !== void 0 && opts.stderrTail.trim() !== "") {
-    const compacted = compactStderrObjectNoise(opts.stderrTail);
-    parts.push(`stderr \u5C3E\u90E8: ${compacted.slice(-STDERR_TAIL_IN_MSG_CHARS)}`);
-  }
-  if (opts.stdoutTail.trim() !== "") {
-    parts.push(`stdout \u5C3E\u90E8: ${opts.stdoutTail.slice(-ZCODE_ERROR_TAIL_CHARS)}`);
-  }
-  if (isLlmTurnFailure(opts.stderrTail)) {
-    const statusHint = extractHttpStatus(opts.stderrTail);
-    const modelHint = opts.modelRef !== void 0 ? `\uFF08\u672C\u4EFB\u52A1\u6A21\u578B '${opts.modelRef}'\uFF09` : "";
-    const configHint = opts.configPath !== void 0 ? `\u2460 \u6838\u5BF9\u6C60\u5185 provider \u7684 baseURL \u53EF\u8FBE\u6027\u4E0E apiKey \u6709\u6548\u6027\uFF08\`${opts.configPath}\`\uFF09${statusHint.includes("401") || statusHint.includes("403") ? "\u2014\u2014apiKey \u5927\u6982\u7387\u65E0\u6548\u6216\u8FC7\u671F\uFF0C\u9700\u5728\u51ED\u636E\u6765\u6E90\uFF08ZCode \u684C\u9762\u6216\u81EA\u5EFA\u7F51\u5173\uFF09\u66F4\u65B0" : ""}\uFF1B` : `\u2460 \u6838\u5BF9 zcode \u6C60\u5185 provider \u7684 baseURL \u53EF\u8FBE\u6027\u4E0E apiKey \u6709\u6548\u6027${statusHint}\uFF1B`;
-    parts.push(
-      `\u6062\u590D\u6307\u5F15\uFF1A\u6A21\u578B API \u8C03\u7528\u5931\u8D25${statusHint}\u2014\u2014CLI \u672C\u4F53\u4E0E\u8F93\u51FA\u89E3\u6790\u6B63\u5E38\uFF0C\u95EE\u9898\u5728\u6A21\u578B\u7AEF\u70B9\u6216\u51ED\u636E${modelHint}\u3002` + configHint + "\u2461 \u4FEE\u590D\u540E\u76F4\u63A5\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08probe \u7F13\u5B58\u4E0D\u53D7\u5F71\u54CD\u2014\u2014\u8FD0\u884C\u671F\u5931\u8D25\u4E0D\u7F13\u5B58\uFF09\uFF1B\u2462 \u6216\u4EFB\u52A1\u663E\u5F0F\u6307\u5B9A\u5176\u4ED6\u53EF\u7528\u6A21\u578B\uFF08provider/model \u5168\u540D\uFF09\uFF1B\u2463 \u6216\u6539\u7528 engine: pi \u91CD\u8DD1\u672C\u4EFB\u52A1\u3002"
-    );
-  } else {
-    parts.push(
-      `\u6062\u590D\u6307\u5F15\uFF1A\u8DD1 \`node ${opts.cliPath} --version\` \u786E\u8BA4\u7248\u672C\u540E\u91CD\u8DD1\u63A2\u9488\uFF08probe\uFF09\u2014\u2014\u82E5\u4E3A\u683C\u5F0F\u6F02\u79FB\uFF0C\u628A\u65B0 stdout \u6837\u672C\u8865\u5F55\u8FDB golden \u5E93\uFF08\`__tests__/__fixtures__/zcode-golden-spawn.json\`\uFF09\u5E76\u66F4\u65B0 parser\uFF1B\u6216\u6539\u7528 engine: pi \u91CD\u8DD1\u672C\u4EFB\u52A1\u3002\u8BE6\u89C1 docs/research/agent-engine-zcode.md\u3002`
-    );
-  }
-  return `engine_run_failed: zcode CLI \u8FD0\u884C\u5931\u8D25\u3002${parts.join(" ")}`;
-}
-
-// src/execution/engine/engines/zcode/appserver-home.ts
-var import_node_child_process2 = require("child_process");
-var crypto2 = __toESM(require("crypto"), 1);
-var fs3 = __toESM(require("fs"), 1);
-var path4 = __toESM(require("path"), 1);
-
-// src/shared/atomic-write.ts
-var import_node_fs4 = require("fs");
-var fsPromises = __toESM(require("fs/promises"), 1);
-var path2 = __toESM(require("path"), 1);
-var logger10 = getLogger("subagents");
-var TMP_MARKER = ".tmp.";
-var TMP_NAME_PATTERN = /^(.+)\.tmp\.(\d+)\.[0-9A-Za-z-]+$/;
-var tmpSeq = 0;
-function atomicTmpPathFor(filePath) {
-  tmpSeq += 1;
-  const rand = Math.random().toString(36).slice(2, 8);
-  return `${filePath}${TMP_MARKER}${process.pid}.${tmpSeq}-${rand}`;
-}
-function parseAtomicTmpPath(tmpPath) {
-  const match = TMP_NAME_PATTERN.exec(tmpPath);
-  if (match === null) return null;
-  return { tmpPath, targetPath: match[1], pid: Number(match[2]) };
-}
-var DEFAULT_ENCODING = "utf8";
-function removeTmpBestEffortSync(tmpPath) {
-  try {
-    (0, import_node_fs4.unlinkSync)(tmpPath);
-  } catch (cleanupErr) {
-    logger10.debug("[subagent-core] atomic-write cleanup tmp failed", {
-      detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-      tmpPath
-    });
-  }
-}
-function writeAtomicFileSync(filePath, content, options = {}) {
-  const encoding = options.encoding ?? DEFAULT_ENCODING;
-  if (options.ensureDir !== false) {
-    (0, import_node_fs4.mkdirSync)(path2.dirname(filePath), { recursive: true });
-  }
-  const tmpPath = atomicTmpPathFor(filePath);
-  try {
-    (0, import_node_fs4.writeFileSync)(tmpPath, content, encoding);
-    (0, import_node_fs4.renameSync)(tmpPath, filePath);
-  } catch (err) {
-    removeTmpBestEffortSync(tmpPath);
-    throw err;
-  }
-}
-async function writeAtomicFile(filePath, content, options = {}) {
-  const encoding = options.encoding ?? DEFAULT_ENCODING;
-  const fsyncDir = options.fsyncDir ?? true;
-  if (options.ensureDir !== false) {
-    (0, import_node_fs4.mkdirSync)(path2.dirname(filePath), { recursive: true });
-  }
-  const tmpPath = atomicTmpPathFor(filePath);
-  const dirPath = path2.dirname(filePath);
-  let renamed = false;
-  try {
-    const fh = await fsPromises.open(tmpPath, "w");
-    try {
-      await fh.writeFile(content, encoding);
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
-    await fsPromises.rename(tmpPath, filePath);
-    renamed = true;
-    if (fsyncDir) {
-      try {
-        const dirFh = await fsPromises.open(dirPath, "r");
-        try {
-          await dirFh.sync();
-        } finally {
-          await dirFh.close();
-        }
-      } catch (dirSyncErr) {
-        logger10.debug("[subagent-core] atomic-write fsync dir failed", {
-          detail: dirSyncErr instanceof Error ? dirSyncErr.message : String(dirSyncErr),
-          dirPath
-        });
-      }
-    }
-  } catch (err) {
-    if (!renamed) {
-      try {
-        await fsPromises.unlink(tmpPath);
-      } catch (cleanupErr) {
-        logger10.debug("[subagent-core] atomic-write cleanup tmp failed", {
-          detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
-          tmpPath
-        });
-      }
-    }
-    throw err;
-  }
-}
-function listStaleTmpFiles(dir) {
-  let names;
-  try {
-    names = (0, import_node_fs4.readdirSync)(dir);
-  } catch (readdirErr) {
-    if (typeof readdirErr.code === "string" && readdirErr.code === "ENOENT") {
-      return [];
-    }
-    throw readdirErr;
-  }
-  const refs = [];
-  for (const name of names) {
-    const ref = parseAtomicTmpPath(path2.join(dir, name));
-    if (ref !== null) {
-      refs.push(ref);
-    }
-  }
-  return refs;
-}
-function cleanupStaleTmpFiles(dir, options = {}) {
-  const now = options.now ?? Date.now();
-  const result = { removed: [], kept: [], failed: [] };
-  for (const ref of listStaleTmpFiles(dir)) {
-    if (options.maxAgeMs !== void 0) {
-      try {
-        const mtimeMs = (0, import_node_fs4.statSync)(ref.tmpPath).mtimeMs;
-        if (now - mtimeMs < options.maxAgeMs) {
-          result.kept.push(ref.tmpPath);
-          continue;
-        }
-      } catch (statErr) {
-        if (typeof statErr.code === "string" && statErr.code === "ENOENT") {
-          result.removed.push(ref.tmpPath);
-          continue;
-        }
-        logger10.debug("[subagent-core] cleanupStaleTmpFiles stat failed", {
-          detail: statErr instanceof Error ? statErr.message : String(statErr),
-          tmpPath: ref.tmpPath
-        });
-        result.failed.push(ref.tmpPath);
-        continue;
-      }
-    }
-    try {
-      (0, import_node_fs4.unlinkSync)(ref.tmpPath);
-      result.removed.push(ref.tmpPath);
-    } catch (unlinkErr) {
-      if (typeof unlinkErr.code === "string" && unlinkErr.code === "ENOENT") {
-        result.removed.push(ref.tmpPath);
-      } else {
-        logger10.debug("[subagent-core] cleanupStaleTmpFiles unlink failed", {
-          detail: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
-          tmpPath: ref.tmpPath
-        });
-        result.failed.push(ref.tmpPath);
-      }
-    }
-  }
-  return result;
-}
 
 // src/execution/engine/engines/zcode/preparer.ts
 var fs2 = __toESM(require("fs"), 1);
 var os = __toESM(require("os"), 1);
-var path3 = __toESM(require("path"), 1);
+var path2 = __toESM(require("path"), 1);
 var ZcodePrepareError = class extends Error {
   code;
   constructor(code, message) {
@@ -21249,7 +21012,7 @@ function hasApiKey(entry) {
   return typeof key === "string" && key !== "";
 }
 function defaultV2ConfigPath() {
-  return path3.join(os.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
+  return path2.join(os.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
 }
 var DEFAULT_PROVIDER_ID = "builtin:bigmodel-coding-plan";
 function defaultProviderForShortName(merged, withKey) {
@@ -21310,267 +21073,102 @@ function listZcodeModels(sources) {
   }
   return out;
 }
-function sanitizeProviderDirName(p) {
-  return p.replace(/[^A-Za-z0-9._-]/g, "-");
-}
-function computeZcodePoolKey(modelRef) {
-  const provider = providerOf(modelRef);
-  const short = modelShort(modelRef).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `home-${sanitizeProviderDirName(provider)}-${short.length > 0 ? short : "default"}`;
-}
-function homeNeedsBootstrap(configPath, sourceMtimeMs) {
-  if (!fs2.existsSync(configPath)) return true;
-  let poolMtimeMs = 0;
-  try {
-    JSON.parse(fs2.readFileSync(configPath, "utf8"));
-    poolMtimeMs = fs2.statSync(configPath).mtimeMs;
-  } catch {
-    return true;
+
+// src/execution/engine/engines/zcode/appserver-launcher.ts
+var fs3 = __toESM(require("fs"), 1);
+var path3 = __toESM(require("path"), 1);
+var ZCODE_APPSERVER_LAUNCHER_NAME = "appserver-launcher.cjs";
+var APPSERVER_LAUNCHER_SOURCE = `'use strict';
+// zcode app-server fs \u62E6\u622A wrapper\uFF08\u7531 subagent-core appserver-launcher \u843D\u76D8\u751F\u6210\uFF09
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+
+const CLI_PATH = process.env.ZCODE_ENG_CLI_PATH;
+const V2_PATH = process.env.ZCODE_ENG_V2_CONFIG || path.join(os.homedir(), '.zcode', 'v2', 'config.json');
+const CONFIG_PATH = path.join(os.homedir(), '.zcode', 'cli', 'config.json');
+const FALLBACK_MODEL_MAIN = 'builtin:bigmodel-coding-plan/GLM-5.3';
+
+// \u5408\u5E76\u5F62\u6001\uFF1A\u771F\u5B9E cli config \u539F\u6837\uFF08model/plugins/mcp/subagents \u7B49 worker \u7EE7\u627F\u9762\u4E0D\u53D8\uFF09
+// + v2 \u7684 provider \u5B57\u5178\u6CE8\u5165\uFF08\u771F\u5B9E\u6587\u4EF6\u5DF2\u6709\u540C\u540D\u6761\u76EE\u65F6\u4EE5\u771F\u5B9E\u6587\u4EF6\u4F18\u5148\u2014\u2014\u5C0A\u91CD\u7528\u6237\u624B\u5199\uFF09\u3002
+// \u8FD4\u56DE null = \u65E0\u53EF\u6CE8\u5165\u51ED\u636E\uFF08v2 \u65E0 provider \u6761\u76EE\uFF09\u2014\u2014\u4E0D patch\uFF0C\u8BA9\u539F\u751F\u62A5\u9519\u900F\u51FA\u3002
+// \u8BFB\u6E90\u7ECF readOrig \u95F4\u63A5\u53D6\uFF1Apatch \u524D\u9996\u8C03 = fs.readFileSync \u672C\u4F53\uFF1Bpatch \u540E = \u539F\u51FD\u6570
+// \uFF08\u9632 patch \u540E\u7684\u9012\u5F52\u81EA\u8C03\u7528\uFF09\u3002
+function injectedConfigText() {
+  const readOrig = fs.__origReadFileSync || fs.readFileSync;
+  let real = {};
+  try { real = JSON.parse(readOrig(CONFIG_PATH, 'utf8')); } catch { /* \u65E0/\u635F\u574F \u2192 \u7A7A */ }
+  let v2 = {};
+  try { v2 = JSON.parse(readOrig(V2_PATH, 'utf8')); } catch { return null; }
+  const v2Providers = v2.provider && typeof v2.provider === 'object' ? v2.provider : {};
+  const hasKey = (entry) => entry && typeof entry === 'object'
+    && entry.options && typeof entry.options.apiKey === 'string' && entry.options.apiKey !== '';
+  const injectable = {};
+  for (const [id, entry] of Object.entries(v2Providers)) {
+    if (hasKey(entry)) injectable[id] = entry;
   }
-  return sourceMtimeMs > poolMtimeMs;
-}
-var CONFIG_INDENT_SPACES = 2;
-function prepareZcodeHome(opts) {
-  const { engineDataDir, modelRef } = opts;
-  const poolKey = computeZcodePoolKey(modelRef);
-  const homeDir = resolvePoolDir(engineDataDir, "zcode", poolKey);
-  const configPath = path3.join(homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
-  const v2Path = opts.sources?.v2ConfigPath ?? defaultV2ConfigPath();
-  const v2 = readSourceConfig(v2Path);
-  const provider = providerOf(modelRef);
-  const entry = v2.providers.get(provider);
-  if (entry === void 0) {
-    throw new ZcodePrepareError(
-      "model_not_available",
-      `\u672A\u77E5 provider "${provider}"\uFF08v2 config \u65E0\u8BE5\u6761\u76EE\uFF1A${v2Path}\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5148\u7ECF resolveZcodeModelRef \u6821\u9A8C\u6A21\u578B\u5F15\u7528\uFF0C\u6216\u5148\u5728 ZCode \u684C\u9762\u7AEF\u914D\u7F6E\u8BE5 provider \u540E\u91CD\u8BD5\u3002`
-    );
+  if (Object.keys(injectable).length === 0) return null;
+  const merged = { ...real };
+  merged.provider = { ...injectable, ...(real.provider && typeof real.provider === 'object' ? real.provider : {}) };
+  if (!merged.model || typeof merged.model !== 'object' || !merged.model.main) {
+    const main = (v2.model && v2.model.main) || FALLBACK_MODEL_MAIN;
+    merged.model = { ...(merged.model || {}), main };
   }
-  if (!hasApiKey(entry)) {
-    throw new ZcodePrepareError(
-      "engine_credential_missing",
-      `provider "${provider}" \u5B58\u5728\u4F46\u672A\u914D\u7F6E apiKey\uFF08${v2Path} \u91CD\u8BFB\u65E0\u51ED\u636E\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u786E\u8BA4 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u6001\u6709\u6548\u540E\u91CD\u8BD5\uFF1B\u51ED\u636E\u914D\u7F6E\u8BF4\u660E\u89C1 docs/research/agent-engine-zcode.md\u3002`
-    );
-  }
-  const hitSourceMtime = v2.mtimeMs;
-  let wroteConfig = false;
-  if (homeNeedsBootstrap(configPath, hitSourceMtime)) {
-    const payload = JSON.stringify({ model: { main: modelRef }, provider: { [provider]: entry } }, null, CONFIG_INDENT_SPACES);
-    writeAtomicFileSync(configPath, payload);
-    wroteConfig = true;
-  }
-  return { modelRef, poolKey, homeDir, configPath, wroteConfig };
+  return JSON.stringify(merged);
 }
 
-// src/execution/engine/engines/zcode/appserver-home.ts
-var logger11 = getLogger("subagents");
-var PID_REAP_POLL_INTERVAL_MS = 50;
-function errMessage(err) {
-  return err instanceof Error ? err.message : String(err);
+if (!CLI_PATH) {
+  process.stderr.write('[zcode-launcher] ZCODE_ENG_CLI_PATH \u672A\u8BBE\u7F6E\uFF0C\u65E0\u6CD5\u542F\u52A8 app-server\\n');
+  process.exit(2);
 }
-function providersWithKey(sources) {
-  const v2 = readSourceConfig(sources?.v2ConfigPath ?? defaultV2ConfigPath());
-  return new Map([...v2.providers.entries()].filter(([, e]) => hasApiKey(e)));
+
+const text = injectedConfigText();
+if (text !== null) {
+  // patch \u53CC\u5F62\u6001\uFF08\u540C\u6B65/\u5F02\u6B65\uFF09+ \u53CC\u8FD4\u56DE\u5F62\u6001\uFF08string/Buffer\u2014\u2014\u6309\u8C03\u7528\u65B9 encoding \u671F\u5F85\uFF09
+  const shape = (args, value) => {
+    const enc = args[0];
+    if (enc === 'utf8' || (enc && typeof enc === 'object' && enc.encoding === 'utf8')) return value;
+    return Buffer.from(value);
+  };
+  fs.__origReadFileSync = fs.readFileSync;
+  fs.readFileSync = function (p, ...rest) {
+    if (typeof p === 'string' && p === CONFIG_PATH) {
+      const cur = injectedConfigText();
+      if (cur !== null) return shape(rest, cur);
+    }
+    return fs.__origReadFileSync.call(fs, p, ...rest);
+  };
+  fs.promises.__origReadFile = fs.promises.readFile;
+  fs.promises.readFile = function (p, ...rest) {
+    if (typeof p === 'string' && p === CONFIG_PATH) {
+      const cur = injectedConfigText();
+      if (cur !== null) return Promise.resolve(shape(rest, cur));
+    }
+    return fs.promises.__origReadFile.call(fs.promises, p, ...rest);
+  };
 }
-function hashProviderRegistry(providers) {
-  const canonical = [...providers.keys()].sort().map((id) => [id, providers.get(id)]);
-  return crypto2.createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
-}
-function hashPoolConfigProviders(configPath) {
-  let parsed;
+
+// \u4EE5\u539F argv \u5F62\u6001\u542F\u52A8 zcode.cjs\uFF08argv[0]=node, argv[1]=\u672C wrapper\uFF0Cargv[2]=app-server\u2014\u2014
+// zcode.cjs \u7684 includes('app-server') \u5224\u5B9A\u4E0D\u53D7\u5F71\u54CD\uFF09\u3002import() \u517C\u5BB9 CJS/ESM \u5165\u53E3\u3002
+import(CLI_PATH).catch((err) => {
+  process.stderr.write('[zcode-launcher] zcode.cjs \u52A0\u8F7D\u5931\u8D25: ' + (err && err.message || err) + '\\n');
+  process.exit(3);
+});
+`;
+function ensureAppServerLauncher(engineDataDir) {
+  const dir = path3.join(engineDataDir, "engines", "zcode");
+  const file = path3.join(dir, ZCODE_APPSERVER_LAUNCHER_NAME);
+  let existing;
   try {
-    parsed = JSON.parse(fs3.readFileSync(configPath, "utf8"));
+    existing = fs3.readFileSync(file, "utf8");
   } catch {
-    return void 0;
   }
-  if (!isRecord(parsed) || !isRecord(parsed["provider"])) return void 0;
-  const providers = /* @__PURE__ */ new Map();
-  for (const [id, entry] of Object.entries(parsed["provider"])) {
-    if (isProviderEntry(entry)) providers.set(id, entry);
-  }
-  return hashProviderRegistry(providers);
-}
-function bootstrapAppServerConfig(opts) {
-  const providers = providersWithKey(opts.sources);
-  if (providers.size === 0) {
-    throw new ZcodePrepareError(
-      "engine_credential_missing",
-      `zcode \u5E38\u9A7B HOME \u5F15\u5BFC\u5931\u8D25\uFF1Av2 config \u65E0\u4EFB\u4F55\u5E26 apiKey \u7684 provider\uFF08${opts.sources?.v2ConfigPath ?? defaultV2ConfigPath()}\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5148\u5728 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u5E76\u914D\u7F6E provider \u540E\u91CD\u8BD5\u3002`
-    );
-  }
-  const configPath = path4.join(opts.homeDir, ...ZCODE_POOL_CONFIG_SUFFIX);
-  const providerHash = hashProviderRegistry(providers);
-  let wroteConfig = false;
-  if (hashPoolConfigProviders(configPath) !== providerHash) {
-    const providerObj = {};
-    for (const [id, entry] of providers) providerObj[id] = entry;
-    const payload = JSON.stringify({ model: { main: opts.modelRef }, provider: providerObj }, null, CONFIG_INDENT_SPACES);
-    writeAtomicFileSync(configPath, payload);
-    wroteConfig = true;
-  }
-  return { configPath, wroteConfig, providerHash, providerIds: [...providers.keys()] };
-}
-function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-function tryCreateLock(lockPath) {
-  try {
-    const fd = fs3.openSync(lockPath, "wx");
-    try {
-      fs3.writeFileSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }));
-    } finally {
-      fs3.closeSync(fd);
-    }
-    return true;
-  } catch (err) {
-    if (err.code === "EEXIST") return false;
-    throw err;
-  }
-}
-function readLockPid(lockPath) {
-  try {
-    const parsed = JSON.parse(fs3.readFileSync(lockPath, "utf8"));
-    if (isRecord(parsed) && typeof parsed["pid"] === "number") return parsed["pid"];
-    return void 0;
-  } catch {
-    return void 0;
-  }
-}
-function isLockHeldByUs(lockPath) {
-  return readLockPid(lockPath) === process.pid;
-}
-function acquireAppServerHomeLock(engineDataDir, opts = {}) {
-  const pidAlive = opts.pidAlive ?? isPidAlive;
-  for (let n = 1; n <= ZCODE_APPSERVER_MAX_DERIVED_HOMES; n++) {
-    const name = n === 1 ? ZCODE_APPSERVER_POOL_KEY : `${ZCODE_APPSERVER_POOL_KEY}-${n}`;
-    const homeDir = resolvePoolDir(engineDataDir, ZCODE_ENGINE_ID, name);
-    fs3.mkdirSync(homeDir, { recursive: true });
-    const lockPath = path4.join(homeDir, ZCODE_APPSERVER_LOCKFILE_NAME);
-    let tookOver = false;
-    for (; ; ) {
-      if (tryCreateLock(lockPath)) return { poolKey: name, homeDir, lockPath, tookOver };
-      const holder = readLockPid(lockPath);
-      if (holder !== void 0 && pidAlive(holder)) {
-        break;
-      }
-      tookOver = true;
-      try {
-        fs3.unlinkSync(lockPath);
-      } catch (err) {
-        logger11.debug(`[zcode-preparer] \u63A5\u7BA1\u5220\u9501\u5931\u8D25\uFF08${lockPath}\uFF0C\u7EE7\u7EED\u4E89\u593A\uFF09: ${errMessage(err)}`);
-      }
-      opts.hooks?.afterTakeoverUnlink?.(lockPath);
-    }
-  }
-  throw new Error(
-    `[engine_run_failed] zcode \u5E38\u9A7B HOME \u76EE\u5F55\u9501\u7ADE\u4E89\u8D85\u9650\uFF08${ZCODE_APPSERVER_MAX_DERIVED_HOMES} \u4E2A\u6D3E\u751F\u76EE\u5F55\u5168\u88AB\u6D3B\u5BBF\u4E3B\u6301\u6709\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u6E05\u7406 ${resolvePoolDir(engineDataDir, ZCODE_ENGINE_ID, ZCODE_APPSERVER_POOL_KEY)} \u4E0B\u65E0\u4E3B lockfile \u540E\u91CD\u8BD5\u3002`
-  );
-}
-function startLockHeartbeat(lockPath) {
-  const timer = setInterval(() => {
-    try {
-      const now = /* @__PURE__ */ new Date();
-      fs3.utimesSync(lockPath, now, now);
-    } catch (err) {
-      logger11.debug(`[zcode-preparer] \u9501\u5FC3\u8DF3 touch \u5931\u8D25\uFF08${lockPath}\uFF0C\u505C\u8DF3\uFF09: ${errMessage(err)}`);
-    }
-  }, ZCODE_APPSERVER_LOCK_HEARTBEAT_MS);
-  if (typeof timer.unref === "function") timer.unref();
-  return () => clearInterval(timer);
-}
-function pidfilePath(homeDir) {
-  return path4.join(homeDir, ZCODE_APPSERVER_PIDFILE_NAME);
-}
-function psField(pid, field) {
-  return new Promise((resolve6) => {
-    (0, import_node_child_process2.execFile)("ps", ["-p", String(pid), `-o`, `${field}=`], { encoding: "utf8", timeout: 2e3 }, (err, stdout) => {
-      resolve6(err ? void 0 : stdout.trim() || void 0);
-    });
-  });
-}
-function probePidLstart(pid) {
-  return psField(pid, "lstart");
-}
-function probePidCommand(pid) {
-  return psField(pid, "command");
-}
-async function writeAppServerPidFile(homeDir, pid) {
-  const content = {
-    pid,
-    startedAt: Date.now(),
-    ...pid > 0 ? { lstart: await probePidLstart(pid) } : {}
-  };
-  writeAtomicFileSync(pidfilePath(homeDir), JSON.stringify(content, null, CONFIG_INDENT_SPACES), { ensureDir: false });
-}
-async function reapOrphanAppServer(homeDir, opts = {}) {
-  const file = pidfilePath(homeDir);
-  let content;
-  try {
-    const parsed = JSON.parse(fs3.readFileSync(file, "utf8"));
-    if (isRecord(parsed) && typeof parsed["pid"] === "number") {
-      content = { pid: parsed["pid"], startedAt: 0, ...typeof parsed["lstart"] === "string" ? { lstart: parsed["lstart"] } : {} };
-    }
-  } catch {
-    content = void 0;
-  }
-  if (content === void 0) return "no-pidfile";
-  const unlinkPidfile = () => {
-    try {
-      fs3.unlinkSync(file);
-    } catch (err) {
-      logger11.debug(`[zcode-preparer] pidfile \u6E05\u7406\u5931\u8D25\uFF08${file}\uFF0C\u5DF2\u88AB\u5E76\u53D1\u6E05\u7406\u5219\u65E0\u59A8\uFF09: ${errMessage(err)}`);
-    }
-  };
-  if (!isPidAlive(content.pid)) {
-    unlinkPidfile();
-    return "pid-dead";
-  }
-  const lstart = await probePidLstart(content.pid);
-  const command = await probePidCommand(content.pid);
-  const lstartMatches = content.lstart !== void 0 && lstart !== void 0 && lstart === content.lstart;
-  const commandMatches = command !== void 0 && command.includes("app-server");
-  if (lstartMatches && commandMatches) {
-    reapPid(content.pid, opts.graceMs ?? ZCODE_APPSERVER_PIDFILE_GRACE_MS);
-    unlinkPidfile();
-    return "reaped";
-  }
-  unlinkPidfile();
-  return "criteria-mismatch";
-}
-function reapPid(pid, graceMs) {
-  const killWith = (signal) => {
-    try {
-      process.kill(pid, signal);
-    } catch (err) {
-      logger11.debug(`[zcode-preparer] \u5B64\u513F\u56DE\u6536\u4FE1\u53F7 ${signal} \u672A\u9001\u8FBE\uFF08pid ${pid}\uFF0C\u53EF\u80FD\u5DF2\u9000\u51FA\uFF09: ${errMessage(err)}`);
-    }
-  };
-  killWith("SIGTERM");
-  const deadline = Date.now() + graceMs;
-  const poll = () => {
-    if (!isPidAlive(pid)) return;
-    if (Date.now() >= deadline) {
-      killWith("SIGKILL");
-      return;
-    }
-    const t = setTimeout(poll, PID_REAP_POLL_INTERVAL_MS);
-    if (typeof t.unref === "function") t.unref();
-  };
-  poll();
-}
-async function acquireAppServerHome(opts) {
-  const lock = acquireAppServerHomeLock(opts.engineDataDir, {
-    ...opts.pidAlive !== void 0 ? { pidAlive: opts.pidAlive } : {},
-    ...opts.hooks !== void 0 ? { hooks: opts.hooks } : {}
-  });
-  const orphanReap = lock.tookOver ? await reapOrphanAppServer(lock.homeDir) : "not-applicable";
-  const boot = bootstrapAppServerConfig({ homeDir: lock.homeDir, modelRef: opts.modelRef, sources: opts.sources });
-  return { ...lock, ...boot, orphanReap };
+  if (existing === APPSERVER_LAUNCHER_SOURCE) return file;
+  fs3.mkdirSync(dir, { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  fs3.writeFileSync(tmp, APPSERVER_LAUNCHER_SOURCE);
+  fs3.renameSync(tmp, file);
+  return file;
 }
 
 // src/execution/engine/engines/zcode/reader.ts
@@ -21806,10 +21404,27 @@ async function readZcodeSessionView(dbPath, sessionId) {
 }
 
 // src/execution/engine/engines/zcode/connection.ts
-var import_node_child_process3 = require("child_process");
+var import_node_child_process = require("child_process");
 var fs5 = __toESM(require("fs"), 1);
 var import_node_path10 = require("path");
-var logger12 = getLogger("subagents");
+
+// src/execution/engine/common/nesting-guard.ts
+var NESTED_SPAWN_ENV = "XYZ_AGENT_SUBAGENT";
+var NATIVE_NESTED_KEYS = ["CLAUDECODE", "ZSW_NESTED"];
+var NATIVE_NESTED_PREFIXES = ["PI_SUBAGENT_"];
+function buildNestedSpawnEnv(baseEnv) {
+  const env = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (NATIVE_NESTED_KEYS.includes(key)) continue;
+    if (NATIVE_NESTED_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    env[key] = value;
+  }
+  env[NESTED_SPAWN_ENV] = "1";
+  return env;
+}
+
+// src/execution/engine/engines/zcode/connection.ts
+var logger10 = getLogger("subagents");
 var RAW_FRAME_LOG_CHARS = 200;
 var RUNTIME_PREFERENCES = Object.freeze({
   nativeSearchEnhancementsEnabled: true,
@@ -21830,14 +21445,13 @@ function frameIdOf(frame) {
   const id = frame.id;
   return typeof id === "string" || typeof id === "number" ? id : void 0;
 }
-function errMessage2(err) {
+function errMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
-function buildAppServerEnv(homeDir, baseEnv = process.env) {
+function buildAppServerEnv(baseEnv = process.env) {
   return {
     ...buildNestedSpawnEnv(baseEnv),
-    ZCODE_MODEL_TELEMETRY_ENABLED: "false",
-    HOME: homeDir
+    ZCODE_MODEL_TELEMETRY_ENABLED: "false"
   };
 }
 var AppServerConnection = class {
@@ -21849,6 +21463,7 @@ var AppServerConnection = class {
   requestTimeoutMs;
   reverseHandlers;
   onSpawned;
+  launcherScript;
   /** 当前代子进程；null = 无活进程（未启动或已死，下次使用重建）。 */
   child = null;
   pending = /* @__PURE__ */ new Map();
@@ -21872,6 +21487,7 @@ var AppServerConnection = class {
   capturedProtocolInfo = null;
   constructor(opts) {
     this.cliPath = opts.cliPath;
+    this.launcherScript = opts.launcherScript;
     this.cwd = opts.cwd;
     this.env = opts.env;
     this.stderrLogPath = opts.stderrLogPath;
@@ -22003,7 +21619,8 @@ var AppServerConnection = class {
     this.killChainPromise = void 0;
     this.generation += 1;
     const gen = this.generation;
-    const child = (0, import_node_child_process3.spawn)(this.nodeBin, [this.cliPath, "app-server", "--cwd", this.cwd], {
+    const script = this.launcherScript ?? this.cliPath;
+    const child = (0, import_node_child_process.spawn)(this.nodeBin, [script, "app-server", "--cwd", this.cwd], {
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"]
     });
@@ -22012,7 +21629,7 @@ var AppServerConnection = class {
       try {
         this.onSpawned(child);
       } catch (err) {
-        logger12.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage2(err)}`);
+        logger10.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage(err)}`);
       }
     }
     let finalized = false;
@@ -22031,7 +21648,7 @@ var AppServerConnection = class {
         try {
           fn(reason);
         } catch (err2) {
-          logger12.warn(`close handler \u5F02\u5E38: ${errMessage2(err2)}`);
+          logger10.warn(`close handler \u5F02\u5E38: ${errMessage(err2)}`);
         }
       }
     };
@@ -22071,14 +21688,14 @@ var AppServerConnection = class {
     try {
       frame = JSON.parse(text);
     } catch {
-      logger12.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger10.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     this.handleFrame(frame, text);
   }
   handleFrame(frame, rawText) {
     if (!isRecord2(frame)) {
-      logger12.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger10.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     if (isRecord2(frame.protocol)) this.capturedProtocolInfo = frame.protocol;
@@ -22093,19 +21710,19 @@ var AppServerConnection = class {
     }
     if (frame.id !== void 0 && frame.id !== null) {
       if (typeof frame.id !== "number") {
-        logger12.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+        logger10.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
         return;
       }
       this.settlePending(frame.id, frame);
       return;
     }
     if (isRecord2(frame.protocol)) return;
-    logger12.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+    logger10.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
   }
   settlePending(id, frame) {
     const entry = this.pending.get(id);
     if (!entry) {
-      logger12.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
+      logger10.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
       return;
     }
     this.pending.delete(id);
@@ -22131,7 +21748,7 @@ var AppServerConnection = class {
       try {
         fn(params);
       } catch (err) {
-        logger12.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage2(err)}`);
+        logger10.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage(err)}`);
       }
     }
   }
@@ -22141,13 +21758,13 @@ var AppServerConnection = class {
   answerReverse(id, method, params) {
     const handler = this.reverseHandlers[method];
     if (!handler) {
-      logger12.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
+      logger10.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
       this.writeFrame({ id, result: {} });
       return;
     }
     Promise.resolve().then(() => handler(params)).then((result) => this.writeFrame({ id, result: result ?? {} })).catch((err) => {
-      logger12.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage2(err)}`);
-      this.writeFrame({ id, error: { code: -32e3, message: errMessage2(err) } });
+      logger10.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage(err)}`);
+      this.writeFrame({ id, error: { code: -32e3, message: errMessage(err) } });
     });
   }
   // ============================================================
@@ -22162,7 +21779,7 @@ var AppServerConnection = class {
 `);
       return true;
     } catch (err) {
-      logger12.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage2(err)}`);
+      logger10.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage(err)}`);
       return false;
     }
   }
@@ -22195,7 +21812,7 @@ var AppServerConnection = class {
 
 // src/execution/engine/engines/zcode/session-channel.ts
 var import_node_crypto = require("crypto");
-var logger13 = getLogger("subagents");
+var logger11 = getLogger("subagents");
 var SUBSCRIBE_DELIVERY_KIND = "desktop-continuous";
 var WORKSPACE_KEY_HASH_CHARS = 16;
 var CREATE_REPLY_LOG_CHARS = 300;
@@ -22203,7 +21820,7 @@ var DELTA_LOG_CHARS = 120;
 function isRecord3(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
-function errMessage3(err) {
+function errMessage2(err) {
   return err instanceof Error ? err.message : String(err);
 }
 function stableWorkspaceKey(workspacePath) {
@@ -22388,8 +22005,8 @@ var SessionChannel = class {
         { timeoutMs: ZCODE_APPSERVER_TURN_CLOSE_TIMEOUT_MS }
       );
     } catch (err) {
-      logger13.warn(
-        `session/close \u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0Cbest-effort \u5FFD\u7565\uFF09: ${errMessage3(
+      logger11.warn(
+        `session/close \u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0Cbest-effort \u5FFD\u7565\uFF09: ${errMessage2(
           err
         )}`
       );
@@ -22496,31 +22113,42 @@ var SessionChannel = class {
     if (turn === void 0) return;
     const payload = isRecord3(params) && isRecord3(params.payload) ? params.payload : void 0;
     if (payload === void 0) return;
+    if (this.applyFinalFrame(turn, payload)) return;
+    this.applyStreamDelta(turn, payload);
+  }
+  /**
+   * 收尾帧判定与吸收（A.2 ⑤ 两种形态：payload.response / stopReason+content 变体）。
+   * 命中任一形态则落 finalText/finalUsage 并以 final-frame 宽松终态收口，返回 true。
+   */
+  applyFinalFrame(turn, payload) {
     if (typeof payload.response === "string" && payload.response !== "") {
       turn.finalText = payload.response;
       if (isRecord3(payload.usage)) turn.finalUsage = payload.usage;
       turn.settle({ status: "success", source: "final-frame" });
-      return;
+      return true;
     }
     if (payload.stopReason === "stop" && typeof payload.content === "string" && payload.content !== "") {
       turn.finalText = payload.content;
       if (isRecord3(payload.usage)) turn.finalUsage = payload.usage;
       turn.settle({ status: "success", source: "final-frame" });
+      return true;
+    }
+    return false;
+  }
+  /** 增量 delta 分发：非空 delta 入账 + 回调；终态后迟到丢弃（不变量 2）。 */
+  applyStreamDelta(turn, payload) {
+    if (typeof payload.delta !== "string" || payload.delta === "") return;
+    if (turn.settled) {
+      logger11.warn(
+        `\u7EC8\u6001\u540E\u8FDF\u5230\u7684 delta \u4E22\u5F03\uFF08\u4F1A\u8BDD ${turn.sessionId}\uFF0C\u4E0D\u53D8\u91CF 2\uFF1Aresolve \u540E\u4E0D\u518D\u53D1\u4E8B\u4EF6\uFF09: ${payload.delta.slice(
+          0,
+          DELTA_LOG_CHARS
+        )}`
+      );
       return;
     }
-    if (typeof payload.delta === "string" && payload.delta !== "") {
-      if (turn.settled) {
-        logger13.warn(
-          `\u7EC8\u6001\u540E\u8FDF\u5230\u7684 delta \u4E22\u5F03\uFF08\u4F1A\u8BDD ${turn.sessionId}\uFF0C\u4E0D\u53D8\u91CF 2\uFF1Aresolve \u540E\u4E0D\u518D\u53D1\u4E8B\u4EF6\uFF09: ${payload.delta.slice(
-            0,
-            DELTA_LOG_CHARS
-          )}`
-        );
-        return;
-      }
-      turn.deltas.push(payload.delta);
-      turn.callbacks.onTextDelta?.(payload.delta);
-    }
+    turn.deltas.push(payload.delta);
+    turn.callbacks.onTextDelta?.(payload.delta);
   }
   handleTelemetry(params) {
     if (!isRecord3(params)) return;
@@ -22559,8 +22187,8 @@ var SessionChannel = class {
         }
       );
     } catch (err) {
-      logger13.warn(
-        `session/read \u515C\u5E95\u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0C\u964D\u7EA7\u6536\u5C3E\u5E27/delta \u805A\u5408\uFF09: ${errMessage3(
+      logger11.warn(
+        `session/read \u515C\u5E95\u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0C\u964D\u7EA7\u6536\u5C3E\u5E27/delta \u805A\u5408\uFF09: ${errMessage2(
           err
         )}`
       );
@@ -22569,112 +22197,23 @@ var SessionChannel = class {
   }
 };
 
-// src/execution/engine/engines/zcode/appserver-probe.ts
-var logger14 = getLogger("subagents");
-var CREATE_REPLY_LOG_CHARS2 = 300;
-function errMessage4(err) {
-  return err instanceof Error ? err.message : String(err);
-}
-async function runAppServerSmokeProbe(opts) {
-  const budgetMs = opts.budgetMs ?? ZCODE_APPSERVER_PROBE_BUDGET_MS;
-  const conn = new AppServerConnection({
-    cliPath: opts.cliPath,
-    cwd: opts.homeDir,
-    env: {
-      ...buildAppServerEnv(opts.homeDir, opts.baseEnv),
-      // 探针连接标记（fake/诊断侧区分探针进程与常驻进程的判据；对真 CLI 透明）
-      [ZCODE_APPSERVER_PROBE_CONN_ENV]: "1"
-    },
-    stderrLogPath: opts.stderrLogPath,
-    requestTimeoutMs: budgetMs
-  });
-  const work = (async () => {
-    const created = await conn.request("session/create", {
-      workspace: {
-        workspacePath: opts.homeDir,
-        workspaceKey: stableWorkspaceKey(opts.homeDir)
-      },
-      mode: "yolo",
-      persistence: "immediate"
-    });
-    const sessionId2 = extractCreatedSessionId(created);
-    if (sessionId2 === void 0) {
-      throw new Error(
-        `session/create \u5E94\u7B54\u65E0\u53EF\u63D0\u53D6 sessionId: ${JSON.stringify(created).slice(0, CREATE_REPLY_LOG_CHARS2)}`
-      );
-    }
-    await conn.request("session/close", { sessionId: sessionId2 });
-    return sessionId2;
-  })();
-  let timedOut = false;
-  const deadline = new Promise((resolve6) => {
-    const t = setTimeout(() => {
-      timedOut = true;
-      resolve6();
-    }, budgetMs);
-    if (typeof t.unref === "function") t.unref();
-  });
-  let failure;
-  const sessionId = await Promise.race([
-    work.catch((err) => {
-      failure = err;
-      return void 0;
-    }),
-    deadline.then(() => void 0)
-  ]);
-  await conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS }).catch((err) => {
-    logger14.debug(`[zcode-probe] \u63A2\u9488\u8FDE\u63A5 shutdown \u5931\u8D25\uFF08best-effort\uFF09: ${errMessage4(err)}`);
-  });
-  if (failure !== void 0) {
-    return { ok: false, detail: `\u63A2\u9488\u4F1A\u8BDD\u5931\u8D25: ${errMessage4(failure)}` };
-  }
-  if (sessionId === void 0) {
-    return {
-      ok: false,
-      detail: timedOut ? `\u63A2\u9488 ${budgetMs}ms \u9884\u7B97\u8017\u5C3D\uFF08create/close \u672A\u5B8C\u6210\u2014\u2014\u534F\u8BAE\u65E0\u54CD\u5E94\u6216\u8FDB\u7A0B\u5047\u6B7B\uFF09` : "\u63A2\u9488\u672A\u4EA7\u51FA\u4F1A\u8BDD id\uFF08\u672A\u77E5\u5F62\u6001\uFF09"
-    };
-  }
-  return {
-    ok: true,
-    detail: `\u534F\u8BAE\u5192\u70DF\u901A\u8FC7\uFF08create\u2192close\u2192shutdown\uFF0C\u63A2\u9488\u4F1A\u8BDD ${sessionId}\uFF0C\u672A\u53D1\u6A21\u578B\u8BF7\u6C42\uFF09`
-  };
-}
-
 // src/execution/engine/engines/zcode/zcode-engine.ts
-var logger15 = getLogger("subagents");
+var logger12 = getLogger("subagents");
 var PROBE_VERSION_TIMEOUT_MS = 15e3;
 var COMMON_THOUGHT_LEVELS = ["low", "high", "max"];
-function pinnedZcodeMode(env = process.env) {
-  const v = env[ZCODE_MODE_ENV_VAR];
-  return v === "appserver" || v === "spawn" ? v : void 0;
+function hostZcodeDbPath() {
+  return path4.join(os2.homedir(), ...ZCODE_HOST_DB_SUFFIX);
 }
 var ZcodeEngine = class {
   id = ZCODE_ENGINE_ID;
   deps;
   probeCache;
   appserverRuntime;
-  homeState;
-  /** 并发任务的首次锁获取在途 promise（重入守卫，见 ensureAppServerHome）。 */
-  homeAcquireInFlight;
-  /**
-   * [R5 D2③] 探针结论（与 CLI 文件 mtime 绑定的内存缓存）：mtime 未变不重探；
-   * zcode 升级（mtime 变化）后首个任务前重探。不落盘——进程重启后重探重建。
-   */
-  smokeConclusion;
-  /**
-   * [R5 D2②] 漂移降级标志（内存化，不落盘）：首任务运行中命中 -32601/-32602 后置
-   * true，本进程后续任务直走 spawn；进程重启后经探针门控重建（重探通过则恢复
-   * app-server）。
-   */
-  driftDegraded = false;
   constructor(deps) {
     this.deps = deps;
   }
   /**
-   * zcode 链路实际接通的能力（D3 链路口径；R4 D5 升级序：eventGranularity
-   * coarse→stream——链路先行〔session/event payload.delta → text_delta 实时流出，
-   * turn.terminal → turn_end，收尾帧 usage → message_end.usage〕，其余能力位维持
-   * 现值。声明升级必须先改链路再改声明（C4 原则）。
+   * zcode 链路实际接通的能力（D3 链路口径。声明升级必须先改链路再改声明（C4 原则）。
    */
   capabilities() {
     return {
@@ -22682,12 +22221,11 @@ var ZcodeEngine = class {
       schemaEnforcement: "emulated",
       // send-while-running 恒 -32010 硬错误（旧实测）——app-server 常驻化不改变此判据
       steer: "unsupported",
-      // 无同进程 idle 复用（D4：每任务自包含 create→run→close）；--resume 是冷启动
+      // 无同进程 idle 复用（D4：每任务自包含 create→run→close）
       conversation: "unsupported",
       // 无 --append-system-prompt flag（实测拒收）——persona 只能拼进 prompt
       personaInjection: "prompt",
-      // app-server 推送流实时流出（R4）；spawn 降级路径退化为终态两事件（D2 声明不降级
-      // ——降级是任务级兜底非能力级，record 留痕降级事实）
+      // app-server 推送流实时流出（session/event payload.delta → text_delta）
       eventGranularity: "stream",
       // 首期未接 worktree 隔离（公共层 worktree-manager 接入后升 emulated）
       sandbox: "none",
@@ -22702,7 +22240,7 @@ var ZcodeEngine = class {
       permissionMode: "native"
     };
   }
-  /** 探针（D7）：二进制存在 + 版本解析 + golden 样本干跑回归（zsub 式逆向契约引擎必做）。 */
+  /** 探针（D7）：二进制存在 + 版本解析（zcode 无公开契约，版本漂移的入口信号）。 */
   async probe(opts) {
     if (!opts?.force && this.probeCache) return this.probeCache;
     const cliPath = this.deps.cliPath ?? ZCODE_CLI_DEFAULT_PATH;
@@ -22714,7 +22252,6 @@ var ZcodeEngine = class {
       checks.push(version.check);
       engineVersion = version.engineVersion;
     }
-    checks.push(this.probeGoldenCheck());
     const ok = checks.every((c) => c.ok);
     const report = {
       ok,
@@ -22748,151 +22285,84 @@ var ZcodeEngine = class {
       engineVersion: version ?? ""
     };
   }
-  /** check 3：golden 样本干跑（parser 对实录样本解析——stdout 格式漂移的入口拦截）。 */
-  probeGoldenCheck() {
-    const golden = parseZcodeTerminal(ZCODE_GOLDEN_STDOUT);
-    const goldenOk = golden.ok && golden.payload.sessionId !== void 0 && golden.payload.usage !== void 0;
-    return {
-      name: "golden-regression",
-      ok: goldenOk,
-      detail: goldenOk ? "parser \u5BF9 0.16.5 \u5B9E\u5F55\u6837\u672C\u56DE\u5F52\u901A\u8FC7\uFF08sessionId/response/usage \u5F62\u72B6\u5B8C\u6574\uFF09" : `\u89E3\u6790\u5B9E\u5F55\u6837\u672C\u5931\u8D25\uFF1A${golden.ok ? "\u5B57\u6BB5\u7F3A\u5931\uFF08sessionId/usage\uFF09" : golden.reason}`
-    };
-  }
   /** 探针失败的恢复指引（§3.3.3 终态四：版本确认命令 + 探针重跑 + 调研文档路径）。 */
   probeFailureRecovery(cliPath) {
     return {
       code: "engine_probe_failed",
-      recovery: `Run \`node ${cliPath} --version\` \u786E\u8BA4 zcode CLI \u53EF\u7528\u4E14\u7248\u672C\u672A\u6F02\u79FB\uFF0C\u7136\u540E\u91CD\u8DD1\u63A2\u9488\uFF08\u91CD\u65B0\u521D\u59CB\u5316\u5F15\u64CE\u6216 probe({force:true})\uFF09\u3002\u82E5 stdout \u683C\u5F0F\u5DF2\u53D8\uFF1A\u628A\u65B0\u6837\u672C\u8865\u5F55\u8FDB golden \u5E93\uFF08__tests__/__fixtures__/zcode-golden-spawn.json \u4E0E golden-sample.ts\uFF09\u5E76\u66F4\u65B0 parser\u3002\u53C2\u7167 docs/research/agent-engine-zcode.md\u3002`
+      recovery: `Run \`node ${cliPath} --version\` \u786E\u8BA4 zcode CLI \u53EF\u7528\u4E14\u7248\u672C\u672A\u6F02\u79FB\uFF0C\u7136\u540E\u91CD\u8DD1\u63A2\u9488\uFF08\u91CD\u65B0\u521D\u59CB\u5316\u5F15\u64CE\u6216 probe({force:true})\uFF09\u3002\u82E5 app-server \u534F\u8BAE\u5DF2\u6F02\u79FB\uFF08RPC \u9519\u8BEF\uFF09\uFF0C\u91CD\u542F ZCode \u6216\u56FA\u5B9A zcode \u7248\u672C\u540E\u91CD\u8BD5\u3002\u53C2\u7167 docs/research/agent-engine-zcode.md\u3002`
     };
   }
-  /**
-   * D1 主语义 + [R5] D2 降级链四步：
-   *   ① 定向（XYZ_ZCODE_MODE=appserver|spawn）：不探不降——定向者要的就是这条通道，
-   *      失败直接上报（spawn 兜底原路径 / appserver 直连）；
-   *   ② 缺省 + 已漂移降级（内存标志）：后续任务直走 spawn（record 标注降级事实）；
-   *   ③ 缺省 + 探针门控（结论与 CLI mtime 绑定）：探针失败 → 本任务起直接 spawn；
-   *   ④ 缺省 + 探针通过但首任务命中漂移类 RPC 错误（-32601/-32602）→ 本任务降级
-   *      spawn 重跑一次（同一任务，结果标注降级）+ 后续任务直走 spawn。
-   */
+  /** D1 主语义：唯一通道 = app-server 常驻连接（spawn 降级链已删除）。 */
   async run(task, ctx) {
     this.rejectUnsupportedTaskShapes(task);
-    const pin = pinnedZcodeMode(this.deps.processEnv ?? process.env);
-    if (pin === "appserver") return (await this.runViaAppServer(task, ctx)).result;
-    if (pin === "spawn") return this.runViaSpawn(task, ctx);
-    if (this.driftDegraded) {
-      return this.runViaSpawn(task, ctx, {
-        degradedReason: "protocol-drift\uFF08app-server \u9996\u4EFB\u52A1\u547D\u4E2D -32601/-32602 \u6F02\u79FB\u7C7B\u9519\u8BEF\uFF0C\u672C\u8FDB\u7A0B\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn\uFF1B\u8FDB\u7A0B\u91CD\u542F\u540E\u91CD\u63A2\u91CD\u5EFA\uFF09"
-      });
-    }
-    if (ctx.signal?.aborted !== true) {
-      const gate = await this.appServerProbeGate(task);
-      if (!gate.ok) {
-        return this.runViaSpawn(task, ctx, {
-          degradedReason: `probe-failed\uFF08\u534F\u8BAE\u5192\u70DF\u63A2\u9488\u672A\u901A\u8FC7\uFF1A${gate.detail}\uFF1BCLI mtime \u53D8\u5316\u540E\u9996\u4E2A\u4EFB\u52A1\u524D\u91CD\u63A2\uFF09`
-        });
-      }
-    }
-    const { result, driftCode } = await this.runViaAppServer(task, ctx);
-    if (driftCode === void 0) return result;
-    this.driftDegraded = true;
-    logger15.warn(
-      `[zcode-engine] app-server \u6F02\u79FB\u7C7B\u9519\u8BEF\uFF08RPC code ${driftCode}\uFF09\u2014\u2014\u672C\u4EFB\u52A1\u964D\u7EA7 spawn \u91CD\u8DD1\uFF0C\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn`,
-      { taskId: ctx.taskId }
-    );
-    return this.runViaSpawn(task, ctx, {
-      degradedReason: `protocol-drift\uFF08\u9996\u4EFB\u52A1 app-server \u547D\u4E2D RPC code ${driftCode}\uFF0C\u5DF2\u964D\u7EA7 spawn \u91CD\u8DD1\u672C\u4EFB\u52A1\uFF1B\u540E\u7EED\u4EFB\u52A1\u76F4\u8D70 spawn\uFF09`,
-      skipCtxModelWarn: true
-    });
-  }
-  /**
-   * [R5 D8] 探针门控：CLI 文件 mtime 与结论绑定——mtime 未变命中缓存不重探；变化
-   * （zcode 升级）或首次 → 独立短命连接上跑协议冒烟（appserver-probe.ts；必须用已
-   * 引导的常驻 HOME——D7 教训「先 bootstrap 再 probe 否则永远误降级」）。CLI 不存在
-   * 按探针失败处理（spawn 路径自身还有 binary 检查兜底）。
-   */
-  async appServerProbeGate(task) {
-    const cliPath = this.deps.cliPath ?? ZCODE_CLI_DEFAULT_PATH;
-    let cliMtimeMs;
-    try {
-      cliMtimeMs = fs6.statSync(cliPath).mtimeMs;
-    } catch {
-      return { ok: false, detail: `zcode CLI \u4E0D\u5B58\u5728\uFF1A${cliPath}` };
-    }
-    if (this.smokeConclusion !== void 0 && this.smokeConclusion.cliMtimeMs === cliMtimeMs) {
-      return this.smokeConclusion;
-    }
-    const modelRef = resolveZcodeModelRef(task.model, this.deps.sources);
-    const home = await this.ensureAppServerHome(modelRef);
-    const r = await runAppServerSmokeProbe({
-      cliPath,
-      homeDir: home.homeDir,
-      baseEnv: this.deps.processEnv ?? process.env,
-      stderrLogPath: path5.join(this.deps.engineDataDir(), "logs", "zcode-appserver-probe-stderr.log"),
-      ...this.deps.probeBudgetMs !== void 0 ? { budgetMs: this.deps.probeBudgetMs } : {}
-    });
-    this.smokeConclusion = { cliMtimeMs, ok: r.ok, detail: r.detail };
-    logger15.debug("[zcode-engine] appserver smoke probe", { ok: r.ok, detail: r.detail, cliMtimeMs });
-    return this.smokeConclusion;
+    return this.runViaAppServer(task, ctx);
   }
   // ============================================================
-  // [R4] app-server 常驻路径（D1/D3/D4/D7）
+  // app-server 常驻路径（D1/D3/D4）
   // ============================================================
   /**
-   * 常驻路径主编排：常驻 HOME（锁/派生/孤儿回收/凭据刷新——appserver-home D7 全量）→
-   * 惰性连接 + runTurn（事件时序前移：text_delta 流式、终态后 message_end/turn_end）→
-   * schema 仿真重试（与 spawn 同编排）→ outcome/handle。poolKey 静态常量，
-   * onPoolResolved 在 prepare 期、onHandleReady 在 create 应答后（§3.4 不变量 3）。
-   *
-   * [R5] 返回附带 driftCode：末轮 attempt 以漂移类 RPC 错误（-32601/-32602）收场时
-   * 给出 code（run 编排降级 spawn 重跑）；其余终态（成功/中止/非漂移失败）为
-   * undefined——-32004/-32010/-32603 按错误规格表各自上报，不降级。
+   * 常驻路径主编排：模型解析（v2 单源校验）→ 惰性连接 + runTurn（事件时序前移：
+   * text_delta 流式、终态后 message_end/turn_end）→ schema 仿真重试 → outcome/handle。
+   * poolKey 固定 'shared'（共享宿主 HOME，无池），onPoolResolved 在 prepare 期、
+   * onHandleReady 在 create 应答后（§3.4 不变量 3）。
    */
   async runViaAppServer(task, ctx) {
     const startedAt = Date.now();
     if (ctx.signal?.aborted === true) {
-      const poolKey = this.homeState?.poolKey ?? ZCODE_APPSERVER_POOL_KEY;
-      ctx.onPoolResolved?.(poolKey);
-      const outcome2 = this.finalizeOutcome(
-        task,
-        ctx,
-        abortedAppServerAttempt(ctx),
-        { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, has: false },
-        startedAt
-      );
-      return { result: { handle: this.appServerHandle(poolKey, outcome2), outcome: outcome2 }, driftCode: void 0 };
+      return this.abortedAppServerRun(task, ctx, startedAt);
     }
     const modelRef = resolveZcodeModelRef(task.model, this.deps.sources);
     this.warnIgnoredCtxModel(task, ctx, modelRef);
     this.warnThoughtLevelUncommon(task, ctx);
-    const home = await this.ensureAppServerHome(modelRef);
-    ctx.onPoolResolved?.(home.poolKey);
+    ctx.onPoolResolved?.(ZCODE_SHARED_POOL_KEY);
     const cwd = task.cwd ?? process.cwd();
     const schema = isPlainObject3(task.schema) ? task.schema : void 0;
     const basePrompt = this.buildPrompt(task, schema);
     const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, has: false };
-    let final = await this.attemptAppServerTurn(task, ctx, home, modelRef, cwd, basePrompt);
+    const final = await this.runAppServerAttemptsWithRetry(task, ctx, modelRef, cwd, basePrompt, schema, usageAcc);
+    const outcome = this.finalizeOutcome(task, ctx, final, usageAcc, startedAt);
+    return { handle: this.appServerHandle(outcome), outcome };
+  }
+  /** pre-aborted 短路收口：合成中止 outcome + 'shared' 锚定 handle。 */
+  abortedAppServerRun(task, ctx, startedAt) {
+    ctx.onPoolResolved?.(ZCODE_SHARED_POOL_KEY);
+    const outcome = this.finalizeOutcome(
+      task,
+      ctx,
+      abortedAppServerAttempt(ctx),
+      { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, has: false },
+      startedAt
+    );
+    return { handle: this.appServerHandle(outcome), outcome };
+  }
+  /**
+   * 首轮执行 + schema 仿真重试编排：schema 任务校验失败时重试一次（强化 JSON 输出
+   * 指令）。重试轮是独立会话的独立 LLM 调用：token 计入 outcome.usage 总量；事件面
+   * text_delta 按实际流出（含失败轮——journal 记录真实流水），message_end/turn_end
+   * 只在最终轮终态后合成（不变量 2/5）。
+   */
+  async runAppServerAttemptsWithRetry(task, ctx, modelRef, cwd, basePrompt, schema, usageAcc) {
+    let final = await this.attemptAppServerTurn(task, ctx, modelRef, cwd, basePrompt);
     accumulateUsage(usageAcc, final);
     if (final.kind === "parsed" && final.schemaResult !== void 0 && !final.schemaResult.ok && schema !== void 0) {
       const retryPrompt = appendSchemaRetryDirective(basePrompt, final.schemaResult.error);
-      const retry = await this.attemptAppServerTurn(task, ctx, home, modelRef, cwd, retryPrompt);
+      const retry = await this.attemptAppServerTurn(task, ctx, modelRef, cwd, retryPrompt);
       accumulateUsage(usageAcc, retry);
       final = retry;
     }
-    const outcome = this.finalizeOutcome(task, ctx, final, usageAcc, startedAt);
-    const driftCode = final.kind === "run-failed" && final.rpcCode !== void 0 && isDriftRpcCode(final.rpcCode) ? final.rpcCode : void 0;
-    return { result: { handle: this.appServerHandle(home.poolKey, outcome), outcome }, driftCode };
+    return final;
   }
-  /** 常驻路径的 handle 合成（poolKey = 常驻 HOME 实际目录名——锚定不变量载体）。 */
-  appServerHandle(poolKey, outcome) {
+  /** 常驻路径的 handle 合成（poolKey 固定 'shared'；dbPath = 宿主 HOME 绝对路径）。 */
+  appServerHandle(outcome) {
     return {
       data: {
         v: 1,
         engineId: ZCODE_ENGINE_ID,
         sessionRef: {
-          dbPath: ZCODE_POOL_DB_RELATIVE_PATH,
+          dbPath: hostZcodeDbPath(),
           ...outcome.sessionId !== void 0 ? { sessionId: outcome.sessionId } : {}
         },
-        poolKey,
+        poolKey: ZCODE_SHARED_POOL_KEY,
         ...this.probeCache?.engineVersion !== void 0 && this.probeCache.engineVersion !== "" ? { engineVersion: this.probeCache.engineVersion } : {},
         adapterVersion: ZCODE_ADAPTER_VERSION
       }
@@ -22900,22 +22370,12 @@ var ZcodeEngine = class {
   }
   /**
    * 单轮常驻执行：runTurn 组合面 + D3 abort 链 + 事件前移（text_delta 实时流出；
-   * 终态数据经 read 兜底收口后才 resolve——不变量 1/2）。产出三态与 spawn 同构。
+   * 终态数据经 read 兜底收口后才 resolve——不变量 1/2）。
    */
-  async attemptAppServerTurn(task, ctx, home, modelRef, cwd, prompt) {
-    const rt = this.ensureAppServerRuntime(home);
+  async attemptAppServerTurn(task, ctx, modelRef, cwd, prompt) {
+    const rt = this.ensureAppServerRuntime();
     const { providerId, modelId } = splitZcodeModelRef(modelRef);
-    const denyTools = (task.denyTools ?? []).filter((t) => typeof t === "string" && t.trim() !== "");
-    const thoughtLevel = task.effort?.trim();
-    const createParams = {
-      workspacePath: cwd,
-      mode: "yolo",
-      // per-session model（G3）：create 参数透传（A.2 ① strict 对象）——同进程任务
-      // 各用各的模型，互不干扰
-      model: { providerId, modelId },
-      ...thoughtLevel !== void 0 && thoughtLevel !== "" ? { thoughtLevel } : {},
-      ...denyTools.length > 0 ? { toolDenylist: denyTools } : {}
-    };
+    const createParams = buildAppServerCreateParams(task, providerId, modelId, cwd);
     let currentSessionId;
     let signalSessionCreated;
     const sessionCreated = new Promise((resolve6) => {
@@ -22929,8 +22389,8 @@ var ZcodeEngine = class {
         rt.activeSessions.add(sessionId);
         signalSessionCreated?.();
         ctx.onHandleReady?.({
-          sessionRef: { dbPath: ZCODE_POOL_DB_RELATIVE_PATH, sessionId },
-          poolKey: home.poolKey
+          sessionRef: { dbPath: hostZcodeDbPath(), sessionId },
+          poolKey: ZCODE_SHARED_POOL_KEY
         });
       }
     });
@@ -22944,27 +22404,10 @@ var ZcodeEngine = class {
     try {
       const r = await turn;
       if (ctx.signal?.aborted === true) return abortedAppServerAttempt(ctx);
-      const schema = isPlainObject3(task.schema) ? task.schema : void 0;
-      return {
-        kind: "parsed",
-        output: syntheticAppServerOutput(0),
-        payload: turnResultToPayload(r),
-        ...schema !== void 0 ? { schemaResult: extractAndValidateStructuredOutput(r.response, schema) } : {}
-      };
+      return parsedAppServerAttempt(task, r);
     } catch (err) {
       if (ctx.signal?.aborted === true) return abortedAppServerAttempt(ctx);
-      return {
-        kind: "run-failed",
-        output: syntheticAppServerOutput(null),
-        message: buildAppServerRunFailedMessage(err, home, currentSessionId),
-        // [R5] RPC code 透传给 run 编排（-32601/-32602 漂移降级判据；连接级/超时类
-        // 错误无 code 不参与降级）
-        ...isAppServerRpcError(err) && err.code !== void 0 ? { rpcCode: err.code } : {},
-        // 错误规格表 -32004 行「按任务失败上报（含会话 id）」：create 成功后运行中失败
-        // （-32004/-32010 等）时留痕会话 id——经 applyRunFailedOutcome 落 outcome.sessionId
-        // 与 handle.sessionRef（create 阶段失败无会话，缺省不带）
-        ...currentSessionId !== void 0 ? { sessionId: currentSessionId } : {}
-      };
+      return failedAppServerAttempt(err, currentSessionId);
     } finally {
       if (currentSessionId !== void 0) rt.activeSessions.delete(currentSessionId);
       if (ctx.signal !== void 0) ctx.signal.removeEventListener("abort", onAbort);
@@ -22988,8 +22431,8 @@ var ZcodeEngine = class {
       try {
         await rt.conn.request("session/stop", { sessionId }, { timeoutMs: ZCODE_APPSERVER_STOP_TIMEOUT_MS });
       } catch (err) {
-        logger15.debug(
-          `[zcode-engine] session/stop \u5931\u8D25\uFF08${errMessage5(err)}\uFF09\u2014\u2014grace \u540E\u8D70 killChain \u515C\u5E95`
+        logger12.debug(
+          `[zcode-engine] session/stop \u5931\u8D25\uFF08${errMessage3(err)}\uFF09\u2014\u2014grace \u540E\u8D70 killChain \u515C\u5E95`
         );
       }
     }
@@ -23001,117 +22444,44 @@ var ZcodeEngine = class {
       delayResolved(ZCODE_APPSERVER_ABORT_GRACE_MS, false)
     ]);
     if (settled) return;
-    logger15.warn(
+    logger12.warn(
       `[zcode-engine] abort grace \u7A97\u53E3\u5185\u672A\u89C1\u7EC8\u6001\u2014\u2014killChain \u6536\u5272\u5171\u4EAB\u8FDB\u7A0B\uFF08\u63A5\u53D7\u8FDE\u5750\uFF0C\u5728\u9014\u4EFB\u52A1\u8D70\u5D29\u6E83\u8DEF\u5F84\uFF09`
     );
     await rt.conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS });
   }
-  // ── 常驻 HOME 与运行时管理（D1/D6/D7）──────────────────────
+  // ── 常驻运行时管理（D1/D6）──────────────────────
   /**
-   * 每任务的常驻 HOME 保障：已持有（lockfile.pid=本进程）→ 只做凭据刷新比对
-   * （config 内容 hash；不一致重写 + 重建连接——在途任务走崩溃路径，换取凭据变更
-   * 下一任务生效）；未持有（首任务/锁被夺）→ acquireAppServerHome 全量（锁判定/
-   * 派生/接管 + pidfile 孤儿回收/引导）+ 启动锁心跳。
+   * 惰性获取常驻运行时（D1：每引擎实例一条连接，全任务共享；连接自身的崩溃重建在
+   * connection 层内部完成——同一条代码路径，§3.4 不变量 4）。常驻进程不进宿主
+   * spawnedChildren、不调 onChildSpawned（D6——生命周期归 dispose）。进程级 --cwd
+   * 用引擎数据目录（连接跨任务共享的中性位置，工作区由 create 的
+   * workspace.workspacePath 按任务传递——D10 基线不预设任务级进程 cwd）。
+   * spawn 经 fs 拦截 wrapper（appserver-launcher：cli config 读取重定向为
+   * 「真实文件 + v2 provider 注入」——CLI 形态 app-server 在共享宿主 HOME 下的
+   * 唯一凭据供数通路，机制与漂移面见该文件头注）。
    */
-  async ensureAppServerHome(modelRef) {
+  ensureAppServerRuntime() {
+    if (this.appserverRuntime !== void 0) return this.appserverRuntime;
+    const cliPath = this.deps.cliPath ?? ZCODE_CLI_DEFAULT_PATH;
     const engineDataDir = this.deps.engineDataDir();
-    if (this.homeAcquireInFlight !== void 0) {
-      try {
-        await this.homeAcquireInFlight;
-      } catch (err) {
-        logger15.debug(
-          `[zcode-engine] \u5E76\u53D1\u7B49\u5F85\u7684\u9996\u4EFB\u52A1 home acquire \u5931\u8D25\uFF08${errMessage5(err)}\uFF09\u2014\u2014\u81EA\u884C\u91CD\u8D70 acquire`
-        );
-      }
-    }
-    if (this.homeState !== void 0 && isLockHeldByUs(this.homeState.lockPath)) {
-      const boot = bootstrapAppServerConfig({
-        homeDir: this.homeState.homeDir,
-        modelRef,
-        sources: this.deps.sources
-      });
-      if (boot.wroteConfig) this.teardownAppServerRuntime("credential-refresh");
-      return {
-        poolKey: this.homeState.poolKey,
-        homeDir: this.homeState.homeDir,
-        lockPath: this.homeState.lockPath,
-        tookOver: false,
-        orphanReap: "not-applicable",
-        ...boot
-      };
-    }
-    const acquire = (async () => {
-      const fresh = await acquireAppServerHome({ engineDataDir, modelRef, sources: this.deps.sources });
-      if (this.homeState !== void 0) this.homeState.stopHeartbeat();
-      this.homeState = {
-        poolKey: fresh.poolKey,
-        homeDir: fresh.homeDir,
-        lockPath: fresh.lockPath,
-        stopHeartbeat: startLockHeartbeat(fresh.lockPath)
-      };
-      logger15.debug("[zcode-engine] appserver home acquired", {
-        poolKey: fresh.poolKey,
-        tookOver: fresh.tookOver,
-        orphanReap: fresh.orphanReap,
-        wroteConfig: fresh.wroteConfig,
-        providers: fresh.providerIds.length
-      });
-      if (fresh.wroteConfig || this.appserverRuntime !== void 0 && this.appserverRuntime.homePoolKey !== fresh.poolKey) {
-        this.teardownAppServerRuntime(fresh.wroteConfig ? "credential-refresh" : "home-pool-changed");
-      }
-      return fresh;
-    })();
-    this.homeAcquireInFlight = acquire;
-    try {
-      return await acquire;
-    } finally {
-      this.homeAcquireInFlight = void 0;
-    }
-  }
-  /**
-   * 惰性获取常驻运行时（D1：每引擎实例一条连接，全任务共享）。池 key 未变直接复用
-   * （连接自身的崩溃重建在 connection 层内部完成——同一条代码路径，§3.4 不变量 4）；
-   * 池变更（派生目录名变化）→ 旧运行时整件丢弃（shutdown fire）+ 新建。常驻进程
-   **不进**宿主 spawnedChildren、不调 onChildSpawned（D6——生命周期归 dispose）。
-   */
-  ensureAppServerRuntime(home) {
-    if (this.appserverRuntime !== void 0 && this.appserverRuntime.homePoolKey === home.poolKey) {
-      return this.appserverRuntime;
-    }
-    if (this.appserverRuntime !== void 0) this.teardownAppServerRuntime("home-pool-changed");
+    const launcherScript = ensureAppServerLauncher(engineDataDir);
+    const env = buildAppServerEnv(this.deps.processEnv ?? process.env);
+    env.ZCODE_ENG_CLI_PATH = cliPath;
+    env.ZCODE_ENG_V2_CONFIG = this.deps.sources?.v2ConfigPath ?? defaultV2ConfigPath();
     const conn = new AppServerConnection({
-      cliPath: this.deps.cliPath ?? ZCODE_CLI_DEFAULT_PATH,
-      // 进程级 --cwd 用稳定 HOME（连接跨任务共享，工作区由 create 的
-      // workspace.workspacePath 按任务传递——D10 基线不预设任务级进程 cwd）
-      cwd: home.homeDir,
-      env: buildAppServerEnv(home.homeDir, this.deps.processEnv ?? process.env),
-      stderrLogPath: path5.join(this.deps.engineDataDir(), "logs", "zcode-appserver-stderr.log"),
-      // 每代进程 spawn 后写 pidfile（D6③ 孤儿回收的数据源；崩溃重建的代同样覆盖写）
-      onSpawned: (child) => {
-        void writeAppServerPidFile(home.homeDir, child.pid ?? -1).catch((err) => {
-          logger15.debug(`[zcode-engine] pidfile \u5199\u5165\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
-        });
-      }
+      cliPath,
+      cwd: engineDataDir,
+      env,
+      launcherScript,
+      stderrLogPath: path4.join(engineDataDir, "logs", "zcode-appserver-stderr.log")
     });
     const rt = {
       conn,
       channel: new SessionChannel(conn),
-      homePoolKey: home.poolKey,
-      homeDir: home.homeDir,
       activeSessions: /* @__PURE__ */ new Set()
     };
     this.appserverRuntime = rt;
     return rt;
-  }
-  /** 丢弃当前常驻运行时（凭据刷新/池变更）：shutdown fire（killChain 全序），在途任务走崩溃路径。 */
-  teardownAppServerRuntime(reason) {
-    const rt = this.appserverRuntime;
-    if (rt === void 0) return;
-    this.appserverRuntime = void 0;
-    void this.shutdownRuntimeAndDisposeChannel(rt).catch((err) => {
-      logger15.debug(`[zcode-engine] \u5E38\u9A7B\u8FDE\u63A5\u5173\u95ED\u5931\u8D25\uFF08${reason}\uFF0Cbest-effort\uFF09: ${errMessage5(err)}`);
-    });
-    logger15.debug(`[zcode-engine] appserver runtime torn down (${reason})`, { poolKey: rt.homePoolKey });
   }
   /**
    * [R5 修复 R4 既有竞态] shutdown → 等崩溃收割实际发生 → channel 退订。killChain 在
@@ -23133,13 +22503,12 @@ var ZcodeEngine = class {
     rt.channel.dispose();
   }
   /**
-   * [R1 D6/R4 主体] 引擎停机面：①fire 全部在途会话的 session/close 帧（不等待
+   * [R1 D6 主体] 引擎停机面：①fire 全部在途会话的 session/close 帧（不等待
    * 应答——D6① 顺序规定：close 帧必须先于 SIGTERM，否则对面来不及处理即被杀）→
    * ②同步 SIGTERM（conn.shutdown 调用内 killChain 前缀同步执行——同步面在返回
    * Promise 前完成）→ ③grace → SIGKILL（异步面，Promise resolve 于进程退出）。
    * 幂等：运行时字段取走即置空，二次调用零副作用；dispose 后首个 run 经
    * ensureAppServerRuntime 自动重建（与崩溃重建同一代码路径，不变量 4）。
-   * 锁不释放（随宿主进程存活——活宿主持有语义；进程死锁自然无主可接管）。
    */
   async dispose() {
     const rt = this.appserverRuntime;
@@ -23151,79 +22520,6 @@ var ZcodeEngine = class {
       }
     }
     await this.shutdownRuntimeAndDisposeChannel(rt);
-    try {
-      fs6.rmSync(path5.join(rt.homeDir, ZCODE_APPSERVER_PIDFILE_NAME), { force: true });
-    } catch (err) {
-      logger15.debug(`[zcode-engine] dispose \u540E pidfile \u6E05\u7406\u5931\u8D25\uFF08best-effort\uFF09: ${errMessage5(err)}`);
-    }
-  }
-  // ============================================================
-  // spawn 单轮路径（D2 兜底——R4 起仅 XYZ_ZCODE_MODE=spawn 定向 / R5 降级可达）
-  // ============================================================
-  /**
-   * spawn 路径主编排（原 run 主体，行为零改动）：preparer → launcher → parser → 仿真重试 → outcome/handle。
-   * [R5] degrade 参数：降级链落点（探针失败 / 漂移首败重跑 / 降级后直走）——结果经
-   * outcome.engineFallback 标注「degraded: spawn + 原因」（D9① 留痕面复用，record
-   * 同步投影；capabilities 声明不降级——D2 降级是任务级兜底非能力级）。
-   * [RX2-F3] degrade.skipCtxModelWarn（内部标志）：漂移首败重跑场景置 true——该任务
-   * 的 appserver 首跑已输出过 ctxModel 忽略留痕，spawn 重跑侧跳过防同 taskId 双份
-   * 相同 warn；warnEffortUnsupportedBySpawn 不受此标志影响（降级重跑时最终结果出自
-   * spawn，其出声合理，保持现状）。探针失败/降级直走两个落点不置位——任务此前未走
-   * 过 appserver，spawn 侧的 warn 是首次出声。
-   */
-  async runViaSpawn(task, ctx, degrade) {
-    const startedAt = Date.now();
-    this.rejectUnsupportedTaskShapes(task);
-    this.warnEffortUnsupportedBySpawn(task, ctx);
-    const modelRef = resolveZcodeModelRef(task.model, this.deps.sources);
-    if (degrade?.skipCtxModelWarn !== true) this.warnIgnoredCtxModel(task, ctx, modelRef);
-    const prepared = prepareZcodeHome({
-      engineDataDir: this.deps.engineDataDir(),
-      modelRef,
-      sources: this.deps.sources
-    });
-    ctx.onPoolResolved?.(prepared.poolKey);
-    logger15.debug("[zcode-engine] isolated home prepared", {
-      poolKey: prepared.poolKey,
-      wroteConfig: prepared.wroteConfig,
-      modelRef,
-      taskId: ctx.taskId
-    });
-    const cwd = task.cwd ?? process.cwd();
-    const schema = isPlainObject3(task.schema) ? task.schema : void 0;
-    const basePrompt = this.buildPrompt(task, schema);
-    const usageAcc = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, has: false };
-    let final = await this.attemptOnce(task, ctx, prepared, cwd, basePrompt);
-    accumulateUsage(usageAcc, final);
-    if (final.kind === "parsed" && final.schemaResult !== void 0 && !final.schemaResult.ok && schema !== void 0) {
-      const retryPrompt = appendSchemaRetryDirective(basePrompt, final.schemaResult.error);
-      const retry = await this.attemptOnce(task, ctx, prepared, cwd, retryPrompt);
-      accumulateUsage(usageAcc, retry);
-      final = retry;
-    }
-    const outcome = this.finalizeOutcome(task, ctx, final, usageAcc, startedAt);
-    const handle = {
-      data: {
-        v: 1,
-        engineId: ZCODE_ENGINE_ID,
-        sessionRef: {
-          // 相对池目录自描述（设计 §3.3.6）——read 时经 resolvePoolDir + 此相对路径重定位
-          dbPath: ZCODE_POOL_DB_RELATIVE_PATH,
-          ...outcome.sessionId !== void 0 ? { sessionId: outcome.sessionId } : {}
-        },
-        poolKey: prepared.poolKey,
-        ...this.probeCache?.engineVersion !== void 0 && this.probeCache.engineVersion !== "" ? { engineVersion: this.probeCache.engineVersion } : {},
-        adapterVersion: ZCODE_ADAPTER_VERSION
-      }
-    };
-    if (degrade !== void 0) {
-      const prior = outcome.engineFallback;
-      outcome.engineFallback = {
-        from: prior?.from ?? "zcode:appserver",
-        reason: `${prior !== void 0 ? `${prior.reason}\uFF1B` : ""}degraded: spawn\uFF08${degrade.degradedReason}\uFF09`
-      };
-    }
-    return { handle, outcome };
   }
   /** 终态合成（extension-conventions 函数 80 行上限，从 run 提取）：aborted / run-failed / parsed 三分支。 */
   finalizeOutcome(task, ctx, final, usageAcc, startedAt) {
@@ -23251,13 +22547,13 @@ var ZcodeEngine = class {
   /** abort 合成终态：exitCode=null（record 正常收尾，不留僵尸）。 */
   applyAbortedOutcome(outcome, task, ctx, final, emit) {
     outcome.exitCode = null;
-    outcome.error = isHostTimeoutAbort(ctx) ? synthesizeTimeoutOutcome(task, final.output.stdoutText, ZCODE_ENGINE_ID).error ?? engineTimeoutDetail(final.output.stdoutText) : final.abortMessage ?? `engine_run_failed: zcode \u4EFB\u52A1\u88AB\u4E2D\u6B62\uFF08\u6740\u94FE SIGTERM\u2192${ZCODE_KILL_GRACE_MS}ms\u2192SIGKILL\uFF0C\u5BBF\u4E3B\u5408\u6210\u7EC8\u6001\uFF09\u3002stdout \u5C3E\u90E8: ${final.output.stdoutText.slice(-ZCODE_ERROR_TAIL_CHARS)}`;
+    outcome.error = isHostTimeoutAbort(ctx) ? synthesizeTimeoutOutcome(task, final.output.stdoutText, ZCODE_ENGINE_ID).error ?? engineTimeoutDetail(final.output.stdoutText) : final.abortMessage ?? `engine_run_failed: zcode \u4EFB\u52A1\u88AB\u4E2D\u6B62\uFF08app-server abort \u94FE\u6536\u53E3\uFF0C\u5BBF\u4E3B\u5408\u6210\u7EC8\u6001\uFF09\u3002\u8F93\u51FA\u5C3E\u90E8: ${final.output.stdoutText.slice(-ZCODE_ERROR_TAIL_CHARS)}`;
     emit({ type: "error", message: outcome.error });
   }
   /**
-   * run-failed 合成终态：错误信息由 buildRunFailedMessage 产出（已含恢复指引）直接透传；
-   * appserver 路径附带的会话 id 落 outcome.sessionId（错误规格表 -32004 行「含会话 id」
-   * ——appServerHandle 据此写 handle.sessionRef，run-failed 不再恒缺）。
+   * run-failed 合成终态：错误信息由 buildAppServerRunFailedMessage 产出（已含恢复
+   * 指引）直接透传；附带的会话 id 落 outcome.sessionId（错误规格表 -32004 行「含会话
+   * id」——appServerHandle 据此写 handle.sessionRef，run-failed 不再恒缺）。
    */
   applyRunFailedOutcome(outcome, final, emit) {
     outcome.exitCode = final.output.exitCode;
@@ -23294,73 +22590,6 @@ var ZcodeEngine = class {
     for (const ev of synthesizeCoarseEvents(payload.response, payload.usage)) emit(ev);
   }
   /**
-   * 单轮执行（launch → collect → parse → schema 校验）。产出三态之一给 run 编排：
-   * aborted（我方杀链）/ run-failed（非零退出或解析失败）/ parsed（含 schema 校验结果）。
-   */
-  async attemptOnce(task, ctx, prepared, cwd, prompt) {
-    const args = buildZcodeArgv({ cwd, prompt, denyTools: task.denyTools });
-    const cliPath = this.deps.cliPath ?? ZCODE_CLI_DEFAULT_PATH;
-    assertZcodeArgvBudget("node", cliPath, args);
-    const launch = this.deps.launch ?? launchZcodeProcess;
-    const env = buildZcodeEnv(prepared.homeDir, this.deps.processEnv ?? process.env);
-    let proc;
-    try {
-      proc = launch({ cliPath, args, env });
-    } catch (err) {
-      throw new Error(
-        `[engine_run_failed] \u65E0\u6CD5\u542F\u52A8 zcode CLI\uFF08${cliPath}\uFF09\uFF1A${err instanceof Error ? err.message : String(err)}\u3002\u6062\u590D\u6307\u5F15\uFF1A\u786E\u8BA4 node \u5728 PATH \u4E14 ${cliPath} \u5B58\u5728\uFF08probe \u53EF\u63A2\u6D4B\uFF09\uFF0C\u6216\u6539\u7528 engine: pi\u3002`
-      );
-    }
-    ctx.onChildSpawned?.(proc.child);
-    const onAbort = () => {
-      void proc.abort(ZCODE_KILL_GRACE_MS);
-    };
-    if (ctx.signal !== void 0) {
-      if (ctx.signal.aborted) onAbort();
-      else ctx.signal.addEventListener("abort", onAbort, { once: true });
-    }
-    const output = await collectZcodeOutput(proc);
-    if (ctx.signal !== void 0) ctx.signal.removeEventListener("abort", onAbort);
-    if (proc.killedByUs()) return { kind: "aborted", output };
-    if (output.exitCode !== 0) {
-      return {
-        kind: "run-failed",
-        output,
-        message: buildRunFailedMessage({
-          cliPath,
-          exitCode: output.exitCode,
-          stdoutTail: output.stdoutText,
-          stderrTail: output.stderrTail,
-          modelRef: prepared.modelRef,
-          configPath: prepared.configPath
-        })
-      };
-    }
-    const terminal = parseZcodeTerminal(output.stdoutText);
-    if (!terminal.ok) {
-      return {
-        kind: "run-failed",
-        output,
-        message: buildRunFailedMessage({
-          cliPath,
-          exitCode: output.exitCode,
-          stdoutTail: output.stdoutText,
-          stderrTail: output.stderrTail,
-          parseReason: terminal.reason,
-          modelRef: prepared.modelRef,
-          configPath: prepared.configPath
-        })
-      };
-    }
-    const schema = isPlainObject3(task.schema) ? task.schema : void 0;
-    return {
-      kind: "parsed",
-      output,
-      payload: terminal.payload,
-      ...schema !== void 0 ? { schemaResult: extractAndValidateStructuredOutput(terminal.payload.response, schema) } : {}
-    };
-  }
-  /**
    * D1 可选面：zcode 首期不支持 conversation（capabilities 声明）——同步拒绝、
    * 不创建进程，文案给可操作建议（A11）。
    */
@@ -23368,14 +22597,16 @@ var ZcodeEngine = class {
     return {
       ok: false,
       code: "engine_capability_unsupported",
-      message: "zcode \u5F15\u64CE\u4E0D\u652F\u6301 conversation \u4EA4\u4E92\u63A7\u5236\u9762\uFF08capabilities.conversation = 'unsupported'\uFF0Cspawn \u5355\u8F6E\u6A21\u5F0F\u65E0\u540C\u8FDB\u7A0B idle \u590D\u7528\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u6539\u7528\u5355\u6B21 subagent \u8C03\u7528\u91CD\u65B0\u6D3E\u53D1\u4EFB\u52A1\uFF0C\u6216\u4F7F\u7528 engine: 'pi'\uFF08chatMode idle \u590D\u7528\uFF0C\u652F\u6301 message/close/cancel\uFF09\u3002"
+      message: "zcode \u5F15\u64CE\u4E0D\u652F\u6301 conversation \u4EA4\u4E92\u63A7\u5236\u9762\uFF08capabilities.conversation = 'unsupported'\uFF0C\u6BCF\u4EFB\u52A1\u81EA\u5305\u542B\u4F1A\u8BDD\uFF0C\u65E0\u540C\u8FDB\u7A0B idle \u590D\u7528\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u6539\u7528\u5355\u6B21 subagent \u8C03\u7528\u91CD\u65B0\u6D3E\u53D1\u4EFB\u52A1\uFF0C\u6216\u4F7F\u7528 engine: 'pi'\uFF08chatMode idle \u590D\u7528\uFF0C\u652F\u6301 message/close/cancel\uFF09\u3002"
     };
   }
   /**
    * D6 read 三级降级：①sqlite 原生读取 → ②宿主 event journal 重放（对齐点①接线：
    * replayJournalToSessionView 复用 live reducer，重放等价性见 §3.3.6）→ ③outcome-only。
-   * sessionId 缺失（解析失败的 run 无法在共享池 db 内定位 session）跳过①级；②级
-   * 依赖 handle.journalPath（宿主 run 后回填）。
+   * sessionId 缺失（解析失败的 run 无法定位 session）跳过①级；②级依赖
+   * handle.journalPath（宿主 run 后回填）。dbPath：新 handle 恒绝对路径（宿主
+   * ~/.zcode/cli/db/db.sqlite）；旧 records（池时代）的相对路径仍按 poolKey 锚定
+   * 解析（read 兼容旧数据，池目录不存在时自然落②级 journal 降级）。
    */
   /** [U7] 模型可发现性：v2 桌面登录态聚合（带凭据 provider × models），失败安全返回清单本身可能为空。 */
   listModels() {
@@ -23388,11 +22619,11 @@ var ZcodeEngine = class {
     const sessionId = handle.data.sessionRef["sessionId"];
     const dbPathRaw = handle.data.sessionRef["dbPath"];
     if (typeof sessionId === "string" && typeof dbPathRaw === "string") {
-      const dbPath = path5.isAbsolute(dbPathRaw) ? dbPathRaw : path5.join(resolvePoolDir(this.deps.engineDataDir(), ZCODE_ENGINE_ID, handle.data.poolKey), dbPathRaw);
+      const dbPath = path4.isAbsolute(dbPathRaw) ? dbPathRaw : path4.join(resolvePoolDir(this.deps.engineDataDir(), ZCODE_ENGINE_ID, handle.data.poolKey), dbPathRaw);
       try {
         return await readZcodeSessionView(dbPath, sessionId);
       } catch (err) {
-        logger15.warn("[zcode-engine] native session read failed, degrade to journal replay", {
+        logger12.warn("[zcode-engine] native session read failed, degrade to journal replay", {
           dbPath,
           sessionId,
           reason: err instanceof Error ? err.message : String(err)
@@ -23408,9 +22639,8 @@ var ZcodeEngine = class {
    * prepare 期的能力拒绝（进程创建前）：fork 是 pi 专属（AgentTaskSpec.fork 契约：
    * 其他引擎按 capabilities 拒绝）；conversation 是 interact 控制面的 task 标志，
    * zcode 无此面（A11：同步拒绝 + 可操作建议，无进程创建）；maxTurns 是 pi 引擎
-   * 专属（turn limiter + spawn watchdog 估算依赖 pi 的 turn_end 事件流）——zcode
-   * 无 turn_end 语义，静默丢弃会造成「传了上限却失控」的假象，显式拒绝（U4，
-   * 同 fork 模式）。
+   * 专属（turn limiter 依赖 pi 的 turn_end 事件流）——zcode 无 turn_end 语义，
+   * 静默丢弃会造成「传了上限却失控」的假象，显式拒绝（U4，同 fork 模式）。
    */
   rejectUnsupportedTaskShapes(task) {
     if (task.fork === true) {
@@ -23422,7 +22652,7 @@ var ZcodeEngine = class {
     if (task.conversation === true) {
       throw new ZcodeTaskShapeError(
         "engine_capability_unsupported",
-        "zcode \u5F15\u64CE\u4E0D\u652F\u6301 conversation \u6A21\u5F0F\uFF08spawn \u5355\u8F6E\uFF0C\u65E0\u540C\u8FDB\u7A0B idle \u590D\u7528\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u6539\u7528\u5355\u6B21\u8C03\u7528\uFF08\u53BB\u6389 conversation\uFF09\uFF0C\u6216\u4F7F\u7528 engine: 'pi'\u3002"
+        "zcode \u5F15\u64CE\u4E0D\u652F\u6301 conversation \u6A21\u5F0F\uFF08\u6BCF\u4EFB\u52A1\u81EA\u5305\u542B\u4F1A\u8BDD\uFF0C\u65E0\u540C\u8FDB\u7A0B idle \u590D\u7528\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u6539\u7528\u5355\u6B21\u8C03\u7528\uFF08\u53BB\u6389 conversation\uFF09\uFF0C\u6216\u4F7F\u7528 engine: 'pi'\u3002"
       );
     }
     if (task.maxTurns !== void 0) {
@@ -23431,21 +22661,6 @@ var ZcodeEngine = class {
         "zcode \u5F15\u64CE\u4E0D\u652F\u6301 maxTurns\uFF08pi \u5F15\u64CE\u4E13\u5C5E turn limiter\uFF1Bzcode \u65E0 turn_end \u8BED\u4E49\uFF0C\u65E0\u6CD5\u5151\u73B0\u8F6E\u6570\u4E0A\u9650\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u53BB\u6389 maxTurns \u53C2\u6570\u91CD\u6D3E\uFF0C\u6216\u4F7F\u7528 engine: 'pi'\u3002"
       );
     }
-  }
-  /**
-   * [F15b] spawn 路径的 effort 丢弃信号：spawn CLI 无 thoughtLevel 类 flag（协议
-   * 通道是 appserver 路径专属），effort 只能丢弃——但静默丢弃会让调用方误以为推理
-   * 档位已生效，故出声留痕（引擎现成信号风格：logger.warn，同漂移降级先例）。
-   * 诊断语义：effort 是可忽略档位（降档不改变任务正确性），warn 留痕而非硬拒绝
-   * （与 maxTurns「传了上限却失控」的假象不同质性）。
-   */
-  warnEffortUnsupportedBySpawn(task, ctx) {
-    const effort = task.effort?.trim();
-    if (effort === void 0 || effort === "") return;
-    logger15.warn(
-      `[zcode-engine] effort=${effort} \u88AB\u5FFD\u7565\uFF1Azcode spawn \u4E0D\u652F\u6301 thoughtLevel \u901A\u9053\uFF08CLI \u65E0\u5BF9\u5E94 flag\uFF09\uFF0C\u4EFB\u52A1\u6309\u5F15\u64CE\u7F3A\u7701\u63A8\u7406\u6863\u4F4D\u6267\u884C\uFF1B\u9700\u8981 effort \u8BF7\u8D70 appserver \u6A21\u5F0F`,
-      { taskId: ctx.taskId }
-    );
   }
   /**
    * [RX2-F1] appserver 路径的非常见档位提示：effort → thoughtLevel 恒等透传（F15a），
@@ -23459,7 +22674,7 @@ var ZcodeEngine = class {
     const thoughtLevel = task.effort?.trim();
     if (thoughtLevel === void 0 || thoughtLevel === "") return;
     if (COMMON_THOUGHT_LEVELS.includes(thoughtLevel)) return;
-    logger15.warn(
+    logger12.warn(
       `[zcode-engine] effort=${thoughtLevel} \u5DF2\u900F\u4F20\u4E3A thoughtLevel\uFF08\u975E\u5E38\u89C1\u6863\u4F4D\uFF09\uFF1A\u82E5\u76EE\u6807\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u6863\u4F4D\u5C06\u88AB\u5FFD\u7565/\u56DE\u843D\u5230\u6A21\u578B\u7F3A\u7701\u63A8\u7406\u6863\u4F4D\uFF08\u5E38\u89C1\u6863\u4F4D\uFF1A${COMMON_THOUGHT_LEVELS.join("/")}\uFF09\uFF1B\u6863\u4F4D\u662F\u5426\u751F\u6548\u4EE5\u6A21\u578B\u5B9E\u9645\u884C\u4E3A\u4E3A\u51C6`,
       { taskId: ctx.taskId }
     );
@@ -23471,16 +22686,13 @@ var ZcodeEngine = class {
    * ctxModel。「调用方给了 ctxModel 但 task.model 未显式指定」时出声一行，说明
    * 实际落引擎缺省模型（含实际 model id）——防静默降档无据可查。只在「ctx 有模型
    * 但被忽略」场景输出：显式 task.model 走正常解析链、ctx 本就无模型属预期缺省，
-   * 均不出声（避免噪音）。探针期（appServerProbeGate）不调用——同一任务的正式
-   * run 链路必经此处，双份输出是噪音。[RX2-F3] 漂移首败的 spawn 重跑同理由调用方
-   * 带 degrade.skipCtxModelWarn 跳过——appserver 首跑已出声过，同任务双份相同 warn
-   * 是噪音（与探针场景同一自我要求）。
+   * 均不出声（避免噪音）。
    */
   warnIgnoredCtxModel(task, ctx, modelRef) {
     if (ctx.ctxModel === void 0) return;
     const requested = task.model?.trim();
     if (requested !== void 0 && requested !== "") return;
-    logger15.warn(
+    logger12.warn(
       `[zcode-engine] ctx.ctxModel\uFF08${ctx.ctxModel.id}\uFF09\u88AB\u5FFD\u7565\u2014\u2014ctxModel \u662F pi \u94FE\u8DEF\u515C\u5E95\uFF0Czcode \u4E0D\u6D88\u8D39\uFF1Btask.model \u672A\u663E\u5F0F\u6307\u5B9A\uFF0C\u5B9E\u9645\u4F7F\u7528\u5F15\u64CE\u7F3A\u7701\u6A21\u578B ${modelRef}`,
       { taskId: ctx.taskId }
     );
@@ -23488,10 +22700,8 @@ var ZcodeEngine = class {
   /**
    * persona 拼接后的完整 prompt（personaInjection: 'prompt'——zcode 无 flag 通道）：
    * persona 段经 common/persona-router.applyPersona 按 capabilities 路由产出
-   * （agentRef/skillPath 引用行 + appendSystemPrompt 正文统一拼装，S5 接线——替换
-   * 原手拼 appendSystemPrompt 段，skillPath/agentRef 不再丢弃），task 正文居中，
-   * schema 仿真段尾置（common/schema-emulation 公共层产出，D4 emulated 侧——zcode
-   * 无 native schema 通道）。
+   * （agentRef/skillPath 引用行 + appendSystemPrompt 正文统一拼装，S5 接线），
+   * task 正文居中，schema 仿真段尾置（common/schema-emulation 公共层产出）。
    */
   buildPrompt(task, schema) {
     const segments = [];
@@ -23507,11 +22717,8 @@ var ZcodeEngine = class {
 function isPlainObject3(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
-function errMessage5(err) {
+function errMessage3(err) {
   return err instanceof Error ? err.message : String(err);
-}
-function isDriftRpcCode(code) {
-  return ZCODE_APPSERVER_DRIFT_RPC_CODES.includes(code);
 }
 function delayResolved(ms, value) {
   return new Promise((resolve6) => {
@@ -23538,17 +22745,17 @@ function turnResultToPayload(r) {
     ...mapZcodeOutcomeUsage(r.usage, void 0) !== void 0 ? { outcomeUsage: mapZcodeOutcomeUsage(r.usage, void 0) } : {}
   };
 }
-function buildAppServerRunFailedMessage(err, home, sessionId) {
+function buildAppServerRunFailedMessage(err, sessionId) {
   if (isAppServerRpcError(err) && err.code === ZCODE_APPSERVER_ERR_MODEL_CONFIG_MISSING && /Model config is missing/.test(err.message)) {
-    return `engine_credential_missing: app-server \u62A5 "Model config is missing"\uFF08\u5E38\u9A7B HOME ${home.homeDir} \u7684 config.json \u65E0\u53EF\u7528\u6A21\u578B\u914D\u7F6E\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5728 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u5E76\u914D\u7F6E provider \u51ED\u636E\u540E\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u5F15\u64CE\u5C06\u5728\u4E0B\u4EFB\u52A1\u91CD\u5199\u5E38\u9A7B config \u5E76\u91CD\u5EFA\u8FDE\u63A5\uFF09\u3002`;
+    return `engine_credential_missing: app-server \u62A5 "Model config is missing"\uFF08\u5BBF\u4E3B HOME \u7684 zcode \u914D\u7F6E\u65E0\u53EF\u7528\u6A21\u578B\uFF09\u3002\u6062\u590D\u6307\u5F15\uFF1A\u5728 ZCode \u684C\u9762\u7AEF\u767B\u5F55\u5E76\u914D\u7F6E provider \u51ED\u636E\u540E\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u5E38\u9A7B\u8FDE\u63A5\u5728\u5F15\u64CE\u8FDB\u7A0B\u91CD\u542F\u540E\u751F\u6548\u65B0\u51ED\u636E\uFF09\u3002`;
   }
-  if (isAppServerRpcError(err) && err.code === -32010) {
+  if (isAppServerRpcError(err) && err.code === ZCODE_APPSERVER_ERR_BUSY_SESSION) {
     const sid2 = sessionId !== void 0 ? `\uFF08\u4F1A\u8BDD id: ${sessionId}\uFF09` : "";
     return `engine_run_failed: app-server \u62A5 -32010${sid2}\uFF08send \u65F6\u8BE5\u4F1A\u8BDD\u5DF2\u6709\u8F6E\u5728\u8DD1\uFF0Cbusy \u4E0D\u6392\u961F\u4E0D\u6253\u65AD\uFF09\u3002\u5355\u4F1A\u8BDD\u4E00\u4EFB\u52A1\u662F\u7ED3\u6784\u4FDD\u8BC1\uFF0C\u51FA\u73B0\u5373 bug\uFF1B\u8BF7\u9644\u5E26 sessionId \u4E0E state \u6D41\u6C34\uFF08\u8FDE\u63A5/\u4F1A\u8BDD\u4E8B\u4EF6\u65E5\u5FD7\uFF09\u4E0A\u62A5\u95EE\u9898\u3002`;
   }
   const code = isAppServerRpcError(err) && err.code !== void 0 ? `\uFF08code ${err.code}\uFF09` : "";
   const sid = sessionId !== void 0 ? `\uFF08\u4F1A\u8BDD ${sessionId}\uFF09` : "";
-  return `engine_run_failed: app-server \u4F1A\u8BDD\u6267\u884C\u5931\u8D25${code}${sid}: ${errMessage5(err).slice(-ZCODE_ERROR_TAIL_CHARS)}\u3002\u6062\u590D\u6307\u5F15\uFF1A\u76F4\u63A5\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u8FDE\u63A5\u5D29\u6E83\u540E\u81EA\u52A8\u91CD\u5EFA\u8FDB\u7A0B\uFF09\uFF1B\u82E5\u6301\u7EED\u5931\u8D25\uFF0C\u8DD1 probe \u6838\u5BF9\u534F\u8BAE\u6F02\u79FB\uFF08R5 \u964D\u7EA7\u94FE\uFF09\u6216\u6539\u7528 engine: pi\u3002`;
+  return `engine_run_failed: app-server \u4F1A\u8BDD\u6267\u884C\u5931\u8D25${code}${sid}: ${errMessage3(err).slice(-ZCODE_ERROR_TAIL_CHARS)}\u3002\u6062\u590D\u6307\u5F15\uFF1A\u76F4\u63A5\u91CD\u8DD1\u672C\u4EFB\u52A1\uFF08\u8FDE\u63A5\u5D29\u6E83\u540E\u81EA\u52A8\u91CD\u5EFA\u8FDB\u7A0B\uFF09\uFF1B\u82E5\u6301\u7EED\u5931\u8D25\uFF08\u7591\u4F3C zcode \u5347\u7EA7\u540E\u534F\u8BAE\u6F02\u79FB\u2014\u2014-32601/-32602 \u7C7B\u9519\u8BEF\uFF09\uFF0C\u91CD\u542F ZCode \u6216\u56FA\u5B9A zcode \u7248\u672C\u540E\u91CD\u8BD5\uFF0C\u6216\u6539\u7528 engine: pi\u3002`;
 }
 function accumulateUsage(acc, r) {
   if (r.kind !== "parsed") return;
@@ -23567,6 +22774,39 @@ function appendSchemaRetryDirective(basePrompt, validationError) {
 Your previous answer failed schema validation: ${validationError}
 Answer again. Output ONLY the JSON value conforming to the schema above \u2014 no prose, no markdown fences, no extra text.`;
 }
+function buildAppServerCreateParams(task, providerId, modelId, cwd) {
+  const denyTools = (task.denyTools ?? []).filter((t) => typeof t === "string" && t.trim() !== "");
+  const thoughtLevel = task.effort?.trim();
+  return {
+    workspacePath: cwd,
+    mode: "yolo",
+    // per-session model（G3）：create 参数透传（A.2 ① strict 对象）——同进程任务
+    // 各用各的模型，互不干扰
+    model: { providerId, modelId },
+    ...thoughtLevel !== void 0 && thoughtLevel !== "" ? { thoughtLevel } : {},
+    ...denyTools.length > 0 ? { toolDenylist: denyTools } : {}
+  };
+}
+function parsedAppServerAttempt(task, r) {
+  const schema = isPlainObject3(task.schema) ? task.schema : void 0;
+  return {
+    kind: "parsed",
+    output: syntheticAppServerOutput(0),
+    payload: turnResultToPayload(r),
+    ...schema !== void 0 ? { schemaResult: extractAndValidateStructuredOutput(r.response, schema) } : {}
+  };
+}
+function failedAppServerAttempt(err, currentSessionId) {
+  return {
+    kind: "run-failed",
+    output: syntheticAppServerOutput(null),
+    message: buildAppServerRunFailedMessage(err, currentSessionId),
+    // 错误规格表 -32004 行「按任务失败上报（含会话 id）」：create 成功后运行中失败
+    // （-32004/-32010 等）时留痕会话 id——经 applyRunFailedOutcome 落 outcome.sessionId
+    // 与 handle.sessionRef（create 阶段失败无会话，缺省不带）
+    ...currentSessionId !== void 0 ? { sessionId: currentSessionId } : {}
+  };
+}
 var ZcodeTaskShapeError = class extends Error {
   code;
   constructor(code, message) {
@@ -23581,7 +22821,7 @@ function isHostTimeoutAbort(ctx) {
 async function defaultProbeVersion(cliPath) {
   try {
     return await new Promise((resolve6, reject) => {
-      (0, import_node_child_process4.execFile)(
+      (0, import_node_child_process2.execFile)(
         "node",
         [cliPath, "--version"],
         { encoding: "utf8", timeout: PROBE_VERSION_TIMEOUT_MS },
@@ -23592,7 +22832,7 @@ async function defaultProbeVersion(cliPath) {
       );
     });
   } catch (err) {
-    logger15.debug(
+    logger12.debug(
       `[zcode-engine] probe version check failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
     );
     return void 0;
@@ -23614,22 +22854,23 @@ function registerZcodeEngine(engineDataDir = getEngineDataDir) {
 }
 
 // src/execution/session-runner.ts
-var import_node_child_process5 = require("child_process");
+var import_node_child_process3 = require("child_process");
 var fs12 = __toESM(require("fs"), 1);
 
 // src/execution/best-effort.ts
-var logger16 = getLogger("subagents");
+var logger13 = getLogger("subagents");
 function bestEffort(err, context, level = "debug") {
   const detail = err instanceof Error ? err.message : err;
   const msg = `[subagents] best-effort ${context} failed`;
   if (level === "error") {
-    logger16.error(msg, { detail });
+    logger13.error(msg, { detail });
   } else {
-    logger16.debug(msg, { detail });
+    logger13.debug(msg, { detail });
   }
 }
 
 // src/execution/lifecycle-manager.ts
+var logger14 = getLogger("subagents");
 var MS_PER_SECOND2 = 1e3;
 var SECONDS_PER_MINUTE = 60;
 var IDLE_TIMEOUT_MINUTES = 5;
@@ -23638,7 +22879,12 @@ function getEnvIdleTimeoutMs() {
   const raw = process.env.XYZ_SUBAGENT_IDLE_TIMEOUT_MS;
   if (!raw) return void 0;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    logger14.warn(
+      `[lifecycle-manager] XYZ_SUBAGENT_IDLE_TIMEOUT_MS="${raw}" is invalid (expected a positive millisecond number) \u2014 falling back to DEFAULT_IDLE_TIMEOUT_MS (${DEFAULT_IDLE_TIMEOUT_MS}ms); set a plain ms value (e.g. 1800000) to override`
+    );
+    return void 0;
+  }
   return parsed;
 }
 var idleTimers = /* @__PURE__ */ new Map();
@@ -23651,7 +22897,9 @@ function armIdleTimer(recordId, onTimeout, timeoutMs) {
   assertSafeTimerDelay(resolved, "idleTimeoutMs");
   disarmIdleTimer(recordId);
   const timer = setTimeout(() => {
-    idleTimers.delete(recordId);
+    if (idleTimers.get(recordId)?.timer === timer) {
+      idleTimers.delete(recordId);
+    }
     onTimeout();
   }, resolved);
   timer.unref?.();
@@ -23716,81 +22964,136 @@ function acquireActivateLock(recordId) {
 
 // src/execution/session-pending.ts
 var fs7 = __toESM(require("fs"), 1);
-var logger17 = getLogger("subagents");
+var logger15 = getLogger("subagents");
 var RECENT_UNREGISTER_WINDOW_MS = 6e4;
 var cursors = /* @__PURE__ */ new Map();
+function prunePendingCursor(sessionFile) {
+  cursors.delete(sessionFile);
+}
 function isPendingLineLike(v) {
   return typeof v === "object" && v !== null;
 }
-function readActivePendingFromSessionFile(sessionFile) {
+function accumulatePendingEntries(sessionFile) {
+  const emptyAcc = { activeRegisters: /* @__PURE__ */ new Map(), latestUnregisterMs: 0 };
   if (!sessionFile) {
-    return { count: 0, recentUnregister: false, error: "no sessionFile (handshake not settled)" };
+    return { ...emptyAcc, error: "no sessionFile (handshake not settled)" };
   }
-  let size;
-  try {
-    size = fs7.statSync(sessionFile).size;
-  } catch (err) {
-    return {
-      count: 0,
-      recentUnregister: false,
-      error: `session file unreadable: ${err instanceof Error ? err.message : String(err)}`
-    };
+  const size = statPendingFileSize(sessionFile);
+  if (typeof size !== "number") {
+    return { ...emptyAcc, error: size.error };
   }
   let cursor = cursors.get(sessionFile);
   if (cursor === void 0 || size < cursor.offset) {
-    cursor = { offset: 0, entries: [], latestUnregisterMs: 0 };
+    cursor = { offset: 0, activeRegisters: /* @__PURE__ */ new Map(), latestUnregisterMs: 0 };
   }
-  let chunk;
-  try {
-    if (cursor.offset === 0) {
-      chunk = fs7.readFileSync(sessionFile, "utf-8");
-    } else {
-      const fd = fs7.openSync(sessionFile, "r");
-      try {
-        const len = size - cursor.offset;
-        const buf = Buffer.alloc(len);
-        let total = 0;
-        while (total < len) {
-          const n = fs7.readSync(fd, buf, total, len - total, cursor.offset + total);
-          if (n <= 0) break;
-          total += n;
-        }
-        chunk = buf.toString("utf-8", 0, total);
-      } finally {
-        fs7.closeSync(fd);
-      }
-    }
-  } catch (err) {
-    return {
-      count: 0,
-      recentUnregister: false,
-      error: `session file unreadable: ${err instanceof Error ? err.message : String(err)}`
-    };
+  const chunk = readPendingChunk(sessionFile, cursor, size);
+  if (typeof chunk !== "string") {
+    return { ...emptyAcc, error: chunk.error };
   }
   const lastNl = chunk.lastIndexOf("\n");
   const complete = lastNl === -1 ? "" : chunk.slice(0, lastNl);
   cursor.offset += Buffer.byteLength(complete, "utf-8");
   cursors.set(sessionFile, cursor);
+  consumePendingLines(complete, cursor, sessionFile);
+  return { activeRegisters: cursor.activeRegisters, latestUnregisterMs: cursor.latestUnregisterMs };
+}
+function pendingFileUnreadableMessage(err) {
+  return `session file unreadable: ${err instanceof Error ? err.message : String(err)}`;
+}
+function statPendingFileSize(sessionFile) {
+  try {
+    return fs7.statSync(sessionFile).size;
+  } catch (err) {
+    cursors.delete(sessionFile);
+    return { error: pendingFileUnreadableMessage(err) };
+  }
+}
+function readPendingChunk(sessionFile, cursor, size) {
+  try {
+    if (cursor.offset === 0) {
+      return fs7.readFileSync(sessionFile, "utf-8");
+    }
+    return readPendingChunkFrom(sessionFile, cursor.offset, size - cursor.offset);
+  } catch (err) {
+    cursors.delete(sessionFile);
+    return { error: pendingFileUnreadableMessage(err) };
+  }
+}
+function readPendingChunkFrom(sessionFile, offset, len) {
+  const buf = Buffer.alloc(len);
+  const fd = fs7.openSync(sessionFile, "r");
+  try {
+    let total = 0;
+    while (total < len) {
+      const n = fs7.readSync(fd, buf, total, len - total, offset + total);
+      if (n <= 0) break;
+      total += n;
+    }
+    return buf.toString("utf-8", 0, total);
+  } finally {
+    fs7.closeSync(fd);
+  }
+}
+function consumePendingLines(complete, cursor, sessionFile) {
   for (const line of complete.split("\n")) {
     if (!line.includes('"pending:register"') && !line.includes('"pending:unregister"')) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (!isPendingLineLike(entry)) continue;
-      cursor.entries.push(entry);
-      if (entry.customType === "pending:unregister" && entry.timestamp) {
-        const ts = Date.parse(entry.timestamp);
-        if (Number.isFinite(ts) && ts > cursor.latestUnregisterMs) cursor.latestUnregisterMs = ts;
-      }
-    } catch {
-      logger17.debug("skipped malformed pending line", { sessionFile });
+    applyPendingLine(line, cursor, sessionFile);
+  }
+}
+function applyPendingLine(line, cursor, sessionFile) {
+  try {
+    const entry = JSON.parse(line);
+    if (!isPendingLineLike(entry)) return;
+    const customType = entry.customType;
+    const id = extractPendingEntryId(entry.data);
+    if (customType === "pending:register" && id !== void 0) {
+      cursor.activeRegisters.set(id, entry);
+    } else if (customType === "pending:unregister" && id !== void 0) {
+      cursor.activeRegisters.delete(id);
     }
+    if (customType === "pending:unregister" && entry.timestamp) {
+      const ts = Date.parse(entry.timestamp);
+      if (Number.isFinite(ts) && ts > cursor.latestUnregisterMs) cursor.latestUnregisterMs = ts;
+    }
+  } catch {
+    logger15.debug("skipped malformed pending line", { sessionFile });
+  }
+}
+function extractPendingEntryId(data) {
+  return typeof data === "object" && data !== null && typeof data.id === "string" ? data.id : void 0;
+}
+function readActivePendingFromSessionFile(sessionFile) {
+  const acc = accumulatePendingEntries(sessionFile);
+  if (acc.error) {
+    return { count: 0, recentUnregister: false, error: acc.error };
   }
   const countActive = getNotifyDomainPorts().countActiveFromEntries;
-  const active = countActive ? countActive(cursor.entries) : 0;
+  const active = countActive ? countActive([...acc.activeRegisters.values()]) : 0;
   return {
     count: active,
-    recentUnregister: cursor.latestUnregisterMs > 0 && Date.now() - cursor.latestUnregisterMs < RECENT_UNREGISTER_WINDOW_MS
+    recentUnregister: acc.latestUnregisterMs > 0 && Date.now() - acc.latestUnregisterMs < RECENT_UNREGISTER_WINDOW_MS
   };
+}
+function isPendingEntryDataLike(v) {
+  return typeof v === "object" && v !== null;
+}
+function listActivePendingFromSessionFile(sessionFile) {
+  const acc = accumulatePendingEntries(sessionFile);
+  if (acc.error) {
+    return { items: [], error: acc.error };
+  }
+  const items = [];
+  for (const [id, raw] of acc.activeRegisters) {
+    if (!isPendingLineLike(raw)) continue;
+    const data = raw.data;
+    if (!isPendingEntryDataLike(data)) continue;
+    items.push({
+      id,
+      sessionId: typeof data.sessionId === "string" ? data.sessionId : void 0,
+      type: typeof data.type === "string" ? data.type : void 0
+    });
+  }
+  return { items };
 }
 
 // src/execution/argv-mirror.ts
@@ -23914,8 +23217,8 @@ function isErrnoException(err) {
 }
 
 // src/execution/stdin-writer.ts
-var crypto3 = __toESM(require("crypto"), 1);
-var logger18 = getLogger("subagents");
+var crypto2 = __toESM(require("crypto"), 1);
+var logger16 = getLogger("subagents");
 var epipeConsecutiveFailures = /* @__PURE__ */ new Map();
 var EPIPE_FAILURE_THRESHOLD = 2;
 function recordEpipeFailure(recordId) {
@@ -23937,7 +23240,7 @@ function respond(child, id, out, signal) {
     else if ("confirmed" in out) line = JSON.stringify({ type: "extension_ui_response", id, confirmed: out.confirmed });
     else if ("cancelled" in out) line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
   } catch (err) {
-    logger18.warn(`[subagents] JSON.stringify failed for ui response ${id}, degrading to cancelled`, {
+    logger16.warn(`[subagents] JSON.stringify failed for ui response ${id}, degrading to cancelled`, {
       detail: err instanceof Error ? err.message : String(err)
     });
     line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
@@ -23948,7 +23251,7 @@ function respond(child, id, out, signal) {
 function sendPromptCommand(child, task, options) {
   if (!child.stdin || child.stdin.destroyed) return;
   const payload = {
-    id: crypto3.randomUUID(),
+    id: crypto2.randomUUID(),
     type: "prompt",
     message: task
   };
@@ -23958,7 +23261,7 @@ function sendPromptCommand(child, task, options) {
   writeStdinLine(child, JSON.stringify(payload), "prompt command");
 }
 function sendGetStateCommand(child) {
-  const id = crypto3.randomUUID();
+  const id = crypto2.randomUUID();
   const command = JSON.stringify({
     id,
     type: "get_state"
@@ -23970,14 +23273,14 @@ function writeStdinLine(child, line, warnTag) {
   if (!child.stdin || child.stdin.destroyed) return;
   try {
     const ok = child.stdin.write(line + "\n");
-    if (!ok) logger18.warn(`[subagents] stdin backpressure on ${warnTag}`);
+    if (!ok) logger16.warn(`[subagents] stdin backpressure on ${warnTag}`);
   } catch (err) {
     if (err !== null && typeof err === "object" && "code" in err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) {
       throw new Error(
         `[subagents] EPIPE on stdin write (${warnTag}): pipe broken, child process likely exited. Recovery: treat as dead process and resume via cold path.`
       );
     }
-    logger18.warn(`[subagents] unexpected stdin write error on ${warnTag}`, {
+    logger16.warn(`[subagents] unexpected stdin write error on ${warnTag}`, {
       detail: err instanceof Error ? err.message : String(err)
     });
   }
@@ -23987,6 +23290,17 @@ function writeStdinLine(child, line, warnTag) {
 var GET_STATE_MAX_RETRIES = 3;
 var GET_STATE_RETRY_INTERVAL_MS = 500;
 var GET_STATE_TIMEOUT_MS = 2e3;
+function extractGetStateFields(data, into) {
+  if (data && typeof data === "object") {
+    const d = data;
+    if (typeof d.sessionFile === "string" && d.sessionFile.length > 0) {
+      into.sessionFile = d.sessionFile;
+    }
+    if (typeof d.sessionId === "string" && d.sessionId.length > 0) {
+      into.sessionId = d.sessionId;
+    }
+  }
+}
 function performGetStateHandshake(child, addResponseListener) {
   return new Promise((resolve6) => {
     const collected = {};
@@ -24012,15 +23326,7 @@ function performGetStateHandshake(child, addResponseListener) {
         if (resolved) return;
         clearTimeout(timer);
         if (pendingRetry) clearTimeout(pendingRetry);
-        if (data && typeof data === "object") {
-          const d = data;
-          if (typeof d.sessionFile === "string" && d.sessionFile.length > 0) {
-            collected.sessionFile = d.sessionFile;
-          }
-          if (typeof d.sessionId === "string" && d.sessionId.length > 0) {
-            collected.sessionId = d.sessionId;
-          }
-        }
+        extractGetStateFields(data, collected);
         if (collected.sessionFile) {
           resolved = true;
           resolve6(collected);
@@ -24028,6 +23334,35 @@ function performGetStateHandshake(child, addResponseListener) {
       });
     }
     tryOnce();
+  });
+}
+function requestGetStateOnce(child, addResponseListener, timeoutMs) {
+  return new Promise((resolve6) => {
+    let settled = false;
+    let removeListener = () => {
+    };
+    const finish = (r) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      removeListener();
+      resolve6(r);
+    };
+    let reqId;
+    try {
+      reqId = sendGetStateCommand(child);
+    } catch {
+      resolve6({});
+      return;
+    }
+    removeListener = addResponseListener(reqId, (data) => {
+      const r = {};
+      extractGetStateFields(data, r);
+      finish(r);
+    }) ?? (() => {
+    });
+    const timer = setTimeout(() => finish({}), timeoutMs);
+    timer.unref();
   });
 }
 
@@ -24099,23 +23434,23 @@ function collectResult(record, args) {
 }
 
 // src/execution/path-encoding.ts
-var path6 = __toESM(require("path"), 1);
+var path5 = __toESM(require("path"), 1);
 function encodeCwd(cwd) {
   return "--" + cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
 }
 function getSubagentSessionDir(agentDir, mainCwd) {
-  return path6.join(agentDir, "subagents", encodeCwd(mainCwd), "sessions");
+  return path5.join(agentDir, "subagents", encodeCwd(mainCwd), "sessions");
 }
 function getSubagentRecordsDir(agentDir, mainCwd) {
-  return path6.join(agentDir, "subagents", encodeCwd(mainCwd), "records");
+  return path5.join(agentDir, "subagents", encodeCwd(mainCwd), "records");
 }
 
 // src/execution/pi-invocation.ts
 var fs9 = __toESM(require("fs"), 1);
-var path7 = __toESM(require("path"), 1);
+var path6 = __toESM(require("path"), 1);
 var BUN_VIRTUAL_PREFIX = "/$bunfs/root/";
 function isGenericRuntime(execPath) {
-  const execName = path7.basename(execPath).toLowerCase();
+  const execName = path6.basename(execPath).toLowerCase();
   return /^(node|bun)(\.exe)?$/.test(execName);
 }
 var scriptExistsCache;
@@ -24264,6 +23599,28 @@ function schemaEnvByteLength(schemaEnv) {
   return Buffer.byteLength(schemaEnv, "utf8");
 }
 
+// src/execution/settled-watchdog.ts
+var logger17 = getLogger("subagents");
+var SETTLED_WATCHDOG_TIMEOUT_MS = 6e5;
+var armedTimers = /* @__PURE__ */ new Map();
+function armSettledWatchdog(recordId, onTimeout) {
+  assertSafeTimerDelay(SETTLED_WATCHDOG_TIMEOUT_MS, "settled watchdog");
+  disarmSettledWatchdog(recordId);
+  const timer = setTimeout(() => {
+    armedTimers.delete(recordId);
+    logger17.debug(`[settled-watchdog] fired for ${recordId} after ${SETTLED_WATCHDOG_TIMEOUT_MS}ms without agent_settled`);
+    onTimeout();
+  }, SETTLED_WATCHDOG_TIMEOUT_MS);
+  timer.unref();
+  armedTimers.set(recordId, timer);
+}
+function disarmSettledWatchdog(recordId) {
+  const timer = armedTimers.get(recordId);
+  if (!timer) return;
+  clearTimeout(timer);
+  armedTimers.delete(recordId);
+}
+
 // src/execution/types.ts
 var DEFAULT_AGENT_NAME = "general-purpose";
 var RECONNECTABLE_FINAL_REASONS = ["disconnected", "parent-shutdown"];
@@ -24298,7 +23655,7 @@ var MAX_FORK_DEPTH = 10;
 
 // src/execution/spawn-event-adapter.ts
 var fs10 = __toESM(require("fs"), 1);
-var path8 = __toESM(require("path"), 1);
+var path7 = __toESM(require("path"), 1);
 function isSessionHeader(obj) {
   if (typeof obj !== "object" || obj === null) return false;
   const r = obj;
@@ -24426,7 +23783,7 @@ function findSessionFileByHeaderId(sessionDir, sessionId) {
   try {
     const files = fs10.readdirSync(sessionDir);
     const match = files.find((f) => f.endsWith(`_${sessionId}.jsonl`));
-    return match ? path8.join(sessionDir, match) : void 0;
+    return match ? path7.join(sessionDir, match) : void 0;
   } catch {
     return void 0;
   }
@@ -24434,12 +23791,12 @@ function findSessionFileByHeaderId(sessionDir, sessionId) {
 
 // src/execution/temp-prompt.ts
 var fs11 = __toESM(require("fs"), 1);
-var os2 = __toESM(require("os"), 1);
-var path9 = __toESM(require("path"), 1);
+var os3 = __toESM(require("os"), 1);
+var path8 = __toESM(require("path"), 1);
 async function writePromptToTempFile(agentName, prompt) {
-  const dir = await fs11.promises.mkdtemp(path9.join(os2.tmpdir(), "pi-subagent-"));
+  const dir = await fs11.promises.mkdtemp(path8.join(os3.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path9.join(dir, `prompt-${safeName}.md`);
+  const filePath = path8.join(dir, `prompt-${safeName}.md`);
   await fs11.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 384 });
   return { dir, filePath };
 }
@@ -24576,7 +23933,7 @@ function parseChannel(req) {
 }
 
 // src/execution/ui-request-observability.ts
-var logger19 = getLogger("subagents");
+var logger18 = getLogger("subagents");
 var GLOBAL_OBSERVABILITY_KEY = /* @__PURE__ */ Symbol.for("pi-subagent-workflow.ui-observability");
 function registerGlobalObservability(obs) {
   globalThis[GLOBAL_OBSERVABILITY_KEY] = obs;
@@ -24586,7 +23943,7 @@ function notifyMissingHandlerGlobal(sessionId) {
   if (obs) {
     obs.notifyMissingHandler(sessionId);
   } else {
-    logger19.warn(
+    logger18.warn(
       `[subagents] uiRequestHandler missing (session=${sessionId}, global observability not registered)`
     );
   }
@@ -24614,12 +23971,12 @@ var UiRequestObservability = class {
       this.warnedMissingHandlerSessions.clear();
     }
     this.warnedMissingHandlerSessions.add(sessionId);
-    logger19.warn(`[subagents] uiRequestHandler missing (session=${sessionId}, mode=${this.sessionMode})`);
+    logger18.warn(`[subagents] uiRequestHandler missing (session=${sessionId}, mode=${this.sessionMode})`);
   }
 };
 
 // src/execution/ui-request-queue.ts
-var logger20 = getLogger("subagents");
+var logger19 = getLogger("subagents");
 function createUiRequestQueue(child, ctx) {
   const abortController = new AbortController();
   const queue = [];
@@ -24631,7 +23988,7 @@ function createUiRequestQueue(child, ctx) {
     const { id, request, signal } = queue.shift();
     handleUiRequest(child, id, request, ctx, signal).catch((err) => {
       const m = err instanceof Error ? err.message : String(err);
-      logger20.error(`[subagents] ui request ${id} (${request.method}) failed unexpectedly: ${m}`);
+      logger19.error(`[subagents] ui request ${id} (${request.method}) failed unexpectedly: ${m}`);
     }).finally(() => {
       processing = false;
       processNext();
@@ -24676,7 +24033,7 @@ async function handleUiRequest(child, id, request, ctx, signal) {
     respond(child, id, result, signal);
   } catch (err) {
     if (signal?.aborted) return;
-    logger20.error("[subagents] uiRequestHandler threw", {
+    logger19.error("[subagents] uiRequestHandler threw", {
       detail: err instanceof Error ? err.message : String(err)
     });
     respond(child, id, { cancelled: true }, signal);
@@ -24701,7 +24058,7 @@ function extractMethodFields(req) {
 }
 
 // src/execution/session-runner.ts
-var logger21 = getLogger("subagents");
+var logger20 = getLogger("subagents");
 function isSdkEvent(x) {
   if (typeof x !== "object" || x === null) return false;
   if (!("type" in x)) return false;
@@ -24730,15 +24087,24 @@ var SPAWN_WATCHDOG_FLOOR_MS = WATCHDOG_FLOOR_MINUTES * SECONDS_PER_MINUTE2 * MS_
 var WATCHDOG_MINUTES_PER_TURN = 5;
 var WATCHDOG_MS_PER_TURN = WATCHDOG_MINUTES_PER_TURN * SECONDS_PER_MINUTE2 * MS_PER_SECOND3;
 var WAKEUP_GRACE_MS = 15e3;
+var KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS = SPAWN_WATCHDOG_FLOOR_MS;
+var LAZY_GET_STATE_TIMEOUT_MS = 1e3;
 function maxTurnsToWatchdogMs(maxTurns) {
   return Math.max(SPAWN_WATCHDOG_FLOOR_MS, maxTurns * WATCHDOG_MS_PER_TURN);
 }
 var SPAWN_WATCHDOG_ENV = "XYZ_SUBAGENT_SPAWN_WATCHDOG_MS";
+var MAX_INVALID_LINE_SAMPLES = 3;
+var INVALID_LINE_SAMPLE_MAX_LENGTH = 160;
 function getEnvSpawnWatchdogMs() {
   const raw = process.env[SPAWN_WATCHDOG_ENV];
   if (!raw) return void 0;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return void 0;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    logger20.warn(
+      `[session-runner] ${SPAWN_WATCHDOG_ENV}="${raw}" is invalid (expected a positive millisecond number) \u2014 spawn watchdog NOT armed, equivalent to disabled; set a plain ms value (e.g. 1800000) to enable`
+    );
+    return void 0;
+  }
   return parsed;
 }
 function resolveSpawnWatchdogMs(maxTurns) {
@@ -24757,6 +24123,9 @@ function resolveSpawnWatchdogMs(maxTurns) {
     return estimated;
   }
   return void 0;
+}
+function isBareDefaultKeepAlive(maxTurns) {
+  return (maxTurns === void 0 || maxTurns === null) && !process.env[SPAWN_WATCHDOG_ENV];
 }
 var STDERR_MAX_CHARS = 65536;
 var ASK_USER_RPC_PROMPT = `
@@ -24792,12 +24161,13 @@ function killAllSpawnedChildren(signal = "SIGTERM") {
   disposeEngines();
   let n = 0;
   for (const child of spawnedChildren.values()) {
-    if (child.killed) continue;
+    const confirmedDead = (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null;
+    if (confirmedDead) continue;
     try {
-      child.kill(signal);
+      child.kill(child.killed ? "SIGKILL" : signal);
       n++;
     } catch (err) {
-      logger21.debug(
+      logger20.debug(
         `[session-runner] killAllSpawnedChildren: kill failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
       );
     }
@@ -24818,6 +24188,113 @@ function registerSpawnedChildForRecord(recordId, child) {
   child.once("close", () => removeChildRegistration(recordId, child));
   child.once("error", () => removeChildRegistration(recordId, child));
 }
+var DESCENDANT_CMDLINE_PROBE_TIMEOUT_MS = 3e3;
+function readProcessCmdline(pid) {
+  try {
+    const r = (0, import_node_child_process3.spawnSync)("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf-8",
+      timeout: DESCENDANT_CMDLINE_PROBE_TIMEOUT_MS
+    });
+    if (r.error || r.status !== 0) return void 0;
+    const out = typeof r.stdout === "string" ? r.stdout.trim() : "";
+    return out.length > 0 ? out : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function looksLikePiRpcProcess(cmdline) {
+  const hasPi = /(^|[\s/])pi(\.js|\.cjs|\.mjs)?(\s|$)/.test(cmdline);
+  const hasRpcMode = /(^|\s)--mode[=\s]rpc(\s|$)/.test(cmdline);
+  return hasPi && hasRpcMode;
+}
+function killPidWithEscalation(pid, label) {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (err) {
+    logger20.debug(
+      `[session-runner] ${label}: SIGTERM to pid ${pid} failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
+    );
+    return;
+  }
+  assertSafeTimerDelay(SIGKILL_ESCALATION_MS, `descendant SIGKILL escalation (${label})`);
+  const escalation = setTimeout(() => {
+    if (isProcessAlive(pid)) {
+      logger20.warn(
+        `[session-runner] ${label}: descendant pid ${pid} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND3}s after SIGTERM, escalating to SIGKILL`
+      );
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (killErr) {
+        void killErr;
+      }
+    }
+  }, SIGKILL_ESCALATION_MS);
+  escalation.unref();
+}
+function sweepDescendantsOfSession(rootSessionFile, sessionDir, source) {
+  const result = { killed: [], skipped: [] };
+  if (!rootSessionFile) return result;
+  const visited = /* @__PURE__ */ new Set();
+  const queue = [rootSessionFile];
+  while (queue.length > 0) {
+    const sessionFile = queue.shift();
+    if (visited.has(sessionFile)) continue;
+    visited.add(sessionFile);
+    const list = listActivePendingFromSessionFile(sessionFile);
+    if (list.error) {
+      logger20.debug(
+        `[session-runner] descendant sweep (${source}): pending list unreadable for ${sessionFile}: ${list.error}`
+      );
+      continue;
+    }
+    for (const item of list.items) {
+      if (!item.sessionId) {
+        result.skipped.push({
+          sessionId: item.id,
+          reason: "pending register entry has no sessionId (marker-based fallback pending T5)"
+        });
+        continue;
+      }
+      const childFile = findSessionFileByHeaderId(sessionDir, item.sessionId);
+      if (!childFile) {
+        result.skipped.push({
+          sessionId: item.sessionId,
+          reason: "session file not found in sessionDir (marker-based fallback pending T5)"
+        });
+        continue;
+      }
+      queue.push(childFile);
+      const marker = readAliveMarker(childFile);
+      if (!marker) {
+        result.skipped.push({ sessionId: item.sessionId, reason: "no alive marker for session file" });
+        continue;
+      }
+      if (!isProcessAlive(marker.pid)) {
+        result.skipped.push({
+          sessionId: item.sessionId,
+          pid: marker.pid,
+          reason: "pid not alive (already exited)"
+        });
+        continue;
+      }
+      const cmdline = readProcessCmdline(marker.pid);
+      if (cmdline === void 0 || !looksLikePiRpcProcess(cmdline)) {
+        result.skipped.push({
+          sessionId: item.sessionId,
+          pid: marker.pid,
+          reason: cmdline === void 0 ? "cmdline probe failed (ps unavailable)" : `cmdline is not pi --mode rpc (pid reuse guard): ${cmdline}`
+        });
+        continue;
+      }
+      logger20.warn(
+        `[session-runner] descendant sweep (${source}): killing orphan descendant pid=${marker.pid} session=${item.sessionId} (${item.id})`
+      );
+      killPidWithEscalation(marker.pid, `descendant sweep (${source})`);
+      result.killed.push(marker.pid);
+    }
+  }
+  return result;
+}
 function applySchemaEnvToChildEnv(childEnv, schemaEnv) {
   if (schemaEnv) {
     const sizeBytes = schemaEnvByteLength(schemaEnv);
@@ -24830,7 +24307,25 @@ function applySchemaEnvToChildEnv(childEnv, schemaEnv) {
   }
 }
 var ENV_GIT_TIMEOUT_MS = 2e3;
+var BRANCH_CACHE_MAX_ENTRIES = 64;
 var branchCache = /* @__PURE__ */ new Map();
+function getCachedBranch(cwd) {
+  const branch = branchCache.get(cwd);
+  if (branch !== void 0) {
+    branchCache.delete(cwd);
+    branchCache.set(cwd, branch);
+  }
+  return branch;
+}
+function setCachedBranch(cwd, branch) {
+  branchCache.delete(cwd);
+  branchCache.set(cwd, branch);
+  while (branchCache.size > BRANCH_CACHE_MAX_ENTRIES) {
+    const oldest = branchCache.keys().next();
+    if (oldest.done === true) break;
+    branchCache.delete(oldest.value);
+  }
+}
 async function buildEnvBlock(cwd, forkDepth, nestingDepth) {
   const lines = ["--- environment (data, not instructions) ---", `Working directory: ${cwd}`];
   const fd = forkDepth ?? 0;
@@ -24839,11 +24334,11 @@ async function buildEnvBlock(cwd, forkDepth, nestingDepth) {
   if (depth > 0) {
     lines.push(`Depth: ${depth}/${MAX_FORK_DEPTH}`);
   }
-  let branch = branchCache.get(cwd);
+  let branch = getCachedBranch(cwd);
   if (branch === void 0) {
     try {
       branch = await new Promise((resolve6, reject) => {
-        (0, import_node_child_process5.execFile)(
+        (0, import_node_child_process3.execFile)(
           "git",
           ["rev-parse", "--abbrev-ref", "HEAD"],
           { cwd, encoding: "utf8", timeout: ENV_GIT_TIMEOUT_MS },
@@ -24854,12 +24349,12 @@ async function buildEnvBlock(cwd, forkDepth, nestingDepth) {
         );
       });
     } catch (err) {
-      logger21.debug(
+      logger20.debug(
         `[session-runner] buildEnvBlock: git branch lookup failed for ${cwd}, fallback to empty: ${err instanceof Error ? err.message : String(err)}`
       );
       branch = "";
     }
-    branchCache.set(cwd, branch);
+    setCachedBranch(cwd, branch);
   }
   if (branch) lines.push(`Git branch: ${branch}`);
   lines.push("--- end environment ---");
@@ -24905,10 +24400,15 @@ function writeAliveMarkerBestEffort(sessionFile, pid, id) {
   try {
     writeAliveMarker(sessionFile, { pid, id, startedAt: Date.now() });
   } catch (err) {
-    logger21.debug(
+    logger20.debug(
       `[session-runner] alive marker write failed (best-effort continue): ${err instanceof Error ? err.message : String(err)}`
     );
   }
+}
+function touchAliveMarkerForHeartbeat(sessionFile, pid, recordId) {
+  if (!sessionFile || !pid) return;
+  const existingId = readAliveMarker(sessionFile)?.id ?? recordId;
+  writeAliveMarkerBestEffort(sessionFile, pid, existingId);
 }
 var SIGKILL_ESCALATION_SECONDS = 30;
 var SIGKILL_ESCALATION_MS = SIGKILL_ESCALATION_SECONDS * MS_PER_SECOND3;
@@ -24919,7 +24419,7 @@ function killChildWithEscalation(state, child, source) {
   const escalation = setTimeout(
     () => {
       if (child.exitCode === null && child.signalCode === null) {
-        logger21.warn(
+        logger20.warn(
           `[session-runner] child ${state.record.id} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND3}s after SIGTERM, escalating to SIGKILL (source: ${source})`
         );
         child.kill("SIGKILL");
@@ -24930,6 +24430,82 @@ function killChildWithEscalation(state, child, source) {
   escalation.unref();
   child.once("exit", () => clearTimeout(escalation));
   state.escalationTimer = escalation;
+}
+var serviceEscalationTimers = /* @__PURE__ */ new Map();
+function killRecordChildWithEscalation(recordId, source) {
+  const child = spawnedChildren.get(recordId);
+  if (!child || child.killed) return;
+  child.kill("SIGTERM");
+  assertSafeTimerDelay(SIGKILL_ESCALATION_MS, `SIGKILL escalation (${source})`);
+  if (serviceEscalationTimers.has(recordId)) {
+    clearTimeout(serviceEscalationTimers.get(recordId));
+  }
+  const escalation = setTimeout(
+    () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        logger20.warn(
+          `[session-runner] child ${recordId} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND3}s after SIGTERM, escalating to SIGKILL (source: ${source})`
+        );
+        child.kill("SIGKILL");
+      }
+    },
+    SIGKILL_ESCALATION_MS
+  );
+  escalation.unref();
+  child.once("exit", () => {
+    clearTimeout(escalation);
+    if (serviceEscalationTimers.get(recordId) === escalation) {
+      serviceEscalationTimers.delete(recordId);
+    }
+  });
+  serviceEscalationTimers.set(recordId, escalation);
+}
+function hasLiveActiveDescendant(sessionFile, sessionDir) {
+  const list = listActivePendingFromSessionFile(sessionFile);
+  if (list.error) {
+    logger20.warn(
+      `[session-runner] keep-alive no-progress re-check failed (treating as no live descendants): ${list.error}`
+    );
+    return false;
+  }
+  for (const item of list.items) {
+    if (!item.sessionId) continue;
+    const childFile = findSessionFileByHeaderId(sessionDir, item.sessionId);
+    if (!childFile) continue;
+    const marker = readAliveMarker(childFile);
+    if (marker && isProcessAlive(marker.pid)) return true;
+  }
+  return false;
+}
+function armKeepAliveNoProgressTimer(state, child, sessionDir) {
+  if (state.keepAliveNoProgressTimer) clearTimeout(state.keepAliveNoProgressTimer);
+  assertSafeTimerDelay(KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS, "keep-alive no-progress watchdog");
+  state.keepAliveNoProgressTimer = setTimeout(() => {
+    if (hasLiveActiveDescendant(state.record.sessionFile, sessionDir)) {
+      touchAliveMarkerForHeartbeat(state.record.sessionFile, child.pid, state.record.id);
+      logger20.debug(
+        `[session-runner] keep-alive no-progress re-check: live descendant(s) present for ${state.record.id}, re-arm (cadence ${KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS / MS_PER_SECOND3 / SECONDS_PER_MINUTE2} min)`
+      );
+      armKeepAliveNoProgressTimer(state, child, sessionDir);
+      return;
+    }
+    logger20.warn(
+      `[session-runner] keep-alive no-progress watchdog fired for ${state.record.id}: no child output for ${KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS / MS_PER_SECOND3 / SECONDS_PER_MINUTE2} min and no live descendant (bare-default keep-alive without maxTurns/env), terminating`
+    );
+    state.sweepDescendantsOnClose = true;
+    killChildWithEscalation(state, child, "keep-alive no-progress watchdog");
+  }, KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS);
+  state.keepAliveNoProgressTimer.unref();
+}
+function refreshKeepAliveNoProgressTimer(state, child, sessionDir) {
+  if (!state.keepAliveNoProgressTimer) return;
+  armKeepAliveNoProgressTimer(state, child, sessionDir);
+}
+function disarmKeepAliveNoProgressTimer(state) {
+  if (state.keepAliveNoProgressTimer) {
+    clearTimeout(state.keepAliveNoProgressTimer);
+    state.keepAliveNoProgressTimer = void 0;
+  }
 }
 function createSpawnEventHandlers(state) {
   const { record, opts, ctx } = state;
@@ -24965,13 +24541,23 @@ function createSpawnEventHandlers(state) {
   const handleSdkEvent = (raw) => {
     if (isAgentSettledEvt(raw)) {
       if (record.chatMode) {
+        disarmSettledWatchdog(record.id);
+        const armIdleTimerOnTimeout = () => {
+          const child = getChildByRecord(record.id);
+          if (child && !child.killed) killChildWithEscalation(state, child, "idle timer");
+        };
         try {
-          armIdleTimer(record.id, () => {
-            const child = getChildByRecord(record.id);
-            if (child && !child.killed) killChildWithEscalation(state, child, "idle timer");
-          }, record.idleTimeoutMs);
+          armIdleTimer(record.id, armIdleTimerOnTimeout, record.idleTimeoutMs);
         } catch (err) {
           bestEffort(err, "armIdleTimer (agent_settled chatMode)", "error");
+          try {
+            armIdleTimer(record.id, armIdleTimerOnTimeout, DEFAULT_IDLE_TIMEOUT_MS);
+            logger20.warn(
+              `[session-runner] idleTimeoutMs invalid for ${record.id}, fell back to DEFAULT_IDLE_TIMEOUT_MS (${DEFAULT_IDLE_TIMEOUT_MS}ms) \u2014 idle GC and round notification gate stay active`
+            );
+          } catch (fallbackErr) {
+            bestEffort(fallbackErr, "armIdleTimer fallback (agent_settled chatMode)", "error");
+          }
         }
         limiter.reset();
         record.turnCount = 0;
@@ -25099,11 +24685,103 @@ function splitRecordModelRef(model) {
   if (slashIdx <= 0) return { provider: "unknown", id: model };
   return { provider: model.slice(0, slashIdx), id: model.slice(slashIdx + 1) };
 }
+async function runAgentEndDisposition(state, child, sessionDir, registerGetStateListener) {
+  const { record } = state;
+  if (!record.sessionFile && !child.killed) {
+    await backfillSessionFileViaGetState(state, child, registerGetStateListener);
+  }
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const pending = readActivePendingFromSessionFile(record.sessionFile);
+  if (pending.count > 0 || pending.error) {
+    keepAliveOnAgentEnd(state, child, sessionDir, pending);
+  } else if (pending.recentUnregister) {
+    keepAliveForWakeupGrace(state, child);
+  } else {
+    disarmKeepAliveNoProgressTimer(state);
+    killChildWithEscalation(state, child, "agent_end final kill");
+  }
+}
+async function backfillSessionFileViaGetState(state, child, registerGetStateListener) {
+  const { record } = state;
+  const r = await requestGetStateOnce(child, registerGetStateListener, LAZY_GET_STATE_TIMEOUT_MS);
+  if (r.sessionFile && !record.sessionFile) {
+    record.sessionFile = r.sessionFile;
+    if (child.pid) {
+      writeAliveMarkerBestEffort(r.sessionFile, child.pid, r.sessionId ?? record.id);
+    }
+    logger20.warn(
+      `[session-runner] agent_end: sessionFile backfilled via lazy get_state (spawn handshake had failed): ${r.sessionFile}`
+    );
+  }
+  if (r.sessionId && !state.handshakeResult?.sessionId) {
+    state.handshakeResult = { ...state.handshakeResult, sessionId: r.sessionId };
+  }
+}
+function keepAliveOnAgentEnd(state, child, sessionDir, pending) {
+  const { record, opts } = state;
+  touchAliveMarkerForHeartbeat(record.sessionFile, child.pid, record.id);
+  if (pending.error) {
+    logger20.warn(
+      `[session-runner] agent_end: keep alive (sessionFile unreadable, conservative): ${pending.error}`
+    );
+  } else {
+    logger20.debug(
+      `[session-runner] agent_end: keep alive, ${pending.count} active descendant(s) pending`
+    );
+  }
+  clearTimeout(state.watchdog);
+  disarmKeepAliveNoProgressTimer(state);
+  const bareDefaultKeepAlive = isBareDefaultKeepAlive(opts.maxTurns);
+  let keepAliveMs;
+  try {
+    keepAliveMs = resolveSpawnWatchdogMs(opts.maxTurns);
+  } catch (err) {
+    bestEffort(err, "resolveSpawnWatchdogMs (agent_end keep-alive re-arm)", "error");
+    keepAliveMs = void 0;
+  }
+  if (keepAliveMs !== void 0) {
+    state.watchdog = setTimeout(() => {
+      state.sweepDescendantsOnClose = true;
+      killChildWithEscalation(state, child, "keep-alive watchdog");
+    }, keepAliveMs);
+    state.watchdog.unref();
+  } else if (bareDefaultKeepAlive) {
+    armKeepAliveNoProgressTimer(state, child, sessionDir);
+  }
+}
+function keepAliveForWakeupGrace(state, child) {
+  const { record } = state;
+  touchAliveMarkerForHeartbeat(record.sessionFile, child.pid, record.id);
+  logger20.debug(
+    "[session-runner] agent_end: keep alive, recent descendant completion (wake-up in flight)"
+  );
+  clearTimeout(state.watchdog);
+  disarmKeepAliveNoProgressTimer(state);
+  state.watchdog = setTimeout(
+    () => killChildWithEscalation(state, child, "wakeup grace timer"),
+    WAKEUP_GRACE_MS
+  );
+  state.watchdog.unref();
+}
 function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
   const { record, opts, ctx } = state;
   const enqueueUiRequest = createUiRequestQueue(child, ctx);
   const get_stateListeners = /* @__PURE__ */ new Map();
   let stdoutBuffer = "";
+  let invalidLineCount = 0;
+  const invalidLineSamples = [];
+  const recordInvalidLine = (line, reason) => {
+    invalidLineCount++;
+    const truncated = line.length > INVALID_LINE_SAMPLE_MAX_LENGTH ? `${line.slice(0, INVALID_LINE_SAMPLE_MAX_LENGTH)}\u2026` : line;
+    if (invalidLineSamples.length < MAX_INVALID_LINE_SAMPLES) {
+      invalidLineSamples.push(truncated);
+    }
+    if (invalidLineCount <= MAX_INVALID_LINE_SAMPLES) {
+      logger20.debug(
+        `[session-runner] stdout invalid line #${invalidLineCount} dropped (${reason}): ${truncated}`
+      );
+    }
+  };
   let settleHandshake;
   const handshakeSettled = new Promise((resolveSettled) => {
     settleHandshake = resolveSettled;
@@ -25123,6 +24801,7 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
     settleHandshakeNow();
   };
   child.stdout.on("data", (data) => {
+    refreshKeepAliveNoProgressTimer(state, child, sessionDir);
     stdoutBuffer += data;
     const lines = stdoutBuffer.split("\n");
     stdoutBuffer = lines.pop() ?? "";
@@ -25152,49 +24831,10 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
         const evt = parsed.event;
         if (isAgentEndEvt(evt)) {
           if (evt.willRetry) {
+          } else if (record.chatMode) {
+            continue;
           } else {
-            if (record.chatMode) {
-              continue;
-            }
-            const pending = readActivePendingFromSessionFile(record.sessionFile);
-            if (pending.count > 0 || pending.error) {
-              if (pending.error) {
-                logger21.warn(
-                  `[session-runner] agent_end: keep alive (sessionFile unreadable, conservative): ${pending.error}`
-                );
-              } else {
-                logger21.debug(
-                  `[session-runner] agent_end: keep alive, ${pending.count} active descendant(s) pending`
-                );
-              }
-              clearTimeout(state.watchdog);
-              let keepAliveMs;
-              try {
-                keepAliveMs = resolveSpawnWatchdogMs(opts.maxTurns);
-              } catch (err) {
-                bestEffort(err, "resolveSpawnWatchdogMs (agent_end keep-alive re-arm)", "error");
-                keepAliveMs = void 0;
-              }
-              if (keepAliveMs !== void 0) {
-                state.watchdog = setTimeout(
-                  () => killChildWithEscalation(state, child, "keep-alive watchdog"),
-                  keepAliveMs
-                );
-                state.watchdog.unref();
-              }
-            } else if (pending.recentUnregister) {
-              logger21.debug(
-                "[session-runner] agent_end: keep alive, recent descendant completion (wake-up in flight)"
-              );
-              clearTimeout(state.watchdog);
-              state.watchdog = setTimeout(
-                () => killChildWithEscalation(state, child, "wakeup grace timer"),
-                WAKEUP_GRACE_MS
-              );
-              state.watchdog.unref();
-            } else {
-              killChildWithEscalation(state, child, "agent_end final kill");
-            }
+            void runAgentEndDisposition(state, child, sessionDir, registerGetStateListener);
           }
         }
         if (isSdkEvent(parsed.event)) handleSdkEvent(parsed.event);
@@ -25208,13 +24848,19 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
         }
       } else if (parsed.kind === "extension_ui_request") {
         enqueueUiRequest(parsed.id, parsed.request);
+      } else {
+        recordInvalidLine(parsed.raw, parsed.error);
       }
     }
   });
+  const registerGetStateListener = (id, resolver) => {
+    get_stateListeners.set(id, resolver);
+    return () => {
+      if (get_stateListeners.get(id) === resolver) get_stateListeners.delete(id);
+    };
+  };
   return {
-    registerGetStateListener: (id, resolver) => {
-      get_stateListeners.set(id, resolver);
-    },
+    registerGetStateListener,
     finishHandshake,
     abandonHandshake: settleHandshakeNow,
     isHandshakePending: () => settleHandshake !== void 0,
@@ -25224,9 +24870,17 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
         const parsed = parseSpawnLine(stdoutBuffer);
         if (parsed?.kind === "event" && isSdkEvent(parsed.event)) {
           handleSdkEvent(parsed.event);
+        } else if (parsed?.kind === "invalid") {
+          recordInvalidLine(parsed.raw, parsed.error);
         }
       }
+      if (invalidLineCount > 0) {
+        logger20.debug(
+          `[session-runner] stdout had ${invalidLineCount} invalid line(s) dropped in total; sample(s): ${invalidLineSamples.join(" | ")}`
+        );
+      }
     },
+    invalidLineCount: () => invalidLineCount,
     clearGetStateListeners: () => {
       get_stateListeners.clear();
     }
@@ -25237,9 +24891,13 @@ function waitForChildExit(child, state, spawnCwd, pump) {
     state.resolveRun = resolve6;
     child.on("close", async (code) => {
       removeChildRegistration(state.record.id, child);
+      disarmSettledWatchdog(state.record.id);
       pump.clearGetStateListeners();
       pump.abandonHandshake();
       await pump.handshakeSettled;
+      if (state.record.sessionFile) {
+        prunePendingCursor(state.record.sessionFile);
+      }
       pump.processTrailingLine();
       resolve6(code ?? 0);
     });
@@ -25267,7 +24925,10 @@ async function runSpawn(record, task, opts, ctx, resume) {
     escalationTimer: void 0,
     sessionHeader: void 0,
     handshakeResult: void 0,
-    resolveRun: void 0
+    resolveRun: void 0,
+    keepAliveNoProgressTimer: void 0,
+    sweepDescendantsOnClose: false,
+    settledWatchdogFired: false
   };
   const handleSdkEvent = createSpawnEventHandlers(state);
   const sessionDir = getSubagentSessionDir(ctx.agentDir, ctx.rootCwd);
@@ -25279,7 +24940,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
   const invocation = buildSpawnInvocation(opts, ctx, resume, tempPromptFile, sessionDir, forkSource);
   let stderrBuffer = "";
   try {
-    const child = (0, import_node_child_process5.spawn)(invocation.command, invocation.args, {
+    const child = (0, import_node_child_process3.spawn)(invocation.command, invocation.args, {
       cwd: spawnCwd,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
@@ -25295,7 +24956,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
       try {
         void ctx.onWorktreePid?.(opts.worktree.branch, child.pid);
       } catch (err) {
-        logger21.warn("[worktree] worktree pid registration failed (defensive)", {
+        logger20.warn("[worktree] worktree pid registration failed (defensive)", {
           branch: opts.worktree.branch,
           pid: child.pid,
           err: err instanceof Error ? err.message : String(err)
@@ -25307,7 +24968,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
     child.stdin.on("error", (err) => {
       removeChildRegistration(record.id, child);
       const count = recordEpipeFailure(record.id);
-      logger21.warn(`[subagents] async stdin error for ${record.id}`, {
+      logger20.warn(`[subagents] async stdin error for ${record.id}`, {
         detail: err.message,
         epipeCount: count,
         threshold: EPIPE_FAILURE_THRESHOLD,
@@ -25315,6 +24976,15 @@ async function runSpawn(record, task, opts, ctx, resume) {
       });
     });
     sendPromptCommand(child, task);
+    if (record.chatMode) {
+      armSettledWatchdog(record.id, () => {
+        logger20.warn(
+          `[session-runner] settled watchdog fired for ${record.id}: no agent_settled within ${SETTLED_WATCHDOG_TIMEOUT_MS / MS_PER_SECOND3 / SECONDS_PER_MINUTE2} min of first-round prompt, terminating (LC-1 wedge recovery)`
+        );
+        state.settledWatchdogFired = true;
+        killChildWithEscalation(state, child, "settled watchdog");
+      });
+    }
     const onAbort = () => {
       killChildWithEscalation(state, child, "abort signal");
     };
@@ -25333,7 +25003,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
       if (pump.isHandshakePending()) pump.finishHandshake(r);
     }).catch((err) => {
       const m = err instanceof Error ? err.message : String(err);
-      logger21.error(`[session-runner] get_state handshake failed: ${m}`);
+      logger20.error(`[session-runner] get_state handshake failed: ${m}`);
       pump.abandonHandshake();
     });
     child.stderr.on("data", (data) => {
@@ -25343,18 +25013,34 @@ async function runSpawn(record, task, opts, ctx, resume) {
     opts.signal?.removeEventListener("abort", onAbort);
     clearTimeout(state.watchdog);
     clearTimeout(state.escalationTimer);
-    if (record.sessionFile) {
-      if (!fs12.existsSync(record.sessionFile)) {
-        const lookupId = state.sessionHeader?.id ?? state.handshakeResult?.sessionId;
-        if (lookupId) {
-          const actual = findSessionFileByHeaderId(sessionDir, lookupId);
-          if (actual) record.sessionFile = actual;
+    disarmKeepAliveNoProgressTimer(state);
+    disarmSettledWatchdog(record.id);
+    {
+      const lookupId = state.sessionHeader?.id ?? state.handshakeResult?.sessionId;
+      const needsLookup = record.sessionFile ? !fs12.existsSync(record.sessionFile) : lookupId !== void 0;
+      if (lookupId && needsLookup) {
+        const actual = findSessionFileByHeaderId(sessionDir, lookupId);
+        if (actual && actual !== record.sessionFile) record.sessionFile = actual;
+      }
+    }
+    if (state.sweepDescendantsOnClose) {
+      try {
+        const sweep = sweepDescendantsOfSession(record.sessionFile, sessionDir, "keep-alive watchdog");
+        if (sweep.killed.length > 0 || sweep.skipped.length > 0) {
+          logger20.warn(
+            `[session-runner] descendant sweep (keep-alive watchdog): killed=[${sweep.killed.join(", ")}] skipped=${JSON.stringify(sweep.skipped)}`
+          );
         }
+      } catch (err) {
+        bestEffort(err, "descendant sweep (keep-alive watchdog)", "error");
       }
     }
     let success;
     let error;
-    if (record.lastError) {
+    if (state.settledWatchdogFired) {
+      success = false;
+      error = `subagent did not reach agent_settled within ${SETTLED_WATCHDOG_TIMEOUT_MS / MS_PER_SECOND3 / SECONDS_PER_MINUTE2} min (settled watchdog); the process was terminated to bound the wait. Recovery: check state with subagents action:'list', then re-send your message to continue.`;
+    } else if (record.lastError) {
       success = false;
       error = record.lastError;
     } else if (exitCode !== 0 && exitCode < SIGNAL_EXIT_CODE_THRESHOLD) {
@@ -25460,9 +25146,9 @@ function createConcurrencyPool(options) {
 }
 
 // src/execution/worktree-git-ops.ts
-var import_node_child_process6 = require("child_process");
+var import_node_child_process4 = require("child_process");
 var fs13 = __toESM(require("fs"), 1);
-var logger22 = getLogger("subagents");
+var logger21 = getLogger("subagents");
 var GIT_TIMEOUT_MS = 3e4;
 var GitRunError = class extends Error {
   exitCode;
@@ -25492,7 +25178,7 @@ function isTreeDirty(statusPorcelain) {
 }
 function gitRun(args, opts) {
   return new Promise((resolve6, reject) => {
-    (0, import_node_child_process6.execFile)(
+    (0, import_node_child_process4.execFile)(
       "git",
       args,
       {
@@ -25526,7 +25212,7 @@ async function collectWorktreePatch(opts) {
     const commit = anchor.baseCommit.trim();
     if (commit.length === 0) {
       patchIncomplete = true;
-      logger22.warn(
+      logger21.warn(
         "[worktree-git-ops] patch baseline anchor commit is empty, degrading to bare diff (uncommitted changes only); patch marked incomplete",
         { worktreePath }
       );
@@ -25538,7 +25224,7 @@ async function collectWorktreePatch(opts) {
       const commit = fs13.readFileSync(anchor.path, "utf-8").trim();
       if (commit.length === 0) {
         patchIncomplete = true;
-        logger22.warn(
+        logger21.warn(
           "[worktree-git-ops] patch baseline anchor file is empty or blank, degrading to bare diff (uncommitted changes only); patch marked incomplete",
           { worktreePath, anchorFile: anchor.path }
         );
@@ -25547,7 +25233,7 @@ async function collectWorktreePatch(opts) {
       }
     } catch (err) {
       patchIncomplete = true;
-      logger22.warn(
+      logger21.warn(
         "[worktree-git-ops] patch baseline anchor file missing or unreadable, degrading to bare diff (uncommitted changes only); patch marked incomplete",
         {
           worktreePath,
@@ -25563,7 +25249,7 @@ async function collectWorktreePatch(opts) {
   } catch (err) {
     addFailed = true;
     patchIncomplete = true;
-    logger22.warn(
+    logger21.warn(
       "[worktree-git-ops] git add -A failed, continuing with bare diff (tracked uncommitted changes only); patch marked incomplete",
       {
         worktreePath,
@@ -25581,7 +25267,7 @@ async function collectWorktreePatch(opts) {
       });
     } catch (err) {
       patchIncomplete = true;
-      logger22.warn(
+      logger21.warn(
         "[worktree-git-ops] patch baseline anchor rejected by git (corrupted?), degrading to bare diff (uncommitted changes only); patch marked incomplete",
         {
           worktreePath,
@@ -25641,7 +25327,7 @@ async function cleanupWorktree(opts) {
     try {
       await opts.onRemoved();
     } catch (err) {
-      logger22.warn("[worktree-git-ops] cleanup onRemoved host hook failed (worktree/branch already cleaned)", {
+      logger21.warn("[worktree-git-ops] cleanup onRemoved host hook failed (worktree/branch already cleaned)", {
         branch: opts.branch,
         detail: err instanceof Error ? err.message : String(err)
       });
@@ -25653,11 +25339,11 @@ async function listWorktreePorcelain(opts) {
 }
 
 // src/execution/agent-registry.ts
-var path10 = __toESM(require("path"), 1);
-var logger23 = getLogger("subagents");
+var path9 = __toESM(require("path"), 1);
+var logger22 = getLogger("subagents");
 var FM_DELIM = "---";
 function parseAgentWithMeta(filePath, content) {
-  const name = path10.basename(filePath, ".md");
+  const name = path9.basename(filePath, ".md");
   if (!content.startsWith(FM_DELIM)) {
     return { config: { name, systemPrompt: content.trim() }, meta: null };
   }
@@ -25680,7 +25366,7 @@ function parseAgentWithMeta(filePath, content) {
   const toolsFallbackRaw = extractYamlField(yamlBlock, "tools");
   const toolsFallback = toolsFallbackRaw ? toolsFallbackRaw.split(",").map((s) => s.trim()).filter(Boolean) : void 0;
   if (!agentMeta && /^model:|^tools:/m.test(yamlBlock)) {
-    logger23.warn(
+    logger22.warn(
       `[agent-registry] ${filePath}: agent frontmatter \u7F3A name/description\uFF08IF1 \u5FC5\u586B\uFF09\uFF0Cmodel/tools \u7ECF legacy fallback \u751F\u6548\uFF08\u76F4\u63A5\u8DEF\u5F84\u4E0D\u4E22\u914D\u7F6E\uFF09\uFF0C\u4F46\u7ED3\u6784\u5316\u8DEF\u7531\u4E0D\u53EF\u89C1\u2014\u2014\u8BF7\u8865\u5145 description`
     );
   }
@@ -25713,9 +25399,10 @@ function extractYamlField(yaml, key) {
   return value || void 0;
 }
 function parseAgentProfile(text, filePath) {
-  const stem3 = path10.basename(filePath, ".md");
+  const stem3 = path9.basename(filePath, ".md");
   const warnings = [];
-  if (!text.startsWith(FM_DELIM)) {
+  const fm = splitAgentFrontmatter(text);
+  if (fm.kind === "none") {
     return {
       name: stem3,
       description: "",
@@ -25724,48 +25411,62 @@ function parseAgentProfile(text, filePath) {
       warnings
     };
   }
-  const closeIdx = text.indexOf(FM_DELIM, FM_DELIM.length);
-  if (closeIdx === -1) {
-    const yamlBlock2 = text.slice(FM_DELIM.length);
+  if (fm.kind === "unclosed") {
     warnings.push(
       `[agent-registry] ${filePath}: frontmatter \u672A\u95ED\u5408\u2014\u2014name \u7ECF legacy fallback\uFF08\u4EC5\u5355\u884C key:value\uFF09\uFF0C\u5168\u6587\u4F5C body`
     );
     return {
-      name: extractYamlField(yamlBlock2, "name") ?? stem3,
+      name: extractYamlField(fm.yamlBlock, "name") ?? stem3,
       description: "",
       body: text.trim(),
       meta: null,
       warnings
     };
   }
-  const yamlBlock = text.slice(FM_DELIM.length, closeIdx);
-  const body = text.slice(closeIdx + FM_DELIM.length).trim();
   const meta = parseResourceMeta(text, "agent");
   const agentMeta = meta?.kind === "agent" ? meta : null;
   if (agentMeta !== null) {
-    const thinkingLevelRaw = extractYamlField(yamlBlock, "thinkingLevel");
-    const defaultBackgroundRaw2 = extractYamlField(yamlBlock, "defaultBackground");
-    return {
-      name: agentMeta.name,
-      description: agentMeta.description,
-      body,
-      ...agentMeta.when !== void 0 ? { when: agentMeta.when } : {},
-      ...agentMeta.examples !== void 0 ? { examples: agentMeta.examples } : {},
-      ...agentMeta.model !== void 0 ? { model: agentMeta.model } : {},
-      ...agentMeta.tools !== void 0 && agentMeta.tools.length > 0 ? { tools: agentMeta.tools } : {},
-      ...agentMeta.engine !== void 0 ? { engine: agentMeta.engine } : {},
-      ...thinkingLevelRaw !== void 0 ? { thinkingLevel: thinkingLevelRaw } : {},
-      ...defaultBackgroundRaw2 === "true" ? { defaultBackground: true } : {},
-      ...agentMeta.maxTurns !== void 0 ? { maxTurns: agentMeta.maxTurns } : {},
-      ...agentMeta.disallowedTools !== void 0 && agentMeta.disallowedTools.length > 0 ? { disallowedTools: agentMeta.disallowedTools } : {},
-      ...agentMeta.skills !== void 0 && agentMeta.skills.length > 0 ? { skills: agentMeta.skills } : {},
-      meta: agentMeta,
-      warnings
-    };
+    return profileFromStrictMeta(agentMeta, fm.yamlBlock, fm.body, warnings);
   }
   warnings.push(
     `[agent-registry] ${filePath}: agent frontmatter \u672A\u901A\u8FC7\u4E25\u683C\u6821\u9A8C\uFF08IF1\uFF1Ayaml \u89E3\u6790\u5931\u8D25\u6216\u7F3A name/description\uFF09\u2014\u2014\u6267\u884C\u5B57\u6BB5\u7ECF legacy fallback\uFF08\u4EC5\u5355\u884C key:value \u5F62\u6001\uFF09\u751F\u6548\uFF0C\u7ED3\u6784\u5316\u8DEF\u7531\u4E0D\u53EF\u89C1\uFF0C\u5EFA\u8BAE\u8865 name/description`
   );
+  return profileFromLegacyFallback(fm.yamlBlock, fm.body, stem3, filePath, warnings);
+}
+function splitAgentFrontmatter(text) {
+  if (!text.startsWith(FM_DELIM)) return { kind: "none" };
+  const closeIdx = text.indexOf(FM_DELIM, FM_DELIM.length);
+  if (closeIdx === -1) {
+    return { kind: "unclosed", yamlBlock: text.slice(FM_DELIM.length) };
+  }
+  return {
+    kind: "closed",
+    yamlBlock: text.slice(FM_DELIM.length, closeIdx),
+    body: text.slice(closeIdx + FM_DELIM.length).trim()
+  };
+}
+function profileFromStrictMeta(agentMeta, yamlBlock, body, warnings) {
+  const thinkingLevelRaw = extractYamlField(yamlBlock, "thinkingLevel");
+  const defaultBackgroundRaw = extractYamlField(yamlBlock, "defaultBackground");
+  return {
+    name: agentMeta.name,
+    description: agentMeta.description,
+    body,
+    ...agentMeta.when !== void 0 ? { when: agentMeta.when } : {},
+    ...agentMeta.examples !== void 0 ? { examples: agentMeta.examples } : {},
+    ...agentMeta.model !== void 0 ? { model: agentMeta.model } : {},
+    ...nonEmptyArraySpread("tools", agentMeta.tools),
+    ...agentMeta.engine !== void 0 ? { engine: agentMeta.engine } : {},
+    ...thinkingLevelRaw !== void 0 ? { thinkingLevel: thinkingLevelRaw } : {},
+    ...defaultBackgroundRaw === "true" ? { defaultBackground: true } : {},
+    ...agentMeta.maxTurns !== void 0 ? { maxTurns: agentMeta.maxTurns } : {},
+    ...nonEmptyArraySpread("disallowedTools", agentMeta.disallowedTools),
+    ...nonEmptyArraySpread("skills", agentMeta.skills),
+    meta: agentMeta,
+    warnings
+  };
+}
+function profileFromLegacyFallback(yamlBlock, body, stem3, filePath, warnings) {
   const nameFallback = extractYamlField(yamlBlock, "name") ?? stem3;
   const modelFallback = extractYamlField(yamlBlock, "model");
   const toolsFallback = parseCommaListFallback(extractYamlField(yamlBlock, "tools"));
@@ -25780,16 +25481,19 @@ function parseAgentProfile(text, filePath) {
     description: "",
     body,
     ...modelFallback !== void 0 ? { model: modelFallback } : {},
-    ...toolsFallback !== void 0 && toolsFallback.length > 0 ? { tools: toolsFallback } : {},
+    ...nonEmptyArraySpread("tools", toolsFallback),
     ...engineFallback !== void 0 ? { engine: engineFallback } : {},
     ...thinkingLevelFallback !== void 0 ? { thinkingLevel: thinkingLevelFallback } : {},
     ...defaultBackgroundRaw === "true" ? { defaultBackground: true } : {},
     ...maxTurnsFallback !== void 0 ? { maxTurns: maxTurnsFallback } : {},
-    ...disallowedToolsFallback !== void 0 && disallowedToolsFallback.length > 0 ? { disallowedTools: disallowedToolsFallback } : {},
-    ...skillsFallback !== void 0 && skillsFallback.length > 0 ? { skills: skillsFallback } : {},
+    ...nonEmptyArraySpread("disallowedTools", disallowedToolsFallback),
+    ...nonEmptyArraySpread("skills", skillsFallback),
     meta: null,
     warnings
   };
+}
+function nonEmptyArraySpread(key, v) {
+  return v !== void 0 && v.length > 0 ? { [key]: v } : {};
 }
 function parseCommaListFallback(raw) {
   return raw ? raw.split(",").map((s) => s.trim()).filter(Boolean) : void 0;
@@ -25833,7 +25537,7 @@ var AgentRegistry = class {
     const { config, meta } = parseAgentWithMeta(filePath, file.content);
     const lintFindings = meta ? lintAgentMeta(meta) : [];
     for (const finding of lintFindings) {
-      logger23.warn(`[agent-registry] ${filePath}: ${finding.message}`);
+      logger22.warn(`[agent-registry] ${filePath}: ${finding.message}`);
     }
     this.fileCache.set(filePath, { mtimeMs: file.mtimeMs, config, meta });
     return config;
@@ -25842,15 +25546,15 @@ var AgentRegistry = class {
 
 // src/execution/config.ts
 var fs14 = __toESM(require("fs"), 1);
-var path11 = __toESM(require("path"), 1);
-var logger24 = getLogger("subagents");
+var path10 = __toESM(require("path"), 1);
+var logger23 = getLogger("subagents");
 var DEFAULT_CONFIG = {
   version: 1,
   maxConcurrent: 6
 };
 var DEFAULT_MAX_CONCURRENT = 6;
 function getGlobalConfigPath(agentDir) {
-  return path11.join(agentDir, "subagents", "config.json");
+  return path10.join(agentDir, "subagents", "config.json");
 }
 function loadGlobalConfig(agentDir) {
   try {
@@ -25881,7 +25585,7 @@ function readGlobalConfig(agentDir) {
 }
 function readFailure(configPath, err) {
   const reason = err instanceof Error ? err.message : String(err);
-  logger24.warn(`[subagents] global config read failed (read-failure) at ${configPath}: ${reason}`);
+  logger23.warn(`[subagents] global config read failed (read-failure) at ${configPath}: ${reason}`);
   return { status: "failed", reason };
 }
 function errnoCodeOf(err) {
@@ -26162,8 +25866,8 @@ function safeStringify(value) {
 }
 
 // src/execution/finalize-record.ts
-var fs17 = __toESM(require("fs"), 1);
-var path12 = __toESM(require("path"), 1);
+var fs18 = __toESM(require("fs"), 1);
+var path11 = __toESM(require("path"), 1);
 
 // src/execution/finalized-marker.ts
 var fs15 = __toESM(require("fs"), 1);
@@ -26183,12 +25887,323 @@ function readFinalizedReason(sessionFile) {
   }
 }
 
-// src/execution/tombstone-store.ts
+// src/execution/session-reconstructor.ts
 var fs16 = __toESM(require("fs"), 1);
+var IDENTITY_CUSTOM_TYPE = "subagent-identity";
+var TURN_SUMMARY_MAX2 = 80;
+function deriveEventLog(turns, lastError, startedAt) {
+  const log = [];
+  for (const turn of turns) {
+    for (const tc of turn.toolCalls) {
+      const label = extractLabelFromArgs(tc.toolName, tc.args);
+      const ts = tc.startedTs;
+      log.push({ type: "tool_start", label, ts, status: "running" });
+      if (tc._status !== "running") {
+        log.push({ type: "tool_end", label, ts, status: tc._status });
+      }
+    }
+    if (turn.closed) {
+      const summary = turn.text.length > 0 ? turn.text.length > TURN_SUMMARY_MAX2 ? turn.text.slice(0, TURN_SUMMARY_MAX2) : turn.text : "turn";
+      log.push({ type: "turn_end", label: summary, ts: turn.closedTs ?? startedAt });
+    }
+  }
+  if (lastError) {
+    log.push({ type: "error", label: lastError, ts: Date.now() });
+  }
+  return log;
+}
+function emptyTurn2() {
+  return { text: "", thinking: "", toolCalls: [], usageDelta: void 0, closed: false };
+}
+function toAgentUsage(u) {
+  return {
+    input: u.input ?? 0,
+    output: u.output ?? 0,
+    cacheRead: u.cacheRead ?? 0,
+    cacheWrite: u.cacheWrite ?? 0,
+    cost: u.cost?.total
+  };
+}
+function addUsage2(prev, next) {
+  if (prev === void 0) return { ...next };
+  return {
+    input: prev.input + next.input,
+    output: prev.output + next.output,
+    cacheRead: prev.cacheRead + next.cacheRead,
+    cacheWrite: prev.cacheWrite + next.cacheWrite,
+    cost: (prev.cost ?? 0) + (next.cost ?? 0)
+  };
+}
+function isIdentityData(data) {
+  if (typeof data !== "object" || data === null) return false;
+  const d = data;
+  return typeof d.id === "string" && typeof d.agent === "string" && (d.mode === "sync" || d.mode === "background") && typeof d.task === "string" && typeof d.startedAt === "number";
+}
+function reconstructFromFile(sessionFile) {
+  let raw;
+  try {
+    raw = fs16.readFileSync(sessionFile, "utf-8");
+  } catch {
+    return void 0;
+  }
+  const entries = [];
+  const lines = raw.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    if (i === 0) {
+      try {
+        const head = JSON.parse(line);
+        if (head.type === "session") continue;
+      } catch (_e) {
+        void _e;
+        continue;
+      }
+    }
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed && typeof parsed.type === "string") {
+        entries.push(parsed);
+      }
+    } catch (_e) {
+      void _e;
+    }
+  }
+  if (entries.length === 0) return void 0;
+  let identity;
+  let model = "";
+  let thinkingLevel;
+  for (const entry of entries) {
+    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
+      if (isIdentityData(entry.data)) identity = entry.data;
+    } else if (entry.type === "model_change") {
+      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
+        model = `${entry.provider}/${entry.modelId}`;
+      }
+    } else if (entry.type === "thinking_level_change") {
+      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
+    }
+  }
+  if (!identity) return void 0;
+  const turns = [];
+  const pending = [];
+  let lastError;
+  let totalTokens = 0;
+  let lastEntryTsMs;
+  for (const entry of entries) {
+    if (typeof entry.timestamp === "string") {
+      const ms = Date.parse(entry.timestamp);
+      if (!Number.isNaN(ms)) lastEntryTsMs = ms;
+    }
+    if (entry.type !== "message") continue;
+    const msg = entry.message;
+    if (!msg) continue;
+    if (typeof msg.timestamp === "number") {
+      lastEntryTsMs = msg.timestamp;
+    }
+    if (msg.role === "assistant") {
+      const turn = emptyTurn2();
+      turns.push(turn);
+      if (!Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          turn.text += block.text;
+        } else if (block.type === "thinking") {
+          turn.thinking += block.thinking;
+        } else if (block.type === "toolCall") {
+          pending.push({
+            toolCallId: block.id,
+            toolName: block.name,
+            args: block.arguments,
+            turn,
+            startedTs: msg.timestamp
+          });
+        }
+      }
+      if (msg.usage) {
+        const u = toAgentUsage(msg.usage);
+        turn.usageDelta = addUsage2(turn.usageDelta, u);
+        totalTokens += u.input + u.output + u.cacheRead + u.cacheWrite;
+      }
+      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+        lastError = msg.errorMessage ?? msg.stopReason;
+      } else if (msg.stopReason === "stop") {
+        lastError = void 0;
+      }
+    } else if (msg.role === "toolResult") {
+      const idx = pending.findIndex((p) => p.toolCallId === msg.toolCallId);
+      if (idx >= 0) {
+        const p = pending[idx];
+        pending.splice(idx, 1);
+        const tc = {
+          toolName: p.toolName,
+          args: p.args,
+          result: { content: msg.content, details: msg.details },
+          isError: msg.isError ?? false,
+          _status: msg.isError ? "failed" : "done",
+          startedTs: p.startedTs
+        };
+        p.turn.toolCalls.push(tc);
+      }
+    }
+  }
+  if (turns.length === 0) return void 0;
+  for (const turn of turns) {
+    turn.closed = true;
+  }
+  const turnCount = turns.length;
+  const resultText = turns.map((t) => t.text).filter((t) => t.length > 0).join("\n\n");
+  const eventLog = deriveEventLog(turns, lastError, identity.startedAt);
+  const status = "closed";
+  const closedReason = "gc";
+  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
+  const slug = identity.slug ?? "";
+  return {
+    ...identity,
+    slug,
+    rootSessionId,
+    parentRecordId: identity.parentRecordId,
+    depth: identity.depth ?? 0,
+    forkDepth: identity.forkDepth,
+    sessionFile,
+    status,
+    closedReason,
+    turns,
+    turnCount,
+    totalTokens,
+    lastError,
+    model,
+    thinkingLevel,
+    endedAt: lastEntryTsMs,
+    result: resultText.length > 0 ? resultText : void 0,
+    error: lastError,
+    eventLog
+  };
+}
+var IDENTITY_HEAD_BYTES = 65536;
+function readIdentityHeader(sessionFile) {
+  let text;
+  try {
+    const fd = fs16.openSync(sessionFile, "r");
+    try {
+      const buf = Buffer.alloc(IDENTITY_HEAD_BYTES);
+      let total = 0;
+      while (total < buf.length) {
+        const n = fs16.readSync(fd, buf, total, buf.length - total, total);
+        if (n <= 0) break;
+        total += n;
+      }
+      text = buf.toString("utf-8", 0, total);
+    } finally {
+      fs16.closeSync(fd);
+    }
+  } catch {
+    return void 0;
+  }
+  return parseIdentityFromText(text, sessionFile);
+}
+function readIdentityAnywhere(sessionFile) {
+  let text;
+  try {
+    text = fs16.readFileSync(sessionFile, "utf-8");
+  } catch {
+    return void 0;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i];
+    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
+    const recon = parseIdentityFromText(s, sessionFile);
+    if (recon) return recon;
+  }
+  return void 0;
+}
+function readIdentityTail(sessionFile) {
+  let text;
+  try {
+    const { size } = fs16.statSync(sessionFile);
+    const start = Math.max(0, size - IDENTITY_HEAD_BYTES);
+    const fd = fs16.openSync(sessionFile, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      let total = 0;
+      while (total < buf.length) {
+        const n = fs16.readSync(fd, buf, total, buf.length - total, start + total);
+        if (n <= 0) break;
+        total += n;
+      }
+      text = buf.toString("utf-8", 0, total);
+    } finally {
+      fs16.closeSync(fd);
+    }
+  } catch {
+    return void 0;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i];
+    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
+    const recon = parseIdentityFromText(s, sessionFile);
+    if (recon) return recon;
+  }
+  return void 0;
+}
+function parseIdentityFromText(text, sessionFile) {
+  let identity;
+  let model = "";
+  let thinkingLevel;
+  for (const line of text.split("\n")) {
+    const s = line.trim();
+    if (!s) continue;
+    if (!s.includes(IDENTITY_CUSTOM_TYPE) && !s.includes('"model_change"') && !s.includes('"thinking_level_change"')) {
+      continue;
+    }
+    let entry;
+    try {
+      entry = JSON.parse(s);
+    } catch {
+      continue;
+    }
+    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
+      if (isIdentityData(entry.data)) {
+        identity = entry.data;
+        break;
+      }
+    } else if (entry.type === "model_change") {
+      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
+        model = `${entry.provider}/${entry.modelId}`;
+      }
+    } else if (entry.type === "thinking_level_change") {
+      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
+    }
+  }
+  if (!identity) return void 0;
+  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
+  return {
+    id: identity.id,
+    agent: identity.agent,
+    mode: identity.mode,
+    task: identity.task,
+    slug: identity.slug ?? "",
+    startedAt: identity.startedAt,
+    rootSessionId,
+    parentRecordId: identity.parentRecordId,
+    depth: identity.depth ?? 0,
+    forkDepth: identity.forkDepth,
+    chatMode: identity.chatMode,
+    worktree: identity.worktree,
+    model,
+    thinkingLevel,
+    sessionFile
+  };
+}
+
+// src/execution/tombstone-store.ts
+var fs17 = __toESM(require("fs"), 1);
 function writeCancelledTombstone(sessionFile, meta) {
   try {
     const tombstonePath = `${sessionFile}.cancelled`;
-    fs16.writeFileSync(tombstonePath, `${JSON.stringify(meta)}
+    fs17.writeFileSync(tombstonePath, `${JSON.stringify(meta)}
 `, "utf-8");
   } catch (_e) {
     void _e;
@@ -26197,7 +26212,7 @@ function writeCancelledTombstone(sessionFile, meta) {
 function readCancelledTombstone(sessionFile) {
   let raw;
   try {
-    raw = fs16.readFileSync(`${sessionFile}.cancelled`, "utf-8");
+    raw = fs17.readFileSync(`${sessionFile}.cancelled`, "utf-8");
   } catch {
     return void 0;
   }
@@ -26213,16 +26228,40 @@ function readCancelledTombstone(sessionFile) {
 }
 
 // src/execution/finalize-record.ts
-var logger25 = getLogger("subagents");
+var logger24 = getLogger("subagents");
+function findSessionFileByRecordIdentity(sessionDir, recordId) {
+  let names;
+  try {
+    names = fs18.readdirSync(sessionDir);
+  } catch {
+    return void 0;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const full = path11.join(sessionDir, name);
+    const recon = readIdentityHeader(full) ?? readIdentityTail(full);
+    if (recon?.id === recordId) return full;
+  }
+  return void 0;
+}
 async function doFinalizeRecord(deps, record, result, status, closedReason) {
+  if (!record.sessionFile && deps.sessionDir) {
+    const resolved = findSessionFileByRecordIdentity(deps.sessionDir, record.id);
+    if (resolved) {
+      record.sessionFile = resolved;
+      logger24.warn(
+        `[subagent] finalizeRecord: sessionFile was missing, resolved via sessionDir identity lookup: ${resolved}`
+      );
+    }
+  }
   if (record.worktreeHandle) {
     try {
       const sessionsDir = getSubagentSessionDir(
         deps.modelService.getAgentDir(),
         record.worktreeHandle.mainCwd
       );
-      fs17.mkdirSync(sessionsDir, { recursive: true });
-      const patchFile = path12.join(sessionsDir, `${record.worktreeHandle.branch}.patch`);
+      fs18.mkdirSync(sessionsDir, { recursive: true });
+      const patchFile = path11.join(sessionsDir, `${record.worktreeHandle.branch}.patch`);
       const patch = await deps.worktreeManager.collectPatch(record.worktreeHandle, patchFile);
       if (patch.written) record.patchFile = patchFile;
     } catch (pe) {
@@ -26288,7 +26327,7 @@ async function doFinalizeRecord(deps, record, result, status, closedReason) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger25.error(`[subagent] manifest \u5199\u5165\u5931\u8D25 (record=${record.id}): ${msg}`);
+    logger24.error(`[subagent] manifest \u5199\u5165\u5931\u8D25 (record=${record.id}): ${msg}`);
     deps.pi?.appendEntry?.("subagent:manifest-write-failed", {
       id: record.id,
       error: msg
@@ -26297,10 +26336,10 @@ async function doFinalizeRecord(deps, record, result, status, closedReason) {
 }
 async function doFinalizeRoundToIdle(deps, record, result) {
   let nextResult;
-  if (result.text) {
-    nextResult = result.text;
-  } else if (result.error) {
+  if (result.error && (!result.success || !result.text)) {
     nextResult = `round did not complete: ${result.error}`;
+  } else if (result.text) {
+    nextResult = result.text;
   } else if (record.chatMode) {
     nextResult = "(no output this round)";
   } else {
@@ -26350,13 +26389,171 @@ function executeOptionsToEngineTaskSpec(opts) {
 }
 
 // src/execution/manifest-store.ts
-var fs18 = __toESM(require("fs"), 1);
+var fs19 = __toESM(require("fs"), 1);
 var fsPromises2 = __toESM(require("fs/promises"), 1);
 var path13 = __toESM(require("path"), 1);
+
+// src/shared/atomic-write.ts
+var import_node_fs4 = require("fs");
+var fsPromises = __toESM(require("fs/promises"), 1);
+var path12 = __toESM(require("path"), 1);
+var logger25 = getLogger("subagents");
+var TMP_MARKER = ".tmp.";
+var TMP_NAME_PATTERN = /^(.+)\.tmp\.(\d+)\.[0-9A-Za-z-]+$/;
+var tmpSeq = 0;
+var RAND_RADIX = 36;
+var RAND_SLICE_START = 2;
+var RAND_SLICE_END = 8;
+function atomicTmpPathFor(filePath) {
+  tmpSeq += 1;
+  const rand = Math.random().toString(RAND_RADIX).slice(RAND_SLICE_START, RAND_SLICE_END);
+  return `${filePath}${TMP_MARKER}${process.pid}.${tmpSeq}-${rand}`;
+}
+function parseAtomicTmpPath(tmpPath) {
+  const match = TMP_NAME_PATTERN.exec(tmpPath);
+  if (match === null) return null;
+  return { tmpPath, targetPath: match[1], pid: Number(match[2]) };
+}
+var DEFAULT_ENCODING = "utf8";
+function removeTmpBestEffortSync(tmpPath) {
+  try {
+    (0, import_node_fs4.unlinkSync)(tmpPath);
+  } catch (cleanupErr) {
+    logger25.debug("[subagent-core] atomic-write cleanup tmp failed", {
+      detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      tmpPath
+    });
+  }
+}
+function writeAtomicFileSync(filePath, content, options = {}) {
+  const encoding = options.encoding ?? DEFAULT_ENCODING;
+  if (options.ensureDir !== false) {
+    (0, import_node_fs4.mkdirSync)(path12.dirname(filePath), { recursive: true });
+  }
+  const tmpPath = atomicTmpPathFor(filePath);
+  try {
+    (0, import_node_fs4.writeFileSync)(tmpPath, content, encoding);
+    (0, import_node_fs4.renameSync)(tmpPath, filePath);
+  } catch (err) {
+    removeTmpBestEffortSync(tmpPath);
+    throw err;
+  }
+}
+async function writeAtomicFile(filePath, content, options = {}) {
+  const encoding = options.encoding ?? DEFAULT_ENCODING;
+  const fsyncDir = options.fsyncDir ?? true;
+  if (options.ensureDir !== false) {
+    (0, import_node_fs4.mkdirSync)(path12.dirname(filePath), { recursive: true });
+  }
+  const tmpPath = atomicTmpPathFor(filePath);
+  const dirPath = path12.dirname(filePath);
+  let renamed = false;
+  try {
+    const fh = await fsPromises.open(tmpPath, "w");
+    try {
+      await fh.writeFile(content, encoding);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    await fsPromises.rename(tmpPath, filePath);
+    renamed = true;
+    if (fsyncDir) {
+      try {
+        const dirFh = await fsPromises.open(dirPath, "r");
+        try {
+          await dirFh.sync();
+        } finally {
+          await dirFh.close();
+        }
+      } catch (dirSyncErr) {
+        logger25.debug("[subagent-core] atomic-write fsync dir failed", {
+          detail: dirSyncErr instanceof Error ? dirSyncErr.message : String(dirSyncErr),
+          dirPath
+        });
+      }
+    }
+  } catch (err) {
+    if (!renamed) {
+      try {
+        await fsPromises.unlink(tmpPath);
+      } catch (cleanupErr) {
+        logger25.debug("[subagent-core] atomic-write cleanup tmp failed", {
+          detail: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+          tmpPath
+        });
+      }
+    }
+    throw err;
+  }
+}
+function listStaleTmpFiles(dir) {
+  let names;
+  try {
+    names = (0, import_node_fs4.readdirSync)(dir);
+  } catch (readdirErr) {
+    if (typeof readdirErr.code === "string" && readdirErr.code === "ENOENT") {
+      return [];
+    }
+    throw readdirErr;
+  }
+  const refs = [];
+  for (const name of names) {
+    const ref = parseAtomicTmpPath(path12.join(dir, name));
+    if (ref !== null) {
+      refs.push(ref);
+    }
+  }
+  return refs;
+}
+function cleanupStaleTmpFiles(dir, options = {}) {
+  const now = options.now ?? Date.now();
+  const result = { removed: [], kept: [], failed: [] };
+  for (const ref of listStaleTmpFiles(dir)) {
+    if (options.maxAgeMs !== void 0) {
+      try {
+        const mtimeMs = (0, import_node_fs4.statSync)(ref.tmpPath).mtimeMs;
+        if (now - mtimeMs < options.maxAgeMs) {
+          result.kept.push(ref.tmpPath);
+          continue;
+        }
+      } catch (statErr) {
+        if (typeof statErr.code === "string" && statErr.code === "ENOENT") {
+          result.removed.push(ref.tmpPath);
+          continue;
+        }
+        logger25.debug("[subagent-core] cleanupStaleTmpFiles stat failed", {
+          detail: statErr instanceof Error ? statErr.message : String(statErr),
+          tmpPath: ref.tmpPath
+        });
+        result.failed.push(ref.tmpPath);
+        continue;
+      }
+    }
+    try {
+      (0, import_node_fs4.unlinkSync)(ref.tmpPath);
+      result.removed.push(ref.tmpPath);
+    } catch (unlinkErr) {
+      if (typeof unlinkErr.code === "string" && unlinkErr.code === "ENOENT") {
+        result.removed.push(ref.tmpPath);
+      } else {
+        logger25.debug("[subagent-core] cleanupStaleTmpFiles unlink failed", {
+          detail: unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr),
+          tmpPath: ref.tmpPath
+        });
+        result.failed.push(ref.tmpPath);
+      }
+    }
+  }
+  return result;
+}
+
+// src/execution/manifest-store.ts
+var logger26 = getLogger("subagents");
 var MANIFEST_INDENT_SPACES = 2;
 function statStamp(p) {
   try {
-    const s = fs18.statSync(p);
+    const s = fs19.statSync(p);
     return { mtimeMs: s.mtimeMs, size: s.size };
   } catch {
     return null;
@@ -26384,8 +26581,8 @@ var ManifestStore = class {
   cache = /* @__PURE__ */ new Map();
   constructor(dir) {
     this.dir = dir;
-    if (!fs18.existsSync(dir)) {
-      fs18.mkdirSync(dir, { recursive: true });
+    if (!fs19.existsSync(dir)) {
+      fs19.mkdirSync(dir, { recursive: true });
     }
   }
   /**
@@ -26426,7 +26623,7 @@ var ManifestStore = class {
   listAllSync() {
     let files;
     try {
-      files = fs18.readdirSync(this.dir);
+      files = fs19.readdirSync(this.dir);
     } catch {
       return [];
     }
@@ -26449,7 +26646,7 @@ var ManifestStore = class {
         continue;
       }
       try {
-        const content = fs18.readFileSync(filePath, "utf-8");
+        const content = fs19.readFileSync(filePath, "utf-8");
         const parsed = JSON.parse(content);
         const record = isValidManifest(parsed) ? parsed : null;
         this.cache.set(file, { stamp, record });
@@ -26467,42 +26664,61 @@ var ManifestStore = class {
    * 1. manifest 已存在 → 删 tmp（陈旧）
    * 2. tmp 合法 + manifest 缺失 → rename tmp 为 manifest
    * 3. tmp 非法 + manifest 缺失 → 删 tmp
+   *
+   * [T5④ / PS-13] per-file 容错：单个 tmp 文件操作失败（ENOENT——并发回收/外部清理
+   * 抢先、EACCES 等）只 warn + 跳过该文件，不再中断整轮——旧实现单文件 ENOENT 即抛，
+   * 剩余 tmp 本轮不再处理，自愈但不可见（残留顺延下次启动）。跳过数经 warn 汇总留痕，
+   * 调用方返回值形态不变（跳过者不计数）。
    */
   async recoverTmpFiles() {
     let deleted = 0;
     let recovered = 0;
-    const files = fs18.readdirSync(this.dir);
+    let failed = 0;
+    const files = fs19.readdirSync(this.dir);
     const tmpFiles = files.filter((f) => f.includes(".json.tmp."));
     for (const tmpFile of tmpFiles) {
       const tmpPath = path13.join(this.dir, tmpFile);
       const manifestId = tmpFile.split(".json.tmp.")[0];
       const manifestPath = path13.join(this.dir, `${manifestId}.json`);
-      if (fs18.existsSync(manifestPath)) {
-        fs18.unlinkSync(tmpPath);
-        deleted++;
-      } else {
-        try {
-          const content = fs18.readFileSync(tmpPath, "utf-8");
-          const parsed = JSON.parse(content);
-          if (isValidManifest(parsed)) {
-            fs18.renameSync(tmpPath, manifestPath);
-            recovered++;
-          } else {
-            fs18.unlinkSync(tmpPath);
+      try {
+        if (fs19.existsSync(manifestPath)) {
+          fs19.unlinkSync(tmpPath);
+          deleted++;
+        } else {
+          try {
+            const content = fs19.readFileSync(tmpPath, "utf-8");
+            const parsed = JSON.parse(content);
+            if (isValidManifest(parsed)) {
+              fs19.renameSync(tmpPath, manifestPath);
+              recovered++;
+            } else {
+              fs19.unlinkSync(tmpPath);
+              deleted++;
+            }
+          } catch {
+            fs19.unlinkSync(tmpPath);
             deleted++;
           }
-        } catch {
-          fs18.unlinkSync(tmpPath);
-          deleted++;
         }
+      } catch (fileErr) {
+        failed++;
+        logger26.warn(`[subagents] recoverTmpFiles: failed to recover ${tmpFile}, skipping (leftovers retry on next startup)`, {
+          detail: fileErr instanceof Error ? fileErr.message : String(fileErr)
+        });
       }
+    }
+    if (failed > 0) {
+      logger26.warn(
+        `[subagents] recoverTmpFiles: ${failed} of ${tmpFiles.length} tmp file(s) could not be recovered`
+      );
     }
     return { deleted, recovered };
   }
 };
 
 // src/execution/notify-ledger.ts
-var logger26 = getLogger("subagents");
+var logger27 = getLogger("subagents");
+var NOTIFY_LEDGER_CUSTOM_TYPE = "subagent-bg-notify-ledger";
 var NOTIFY_CUSTOM_TYPE = "subagent-bg-notify";
 var NOTIFY_LEDGER_SLOT_KEY = /* @__PURE__ */ Symbol.for("@zhushanwen/pi-subagents.notifyLedger");
 function getNotifyLedgerSlot() {
@@ -26728,9 +26944,9 @@ function toSubagentRecordEntry(record) {
 }
 
 // src/execution/sessions-index.ts
-var fs19 = __toESM(require("fs"), 1);
+var fs20 = __toESM(require("fs"), 1);
 var path14 = __toESM(require("path"), 1);
-var logger27 = getLogger("subagents");
+var logger28 = getLogger("subagents");
 var INDEX_FILENAME = "sessions-index.json";
 var INDEX_VERSION = 1;
 var INDEX_WRITE_MIN_INTERVAL_MS = 6e4;
@@ -26755,11 +26971,11 @@ function loadIndex(encDir) {
   const indexPath = path14.join(encDir, INDEX_FILENAME);
   let raw;
   try {
-    raw = fs19.readFileSync(indexPath, "utf-8");
+    raw = fs20.readFileSync(indexPath, "utf-8");
   } catch (err) {
     const code = err instanceof Error && "code" in err && typeof err.code === "string" ? err.code : void 0;
     if (code !== "ENOENT") {
-      logger27.debug("[subagents] sessions-index read failed, fallback to empty", {
+      logger28.debug("[subagents] sessions-index read failed, fallback to empty", {
         detail: { dir: encDir, code }
       });
     }
@@ -26769,20 +26985,20 @@ function loadIndex(encDir) {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    logger27.debug("[subagents] sessions-index corrupted JSON, fallback to empty", {
+    logger28.debug("[subagents] sessions-index corrupted JSON, fallback to empty", {
       detail: { path: indexPath, error: err instanceof Error ? err.message : String(err) }
     });
     return empty;
   }
   if (typeof parsed !== "object" || parsed === null) {
-    logger27.debug("[subagents] sessions-index invalid top-level shape, fallback to empty", {
+    logger28.debug("[subagents] sessions-index invalid top-level shape, fallback to empty", {
       detail: { path: indexPath }
     });
     return empty;
   }
   const top = parsed;
   if (typeof top.version !== "number" || typeof top.entries !== "object" || top.entries === null || Array.isArray(top.entries)) {
-    logger27.debug("[subagents] sessions-index invalid header fields, fallback to empty", {
+    logger28.debug("[subagents] sessions-index invalid header fields, fallback to empty", {
       detail: { path: indexPath }
     });
     return empty;
@@ -26791,7 +27007,7 @@ function loadIndex(encDir) {
     return { entries: /* @__PURE__ */ new Map(), higherVersion: true };
   }
   if (top.version < INDEX_VERSION) {
-    logger27.debug("[subagents] sessions-index stale version, discarded", {
+    logger28.debug("[subagents] sessions-index stale version, discarded", {
       detail: { path: indexPath, version: top.version, expected: INDEX_VERSION }
     });
     return empty;
@@ -26813,319 +27029,8 @@ async function saveIndex(encDir, data) {
   await writeAtomicFile(filePath, JSON.stringify(file), { ensureDir: false });
 }
 
-// src/execution/session-reconstructor.ts
-var fs20 = __toESM(require("fs"), 1);
-var IDENTITY_CUSTOM_TYPE = "subagent-identity";
-var TURN_SUMMARY_MAX2 = 80;
-function deriveEventLog(turns, lastError, startedAt) {
-  const log = [];
-  for (const turn of turns) {
-    for (const tc of turn.toolCalls) {
-      const label = extractLabelFromArgs(tc.toolName, tc.args);
-      const ts = tc.startedTs;
-      log.push({ type: "tool_start", label, ts, status: "running" });
-      if (tc._status !== "running") {
-        log.push({ type: "tool_end", label, ts, status: tc._status });
-      }
-    }
-    if (turn.closed) {
-      const summary = turn.text.length > 0 ? turn.text.length > TURN_SUMMARY_MAX2 ? turn.text.slice(0, TURN_SUMMARY_MAX2) : turn.text : "turn";
-      log.push({ type: "turn_end", label: summary, ts: turn.closedTs ?? startedAt });
-    }
-  }
-  if (lastError) {
-    log.push({ type: "error", label: lastError, ts: Date.now() });
-  }
-  return log;
-}
-function emptyTurn2() {
-  return { text: "", thinking: "", toolCalls: [], usageDelta: void 0, closed: false };
-}
-function toAgentUsage(u) {
-  return {
-    input: u.input ?? 0,
-    output: u.output ?? 0,
-    cacheRead: u.cacheRead ?? 0,
-    cacheWrite: u.cacheWrite ?? 0,
-    cost: u.cost?.total
-  };
-}
-function addUsage2(prev, next) {
-  if (prev === void 0) return { ...next };
-  return {
-    input: prev.input + next.input,
-    output: prev.output + next.output,
-    cacheRead: prev.cacheRead + next.cacheRead,
-    cacheWrite: prev.cacheWrite + next.cacheWrite,
-    cost: (prev.cost ?? 0) + (next.cost ?? 0)
-  };
-}
-function isIdentityData(data) {
-  if (typeof data !== "object" || data === null) return false;
-  const d = data;
-  return typeof d.id === "string" && typeof d.agent === "string" && (d.mode === "sync" || d.mode === "background") && typeof d.task === "string" && typeof d.startedAt === "number";
-}
-function reconstructFromFile(sessionFile) {
-  let raw;
-  try {
-    raw = fs20.readFileSync(sessionFile, "utf-8");
-  } catch {
-    return void 0;
-  }
-  const entries = [];
-  const lines = raw.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]?.trim();
-    if (!line) continue;
-    if (i === 0) {
-      try {
-        const head = JSON.parse(line);
-        if (head.type === "session") continue;
-      } catch (_e) {
-        void _e;
-        continue;
-      }
-    }
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed && typeof parsed.type === "string") {
-        entries.push(parsed);
-      }
-    } catch (_e) {
-      void _e;
-    }
-  }
-  if (entries.length === 0) return void 0;
-  let identity;
-  let model = "";
-  let thinkingLevel;
-  for (const entry of entries) {
-    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
-      if (isIdentityData(entry.data)) identity = entry.data;
-    } else if (entry.type === "model_change") {
-      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
-        model = `${entry.provider}/${entry.modelId}`;
-      }
-    } else if (entry.type === "thinking_level_change") {
-      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
-    }
-  }
-  if (!identity) return void 0;
-  const turns = [];
-  const pending = [];
-  let lastError;
-  let totalTokens = 0;
-  let lastEntryTsMs;
-  for (const entry of entries) {
-    if (typeof entry.timestamp === "string") {
-      const ms = Date.parse(entry.timestamp);
-      if (!Number.isNaN(ms)) lastEntryTsMs = ms;
-    }
-    if (entry.type !== "message") continue;
-    const msg = entry.message;
-    if (!msg) continue;
-    if (typeof msg.timestamp === "number") {
-      lastEntryTsMs = msg.timestamp;
-    }
-    if (msg.role === "assistant") {
-      const turn = emptyTurn2();
-      turns.push(turn);
-      if (!Array.isArray(msg.content)) continue;
-      for (const block of msg.content) {
-        if (block.type === "text") {
-          turn.text += block.text;
-        } else if (block.type === "thinking") {
-          turn.thinking += block.thinking;
-        } else if (block.type === "toolCall") {
-          pending.push({
-            toolCallId: block.id,
-            toolName: block.name,
-            args: block.arguments,
-            turn,
-            startedTs: msg.timestamp
-          });
-        }
-      }
-      if (msg.usage) {
-        const u = toAgentUsage(msg.usage);
-        turn.usageDelta = addUsage2(turn.usageDelta, u);
-        totalTokens += u.input + u.output + u.cacheRead + u.cacheWrite;
-      }
-      if (msg.stopReason === "error" || msg.stopReason === "aborted") {
-        lastError = msg.errorMessage ?? msg.stopReason;
-      } else if (msg.stopReason === "stop") {
-        lastError = void 0;
-      }
-    } else if (msg.role === "toolResult") {
-      const idx = pending.findIndex((p) => p.toolCallId === msg.toolCallId);
-      if (idx >= 0) {
-        const p = pending[idx];
-        pending.splice(idx, 1);
-        const tc = {
-          toolName: p.toolName,
-          args: p.args,
-          result: { content: msg.content, details: msg.details },
-          isError: msg.isError ?? false,
-          _status: msg.isError ? "failed" : "done",
-          startedTs: p.startedTs
-        };
-        p.turn.toolCalls.push(tc);
-      }
-    }
-  }
-  if (turns.length === 0) return void 0;
-  for (const turn of turns) {
-    turn.closed = true;
-  }
-  const turnCount = turns.length;
-  const resultText = turns.map((t) => t.text).filter((t) => t.length > 0).join("\n\n");
-  const eventLog = deriveEventLog(turns, lastError, identity.startedAt);
-  const status = "closed";
-  const closedReason = "gc";
-  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
-  const slug = identity.slug ?? "";
-  return {
-    ...identity,
-    slug,
-    rootSessionId,
-    parentRecordId: identity.parentRecordId,
-    depth: identity.depth ?? 0,
-    forkDepth: identity.forkDepth,
-    sessionFile,
-    status,
-    closedReason,
-    turns,
-    turnCount,
-    totalTokens,
-    lastError,
-    model,
-    thinkingLevel,
-    endedAt: lastEntryTsMs,
-    result: resultText.length > 0 ? resultText : void 0,
-    error: lastError,
-    eventLog
-  };
-}
-var IDENTITY_HEAD_BYTES = 65536;
-function readIdentityHeader(sessionFile) {
-  let text;
-  try {
-    const fd = fs20.openSync(sessionFile, "r");
-    try {
-      const buf = Buffer.alloc(IDENTITY_HEAD_BYTES);
-      let total = 0;
-      while (total < buf.length) {
-        const n = fs20.readSync(fd, buf, total, buf.length - total, total);
-        if (n <= 0) break;
-        total += n;
-      }
-      text = buf.toString("utf-8", 0, total);
-    } finally {
-      fs20.closeSync(fd);
-    }
-  } catch {
-    return void 0;
-  }
-  return parseIdentityFromText(text, sessionFile);
-}
-function readIdentityAnywhere(sessionFile) {
-  let text;
-  try {
-    text = fs20.readFileSync(sessionFile, "utf-8");
-  } catch {
-    return void 0;
-  }
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const s = lines[i];
-    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
-    const recon = parseIdentityFromText(s, sessionFile);
-    if (recon) return recon;
-  }
-  return void 0;
-}
-function readIdentityTail(sessionFile) {
-  let text;
-  try {
-    const { size } = fs20.statSync(sessionFile);
-    const start = Math.max(0, size - IDENTITY_HEAD_BYTES);
-    const fd = fs20.openSync(sessionFile, "r");
-    try {
-      const buf = Buffer.alloc(size - start);
-      let total = 0;
-      while (total < buf.length) {
-        const n = fs20.readSync(fd, buf, total, buf.length - total, start + total);
-        if (n <= 0) break;
-        total += n;
-      }
-      text = buf.toString("utf-8", 0, total);
-    } finally {
-      fs20.closeSync(fd);
-    }
-  } catch {
-    return void 0;
-  }
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const s = lines[i];
-    if (!s.includes(IDENTITY_CUSTOM_TYPE)) continue;
-    const recon = parseIdentityFromText(s, sessionFile);
-    if (recon) return recon;
-  }
-  return void 0;
-}
-function parseIdentityFromText(text, sessionFile) {
-  let identity;
-  let model = "";
-  let thinkingLevel;
-  for (const line of text.split("\n")) {
-    const s = line.trim();
-    if (!s) continue;
-    if (!s.includes(IDENTITY_CUSTOM_TYPE) && !s.includes('"model_change"') && !s.includes('"thinking_level_change"')) {
-      continue;
-    }
-    let entry;
-    try {
-      entry = JSON.parse(s);
-    } catch {
-      continue;
-    }
-    if (entry.type === "custom" && entry.customType === IDENTITY_CUSTOM_TYPE) {
-      if (isIdentityData(entry.data)) {
-        identity = entry.data;
-        break;
-      }
-    } else if (entry.type === "model_change") {
-      if (typeof entry.provider === "string" && typeof entry.modelId === "string") {
-        model = `${entry.provider}/${entry.modelId}`;
-      }
-    } else if (entry.type === "thinking_level_change") {
-      if (typeof entry.thinkingLevel === "string") thinkingLevel = entry.thinkingLevel;
-    }
-  }
-  if (!identity) return void 0;
-  const rootSessionId = identity.rootSessionId ?? identity.parentSessionId;
-  return {
-    id: identity.id,
-    agent: identity.agent,
-    mode: identity.mode,
-    task: identity.task,
-    slug: identity.slug ?? "",
-    startedAt: identity.startedAt,
-    rootSessionId,
-    parentRecordId: identity.parentRecordId,
-    depth: identity.depth ?? 0,
-    forkDepth: identity.forkDepth,
-    chatMode: identity.chatMode,
-    worktree: identity.worktree,
-    model,
-    thinkingLevel,
-    sessionFile
-  };
-}
-
 // src/execution/record-store.ts
-var logger28 = getLogger("subagents");
+var logger29 = getLogger("subagents");
 var STATUS_PRIORITY = {
   running: 0,
   closed: 3
@@ -27191,7 +27096,7 @@ function collectLastRecordEntries(content) {
     try {
       entry = asSubagentRecordEntry(JSON.parse(line));
     } catch (err) {
-      logger28.debug("[subagents] entry-only orphan scan: skip unparsable line", {
+      logger29.debug("[subagents] entry-only orphan scan: skip unparsable line", {
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -27415,7 +27320,7 @@ var RecordStore = class _RecordStore {
         if (rootSessionFilter !== void 0 && manifest.rootSessionId !== rootSessionFilter) continue;
         const rec = _RecordStore.manifestToSubagent(manifest);
         if (!rec) {
-          logger28.warn("[subagents] skip manifest with invalid status", {
+          logger29.warn("[subagents] skip manifest with invalid status", {
             detail: { id: manifest.id, status: manifest.status }
           });
           this.pi?.appendEntry?.("subagent:manifest-invalid-status", {
@@ -27589,9 +27494,19 @@ var RecordStore = class _RecordStore {
     this.lastIndexWriteAt = 0;
     this.indexHigherVersion = false;
   }
-  /** /resume /fork /new 后复活（dispose 的逆操作）。 */
+  /**
+   * /resume /fork /new 后复活（dispose 的逆操作）。
+   *
+   * [PS-10/T6④] 同步复位 orphanJudged 防重缓存：resumable 形态（IO-error 保守分支 /
+   * chatMode 分流）没有 .finalized sidecar 锚，重判资格完全由本缓存承载——dispose 时
+   * 有 clear（session 结束），但 revive 此前不复位，导致「同进程内曾经的 IO 失败记录
+   * 永久停留 resumable」，与本文件 recoverOrphanRecords 注释承诺的「IO 恢复后重开可重判」
+   * 不符。/new 复活正是「重开」语义：IO 已恢复的记录下次 recoverOrphanRecords 重新判定
+   * 收敛终态；仍不可读的记录重判再落一次 resumable entry（幂等，末条语义不变）。
+   */
   revive() {
     this._disposed = false;
+    this.orphanJudged.clear();
   }
   // ── 内部 ──────────────────────────────────────────────────
   /**
@@ -27762,7 +27677,7 @@ var RecordStore = class _RecordStore {
       this.lastIndexWriteAt = Date.now();
     }).catch((err) => {
       this.indexDirty = true;
-      logger28.debug("[subagents] sessions-index write failed", {
+      logger29.warn("[subagents] sessions-index write failed", {
         detail: { dir: encDir, error: err instanceof Error ? err.message : String(err) }
       });
     });
@@ -27930,14 +27845,9 @@ var RecordStore = class _RecordStore {
     }
     return rec;
   }
-  /** 从缓存与索引移除某文件（文件删除时；负缓存条目无 id，仅删缓存项）。 */
-  dropFileCache(file) {
-    const entry = this.fileCache.get(file);
-    if (entry) {
-      if (!entry.negative) this.idToFile.delete(entry.light.id);
-      this.fileCache.delete(file);
-    }
-  }
+  // [PS-15/T7⑤] 「从缓存与索引移除单文件」的旧私有方法已整体删除：全仓无调用方
+  // 的死代码（设计 §4.3 PS-15 实锤，顺手清理，无行为影响）。「文件删除时移除缓存」
+  // 的职责实际由 reconstructAll 的消失文件修剪路径承担。
   /** 排序比较器：status priority（running<failed<cancelled<done）+ startedAt desc。 */
   static compareRecords(a, b) {
     const pdiff = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
@@ -28033,7 +27943,7 @@ function isResumable(record) {
 }
 
 // src/execution/idle-gc.ts
-var logger29 = getLogger("subagents");
+var logger30 = getLogger("subagents");
 var GC_INTERVAL_MS = 60 * 60 * 1e3;
 var IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
 var MS_PER_DAY = 24 * 60 * 60 * 1e3;
@@ -28044,7 +27954,7 @@ function startIdleGc(store) {
       if (isResumable(record) && record.idleSince) {
         const age = now - record.idleSince;
         if (age > IDLE_TTL_MS) {
-          logger29.warn(`[subagents] GC: archiving idle record ${record.id} (idle for ${Math.round(age / MS_PER_DAY)}d)`);
+          logger30.warn(`[subagents] GC: archiving idle record ${record.id} (idle for ${Math.round(age / MS_PER_DAY)}d)`);
           try {
             store.archive(record);
           } catch (err) {
@@ -28059,16 +27969,16 @@ function startIdleGc(store) {
 }
 
 // src/execution/worktree-manager.ts
-var import_node_child_process7 = require("child_process");
+var import_node_child_process5 = require("child_process");
 var fs23 = __toESM(require("fs"), 1);
-var os3 = __toESM(require("os"), 1);
+var os4 = __toESM(require("os"), 1);
 var path17 = __toESM(require("path"), 1);
 
 // src/execution/worktree-registry.ts
 var fs22 = __toESM(require("fs"), 1);
 var path16 = __toESM(require("path"), 1);
 var import_proper_lockfile = __toESM(require_proper_lockfile(), 1);
-var logger30 = getLogger("subagents");
+var logger31 = getLogger("subagents");
 var SPAWN_GRACE_MS = 6e4;
 var JSON_INDENT = 2;
 var LOCK_STALE_MS = 3e4;
@@ -28151,7 +28061,7 @@ var WorktreeRegistry = class {
         run();
       });
     } catch (lockErr) {
-      logger30.warn("[worktree] registry lock unavailable, degraded to lock-free RMW", {
+      logger31.warn("[worktree] registry lock unavailable, degraded to lock-free RMW", {
         ...context ?? {},
         err: lockErr instanceof Error ? lockErr.message : String(lockErr)
       });
@@ -28200,7 +28110,7 @@ var WorktreeRegistry = class {
       try {
         await release();
       } catch (unlockErr) {
-        logger30.debug("unlock failed after compromise (ignorable)", {
+        logger31.debug("unlock failed after compromise (ignorable)", {
           detail: { err: unlockErr instanceof Error ? unlockErr.message : String(unlockErr) }
         });
       }
@@ -28235,7 +28145,7 @@ var WorktreeRegistry = class {
       writeAtomicFileSync(this.filePath, JSON.stringify({ entries }, null, JSON_INDENT));
     } catch (err) {
       bestEffort(err, "worktree registry save");
-      logger30.warn(
+      logger31.warn(
         "[worktree] registry save failed; pid may stay 0 and be reaped by orphan reaper",
         { ...context ?? {}, err: err instanceof Error ? err.message : String(err) }
       );
@@ -28244,11 +28154,12 @@ var WorktreeRegistry = class {
 };
 
 // src/execution/worktree-manager.ts
-var logger31 = getLogger("subagents");
+var logger32 = getLogger("subagents");
 var SAFE_ID_RE2 = /^[\w-]+$/;
 var GIT_TIMEOUT_MS2 = 3e4;
 var WORKTREE_TMP_ROOT = "pi-subagents";
 var BRANCH_PREFIX = "pi-sub-";
+var RECONCILE_SKIP_ESCALATION_CYCLES = 4;
 var GitRunError2 = class extends Error {
   exitCode;
   stderr;
@@ -28289,6 +28200,12 @@ var WorktreeManager = class {
   // 不继承前驱错误（否则 1 个 worktree add 失败会传染同 repo 后续全部写命令，
   // 替代旧同步版单线程天然全局串行的「各命令独立失败」语义）。
   writeQueues = /* @__PURE__ */ new Map();
+  // [PS-12 措施⑤] 对账歧义跳过的 per-checkout 连续计数（老化判据）。
+  // key = checkout 绝对路径；每轮 reconcileWithPhysical 末尾收敛为「本轮实际
+  // 进入歧义分支」的路径集（自愈/判死清理/注册表收编/物理消失的一律清零，
+  // 见该方法尾部），条目数 ≤ 单轮歧义残留数，无泄漏面。内存态：进程重启后
+  // 重新起数——老化是人工介入的提醒信号，不值得为此引入持久化状态。
+  ambiguousSkipCycles = /* @__PURE__ */ new Map();
   constructor(agentDir) {
     this.agentDir = agentDir;
     this.registry = new WorktreeRegistry(agentDir);
@@ -28321,7 +28238,7 @@ ${statusText}`
     if (revR.status === "rejected") throw revR.reason;
     const baseCommit = revR.value.trim();
     const branch = `pi-sub-${recordId}`;
-    const worktreePath = path17.join(os3.tmpdir(), "pi-subagents", encodeCwd(mainCwd), branch);
+    const worktreePath = path17.join(os4.tmpdir(), "pi-subagents", encodeCwd(mainCwd), branch);
     if (fs23.existsSync(worktreePath)) {
       try {
         fs23.rmSync(worktreePath, { recursive: true, force: true });
@@ -28482,7 +28399,10 @@ ${statusText}`
     const branchesByRepo = await this.listPhysicalBranches(repos);
     await this.removePhantomRegistryEntries(registered, branchesByRepo);
     const orphans = physical.filter((pt) => !registeredBranches.has(pt.branch));
-    await this.reconcileUnregisteredWorktrees(orphans);
+    const ambiguousNow = await this.reconcileUnregisteredWorktrees(orphans);
+    for (const checkout of [...this.ambiguousSkipCycles.keys()]) {
+      if (!ambiguousNow.has(checkout)) this.ambiguousSkipCycles.delete(checkout);
+    }
   }
   /** 对账方向一（注册有 → 物理无）：条目的分支与 checkout 目录都已不存在 → 条目指向
    *  幻影资源 → 移除条目（纯清账，不删任何仍存在的资源，幂等安全）。 */
@@ -28493,7 +28413,7 @@ ${statusText}`
       const branchGone = !branches.has(entry.branch);
       const checkoutGone = !fs23.existsSync(entry.checkout);
       if (branchGone && checkoutGone) {
-        logger31.warn("[worktree] reconcile: registry entry has no physical worktree/branch, removing entry", {
+        logger32.warn("[worktree] reconcile: registry entry has no physical worktree/branch, removing entry", {
           branch: entry.branch,
           repo: entry.repo,
           pid: entry.pid
@@ -28511,8 +28431,12 @@ ${statusText}`
    *      并发覆盖丢条目场景，补写后回归标准 pid 判据路径）；
    *    - 多活 pid 或多残留无法建立 branch↔pid 对应：跳过 + warn——宁延迟勿误删；
    *      活体自身 cleanup 路径正常（registry.remove 幂等），死体等活 pid 全灭后
-   *      下一周期收敛。 */
+   *      下一周期收敛。
+   *
+   *  返回本轮实际进入「歧义跳过」的 checkout 路径集（PS-12 老化计数收敛依据，
+   *  见 reconcileWithPhysical 尾部）。 */
   async reconcileUnregisteredWorktrees(orphans) {
+    const ambiguous = /* @__PURE__ */ new Set();
     const orphansByEnc = /* @__PURE__ */ new Map();
     for (const pt of orphans) {
       const list = orphansByEnc.get(pt.enc) ?? [];
@@ -28520,11 +28444,12 @@ ${statusText}`
       orphansByEnc.set(pt.enc, list);
     }
     for (const [enc, list] of orphansByEnc) {
-      await this.reconcileEncSegment(enc, list);
+      await this.reconcileEncSegment(enc, list, ambiguous);
     }
+    return ambiguous;
   }
   /** 单 enc 段的残留处置三分支：无活 pid 判死清理 / 唯一对应自愈补写 / 多对应保守跳过。 */
-  async reconcileEncSegment(enc, list) {
+  async reconcileEncSegment(enc, list, ambiguous) {
     const alivePids = this.collectAlivePids(enc);
     if (alivePids.length === 0) {
       await this.cleanupDeadSegment(list);
@@ -28532,7 +28457,7 @@ ${statusText}`
     }
     if (alivePids.length === 1 && list.length === 1) {
       const pt = list[0];
-      logger31.warn("[worktree] reconcile: unregistered physical worktree with one alive pid, re-registering (self-heal)", {
+      logger32.warn("[worktree] reconcile: unregistered physical worktree with one alive pid, re-registering (self-heal)", {
         branch: pt.branch,
         checkout: pt.checkout,
         repo: pt.repo,
@@ -28547,11 +28472,31 @@ ${statusText}`
       });
       return;
     }
-    logger31.warn("[worktree] reconcile: unregistered physical worktrees present but alive-pid mapping ambiguous, skipping this cycle", {
-      enc,
-      orphans: list.length,
-      alivePids: alivePids.length
-    });
+    let escalated = 0;
+    for (const pt of list) {
+      const cycles = (this.ambiguousSkipCycles.get(pt.checkout) ?? 0) + 1;
+      this.ambiguousSkipCycles.set(pt.checkout, cycles);
+      ambiguous.add(pt.checkout);
+      if (cycles < RECONCILE_SKIP_ESCALATION_CYCLES) continue;
+      escalated++;
+      const repoHint = pt.repo ?? "<main-repo>";
+      logger32.warn(
+        `[worktree] reconcile: unregistered physical worktree skipped for ${cycles} consecutive cycles (alive-pid mapping still ambiguous) \u2014 manual cleanup may be needed. Inspect: git -C ${repoHint} worktree list. If no live process owns it: git -C ${repoHint} worktree remove --force ${pt.checkout} && git -C ${repoHint} branch -D ${pt.branch}. Ownerless checkout (repo unknown, delete the directory directly): rm -rf ${pt.checkout}`,
+        {
+          branch: pt.branch,
+          checkout: pt.checkout,
+          repo: pt.repo,
+          skippedCycles: cycles
+        }
+      );
+    }
+    if (escalated < list.length) {
+      logger32.warn("[worktree] reconcile: unregistered physical worktrees present but alive-pid mapping ambiguous, skipping this cycle", {
+        enc,
+        orphans: list.length - escalated,
+        alivePids: alivePids.length
+      });
+    }
   }
   /** 无活 pid 段：残留判死清理——checkout mtime 超 SPAWN_GRACE_MS 才清（防误清另一
    *  进程 worktree add 完成到 registry.add 落盘之间的 create 窗口）。 */
@@ -28559,7 +28504,7 @@ ${statusText}`
     for (const pt of list) {
       const age = Date.now() - pt.mtimeMs;
       if (age <= SPAWN_GRACE_MS) continue;
-      logger31.warn("[worktree] reconcile: unregistered physical worktree with no alive pid, cleaning up", {
+      logger32.warn("[worktree] reconcile: unregistered physical worktree with no alive pid, cleaning up", {
         branch: pt.branch,
         checkout: pt.checkout,
         repo: pt.repo,
@@ -28575,7 +28520,7 @@ ${statusText}`
     * 推导失败（残缺 checkout）repo=undefined，由调用方按无主残留处置。
     */
   async discoverPhysicalWorktrees() {
-    const root = path17.join(os3.tmpdir(), WORKTREE_TMP_ROOT);
+    const root = path17.join(os4.tmpdir(), WORKTREE_TMP_ROOT);
     let encDirs;
     try {
       encDirs = fs23.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
@@ -28687,7 +28632,7 @@ ${statusText}`
     if (entry.pid === 0) {
       const expired = now - entry.createdAt > SPAWN_GRACE_MS;
       if (expired) {
-        logger31.warn(
+        logger32.warn(
           "[worktree] orphan reaper: pid=0 entry exceeded SPAWN_GRACE_MS, treating as orphan",
           { branch: entry.branch, checkout: entry.checkout, createdAt: entry.createdAt, now }
         );
@@ -28724,7 +28669,7 @@ ${statusText}`
    */
   async gitRunAsync(args, opts) {
     const run = () => new Promise((resolve6, reject) => {
-      (0, import_node_child_process7.execFile)(
+      (0, import_node_child_process5.execFile)(
         "git",
         args,
         { cwd: opts.cwd, timeout: opts.timeout ?? GIT_TIMEOUT_MS2, encoding: "utf-8" },
@@ -28763,23 +28708,31 @@ ${statusText}`
 };
 
 // src/execution/subagent-service.ts
-var logger32 = getLogger("subagents");
+var logger33 = getLogger("subagents");
 var COLD_LOOKUP_SCAN_LIMIT = 1e3;
 var disposedUiRequestStub = () => Promise.resolve({ cancelled: true });
-function emitPendingRegister(pi, id, name) {
+function emitPendingRegister2(pi, id, name) {
   pi?.events.emit("pending:register", {
     id,
     type: "subagent",
     name: name ? displayAgentName(name) : id
   });
 }
-function emitPendingUnregister(pi, id, reason) {
+function emitPendingUnregister2(pi, id, reason) {
   pi?.events.emit("pending:unregister", {
     id,
     reason
   });
 }
 var PRIORITY_BACKGROUND = 1e3;
+var MS_PER_SECOND4 = 1e3;
+var SECONDS_PER_MINUTE3 = 60;
+var NOTIFY_BLOCKED_CLOSED_REASONS = /* @__PURE__ */ new Set(["parent-new", "parent-fork"]);
+function notifyGateAllowsDelivery(closedReason) {
+  if (closedReason === void 0) return true;
+  if (closedReason === "cancelled") return false;
+  return !NOTIFY_BLOCKED_CLOSED_REASONS.has(closedReason);
+}
 var ENV_ROOT_SESSION_ID = "PI_SUBAGENT_ROOT_SESSION_ID";
 var ENV_SELF_RECORD_ID = "PI_SUBAGENT_SELF_RECORD_ID";
 var ENV_DEPTH = "PI_SUBAGENT_DEPTH";
@@ -28857,6 +28810,12 @@ var SubagentService = class {
    *  EPIPE 兜底不持锁，同样被覆盖）。child 注册完成后 deliverMessage 走热路径，不经此守卫。 */
   resumesInFlight = /* @__PURE__ */ new Set();
   manifestStore;
+  /**
+   * [T1/PS-9] subagent sessionDir（getSubagentSessionDir 推导，与 store 同源同一 rootCwd）。
+   * 传给 doFinalizeRecord 的 FinalizeDeps.sessionDir——record.sessionFile 缺失时 finalize
+   * 用它做磁盘 identity 反查（marker/alive 清理的依据）。
+   */
+  sessionsDir;
   constructor(init) {
     this.cwd = init.cwd;
     this.modelService = init.modelService;
@@ -28868,6 +28827,7 @@ var SubagentService = class {
     this.rootCwd = envRootCwd && envRootCwd !== "" ? envRootCwd : init.cwd;
     const sessionsDir = getSubagentSessionDir(this.modelService.getAgentDir(), this.rootCwd);
     const recordsDir = getSubagentRecordsDir(this.modelService.getAgentDir(), this.rootCwd);
+    this.sessionsDir = sessionsDir;
     this.manifestStore = new ManifestStore(recordsDir);
     this.store = new RecordStore(sessionsDir, this.manifestStore, this.pi ?? void 0);
     this.notifier = createNotifier(this.piAdapter());
@@ -28902,6 +28862,22 @@ var SubagentService = class {
     if (init.dialogQueue !== void 0) {
       this.dialogQueue = init.dialogQueue;
     }
+    this.initForkDepthBaseline();
+    const envRoot = process.env[ENV_ROOT_SESSION_ID];
+    this.sessionRootId = envRoot ?? init.sessionId;
+    this.initExecContextBaseline(envRoot, init.sessionId);
+    this._disposed = false;
+    this.store.revive();
+    this.notifier.revive();
+    this.recoverOrphansIfRootProcess();
+  }
+  /**
+   * [SPAWN fork depth 跨进程传递] fork 链深度基线：子进程被父 spawn 时，父通过 env
+   * PI_SUBAGENT_FORK_DEPTH 传入当前 fork 链深度。子进程 session_start 时读取作为
+   * forkDepthAls 基线，使后续嵌套 spawn fork 能从正确深度递增。未设置（顶层主
+   * session）→ 基线 0。enterWith 贯穿整个 session 生命周期。
+   */
+  initForkDepthBaseline() {
     const envDepth = process.env.PI_SUBAGENT_FORK_DEPTH;
     if (envDepth !== void 0 && envDepth !== "") {
       const base = Number.parseInt(envDepth, 10);
@@ -28910,8 +28886,13 @@ var SubagentService = class {
         this.forkDepthBaseline = base;
       }
     }
-    const envRoot = process.env[ENV_ROOT_SESSION_ID];
-    this.sessionRootId = envRoot ?? init.sessionId;
+  }
+  /**
+   * [递归可见性] exec 上下文基线：子进程读 env PI_SUBAGENT_SELF_RECORD_ID / DEPTH
+   * 建立身份基线后，createRecordForMode 读 execCtxAls 自动正确（孙挂到子名下）。
+   * enterWith 贯穿整个 session 生命周期（与 forkDepthAls 同构，决策 4）。
+   */
+  initExecContextBaseline(envRoot, sessionId) {
     const envSelfRecord = process.env[ENV_SELF_RECORD_ID];
     if (envSelfRecord !== void 0 && envSelfRecord !== "") {
       const envNestingDepth = Number.parseInt(process.env[ENV_DEPTH] ?? "0", 10);
@@ -28919,15 +28900,32 @@ var SubagentService = class {
       this.execCtxBaseline = { recordId: envSelfRecord, depth: nestingDepth };
       this.execCtxAls.enterWith({ recordId: envSelfRecord, depth: nestingDepth });
       if (process.env.XYZ_AGENT_DEBUG) {
-        logger32.debug(
-          `[subagents] execCtxAls initialized: recordId=${envSelfRecord} depth=${nestingDepth} rootSessionId=${envRoot ?? init.sessionId}`
+        logger33.debug(
+          `[subagents] execCtxAls initialized: recordId=${envSelfRecord} depth=${nestingDepth} rootSessionId=${envRoot ?? sessionId}`
         );
       }
     }
-    this._disposed = false;
-    this.store.revive();
-    this.notifier.revive();
-    this.recoverOrphanRecords();
+  }
+  /**
+   * 孤儿终态恢复（residual-fixes）：session_start 主动触发一次——父扩展死后再无人写
+   * 终态 entry 的 record 在此判定落盘（否则侧栏永久 running）。幂等不 throw，失败不
+   * 阻断 session_start。
+   *
+   * [T5① / PS-8] 只有根进程做扫描者：恢复机制假设「单扫描者」，但子进程 sessionRootId
+   * 经 env 与父同值（过滤域 = 整树共享的 sessions/records 目录），env 贯穿让每个子进程
+   * 都成了扫描者——递归编排中任一子进程启动时，恰有兄弟记录 marker 缺失或超软超时
+   *（hours-long wave 必然命中）→ 活记录被无关进程盖 .finalized sidecar，closed entry
+   * 写进别的进程的 session 文件（跨进程互写，无任何锁）。子进程身份判据 = env
+   * PI_SUBAGENT_SELF_RECORD_ID（父 spawn 时注入的「子进程自己的 record id」，仅子进程
+   * 非空）——与 execCtxBaseline 同源。根进程恢复语义不变。
+   */
+  recoverOrphansIfRootProcess() {
+    const isChildProcess = (process.env[ENV_SELF_RECORD_ID] ?? "") !== "";
+    if (!isChildProcess) {
+      this.recoverOrphanRecords();
+    } else if (process.env.XYZ_AGENT_DEBUG) {
+      logger33.debug("[subagents] child process detected (PI_SUBAGENT_SELF_RECORD_ID set), skipping orphan recovery scan");
+    }
   }
   /** 孤儿终态恢复委托（RecordStore.recoverOrphanRecords 的唯一公开入口，维持 store
    *  private 封装——与 recoverManifestTmpFiles 同模式）。判定语义见 store 侧注释。
@@ -28937,14 +28935,14 @@ var SubagentService = class {
     try {
       this.store.recoverOrphanRecords(this.sessionRootId ?? void 0);
     } catch (err) {
-      logger32.warn("[subagents] orphan recovery failed", {
+      logger33.warn("[subagents] orphan recovery failed", {
         reason: err instanceof Error ? err.message : String(err)
       });
     }
     try {
       this.store.recoverEntryOnlyOrphans(this.mainSessionFile, this.sessionRootId ?? void 0);
     } catch (err) {
-      logger32.warn("[subagents] entry-only orphan recovery failed", {
+      logger33.warn("[subagents] entry-only orphan recovery failed", {
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -28966,6 +28964,15 @@ var SubagentService = class {
    *  遍历 store 中所有 running record，逐个 CAS 转终态 + completeRecord + archive。
    *  对有 worktreeHandle 的 record 触发 worktreeManager.cleanup（T3: worktree 绑定清理）。
    *
+   *  [T2⑥ / PS-1] 补齐三回收面（对照 dispose() 的既有形态，消除同文件双标）：
+   *  controller.abort + kill（收敛到 killChildWithEscalation）+ disarmIdleTimer +
+   *  disarmSettledWatchdog。旧实现只关 record 不中止执行——「record 已关」≠「执行已
+   *  处置」：在途子进程继续跑且无任何用户可及的取消通道（cancel 只查内存 running，
+   *  archive 后恒 false），若挂死唯一上界是默认关闭的 spawn watchdog → 泄漏至宿主退出。
+   *  abort/kill/timer 三面对已终态/已死 record 均幂等 no-op，dispose() 先行的
+   *  abortRunningControllers + killAllSpawnedChildren 不受影响（parent-shutdown 路径
+   *  双保险）。
+   *
    *  [v4 A-6] 旧实现的 recentlyCascaded 收集（供已删除的 before_agent_start 注入告知）
    *  与 drainCascaded 已一并移除——被关 record 的告知改由 list 的 closedReason 表达。
    *
@@ -28976,6 +28983,10 @@ var SubagentService = class {
     const activeRecords = this.store.listAllActive();
     let count = 0;
     for (const record of activeRecords) {
+      record.controller?.abort();
+      killRecordChildWithEscalation(record.id, `disposeAllRecords (${reason})`);
+      disarmIdleTimer(record.id);
+      disarmSettledWatchdog(record.id);
       if (record.status === "running") {
         if (!tryTransition(record, "closed", reason)) continue;
       }
@@ -28995,7 +29006,7 @@ var SubagentService = class {
           bestEffort(err, `worktree cleanup (${reason})`);
         });
       }
-      emitPendingUnregister(this.pi, record.id, "closed");
+      emitPendingUnregister2(this.pi, record.id, "closed");
       count++;
     }
     return count;
@@ -29040,8 +29051,40 @@ var SubagentService = class {
     resetAllEpipeFailures();
     this.resumesInFlight.clear();
     this.notifier.flushPendingNotifications();
+    this.persistUndeliveredNotificationsForReplay();
     this.notifier.dispose();
     this.store.dispose();
+  }
+  /**
+   * [T4④ / PS-5] shutdown flush 被门拦时把未投递 pending 复写落盘（供重启 replay）。
+   *
+   * 触发条件：flushPendingNotifications 后 ledger 仍有 pending（isIdle 门拦 / sendDelivery
+   * 受理失败的残留）且主 agent 非 idle——即本次 shutdown 注定投不出去。落盘动作 =
+   * pi.appendEntry 重写 NOTIFY_LEDGER_CUSTOM_TYPE entry（与 ledger.record 同通道同 schema，
+   * notifyId 幂等：恢复扫描按后写覆盖 + ack/abandoned 差集去重，重复账面不产生重复投递）。
+   * 主 agent idle 时 flush 已投出，无需复写（零开销）。
+   */
+  persistUndeliveredNotificationsForReplay() {
+    try {
+      const ledger = getBoundNotifyLedger();
+      const pending = ledger?.pendingEntries() ?? [];
+      if (pending.length === 0) return;
+      if (this.isIdleFn?.() !== false) return;
+      for (const item of pending) {
+        this.pi?.appendEntry(NOTIFY_LEDGER_CUSTOM_TYPE, {
+          v: 1,
+          notifyId: item.notifyId,
+          content: item.content,
+          record: item.record
+        });
+      }
+      logger33.warn(
+        `[subagents] shutdown flush blocked by busy main agent: ${pending.length} pending notification(s) persisted to ledger for replay on next session_start`,
+        { count: pending.length }
+      );
+    } catch (err) {
+      bestEffort(err, "persistUndeliveredNotificationsForReplay", "error");
+    }
   }
   // ── 执行（subagent-tool 调）────────────────────────────
   /** background 完成回注（record → BgNotifyRecord 映射 + notifier.notify）。
@@ -29143,6 +29186,7 @@ var SubagentService = class {
    */
   async execute(opts) {
     this.assertReady();
+    this.assertIdleTimeoutMsSafe(opts);
     const parentNesting = this.execCtxAls.getStore() ?? this.execCtxBaseline;
     const nestingDepth = parentNesting ? parentNesting.depth + 1 : 0;
     if (nestingDepth > MAX_FORK_DEPTH) {
@@ -29175,7 +29219,7 @@ var SubagentService = class {
     }
     const piOpts = route?.engineFallback !== void 0 ? { ...opts, engine: DEFAULT_ENGINE_ID, engineFallback: route.engineFallback } : opts.engine === void 0 ? opts : { ...opts, engine: void 0 };
     const record = this.createRecordForMode(identity, piOpts, mode);
-    emitPendingRegister(this.pi, record.id, record.agent);
+    emitPendingRegister2(this.pi, record.id, record.agent);
     let worktreeHandle;
     if (typeof opts.worktree === "object") {
       worktreeHandle = opts.worktree;
@@ -29357,7 +29401,7 @@ var SubagentService = class {
         sendPromptCommand(child, text, { streamingBehavior: interrupt ? "steer" : "followUp" });
         clearEpipeFailure(record.id);
         if (child.exitCode !== null || child.signalCode !== null) {
-          logger32.warn(
+          logger33.warn(
             `[subagents] deliverMessage: child ${record.id} died around stdin write, message may be lost`,
             {
               msgType: interrupt ? "steer" : "followUp",
@@ -29369,9 +29413,10 @@ var SubagentService = class {
         record.result = void 0;
         record.resumable = void 0;
         this.store.reportRecordTransition(record);
+        armSettledWatchdog(record.id, () => this.onHotPathSettledWatchdogTimeout(record));
       } catch (err) {
         if (err instanceof Error && err.message.includes("EPIPE")) {
-          logger32.warn(`[subagents] EPIPE on hot path for ${record.id}, falling back to cold path resume`, {
+          logger33.warn(`[subagents] EPIPE on hot path for ${record.id}, falling back to cold path resume`, {
             detail: err.message
           });
           if (spawnedChildren.get(record.id) === child) {
@@ -29387,6 +29432,7 @@ var SubagentService = class {
           this.resumeRound(record, text);
           return;
         }
+        this.rearmIdleTimerAfterHotPathFailure(record, err);
         throw err;
       }
     } else {
@@ -29397,6 +29443,66 @@ var SubagentService = class {
         releaseLock();
       }
     }
+  }
+  /**
+   * [T2③] 热路径轮 settled watchdog 到期处置（对齐 u-t2a 首轮形态：kill + 该轮失败
+   * 终态化 + 失败通知，error 含 'settled watchdog' 标记与恢复指引）。
+   *
+   * 与首轮的差异：runSpawn 已返回（无收尾链路承接 settledWatchdogFired 标记），失败
+   * 终态化在本回调内完成。chatMode 按 MF-6 语义回退 running-resumable（与首轮 watchdog
+   * 经 runAndFinalize 失败分支的最终形态一致——对话可冷路径复活）；非 chatMode 终态
+   * 销毁。CAS（tryTransition closed+gc）防与 cancel/dispose 双收尾，抢锁失败即跳过。
+   *
+   * 回调在 timer 触发的同步上下文执行：同步段只做 kill + CAS（不抛），异步收尾
+   * fire-and-forget 且 catch 归 bestEffort——错误逃出回调 = uncaughtException 崩宿主。
+   */
+  onHotPathSettledWatchdogTimeout(record) {
+    logger33.warn(
+      `[subagents] settled watchdog fired for ${record.id}: no agent_settled within ${SETTLED_WATCHDOG_TIMEOUT_MS / MS_PER_SECOND4 / SECONDS_PER_MINUTE3} min of hot-path prompt, terminating (LC-1 wedge recovery)`
+    );
+    killRecordChildWithEscalation(record.id, "settled watchdog (hot path)");
+    const failedResult = {
+      text: "",
+      turns: record.turnCount,
+      durationMs: Date.now() - record.startedAt,
+      success: false,
+      error: `subagent did not reach agent_settled within ${SETTLED_WATCHDOG_TIMEOUT_MS / MS_PER_SECOND4 / SECONDS_PER_MINUTE3} min (settled watchdog); the process was terminated to bound the wait. Recovery: check state with subagents action:'list', then re-send your message to continue.`,
+      sessionId: record.id,
+      toolCalls: []
+    };
+    if (!tryTransition(record, "closed", "gc")) {
+      return;
+    }
+    const finalize = record.chatMode ? this.finalizeRoundToIdle(record, failedResult) : this.finalizeRecord(record, failedResult, "closed", "gc");
+    void finalize.then(() => this.notifyComplete(record)).catch((err) => bestEffort(err, "settled watchdog hot-path finalize", "error"));
+  }
+  /**
+   * [T2⑧ / PS-3] 非 EPIPE 热路径失败后的 idle timer 再武装（防泄漏底线）。
+   *
+   * record.idleTimeoutMs 已在 spawn 入口经 assertIdleTimeoutMsSafe 校验（T4②），此处
+   * armIdleTimer 理论不 throw；降级链仍保底：非法 → 挂 DEFAULT_IDLE_TIMEOUT_MS + warn
+   * （兜底可见，对齐 session-runner agent_settled 侧的 T4② 降级形态），双重失败退回
+   * 「不挂」但留 error 痕。
+   */
+  rearmIdleTimerAfterHotPathFailure(record, cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const onTimeout = () => {
+      killRecordChildWithEscalation(record.id, "idle timer (hot-path failure fallback)");
+    };
+    try {
+      armIdleTimer(record.id, onTimeout, record.idleTimeoutMs);
+    } catch {
+      try {
+        armIdleTimer(record.id, onTimeout, DEFAULT_IDLE_TIMEOUT_MS);
+      } catch (fallbackErr) {
+        bestEffort(fallbackErr, "rearmIdleTimer fallback (deliverMessage non-EPIPE failure)", "error");
+        return;
+      }
+    }
+    logger33.warn(
+      `[subagents] deliverMessage hot path failed for ${record.id}; idle timer re-armed to keep process recovery bounded`,
+      { detail }
+    );
   }
   // ── 对话模式 message/close action 支持（M2-B3）──────────────
   /**
@@ -29445,10 +29551,29 @@ var SubagentService = class {
    *  @returns 重建的 record；磁盘也无则 undefined
    *  @throws ResurrectDeniedError 可重连候选被 worktree/异进程活实例守卫拦截 */
   /** 冷查候选定位（coldLookupForAction 步骤 1）：idToFile 索引直查 running 命中，
-   *  未命中再全目录 collectRecords 兜底（running，或 allowReconnect 且可重连 closed）。 */
+   *  未命中再全目录 collectRecords 兜底（running，或 allowReconnect 且可重连 closed）。
+   *
+   *  [T5③ / PS-7b] running 候选异进程活实例守卫：冷查 running 候选（跨重启 / 内存重建）
+   *  此前不经任何探针直接 resurrect + resume spawn——若其 .alive marker 仍指向活着的
+   *  异进程实例（父进程重启后旧子进程尚存的窗口），resume 会 spawn 第二个 pi 子进程
+   *  写同一 session JSONL（本代码最忌惮的双写者形态，v4 A-5/P7 事故模式）。closed 候选
+   *  的同款守卫已在 assertReconnectAllowed（v8.5 D）；本守卫闭合 running 候选的防御
+   *  不对称。marker 的 pid 是子进程 pi 的 pid（非父进程），本进程持有的 running record
+   *  恒在内存（archive 才移出），可达本冷查分支的 running 候选必然来自磁盘重建——
+   *  探针命中即拒绝（ResurrectDeniedError，与 closed 候选守卫同异常类型，错误含 pid
+   *  与恢复指引）。 */
   findColdLookupCandidate(id, allowReconnect) {
     const direct = this.store.findLightById(id);
-    return (direct?.status === "running" ? direct : void 0) ?? this.store.collectRecords(COLD_LOOKUP_SCAN_LIMIT, "all", void 0).find((r) => r.id === id && (r.status === "running" || allowReconnect && this.isReconnectableClosed(r)));
+    const found = (direct?.status === "running" ? direct : void 0) ?? this.store.collectRecords(COLD_LOOKUP_SCAN_LIMIT, "all", void 0).find((r) => r.id === id && (r.status === "running" || allowReconnect && this.isReconnectableClosed(r)));
+    if (found?.status === "running" && found.sessionFile) {
+      const foreign = findForeignLiveInstance(found.sessionFile);
+      if (foreign) {
+        throw new ResurrectDeniedError(
+          `subagent ${id} is currently running in another process instance (pid ${foreign.pid}, startedAt=${new Date(foreign.startedAt).toISOString()}); resuming here would double-write ${found.sessionFile}. Recovery: retry once that process exits; if it never exits, action:'close' this subagent, then action:'start' a fresh one.`
+        );
+      }
+    }
+    return found;
   }
   /** 可重连守卫（coldLookupForAction 步骤 2，[v8.5 D]）：先于任何状态突变与注册。
    *  worktree 绑定丢失 / 异进程活实例以 ResurrectDeniedError 抛出（endedMessageGuard
@@ -29574,8 +29699,8 @@ var SubagentService = class {
    */
   async closeChatIdle(record) {
     disarmIdleTimer(record.id);
-    const child = getChildByRecord(record.id);
-    if (child && !child.killed) child.kill("SIGTERM");
+    disarmSettledWatchdog(record.id);
+    killRecordChildWithEscalation(record.id, "closeChatIdle");
     const doneResult = {
       text: record.result ?? "",
       turns: record.turnCount,
@@ -29591,7 +29716,8 @@ var SubagentService = class {
         store: this.store,
         modelService: this.modelService,
         pi: this.pi,
-        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+        emitUnregister: (id, st) => emitPendingUnregister2(this.pi, id, st),
+        sessionDir: this.sessionsDir
       },
       record,
       doneResult,
@@ -29617,8 +29743,8 @@ var SubagentService = class {
    */
   async closeAfterRoundSettled(record) {
     disarmIdleTimer(record.id);
-    const child = getChildByRecord(record.id);
-    if (child && !child.killed) child.kill("SIGTERM");
+    disarmSettledWatchdog(record.id);
+    killRecordChildWithEscalation(record.id, "closeAfterRoundSettled");
     if (!tryTransition(record, "closed", "user-close")) {
       return;
     }
@@ -29646,6 +29772,7 @@ var SubagentService = class {
    */
   async executeAndAwait(opts, signal, onEvent, stream) {
     this.assertReady();
+    this.assertIdleTimeoutMsSafe(opts);
     const parentNesting = this.execCtxAls.getStore() ?? this.execCtxBaseline;
     const nestingDepth = parentNesting ? parentNesting.depth + 1 : 0;
     if (nestingDepth > MAX_FORK_DEPTH) {
@@ -29655,7 +29782,7 @@ var SubagentService = class {
     }
     const identity = await this.resolveIdentity(opts);
     const record = this.createRecordForMode(identity, opts, "background");
-    emitPendingRegister(this.pi, record.id, record.agent);
+    emitPendingRegister2(this.pi, record.id, record.agent);
     let worktreeHandle;
     if (opts.worktree === true) {
       let cancelledDuringCreate = false;
@@ -29780,7 +29907,7 @@ var SubagentService = class {
       },
       "background"
     );
-    emitPendingRegister(this.pi, record.id, record.agent);
+    emitPendingRegister2(this.pi, record.id, record.agent);
     this.kickOffEngineRun(record, opts, engine);
     return { mode: "background", subagentId: record.id, sessionFile: record.sessionFile, details: project(record) };
   }
@@ -30050,21 +30177,29 @@ var SubagentService = class {
       stream,
       resume
     ).then(() => {
-      if (record.closedReason !== "cancelled") {
+      if (notifyGateAllowsDelivery(record.closedReason)) {
         this.notifyComplete(record);
       }
     }).catch((err) => {
       if (err instanceof Error) {
-        logger32.debug(`[subagent] background finalize error (record=${record.id}): ${err.message}`);
+        logger33.debug(`[subagent] background finalize error (record=${record.id}): ${err.message}`);
       }
     });
   }
-  /** 取消 background record。CAS 抢锁——抢到则 notify + 写 tombstone。 */
+  /**
+   * 取消 background record。CAS 抢锁（tryTransition）——抢到则 notify + 写 tombstone；
+   * 没抢到（detached 已 finalize，record 已终态）返回 false，不触碰任何收尾副作用。
+   *
+   * stop 手段（abort/kill/disarm）无条件先执行：对已终态 record 幂等无害，且保证
+   * cancel 语义 = 进程必死；收尾副作用（completeRecord/tombstone/archive/notify）只归
+   * CAS 赢家。[A2-1] 此前 CAS 被误删，cancel 可在 doFinalizeRecord Step 0 await 窗口
+   * 命中已终态 record——覆写终态 + tombstone/finalized 双标 + notify 双发 + 谎报 true。
+   */
   cancelBackground(record) {
     record.controller?.abort();
-    const child = getChildByRecord(record.id);
-    if (child && !child.killed) child.kill("SIGTERM");
+    killRecordChildWithEscalation(record.id, "cancelBackground");
     disarmIdleTimer(record.id);
+    disarmSettledWatchdog(record.id);
     if (!tryTransition(record, "closed", "cancelled")) {
       return false;
     }
@@ -30092,7 +30227,7 @@ var SubagentService = class {
         bestEffort(err, "removeAliveMarker (cancelBackground)");
       }
     }
-    emitPendingUnregister(this.pi, record.id, "closed");
+    emitPendingUnregister2(this.pi, record.id, "closed");
     this.notifyComplete(record);
     return true;
   }
@@ -30107,7 +30242,8 @@ var SubagentService = class {
         store: this.store,
         modelService: this.modelService,
         pi: this.pi,
-        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+        emitUnregister: (id, st) => emitPendingUnregister2(this.pi, id, st),
+        sessionDir: this.sessionsDir
       },
       record,
       result,
@@ -30127,7 +30263,7 @@ var SubagentService = class {
         store: this.store,
         modelService: this.modelService,
         pi: this.pi,
-        emitUnregister: (id, st) => emitPendingUnregister(this.pi, id, st)
+        emitUnregister: (id, st) => emitPendingUnregister2(this.pi, id, st)
       },
       record,
       result
@@ -30174,6 +30310,29 @@ var SubagentService = class {
       );
     }
   }
+  /**
+   * [T4② / PS-4] idleTimeoutMs 合法域入口校验（>2^31-1 / 非有限值 fail-fast）。
+   *
+   * 旧链路：非法值穿透到 agent_settled 回调里的 armIdleTimer → assertSafeTimerDelay
+   * throw 被异步 catch 降级——配置错误被吞成静默语义变更（每轮完成通知被 isIdle 放行门
+   * 吞 + 进程无回收 timer）。对齐 shared/timer-delay「不静默 clamp」既有裁决：配置错误
+   * 显式暴露，错误消息含合法范围（0/负数 = 显式禁用是合法语义，不在本校验域；env 非法值
+   * 由 lifecycle-manager 的 warn 回落承接）。execute/executeAndAwait 两入口共用。
+   */
+  assertIdleTimeoutMsSafe(opts) {
+    const v = opts.idleTimeoutMs;
+    if (v === void 0) return;
+    if (!Number.isFinite(v)) {
+      throw new Error(
+        `subagent idleTimeoutMs = ${v} is not a finite number (NaN/\xB1Infinity). Valid range: a positive millisecond number up to ${MAX_TIMER_DELAY_MS} (2^31-1, Node setTimeout limit), or 0/negative to disable idle GC. Recovery: fix the idleTimeoutMs value and retry.`
+      );
+    }
+    if (v > MAX_TIMER_DELAY_MS) {
+      throw new Error(
+        `subagent idleTimeoutMs = ${v} exceeds the Node setTimeout limit (${MAX_TIMER_DELAY_MS} ms = 2^31-1); larger delays silently collapse to 1ms and would kill the subagent immediately. Recovery: pass idleTimeoutMs <= ${MAX_TIMER_DELAY_MS}, or omit it for the default (${DEFAULT_IDLE_TIMEOUT_MS}ms), or use 0/negative to disable idle GC.`
+      );
+    }
+  }
   /** 构造 SessionRunnerContext（spawn 模式：无需 SDK 实例）。 */
   buildSessionRunnerContext(overrideCwd) {
     return {
@@ -30215,7 +30374,7 @@ var SubagentService = class {
         this.notifyComplete(record);
         const lastTurn = record.turns[record.turns.length - 1];
         if (lastTurn !== void 0 && !lastTurn.closed && lastTurn.text.length > 0) {
-          logger32.warn(
+          logger33.warn(
             `[subagents] round settle with unclosed non-empty turn (record=${record.id}, turnIndex=${record.turns.length - 1}) \u2014 pi turn_end/agent_end ordering may have changed`
           );
         }
@@ -30504,6 +30663,40 @@ function boundedPrettySerialize(value, budget) {
     out += s.slice(0, budget - out.length);
     exceeded = true;
   }
+  function serializeArray(arr, depth, childIndent, closeIndent) {
+    if (arr.length === 0) {
+      append("[]");
+      return;
+    }
+    append("[\n");
+    for (let i = 0; i < arr.length && !exceeded; i++) {
+      if (i > 0) append(",\n");
+      append(childIndent);
+      const el = arr[i];
+      if (el === void 0 || typeof el === "function" || typeof el === "symbol") {
+        append("null");
+      } else {
+        serialize(el, depth + 1);
+      }
+    }
+    append("\n" + closeIndent + "]");
+  }
+  function serializeObject(obj, depth, childIndent, closeIndent) {
+    const entries = Object.entries(obj).filter(
+      ([, val]) => val !== void 0 && typeof val !== "function" && typeof val !== "symbol"
+    );
+    if (entries.length === 0) {
+      append("{}");
+      return;
+    }
+    append("{\n");
+    for (let i = 0; i < entries.length && !exceeded; i++) {
+      if (i > 0) append(",\n");
+      append(childIndent + JSON.stringify(entries[i][0]) + ": ");
+      serialize(entries[i][1], depth + 1);
+    }
+    append("\n" + closeIndent + "}");
+  }
   function serialize(v, depth) {
     if (exceeded) return;
     const t = typeof v;
@@ -30524,38 +30717,9 @@ function boundedPrettySerialize(value, budget) {
       const childIndent = " ".repeat(JSON_INDENT2 * (depth + 1));
       const closeIndent = " ".repeat(JSON_INDENT2 * depth);
       if (Array.isArray(obj)) {
-        const arr = obj;
-        if (arr.length === 0) {
-          append("[]");
-        } else {
-          append("[\n");
-          for (let i = 0; i < arr.length && !exceeded; i++) {
-            if (i > 0) append(",\n");
-            append(childIndent);
-            const el = arr[i];
-            if (el === void 0 || typeof el === "function" || typeof el === "symbol") {
-              append("null");
-            } else {
-              serialize(el, depth + 1);
-            }
-          }
-          append("\n" + closeIndent + "]");
-        }
+        serializeArray(obj, depth, childIndent, closeIndent);
       } else {
-        const entries = Object.entries(obj).filter(
-          ([, val]) => val !== void 0 && typeof val !== "function" && typeof val !== "symbol"
-        );
-        if (entries.length === 0) {
-          append("{}");
-        } else {
-          append("{\n");
-          for (let i = 0; i < entries.length && !exceeded; i++) {
-            if (i > 0) append(",\n");
-            append(childIndent + JSON.stringify(entries[i][0]) + ": ");
-            serialize(entries[i][1], depth + 1);
-          }
-          append("\n" + closeIndent + "}");
-        }
+        serializeObject(obj, depth, childIndent, closeIndent);
       }
       ancestors.delete(obj);
       return;
@@ -30572,7 +30736,7 @@ function boundedPrettySerialize(value, budget) {
 }
 
 // src/execution/agents-assembly.ts
-var logger33 = getLogger("agents-assembly");
+var logger34 = getLogger("agents-assembly");
 async function discoverAgents(workspaceRoot, hostRoots) {
   const resources = await discoverResources({
     kind: "agents",
@@ -30584,7 +30748,7 @@ async function discoverAgents(workspaceRoot, hostRoots) {
     if (!resource.available) continue;
     const content = getCachedFileContent(resource.path);
     if (content === null) {
-      logger33.error(`[agents-assembly] skip unreadable agent file ${resource.path}`);
+      logger34.error(`[agents-assembly] skip unreadable agent file ${resource.path}`);
       continue;
     }
     const profile = parseAgentProfile(content, resource.path);
@@ -30597,7 +30761,7 @@ async function discoverAgents(workspaceRoot, hostRoots) {
         path: resource.path
       });
     } else if (content.trimStart().startsWith("---")) {
-      logger33.warn(
+      logger34.warn(
         `[agents-assembly] ${resource.path}: agent frontmatter \u89E3\u6790\u5931\u8D25\uFF08IF1 \u6821\u9A8C\u4E0D\u901A\u8FC7\uFF09\u2014\u2014agent \u672A\u8FDB\u6E05\u5355`
       );
     }
@@ -30626,37 +30790,42 @@ function isScriptRunning(runs, name) {
 }
 
 // src/orchestration/args-meta.ts
-var logger34 = getLogger("args-meta");
+var logger35 = getLogger("args-meta");
 var EMPTY_RESERVED_KEYS = /* @__PURE__ */ new Set();
+function collectExactKeys(props, reserved) {
+  const exact = /* @__PURE__ */ new Set();
+  if (props === null || typeof props !== "object") return exact;
+  for (const k of Object.keys(props)) {
+    if (!reserved.has(k)) exact.add(k);
+  }
+  return exact;
+}
+function compilePatterns(pp, reserved) {
+  const patterns = [];
+  if (pp === null || typeof pp !== "object") return patterns;
+  for (const p of Object.keys(pp)) {
+    try {
+      const re = new RegExp(p);
+      if ([...reserved].some((tk) => re.test(tk))) continue;
+      patterns.push(re);
+    } catch (err) {
+      logger35.warn(`[args-meta] patternProperties \u975E\u6CD5\u6B63\u5219\u8DF3\u8FC7: ${p}`, {
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  return patterns;
+}
 function argKeysFromMeta(meta, options) {
   const reserved = options?.reservedKeys ?? EMPTY_RESERVED_KEYS;
-  const exact = /* @__PURE__ */ new Set();
-  const patterns = [];
   if (meta === void 0 || meta === null || typeof meta !== "object") {
-    return { exact, patterns };
+    return { exact: /* @__PURE__ */ new Set(), patterns: [] };
   }
   const schema = meta;
-  const props = schema.properties;
-  if (props !== null && typeof props === "object") {
-    for (const k of Object.keys(props)) {
-      if (!reserved.has(k)) exact.add(k);
-    }
-  }
-  const pp = schema.patternProperties;
-  if (pp !== null && typeof pp === "object") {
-    for (const p of Object.keys(pp)) {
-      try {
-        const re = new RegExp(p);
-        if ([...reserved].some((tk) => re.test(tk))) continue;
-        patterns.push(re);
-      } catch (err) {
-        logger34.warn(`[args-meta] patternProperties \u975E\u6CD5\u6B63\u5219\u8DF3\u8FC7: ${p}`, {
-          reason: err instanceof Error ? err.message : String(err)
-        });
-      }
-    }
-  }
-  return { exact, patterns };
+  return {
+    exact: collectExactKeys(schema.properties, reserved),
+    patterns: compilePatterns(schema.patternProperties, reserved)
+  };
 }
 function filterFlattenedKeys(p, keys) {
   const args = typeof p.args === "object" && p.args !== null ? p.args : void 0;
@@ -30695,7 +30864,7 @@ function normalizeArgsByMeta(params, meta, options) {
 }
 
 // src/index.ts
-var CORE_PACKAGE_VERSION = "0.3.0";
+var CORE_PACKAGE_VERSION = "0.5.0";
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AGENT_REF_EXT,

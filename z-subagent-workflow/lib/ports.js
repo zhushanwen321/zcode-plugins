@@ -9,7 +9,8 @@
  *                                      通道——appserver 已退役，spawn 驱动归
  *                                      vendored subagent-core，zsw 不再有自有实现）
  *   决策位② 回流通道  NotifierPort   : mailbox（主）| polling（兜底）| task-notification（预留）
- *   决策位③ 入口形态  （MCP / CLI）   : dist/mcp/server.js 与 bin/zsw.js 都只是 manager 的薄壳
+ *   决策位③ 入口形态  （CLI 单一入口）: bin/zsw.js 是 manager 的薄壳（1.x 的
+ *                                      dist/mcp/server.js MCP 壳已随 daemon 退役）
  *
  * 更换决策 = 在 createRuntime 里换一个实现类，manager 零改动。
  * 平台版本漂移（zcode 闭源升级）被限制在端口实现与 core 引擎内部消化。

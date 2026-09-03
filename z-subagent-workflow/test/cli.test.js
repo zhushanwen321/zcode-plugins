@@ -11,7 +11,6 @@
 
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
-const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { test, after } = require('node:test');
@@ -62,27 +61,6 @@ function run(args, extraEnv = {}) {
         resolve({ code: error ? error.code : 0, stdout, stderr });
       },
     );
-  });
-}
-
-/** 起假 daemon：记录全部请求帧，onFrame(req) 返回响应对象（不含 id）。写法同 cli-daemon-zsub.test.js。 */
-function startFakeDaemon(onFrame) {
-  return new Promise((resolve) => {
-    const sockPath = path.join(TMP, `fake-${process.pid}.sock`);
-    const seen = [];
-    const server = net.createServer((conn) => {
-      let buf = Buffer.alloc(0);
-      conn.on('data', (chunk) => {
-        buf = Buffer.concat([buf, chunk]);
-        const nl = buf.indexOf(0x0a);
-        if (nl === -1) return; // 半截请求帧：等下一段 data
-        const req = JSON.parse(buf.subarray(0, nl).toString('utf8'));
-        buf = Buffer.alloc(0);
-        seen.push(req);
-        conn.write(`${JSON.stringify({ id: req.id, ...onFrame(req) })}\n`);
-      });
-    });
-    server.listen(sockPath, () => resolve({ server, sockPath, seen }));
   });
 }
 
@@ -173,21 +151,23 @@ test('list --local → exit 0，stdout 为 JSON 数组', async () => {
   assert.deepEqual(JSON.parse(r.stdout), []);
 });
 
-// ----------------------------------------------- 默认 daemon 形态（1.0.0 起翻转）
+// ------------------------------------------------- wait（2.0 随 daemon 退役）
 
-test('默认 daemon 形态：daemon 未运行 → exit 1 + 可操作恢复指引（不静默降级 --local）', async () => {
-  // 隔离 ZSW_SOCK 指向不存在路径：connect ENOENT 走 §5.2 第 1 行口径
-  const r = await run(['list'], { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+test('wait → 显式拒绝（2.0 无 daemon，无跨进程执行体可等）+ exit 1 + 可操作指引', async () => {
+  const r = await run(['wait', '--id', 'x']);
   assert.equal(r.code, 1);
-  assert.match(r.stderr, /daemon 未运行/);
-  assert.match(r.stderr, /恢复指引/);
-  assert.match(r.stderr, /--local/);
+  assert.match(r.stderr, /wait 已移除/);
+  assert.match(r.stderr, /start --wait/);
+  assert.match(r.stderr, /run_in_background/);
 });
 
-test('wait --local → 显式拒绝（wait 无本地模式）+ exit 1', async () => {
-  const r = await run(['wait', '--local', '--id', 'x']);
-  assert.equal(r.code, 1);
-  assert.match(r.stderr, /wait 无本地模式/);
+test('list 不带 --local → 与 --local 同语义（2.0 本地是唯一形态，flag 接受但忽略）', async () => {
+  const a = await run(['list']);
+  assert.equal(a.code, 0);
+  assert.deepEqual(JSON.parse(a.stdout), []);
+  const b = await run(['list', '--local']);
+  assert.equal(b.code, 0);
+  assert.deepEqual(JSON.parse(b.stdout), []);
 });
 
 // ------------------------------------------------------------------ workflow
@@ -235,6 +215,22 @@ test('workflow --action abort/status 缺 --id → exit 1', async () => {
   assert.match(s.stderr, /--id/);
 });
 
+// MF-6：abort 的 not-in-process 分支是 2.0 语义变更点（daemon 代杀 → TaskStop
+// 指引），此前全仓零 CLI 面用例。一次性进程内存 runs 只有本进程创建的视图，
+// 任意历史/他进程 runId 必落入该分支
+test('workflow abort --id <非本进程 run> → exit 1 + TaskStop 指引 + {aborted:false, reason:not-in-process}', async () => {
+  const r = await run(['workflow', '--action', 'abort', '--id', 'wf-20990101-0001']);
+  assert.equal(r.code, 1, `stderr: ${r.stderr}`);
+  assert.match(r.stderr, /不在本进程/);
+  assert.match(r.stderr, /TaskStop/);
+  assert.match(r.stderr, /workflow-state/);
+  assert.deepEqual(JSON.parse(r.stdout), {
+    runId: 'wf-20990101-0001',
+    aborted: false,
+    reason: 'not-in-process',
+  });
+});
+
 test('workflow --action lint 缺 --file → exit 1', async () => {
   const r = await run(['workflow', '--action', 'lint']);
   assert.equal(r.code, 1);
@@ -264,7 +260,35 @@ return { final: 'done' };
 
 // parseArgs/csv 纯解析单测：bin/zsw.js 以 require.main 守卫导出解析函数——
 // 黑盒子进程测不到的 kebab→camel 映射与缺值布尔形态在此钉住
-const { parseArgs, csv } = require('../bin/zsw.js');
+const { parseArgs, csv, applyStartExitCode } = require('../bin/zsw.js');
+
+// MF-1/MF-7：start exit code 契约钉住——manager.start(wait=true) 返回扁平对象
+// {subagentId, slug, status, ...}（无 record 键），applyStartExitCode 须读顶层
+// result.status；修复前读 result.record.status 恒 undefined，失败终态全部
+// 静默 exit 0。黑盒 start 须跑真引擎，契约由此单测锁定（idle=0、cancelled=1 等
+// 五终态映射 + 非 start 子命令不设 exit code）
+test('applyStartExitCode：五终态 → exit code 映射（顶层 result.status）', () => {
+  const saved = process.exitCode;
+  try {
+    for (const [status, expected] of [
+      ['closed', 0], ['idle', 0], ['cancelled', 1], ['error', 1], ['timeout', 1], ['lost', 1],
+    ]) {
+      process.exitCode = undefined;
+      applyStartExitCode('start', { subagentId: 'sa-x', slug: 's', status });
+      assert.equal(process.exitCode, expected, `status=${status} 应映射 exit ${expected}`);
+    }
+    // 非 start 子命令：不设 exit code（保持 CLI 缺省 0）
+    process.exitCode = undefined;
+    applyStartExitCode('list', { status: 'error' });
+    assert.equal(process.exitCode, undefined, '非 start 子命令不得改写 exit code');
+    // record 嵌套形态（修复前的错误数据源）不得被消费——扁平对象无 record 键
+    process.exitCode = undefined;
+    applyStartExitCode('start', { record: { status: 'error' }, status: undefined });
+    assert.equal(process.exitCode, undefined, '无顶层 status 时不误设（start 出口必有 status，防御断言）');
+  } finally {
+    process.exitCode = saved;
+  }
+});
 
 test('F4 flag 解析：--thinking/--allow-tools/--deny-tools 的 kebab→camel 与值形态', () => {
   const a = parseArgs(['start', '--thinking', 'low', '--allow-tools', 'Read,Grep', '--deny-tools', 'Bash, WebSearch', '--task', 'x']);
@@ -283,13 +307,14 @@ test('F4 flag 解析：--thinking/--allow-tools/--deny-tools 的 kebab→camel �
   assert.equal(csv(42), undefined);
 });
 
-test('F4 flag 黑盒：--thinking 缺值 → stderr warn + 忽略（容错不失败，daemon 模式可观测）', async () => {
-  const r = await run(['start', '--thinking', '--task', 'x', '--slug', 'y'],
-    { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
-  assert.equal(r.code, 1); // daemon 不在场照常报错（warn 不改变退出语义）
+test('F4 flag 黑盒：--thinking 缺值 → stderr warn + 忽略（容错不失败，后续路径可观测）', async () => {
+  // 不跑引擎的快速失败：--agent 指向不存在路径，manager.start 的 resolver
+  // 校验先于引擎 spawn 拒绝（组参阶段 warn 已发出）
+  const r = await run(['start', '--thinking', '--task', 'x', '--slug', 'y',
+    '--agent', path.join(TMP, 'no-such-agent.md')]);
+  assert.equal(r.code, 1);
   assert.match(r.stderr, /--thinking 需要档位值/);
   assert.match(r.stderr, /已忽略该参数/);
-  assert.match(r.stderr, /daemon 未运行/); // 后续路径不受影响
 });
 
 test('F4 flag 黑盒：--allow-tools/--deny-tools 缺值 → stderr warn + 忽略', async () => {
@@ -301,10 +326,10 @@ test('F4 flag 黑盒：--allow-tools/--deny-tools 缺值 → stderr warn + 忽�
 });
 
 test('F4 flag 黑盒：合法档位值不触发缺值 warn', async () => {
-  const r = await run(['start', '--thinking', 'low', '--task', 'x', '--slug', 'y'],
-    { ZSW_SOCK: path.join(TMP, 'no-daemon', 'daemon.sock') });
+  const r = await run(['start', '--thinking', 'low', '--task', 'x', '--slug', 'y',
+    '--agent', path.join(TMP, 'no-such-agent.md')]);
   assert.doesNotMatch(r.stderr, /--thinking 需要档位值/);
-  assert.match(r.stderr, /daemon 未运行/); // 仍走 daemon 报错路径（本测试不跑引擎）
+  assert.match(r.stderr, /no-such-agent/); // 走到 agent 校验失败（本测试不跑引擎）
 });
 
 // ---------------------------------- workflow CLI 参数透传冒烟（零引擎，core 契约）
@@ -505,23 +530,19 @@ test('script-save：重名拒绝（tmp 已固化同名时不覆盖）+ tmp 缺�
   assert.equal(fs.existsSync(savedPath), false);
 });
 
-test('script-save/script-delete 默认经 daemon：帧形态 params={action,name}；缺 name 在组帧前拒绝', async () => {
-  const d = await startFakeDaemon(() => ({ ok: true, result: { name: 'w8-frame', message: 'fake' } }));
-  // 先 generate 落 tmp（恒本地，不经 daemon），save/delete 走 daemon 帧
+test('script-save/script-delete 不带 --local → 与 --local 同语义（恒本地）；缺 --name 拒绝', async () => {
   await run(['workflow', '--action', 'script-generate', '--name', 'w8-frame', '--script', CREATIVE_SRC]);
-  const saved = await run(['workflow', '--action', 'script-save', '--name', 'w8-frame'], { ZSW_SOCK: d.sockPath });
+  const saved = await run(['workflow', '--action', 'script-save', '--name', 'w8-frame']);
   assert.equal(saved.code, 0, `stderr: ${saved.stderr}`);
-  assert.equal(d.seen[0].tool, 'zflow');
-  assert.deepEqual(d.seen[0].params, { action: 'script-save', name: 'w8-frame' });
-  const deleted = await run(['workflow', '--action', 'script-delete', '--name', 'w8-frame'], { ZSW_SOCK: d.sockPath });
+  const savedPath = path.join(TMP, 'home', '.zsw', 'workflows', 'w8-frame.js');
+  assert.equal(fs.existsSync(savedPath), true, 'save 应固化到 HOME saved 根');
+  const deleted = await run(['workflow', '--action', 'script-delete', '--name', 'w8-frame']);
   assert.equal(deleted.code, 0);
-  assert.equal(d.seen[1].tool, 'zflow');
-  assert.deepEqual(d.seen[1].params, { action: 'script-delete', name: 'w8-frame' });
-  // 缺 --name：CLI 侧组帧前拒绝（daemon/--local 两形态同文案）
-  const noName = await run(['workflow', '--action', 'script-save'], { ZSW_SOCK: d.sockPath });
+  assert.equal(fs.existsSync(savedPath), false);
+  // 缺 --name：CLI 侧拒绝
+  const noName = await run(['workflow', '--action', 'script-save']);
   assert.equal(noName.code, 1);
   assert.match(noName.stderr, /需要 name/);
-  d.server.close();
 });
 
 test('冒烟：内置 workflow 的未知键被 host 前置拦截（stderr warning + 不进 $ARGS）', async () => {
@@ -564,20 +585,21 @@ test('XYZ_AGENT_SUBAGENT=1（core 引擎嵌套标记）：CLI 同款拒绝（F03
 
 // ------------------------------------------------- models --all（跨 provider 视图）
 
-test('models --all → 请求带 all:true 透传 daemon，结果原样打印', async () => {
-  const d = await startFakeDaemon(() => ({
-    ok: true,
-    result: {
-      all: true,
-      providers: [{ provider: 'prov-a', models: [{ name: 'prov-a/m1' }] }],
-      guidance: '跨 provider 用全名',
-    },
+test('models --all → 本地执行（真实 model-router 读 v2 config），全 provider 视图', async () => {
+  // v2 config fixture：带凭据 provider prov-a（model-router qualifiedProviders 口径）
+  const v2Dir = path.join(TMP, 'home', '.zcode', 'v2');
+  fs.mkdirSync(v2Dir, { recursive: true });
+  fs.writeFileSync(path.join(v2Dir, 'config.json'), JSON.stringify({
+    model: { main: `${PROVIDER_ID}/GLM-5.3-Flash` },
+    provider: { [PROVIDER_ID]: { models: { 'GLM-5.3': {} } }, 'prov-a': { options: { apiKey: 'k-a' }, models: { m1: {} } } },
   }));
-  const r = await run(['models', '--all'], { ZSW_SOCK: d.sockPath });
-  assert.equal(r.code, 0);
-  assert.deepEqual(d.seen[0].params, { action: 'models', all: true });
-  assert.equal(JSON.parse(r.stdout).providers[0].models[0].name, 'prov-a/m1');
-  d.server.close();
+  const r = await run(['models', '--all']);
+  assert.equal(r.code, 0, `stderr: ${r.stderr}`);
+  const view = JSON.parse(r.stdout);
+  assert.equal(view.all, true);
+  assert.ok(view.providers.some((p) => p.provider === 'prov-a' && p.models.some((m) => m.name === 'prov-a/m1')),
+    `prov-a/m1 expected in providers: ${JSON.stringify(view.providers)}`);
+  assert.match(view.guidance, /全名/);
 });
 
 // ------------------------------------- hook 子命令 delegator（批 A2b 收敛验证）

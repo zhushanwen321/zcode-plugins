@@ -66,11 +66,11 @@ function resolveStateKeep(env = process.env) {
  * workflow-state 磁盘裁剪接线（C13，无声恶化项修复）：把
  * <zswRoot>/workflow-state/ 收敛到上限个最新 .jsonl（mtime 升序删最旧，语义
  * 由 core FileRunStore.pruneStateFilesBeyondCap 承担）。设计 V7 后半的装配点
- * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——经组装面的只有
- * daemon 启动（dist/mcp/server.js main → createManager）与 CLI 本地组装路径
- * （bin/zsw.js `--local` / workflow 子命令；hook 子命令与 daemon thin-client
- * 默认路径在组装前分流，不经 assembleManager），单点同时覆盖 daemon 启动与
- * session-start 两语义；workflow-state 只产生于经组装面的路径，hook/thin-client
+ * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——2.0 经组装面的
+ * 只有 CLI 本地组装路径（bin/zsw.js zsub 子命令 / workflow 子命令；hook 子
+ * 命令在组装前分流，不经 assembleManager；1.x 的 daemon 启动挂点
+ * dist/mcp/server.js main → createManager 已随 MCP 壳退役），单点覆盖 CLI
+ * 各子命令语义；workflow-state 只产生于经组装面的路径，hook
  * 不落状态、无需 prune。server.js 不设第二调用点（同一次启动会双跑 prune，
  * 且状态目录与 wfHost.store 同源）。
  *
@@ -112,22 +112,52 @@ function assertRunnerEnv() {
   if (envRunner === 'spawn') {
     if (!warnedSpawnNoop) {
       warnedSpawnNoop = true;
-      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine；引擎模式定向用 XYZ_ZCODE_MODE=appserver|spawn），值被忽略');
+      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine 单一 app-server 形态），值被忽略');
     }
     return;
   }
   if (envRunner === 'appserver') {
     throw new Error(
       'ZSW_RUNNER=appserver：zsw 1.x 宿主私连通道已按设计 D6-⑥ 退役（执行统一走 core zcode engine，'
-      + '其内部已缺省 appserver 常驻——P3 回归完成，宿主层不再有独立通道开关）。'
-      + '恢复指引：去掉 ZSW_RUNNER（缺省即 core 引擎，appserver 常驻自动生效）；'
-      + '需定向 spawn 单轮改用 XYZ_ZCODE_MODE=spawn。'
+      + 'app-server 常驻自动生效——宿主层不再有独立通道开关）。'
+      + '恢复指引：去掉 ZSW_RUNNER（缺省即 core 引擎）。'
     );
   }
   throw new Error(
-    `ZSW_RUNNER=${JSON.stringify(envRunner)} 不是有效值（2c 后可选值仅 'spawn'，且为兼容 no-op）。`
-    + '恢复指引：去掉 ZSW_RUNNER 走缺省 core zcode engine，或设 ZSW_RUNNER=spawn。'
+    `ZSW_RUNNER=${JSON.stringify(envRunner)} 不是有效值（可选值仅 'spawn'，且为兼容 no-op）。`
+    + '恢复指引：去掉 ZSW_RUNNER 走缺省 core zcode engine。'
   );
+}
+
+/**
+ * records.jsonl 磁盘收敛挂点（1.x 自 dist/mcp/server.js 的 daemon 启动/接管
+ * 挂点迁来，daemon 已退役）：收敛「活跃全量 + 最近 N 终态」，恢复成本与磁盘封顶。
+ *
+ * 1.x 单属主由 daemon 角色保证；2.0 挂在 assembleManager 收尾 fire-and-forget
+ * ——CLI 组装路径单点覆盖，并发 CLI 调用的竞态由 RecordStore.compact 的
+ * D9② 双向复查兜住（读后复查前并发 append 变大 / 他者 compact rename 缩小
+ * → 均放弃 + temp 清理）。run 总数 ≤ keep 时秒级跳过（不触文件）；结果/放弃
+ * 一行 stderr 日志；失败不炸组装（compact 是旁路维护，下次调用幂等再试）。
+ * @param {object} manager 已重建索引的 manager（records = RecordStore）
+ * @param {string} phase 日志定位（2.0 恒 'cli'；保留参数兼容测试）
+ * @param {(msg: string) => void} log
+ */
+function compactRecords(manager, phase, log) {
+  try {
+    const keep = config.resolveRecordKeep();
+    const total = manager.records.records.size;
+    if (total <= keep) return; // 零成本跳过：总数不超 keep 则终态必不超
+    const r = manager.records.compact({ keep });
+    if (r.skipped) {
+      // skipped 含两种成因：D9② 复查放弃 / MF-4 前置闸（非终态近窗内有事件，
+      // 疑似对端进程在写）——均为不动文件、下次再试语义
+      log(`record compact 跳过（台账被并发变更或非终态 run 疑似活跃，下次启动再试）：phase=${phase} runs=${total} keep=${keep}`);
+    } else {
+      log(`record compact 完成：phase=${phase} removedRuns=${r.removedRuns} removedLines=${r.removedLines} keptRuns=${r.keptRuns} keep=${keep}`);
+    }
+  } catch (e) {
+    log(`record compact 失败（不影响服务，下次启动再试）: ${e && e.message || e}`);
+  }
 }
 
 async function assembleManager(opts = {}) {
@@ -168,8 +198,9 @@ async function assembleManager(opts = {}) {
     runner,
     resolver: opts.resolver || resolver,
   });
-  // 退出链组合（W6a2）：daemon 退出的唯一生产 shutdown 钩子是 wfHost.shutdown
-  // （MCP server stdin 关闭面，dist/mcp/server.js 不在本层领地）——runner 的
+  // 退出链组合（W6a2）：2.0 一次性 CLI 的唯一生产 shutdown 钩子是
+  // bin/zsw.js 的 exitAfterEngineShutdown（成功路径与 main catch 错误出口都
+  // 收口，dist/mcp/server.js 已随 MCP 壳退役不再存在）——runner 的
   // 进程收割面（appserver 常驻引擎 dispose + spawn 子进程 killAll 兜底）没有
   // 独立生产调用点，组合进同一钩子：先 terminate workflow runs（record 卫生），
   // 再收 runner（常驻进程回收，dispose 的 close 帧先于 SIGTERM）。注入 fake
@@ -189,7 +220,17 @@ async function assembleManager(opts = {}) {
   // 组装之后：生产路径此时 orchestration-host.ensureConfigured 已 configureCore
   // （dataRoot 就绪，FileRunStore.stateDir 可解析）
   pruneWorkflowState();
+  // records.jsonl 收敛（compactRecords 头注）：同样 fire-and-forget 旁路维护。
+  // MF-1 时序修复：compact 判定依赖内存索引的终态数，而 RecordStore 构造不
+  // 读盘——组装点先 rebuildFromLog（只建内存索引，不动文件），否则 total 恒 0
+  // 恒早退、compact 在组装路径永不执行。调用方（CLI main）随后的二次 rebuild
+  // 幂等无冲突；compact 动文件不动内存索引，rebuild 读到 compact 前后任一
+  // 形态的合法事件流均一致（D9② 并发防护保证 rename 原子性）
+  if (records && typeof records.rebuildFromLog === 'function') {
+    try { records.rebuildFromLog(); } catch (e) { log(`record 重建失败（跳过 compact 判定）: ${e && e.message || e}`); }
+  }
+  compactRecords(manager, 'cli', log);
   return { manager, wfHost, notifier };
 }
 
-module.exports = { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT };
+module.exports = { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT, compactRecords };

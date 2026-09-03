@@ -126,6 +126,20 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ⚠️ 整个 merge 流程的**最后一步**。执行后立即输出合并总结收尾，禁止再调 bash 做「删除确认」。
 
+**6a. dev-link 恢复正式版（删 worktree 前置，防止 inline 悬空）**：插件若以 dev-link 的
+inline 形态注册在本机 zcode（`~/.zcode/cli/config.json` 指向本 worktree），直接删 worktree
+会留下悬空 inline 条目（zcode 加载报错）——dev-link skill「约束」节要求删 worktree 前先
+unlink。时序在阶段 5 之后天然成立：已发版时 unlink 恢复的正式版含本次改动；未发版则恢复
+旧版（脚本黄字提示并跳过安装，维持 dev 形态由用户决定）：
+
+```bash
+cd $WS_ROOT/$WT && bash .agents/skills/dev-link/status.sh   # 只读；看目标插件行
+# 输出含 "inline: ✓" 或 "✗ 悬空目录" 时（"inline: 无" 则跳过本步）：
+cd $WS_ROOT/$WT && bash .agents/skills/dev-link/unlink-dev.sh <plugin>
+```
+
+**6b. 删除 worktree 与分支**：
+
 ```bash
 cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 ```
@@ -151,7 +165,7 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 | 4 | main 同步（3） | `merge --ff-only origin/main` |
 | 5 | post-merge CI（4） | `gh run watch --exit-status` |
 | 6 | 发版决策（5，默认跳过） | `scripts/release.js` + tag |
-| 7 | 清理 worktree（6，终结） | 删除后直接总结收尾 |
+| 7 | dev-link 恢复 + 清理 worktree（6，终结） | status.sh 检测 → unlink-dev.sh → 删除后直接总结收尾 |
 
 ## 项目特化
 
@@ -159,7 +173,7 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
   typecheck/lint，语法门禁由 pre-commit hook（node --check）承接
 - **发布模式**：tag 直发 `<plugin>@<semver>`（非 changesets）；发版与合并解耦，见 AGENTS.md「npm 发布规范」
 - **合入同步项**：marketplace.json 条目 + 根 README 插件表（阶段 1 核对）
-- **无 Electron / 无双语 release notes / 无 dev-link 清理**（不适用本项目形态）
+- **无 Electron / 无双语 release notes**（不适用本项目形态）；**有 dev-link 清理**（6a：inline 形态删 worktree 前先恢复正式版，机制见 dev-link skill）
 
 ## 失败恢复
 
@@ -167,6 +181,7 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 |------|------|
 | Gate-1 测试 FAIL | 按失败用例修复后从阶段 1 头部重跑 |
 | Gate-1 check-sync 版本漂移 | 禁手改单一文件对齐——三处版本以将要发版的目标为准统一（发版走 release.js；不发版则以 main 版本为准回退漂移文件） |
+| 6a unlink 报「未发布」 | gitee main 的 marketplace.json 不含该插件（从未发版）——询问用户：先补发版再 unlink，或确认维持 dev 形态后手工删 inline 条目再删 worktree |
 | PR CI FAIL | 看 checks 日志，修复以新 commit push 进 feature 分支，CI 绿后重走阶段 2 |
 | 阶段 3 非 ff | 本地 main 有独有 commit：人工排查后决策（revert 本地或强推），禁自动 reset --hard |
 | 阶段 4 post-merge CI FAIL | 新分支修复走 pr-cr-fix；main 已坏时上报用户决策 |

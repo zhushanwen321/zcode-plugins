@@ -33,11 +33,36 @@
   `dist/`）。vendored 主入口为**自包含形态**（`dist.bundle` 优先落位 vendored `dist/`，
   `capabilities.selfContainedIndex=true`，无 ajv/yaml/proper-lockfile 外部依赖），
   `requireCore()` 直接可用；workflow 资产（`workflows/*.js|.cjs`，零依赖自包含）不受
-  形态影响，`workflowAssetPath` 直接可用。**版本口径统一 0.4.0**：当前 vendored 基线为
-  本地构建的 0.3.0（npm 上 0.2.0 已被同号不同物占用、0.3.0 永不单独发布——2026-08-30
-  用户裁决），核心包正式发布落点 **0.4.0**（minor changeset = 本地基线 0.3.0 + minor
-  bump）；core 发版后 `--npm 0.4.0` 即可用 registry 源刷新，当前刷新统一走 `--local`
-  （与 `lib/core-ref.js` 刷新指引同口径）。
+  形态影响，`workflowAssetPath` 直接可用。**版本口径**：0.2.0（npm 被同号不同物占用）与
+  0.3.0（本地基线、永不单独发布——2026-08-30 用户裁决）为历史形态；0.4.0 曾为首个
+  registry 可用版本；**当前 vendored 基线 0.5.0**（2026-09-03 本地构建刷新，breaking：
+  zcode 引擎删 CLI spawn 链 + HOME 池化，共享宿主 HOME——详见下方「zcode 引擎单一
+  app-server 形态」）。core 发版后 `--npm <version>` 即可用 registry 源刷新，当前刷新
+  统一走 `--local`（与 `lib/core-ref.js` 刷新指引同口径）。
+
+### zcode 引擎单一 app-server 形态（core 0.5.0 起，2026-09 用户拍板）
+
+- **只走 app-server RPC，不走 CLI spawn**：`zcode --json --prompt` 单轮链、probe 冒烟
+  门控、protocol-drift 首败降级、`XYZ_ZCODE_MODE` 钉扎全部删除；协议漂移直接报可操作
+  错误（提示核对版本/重启/改用 pi 引擎）。
+- **共享宿主 HOME + fs 拦截凭据供数**：引擎 spawn env 不覆写 HOME，app-server 直接
+  消费宿主 `~/.zcode/`；会话写入真实 `~/.zcode/cli/db/db.sqlite`（与 GUI 共写同一
+  SQLite，WAL 并发安全）。**凭据供数走 fs 拦截 wrapper**（core `appserver-launcher`）：
+  spawn 的是落盘于 `engines/zcode/appserver-launcher.cjs` 的 wrapper，它 patch
+  `fs.readFileSync/fsPromises.readFile` 把 `~/.zcode/cli/config.json` 精确路径的读取
+  重定向为「真实文件 + v2 provider 注入」的内存合并结果——CLI 形态 app-server 只认
+  该文件的 provider 字段（bundle 实测：GUI 内嵌走 modelConfig 直传，外部进程无
+  env/argv/协议注入通道），wrapper 是 GUI 传参的进程外等价复刻。漂移面：zcode 升级
+  改配置读取路径 → `missing baseURL` 明确报错（与协议漂移同级姿态）。
+- **journal 分组**：poolKey 恒 `'shared'`（与 pi 引擎同构），journal 落
+  `<ZSW_ROOT>/engines/zcode/shared/journal-*.jsonl`；旧 home-appserver*/home-provider-model
+  池目录废弃（存量无害可手工清理）。
+- **exec/sessionRef 契约**：`exec.kind` 恒 `'appserver'`、`pid` 恒 undefined
+  （`alive()` 保留 spawn 分支仅为旧 records 兼容读取）；`sessionRef.dbPath` 为宿主
+  绝对路径。
+- **已接受代价**：GUI 会话列表可见 headless 会话；登录态轮换后常驻连接需引擎进程
+  重启；worker 继承用户 MCP/plugins/hooks。收益：HOME 依赖副作用（pnpm store 随
+  HOME 翻转等）根治。
 - **与 check-sync 的关系**：check-sync 规则 4（零依赖红线，查插件 package.json 的依赖声明）
   不受本节影响——vendored 副本是构建期产物不是依赖声明；vendored `package.json` 已精简为
   name/version，不会被误读为引入依赖。

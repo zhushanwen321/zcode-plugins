@@ -51,7 +51,7 @@ test('组装 runner 恒为 CoreRunner（core zcode engine 适配），端口面�
   const { manager } = await assembleManager();
   const runner = manager.runner;
   assert.ok(runner instanceof CoreRunner, 'runner 是 CoreRunner 实例');
-  assert.equal(runner.capabilities().kind, 'spawn', 'capabilities().kind 恒 spawn（台账标注兼容）');
+  assert.equal(runner.capabilities().kind, 'appserver', 'capabilities().kind 恒 appserver（单一 app-server 形态基线）');
   for (const method of ['start', 'resume', 'alive', 'release', 'probe', 'capabilities']) {
     assert.equal(typeof runner[method], 'function', `runner.${method} 在场`);
   }
@@ -64,7 +64,7 @@ test('CoreRunner 构造幂等登记 core registry（registerZcodeEngine 覆盖�
   assert.doesNotThrow(() => CoreRunner.ensureZcodeEngineRegistered());
 });
 
-test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与引擎模式定向指引）', async () => {
+test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与恢复指引）', async () => {
   process.env.ZSW_RUNNER = 'appserver';
   try {
     await assert.rejects(
@@ -72,8 +72,7 @@ test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与引擎
       (err) => {
         assert.match(err.message, /D6-⑥ 退役/);
         assert.match(err.message, /core zcode engine/);
-        assert.match(err.message, /XYZ_ZCODE_MODE=spawn/);
-        assert.match(err.message, /P3/);
+        assert.match(err.message, /去掉 ZSW_RUNNER/);
         return true;
       },
     );
@@ -232,5 +231,38 @@ test('启动路径冒烟（C13）：assembleManager（daemon/CLI 共用装配面
     assert.equal(seenCap, resolveStateKeep(), '上限经 resolveStateKeep 透传（缺省 1000）');
   } finally {
     spy.mock.restore();
+  }
+});
+
+test('compactRecords 组装接线（MF-1/S-4）：超 keep 终态 run → 组装时实际收缩文件', async () => {
+  ensureConfigured();
+  const recFile = path.join(config.zswRoot(), 'records.jsonl');
+  try { // S-4：fixture 清理进 finally——断言失败时 rmSync 不再被跳过泄漏污染同 ZSW_ROOT 用例
+    const lines = [];
+    for (let i = 1; i <= 5; i++) {
+      lines.push(JSON.stringify({ ts: 1000 + i, type: 'created', subagentId: `sa-mfc-${i}`, task: 't', slug: `s${i}` }));
+      lines.push(JSON.stringify({ ts: 1001 + i, type: 'transition', id: `sa-mfc-${i}`, from: 'created', to: 'cancelled', closedReason: 'fixture' }));
+    }
+    fs.writeFileSync(recFile, `${lines.join('\n')}\n`);
+    const before = fs.readFileSync(recFile, 'utf8');
+
+    let stderr = '';
+    const origWrite = process.stderr.write;
+    process.stderr.write = (s) => { stderr += String(s); return true; };
+    try {
+      process.env.ZSW_RECORD_KEEP = '2';
+      await assembleManager();
+      await new Promise((r) => setImmediate(r)); // 冲刷 fire-and-forget 链路
+    } finally {
+      process.stderr.write = origWrite;
+      delete process.env.ZSW_RECORD_KEEP;
+    }
+    assert.ok(stderr.includes('record compact 完成') && stderr.includes('phase=cli'), '组装出 compact 完成日志');
+    const after = fs.readFileSync(recFile, 'utf8');
+    assert.ok(after.length < before.length, `文件实际收缩（${before.length} → ${after.length}）`);
+    assert.ok(!after.includes('sa-mfc-1'), '最旧终态 run 被移除');
+    assert.ok(after.includes('sa-mfc-5'), '最新终态 run 保留');
+  } finally {
+    fs.rmSync(recFile, { force: true }); // 不污染同文件其他用例的 ZSW_ROOT
   }
 });

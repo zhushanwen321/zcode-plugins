@@ -40,17 +40,21 @@ name: review-concurrency
 
 ## 输出格式 [MANDATORY——zsub review-fix-loop 契约]
 
-先 2-3 句总体印象，然后必须输出一个 ```json 围栏块：
+报告正文（markdown，含 per-issue 表格、每条 evidence 与 Fix suggestion 列）用 Write
+写入 prompt 指定的报告路径；最终回复以一个 ```json 围栏块收尾，且仅含如下结构化结果
+（workflow 按此 schema 解析，must_fix 必须是 number；正文里不要放其他 json 块）：
 
 ```json
-{"status":"issues","issues":[{"id":"A1","severity":"major","title":"问题标题","detail":"说明与依据（引用 file:line）","file":"相对路径"}]}
+{"report_file":"<刚写盘的报告绝对路径>","must_fix":2,"suggestion":1,"reconciliation":[]}
 ```
 
+- must_fix（number）= critical+major 条数；suggestion（number）= minor 条数；问题明细全在正文报告里，不进 json
 - severity 取 critical/major/minor；只有 critical 和 major 算必须修复
 - 类别用：abort-chain / concurrency-limit / process-leak / timer-leak / worktree-leak / race-condition / record-consistency
 - 并发 bug 的 severity 判定：会累积成进程/worktree 泄漏或状态损坏的 = critical；理论竞态但触发条件苛刻的 = major
-- 无问题时输出 `{"status":"clean","issues":[]}`
-- 不要报风格类 minor 问题；不要输出其他 json 块
+- reconciliation：首轮（R1）恒返回 `[]`；R2+ 对前轮每个 issue_id 给 `{"prev_id":"A1","status":"fixed","evidence":"实读 file:line + 确认内容"}`（status ∈ fixed/not-fixed/regressed/escalate；fix 侧自称 fixed 不算证据，必须实读核对）
+- 无问题时输出 `{"report_file":"<报告路径>","must_fix":0,"suggestion":0,"reconciliation":[]}`
+- 不要报风格类 minor 问题
 
 ## 约束
 

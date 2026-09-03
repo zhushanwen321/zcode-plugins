@@ -7,7 +7,9 @@
  * preparer（core TS 重写自 zsub 同源机制），本模块不再承担执行期职责。
  * 保留面 = 清单与默认标记（`zsw models` action / SessionStart hook 注入块 /
  * hook 面的实际消费导出）：
- * - ModelRouter#listModels / #allProviders   dist/mcp/server.js models action
+ * - ModelRouter#listModels / #allProviders   `zsw models` CLI action（1.x 曾由
+ *                                           dist/mcp/server.js models action 消费，
+ *                                           已随 MCP 壳退役）
  * - ModelRouter#resolveDefault               manager.start 台账落盘的默认模型
  *                                           回退链（record.model 展示值；执行
  *                                           校验归 engine preparer）
@@ -24,8 +26,9 @@ const config = require('./config');
 // vendored core 单一解析点（V5e 收口）：模型切分原语 splitZcodeModelRef、凭据
 // 谓词 hasApiKey、缺省常量 DEFAULT_PROVIDER_ID / ZCODE_FALLBACK_DEFAULT_MODEL
 // 全部消费 core 单一源，退役本模块自算副本。顶层 requireCore 非性能取舍，
-// 动机有二：① PROVIDER_ID = core.DEFAULT_PROVIDER_ID 是值导出，hook-inject /
-// dist/mcp/server.js 顶层解构消费，惰性求值不可行；② 顶层装载促成常量/切分/
+// 动机有二：① PROVIDER_ID = core.DEFAULT_PROVIDER_ID 是值导出，hook-inject
+// （1.x 还有 dist/mcp/server.js 顶层解构，已随 MCP 壳退役）消费，惰性求值
+// 不可行；② 顶层装载促成常量/切分/
 // 凭据三面运行时单一源。hook 链路（hook-inject）本就经 core-ref 装载 core
 // barrel，模块缓存下本模块顶层 require 的边际成本≈0
 const core = require('./core-ref').requireCore();
@@ -241,8 +244,9 @@ class ModelRouter {
 
   /**
    * models --all 的全 provider 结构化视图（zsub models --all 数据源；「合格
-   * provider 判定 + 全 provider 模型视图」收拢于本模块单一实现，dist/mcp/server.js
-   * 入口薄壳层只消费不复制，SessionStart 注入块经 qualifiedProviders 同口径）。
+   * provider 判定 + 全 provider 模型视图」收拢于本模块单一实现，CLI 入口
+   * 薄壳层只消费不复制（1.x 曾由 dist/mcp/server.js 消费，已随 MCP 壳退役），
+   * SessionStart 注入块经 qualifiedProviders 同口径）。
    * 只列合格 provider（qualifiedProviders：带凭据且清单非空），模型名升格为全名
    * <provider>/<model>——跨 provider 引用必须全名，这是视图存在的理由。
    * 清单不可读抛可操作错误（与 listModels 失败口径一致，不静默回空数组）；读

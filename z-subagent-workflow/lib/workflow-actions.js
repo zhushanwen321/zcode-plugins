@@ -2,8 +2,8 @@
 /**
  * zflow workflow 引用契约（D-4/D-E3）+ 创作闭环（W8 / D-6）共享实现（MF-1 收口）。
  *
- * 为什么在 lib/ 而非 bin/zsw.js：这些函数是 CLI（bin/zsw.js）与 MCP/daemon
- * （dist/mcp/server.js 的 zflow handler）两入口共用的业务实现——入口模块只做
+ * 为什么在 lib/ 而非 bin/zsw.js：这些函数是 CLI（bin/zsw.js；1.x 还有
+ * dist/mcp/server.js 的 zflow handler，已随 MCP 壳退役）入口共用的业务实现——入口模块只做
  * argv/帧解析的薄壳，业务实现寄生在 CLI 入口会让 MCP 入口反向 require 另一
  * 入口模块取逻辑（入口职责倒挂）。镜像 lib/zsub-actions.js 的收口模式：
  * 实现落 lib，两入口从这里导入，单一来源防漂移；core 管线调用保持单源
@@ -30,8 +30,8 @@ function workflowScriptDirs() {
  * knownNames 参数（可选）：内置 5 名 + 发现面 saved 名，由 lib/orchestration-host
  * 的 buildKnownWorkflowNames 异步构建（CLI 入口 await 后传入，cwd 口径与 host
  * 的 ctx.cwd 同源——⛔D：同一目录集三入口产出同一集）。saved 裸名放行 =
- * D-E3 裁决（known 命中即合法）。run 两入口（CLI buildWorkflowRunParams 与
- * daemon socket 面 dist/mcp/server.js 的 zflow run 分支）均已 await 全量
+ * D-E3 裁决（known 命中即合法）。run 入口（CLI buildWorkflowRunParams；1.x
+ * daemon socket 面亦然，已随 MCP 壳退役）均已 await 全量
  * knownNames 后传入；单参形态（knownNames 缺省回落内置 5 名）保留为防御位
  * （同步签名不变：async 化会让未 await 的调用把非法 ref 变 unhandled
  * rejection 崩 daemon）。

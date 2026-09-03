@@ -52,6 +52,18 @@ const {
 const SUMMARY_HEAD_CHARS = 500;
 
 /**
+ * 无句柄时「执行体在他进程」守卫谓词（cancel/close 共享，MF-2/MF-3 单源——
+ * 两处条件漂移正是 MF-3 的 root cause）：running / 非 idle 来源的 lost =
+ * 执行体在另一 CLI 进程，本进程跨进程终态化会让对端 done 落 CAS 拒绝、台账与
+ * 本进程视图矛盾（close 还会拆掉他进程正用的 worktree）。MF-5 例外：lost 且
+ * _lostFrom='idle'（rebuildFromLog 标 lost 时留的内存标记）= 轮间本无进程，
+ * 放行本地终态化（lost→cancelled/closed 在 TRANSITIONS 合法）。
+ */
+function hasForeignExecutor(rec) {
+  return rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle');
+}
+
+/**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
  * worktree-adapter 真实现；占位仅保留给「显式不想要 worktree 能力」的组装场景）。
  */
@@ -363,7 +375,8 @@ class SubagentManager {
       return {
         busy: true,
         message: `该 subagent 正在运行，仅 idle 状态可投递。`
-          + `等待当前轮完成（node "${config.zswCliPath()}" wait --id ${id}）`
+          + `等待当前轮完成（node "${config.zswCliPath()}" status --id ${id} 轮询进度；`
+          + `承载 start 的后台 Bash 任务完成即原生 task-notification 唤醒）`
           + `或 node "${config.zswCliPath()}" cancel --id ${id} 取消后再投递`,
       };
     }
@@ -408,13 +421,22 @@ class SubagentManager {
       if (pending) await pending.catch(() => {});
       return { subagentId: id, status: this.records.get(id).status, cancelled: true };
     }
-    // 无句柄：created（排队中）/ idle（轮间无进程）/ lost | running（server 重启后，
-    // record 仍在 running 但句柄随进程内存丢失——两者都要注明进程可能残留）
+    // 无句柄：created（排队中）/ idle（轮间无进程）可本进程直接终态化；
+    // 其余（running / 非 idle 来源 lost）= 执行体在他进程，必须报错（MF-2，
+    // 条件单源 hasForeignExecutor）。错误文案给可操作恢复指引：kill 对端
+    // 承载任务的后台 Bash；死透的 lost 给手工终态事件形态。
+    if (hasForeignExecutor(rec)) {
+      throw new Error(
+        `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
+        + '本进程无法取消：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
+        + 'record 由持有执行体的对端进程终态化。若确认对端进程已退出后仍卡 lost：可手工向台账文件'
+        + `（records.jsonl）追加该 run 的终态事件，如 {"ts":${Date.now()},"type":"transition","id":"${id}","from":"lost","to":"cancelled"}，`
+        + '下次 rebuild 即恢复终态。恢复指引：zsw list 复查状态。',
+      );
+    }
     const note = rec.status === 'created'
       ? '排队中被取消，进程未启动'
-      : (rec.status === 'idle'
-        ? 'idle 会话无进程，直接终态化'
-        : '句柄丢失（server 重启），进程可能残留；确认请 ps 检查后手工清理');
+      : 'idle 会话无进程，直接终态化';
     this.records.transition(id, rec.status, 'cancelled', { closedReason: note });
     return { subagentId: id, status: 'cancelled', cancelled: true, note };
   }
@@ -428,9 +450,20 @@ class SubagentManager {
     if (!TERMINAL_STATUSES.has(rec.status)) {
       if (this.handles.has(id)) {
         await this._cancelCore(id); // 运行中：借取消链杀进程 + 终态落盘（同锁内直调，避免重入自等）
+      } else if (hasForeignExecutor(rec)) {
+        // MF-3：与 cancel 同款守卫（单源 hasForeignExecutor）——跨进程终态化
+        // 会让对端 done 落 CAS 拒绝，且下面的 worktree.cleanup 会直接拆掉
+        // 他进程正用的隔离目录（活任务 cwd 被拆）
+        throw new Error(
+          `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
+          + '本进程无法关闭：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
+          + 'record 由持有执行体的对端进程终态化后再 close 清理 worktree。若确认对端进程已退出后仍卡 lost：'
+          + '可手工向台账文件（records.jsonl）追加该 run 的终态事件（如 {"type":"transition","from":"lost","to":"cancelled"} 形态，'
+          + '补 ts/id 字段），下次 rebuild 恢复终态后再 close。恢复指引：zsw list 复查状态。',
+        );
       } else {
         const note = rec.status === 'lost'
-          ? 'closed（句柄丢失，进程可能残留）'
+          ? 'closed（rebuild 标 lost，原为 idle 无进程残留）'
           : 'closed-by-user';
         this.records.transition(id, rec.status, 'closed', { closedReason: note });
       }
@@ -790,8 +823,7 @@ class SubagentManager {
     if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
       throw new Error(
         `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
-        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\``
-        + '（管理面默认经 daemon，--local 本地）。'
+        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\`。`
       );
     }
     return rec;

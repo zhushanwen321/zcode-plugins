@@ -3,20 +3,22 @@
 /**
  * 无头真机 e2e（DESIGN-v3 §4.1）：真实 zcode.cjs + 真实模型（GLM-5.3）。
  *
- * 回接 2c（D6-⑥）+ W6a2：执行链 = vendored subagent-core 的 zcode engine
- * （lib/runner-core.js），engine 缺省 appserver 常驻（probe 冒烟门控通过即命中；
- * 降级/定向走 spawn 单轮）。涉及 exec 形态的场景（E4/E6/E7）按 exec.kind 分支
- * 断言：spawn → pid 整数通路（旧语义）；appserver → kind='appserver' +
- * sessionRef 回填 + pid 恒空（core D6 边界：常驻进程不进 onChildSpawned）。
- * E3 conversation 续聊断言：core EnginePort 面无 resume 入口，message 续聊报
- * 可操作退役错误（旧 --resume 冷续聊让渡）。
+ * 回接 2c（D6-⑥）+ 2026-09 单一形态收口：执行链 = vendored subagent-core
+ * （0.5.0+）的 zcode engine——单一 app-server 常驻、共享宿主 HOME（无 CLI
+ * spawn 降级链、无 HOME 池）。exec 形态断言（E4/E6/E7）：kind 恒 'appserver'、
+ * sessionRef 回填（dbPath = 宿主 ~/.zcode/cli/db/db.sqlite 绝对路径）、pid 恒
+ * 空、poolKey 恒 'shared'。E3 conversation 续聊断言：core EnginePort 面无
+ * resume 入口，message 续聊报可操作退役错误。
  *
  * 与单测的隔离差异（为什么 env 这么设）：
- * - ZSW_ROOT / ZCODE_MAILBOX_ROOT 指临时目录：records/outputs/引擎池
- *   （<ZSW_ROOT>/engines/） /mailbox 全部隔离，绝不碰真实 ~/.zcode/zsw。
- * - HOME 刻意【不】改：core 引擎 preparer 的凭据源（~/.zcode/v2/config.json）
- *   需要真实登录态（改了 HOME 就没有真实凭据，所有模型调用必挂）。user 级
- *   agent 根的隔离改走 resolver 注入临时 homeDir。
+ * - ZSW_ROOT / ZCODE_MAILBOX_ROOT 指临时目录：records/outputs/journal 分组
+ *   （<ZSW_ROOT>/engines/zcode/shared/）/mailbox 全部隔离，绝不碰真实
+ *   ~/.zcode/zsw。
+ * - HOME 刻意【不】改（共享宿主 HOME 是引擎语义本身）：引擎凭据源
+ *   （~/.zcode/v2/config.json）与 app-server 会话 db（真实 ~/.zcode/cli/db/
+ *   db.sqlite）都需要真实 HOME——e2e 会话会写入真实 db（与 GUI 共写，
+ *   WAL 并发安全；已接受的拍板代价）。user 级 agent 根的隔离改走 resolver
+ *   注入临时 homeDir。
  * - ZCODE_MESSAGE_ENABLED=1：激活 mailbox 档（E2/E3 投递断言的前提）。
  *
  * 成本纪律：task 文本极简；每场景 1-2 次真实调用封顶；E4/E6/E8 不计入完成
@@ -230,8 +232,8 @@ function envelopeCountSafe(sessionId) {
 
 /**
  * E6 的「server 进程」脚本：真实 start bg 后保活，等测试进程 SIGKILL 模拟崩溃。
- * 就绪信号（READY）按 exec 形态双形态输出（W6a2 后缺省 appserver：pid 恒空，
- * 等 pid 必然 TIMEOUT）：`READY <id> spawn <pid>` / `READY <id> appserver`。
+ * 就绪信号（READY）：`READY <id> appserver`（单一 app-server 形态——sessionRef
+ * 回填即 in-flight；exec.pid 恒 undefined，无 spawn 形态）。
  */
 function writeE6ServerScript() {
   const script = path.join(TMP, 'e6-server.cjs');
@@ -250,11 +252,6 @@ const agentDiscovery = require(${JSON.stringify(path.join(REPO, 'lib', 'agent-di
   while (Date.now() - t0 < 20000) {
     const rec = manager.status(h.subagentId);
     const exec = rec && rec.exec;
-    if (exec && Number.isInteger(exec.pid)) {
-      console.log('READY ' + h.subagentId + ' spawn ' + exec.pid);
-      setInterval(() => {}, 5000); // 保活：等待被 SIGKILL
-      return;
-    }
     if (exec && exec.kind === 'appserver' && exec.sessionRef) {
       console.log('READY ' + h.subagentId + ' appserver');
       setInterval(() => {}, 5000); // 保活：等待被 SIGKILL（常驻连接也持有事件循环）
@@ -397,123 +394,71 @@ test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', scenar
     { task: '从 1 逐个数到 1000000，不要停', slug: 'e4-cancel', model: MODEL, timeoutMs: 120_000 },
     { cwd: path.join(TMP, 'e1-proj'), targetSessionId: 'sess_e4' },
   );
-  // 在飞信号按 exec 形态分支（缺省 probe 过 = appserver：create 应答即翻转 +
-  // sessionRef；降级 = spawn：pid 落盘）。必须等到「真正在跑」再 cancel——
-  // 抢在会话建立/进程 spawn 前就测不到中止链
+  // 在飞信号：单一 app-server 形态——create 应答回填 sessionRef 即在跑。
+  // 必须等到「真正在跑」再 cancel——抢在会话建立前就测不到中止链
   const inFlight = await waitFor(() => {
     const r = manager.status(h.subagentId);
     if (!r.exec) return null;
-    if (Number.isInteger(r.exec.pid)) return { kind: 'spawn', pid: r.exec.pid };
     if (r.exec.kind === 'appserver' && r.exec.sessionRef
       && typeof r.exec.sessionRef.sessionId === 'string') return { kind: 'appserver' };
     return null;
   }, 10_000);
 
+  // ps 判据锚定有效性（防判据漂移静默失效——③ 在扫不到时恒真，判据坏了
+  // 也 pass，故必须在此证明判据真能锚定到进程）：in-flight 已证 sessionRef
+  // 回填 = 连接刚建立，此刻常驻进程必然存活。放在 cancel 之前——cancel 的
+  // D3 终局两可（优雅 stop 落定 → 常驻存活；grace 未落定 → killChain 连坐
+  // 收割共享进程）使 cancel 后「在场」不可靠（长任务 stop 不落定时进程会被
+  // 连坐杀掉），不作断言面。
+  assert.ok((await scanEngineAppServers()).length > 0, 'in-flight 引擎常驻进程应被 ps 判据锚定');
   const out = await manager.cancel(h.subagentId);
   assert.equal(out.cancelled, true);
   assert.equal(manager.status(h.subagentId).status, 'cancelled');
 
-  if (inFlight.kind === 'spawn') {
-    // SIGTERM 优雅退出可能超 200ms（收尾钩子）；轮询 ps 直到该 pid 消失或已
-    // 非 zcode.cjs（本机 pid 高复用环境下 kill(pid,0) 有假阳性——几 ms 窗口内
-    // pid 可被无关短命进程复用，ps 命令行是权威判据）。上限 = killGraceMs + 1s。
-    const deadline = Date.now() + 6_000;
-    let cmd = 'unknown';
-    while (Date.now() < deadline) {
-      cmd = await psCommandOf(inFlight.pid);
-      if (cmd === null || !cmd.includes('zcode.cjs')) break;
-      await sleep(100);
-    }
-    assert.ok(cmd === null || !cmd.includes('zcode.cjs'), `pid ${inFlight.pid} 仍存活 zcode.cjs: ${cmd}`);
-  } else {
-    // appserver：无 per-task 进程。cancel 的 D3 终局两可（Gate A 实测走了后者）：
-    // 优雅 stop 落定 → 常驻存活；grace 未落定 → killChain 连坐收割共享进程
-    // （pidfile 留死 pid，清理归 dispose）。「无残留」的确定性断言面因此取：
-    // ① cancel 后快照——至少一个 pidfile 在场（in-flight 已证引擎建过常驻）；
-    // ② 显式收割（dispose：close 帧 + 杀链 + pidfile 清理；连坐后对死连接幂等）
-    //    ——与 buildManager 的 t.after 收割幂等共存；
-    // ③ 收割后轮询直到无活常驻（kill 链 SIGTERM→grace→SIGKILL 给足窗口）。
-    const snap = scanAppServerPidfiles();
-    assert.ok(snap.length > 0, `appserver 分支应在派生目录留有 pidfile（快照: ${JSON.stringify(snap)}）`);
-    await manager.runner.shutdown();
-    const deadline = Date.now() + 8_000;
-    let live = readAppServerPid();
-    while (live !== null && Date.now() < deadline) {
-      await sleep(100);
-      live = readAppServerPid();
-    }
-    assert.equal(live, null, 'dispose 收割后不得有活常驻进程（扫描应无 alive pidfile）');
+  // appserver：无 per-task 进程。「无残留」的确定性断言面：
+  // ① ps 判据锚定（上方，cancel 前）；
+  // ② 显式收割（dispose：close 帧 + 杀链）——与 buildManager 的 t.after 收割
+  //    幂等共存；
+  // ③ 收割后轮询直到无引擎常驻进程（kill 链 SIGTERM→grace→SIGKILL 给足窗口）。
+  await manager.runner.shutdown();
+  const deadline = Date.now() + 8_000;
+  let live = await scanEngineAppServers();
+  while (live.length > 0 && Date.now() < deadline) {
+    await sleep(100);
+    live = await scanEngineAppServers();
   }
+  assert.equal(live.length, 0, `dispose 收割后不得有引擎常驻进程残留: ${live.join(' | ')}`);
   assert.equal(manager.notifier.capabilities().mode, 'mailbox');
   assert.equal(envelopeCountSafe('sess_e4'), 0, 'cancelled 不投递');
 });
 
-/** ps 查某 pid 的 command 行；进程不存在返回 null（ps 权威判据）。 */
-function psCommandOf(pid) {
+/**
+ * 扫系统进程表：本测试进程名下的 zcode app-server 常驻子进程（共享宿主 HOME
+ * 形态无 pidfile）。两个现实约束：① zcode 进程启动后改写 process.title
+ * （ps command 列变为 'zcode-cli'），任何 argv 字样判据（zcode.cjs /
+ * app-server / --cwd）在初始化窗口后必然失配——唯一稳定锚定是进程父子关系
+ * （ppid = 本测试进程，title 改写不影响 ppid）；② 排除 ps 自身与 --version
+ * 探针子进程（启动期瞬时存在）。app-server 是测试进程直接子进程
+ * （core AppServerConnection spawn，stdio pipe），ppid 锚定覆盖其全生命周期。
+ * 返回 command 行数组。
+ */
+async function scanEngineAppServers() {
   return new Promise((resolve) => {
-    execFile('ps', ['-p', String(pid), '-o', 'command='], { timeout: 3000 }, (err, stdout) => {
-      resolve(err ? null : stdout.trim());
+    execFile('ps', ['-eo', 'pid,ppid,command'], { timeout: 3000 }, (err, stdout) => {
+      if (err) return resolve([]);
+      resolve(
+        stdout.split('\n')
+          .filter((line) => {
+            const cols = line.trim().split(/\s+/);
+            if (cols[1] !== String(process.pid)) return false;
+            if (!/zcode/i.test(line)) return false;
+            if (line.includes('--version') || line.includes('ps -eo')) return false;
+            return true;
+          })
+          .map((line) => line.trim()),
+      );
     });
   });
-}
-
-/**
- * appserver 常驻 HOME 扫描：遍历 <ZSW_ROOT>/engines/zcode/ 下全部
- * home-appserver* 派生目录的 pidfile（core D6③，JSON {pid, startedAt}），
- * process.kill(pid,0) 探活（EPERM=活，与 runner-core.alive 同口径）。
- *
- * 为什么必须扫派生目录（Gate A 实测归因）：本文件 ZSW_ROOT 跨场景共享，且
- * before gate 独立 runner + 每场景新 runner = 每次都是新引擎实例——core 锁判定
- * 「lockfile.pid 活 ⇒ 一律视为持有（新实例派生后缀目录）」，同测试进程 pid
- * 持有的锁对新实例同样是活持有 → 逐场景派生 -2/-3/…（上限 8）；dispose 杀
- * 常驻、删本目录 pidfile，但刻意不删锁（锁随宿主进程存活）。pidfile 只会落在
- * 当前派生目录，固定读 home-appserver 必然 miss（实测：gate=home-appserver、
- * E4 引擎=home-appserver-2）。
- */
-function scanAppServerPidfiles() {
-  const enginesDir = path.join(process.env.ZSW_ROOT, 'engines', 'zcode');
-  let dirs;
-  try {
-    dirs = fs.readdirSync(enginesDir).filter((d) => /^home-appserver(-\d+)?$/.test(d));
-  } catch {
-    return [];
-  }
-  return dirs.map((dir) => {
-    const pidFile = path.join(enginesDir, dir, 'appserver.pid');
-    try {
-      const parsed = JSON.parse(fs.readFileSync(pidFile, 'utf8'));
-      const alive = Number.isInteger(parsed && parsed.pid) && parsed.pid > 0 && pidAlive0(parsed.pid);
-      return { dir, pid: parsed.pid, startedAt: Number(parsed.startedAt) || 0, alive };
-    } catch (e) {
-      return { dir, pid: null, startedAt: 0, alive: false, error: e.code || String(e && e.message || e) };
-    }
-  });
-}
-
-/** 最新一代活常驻 pid（startedAt 最大——当前场景引擎的常驻）；无活返回 null。 */
-function readAppServerPid() {
-  const live = scanAppServerPidfiles()
-    .filter((e) => e.alive)
-    .sort((a, b) => b.startedAt - a.startedAt);
-  if (live.length > 0) return live[0].pid;
-  // 诊断清单只打一次（收割轮询会反复调用，刷屏无增益）
-  if (!readAppServerPid.manifestLogged) {
-    readAppServerPid.manifestLogged = true;
-    const manifest = scanAppServerPidfiles()
-      .map((e) => `  ${e.dir}: ${e.pid === null ? `pidfile 缺失/损坏（${e.error}）` : `pid=${e.pid} startedAt=${e.startedAt} alive=${e.alive}`}`);
-    console.error(`[e2e] readAppServerPid: 无活常驻 pidfile。扫描清单:\n${manifest.join('\n') || '  （无 home-appserver* 目录）'}`);
-  }
-  return null;
-}
-
-/** pid 探活：信号 0（ESRCH=死；EPERM=存在但属主不同，按活算）。 */
-function pidAlive0(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === 'EPERM';
-  }
 }
 
 // ------------------------------------------------------------------ E5
@@ -570,21 +515,16 @@ test('E6 崩溃恢复：server 进程死亡后 recover 按 exec 形态分流（s
     let buf = '';
     server.stdout.on('data', (d) => {
       buf += d;
-      const m = buf.match(/^READY (sa-\S+) (?:spawn (\d+)|appserver)$/m);
-      if (m) { clearTimeout(t); resolve({ id: m[1], agentPid: m[2] !== undefined ? Number(m[2]) : null }); }
+      const m = buf.match(/^READY (sa-\S+) appserver$/m);
+      if (m) { clearTimeout(t); resolve({ id: m[1] }); }
       if (/TIMEOUT_NO_EXEC|SRV_ERR/.test(buf)) { clearTimeout(t); reject(new Error(`E6 server 异常: ${buf.trim()}`)); }
     });
   });
 
-  // 模拟 server 崩溃：先杀 server（断掉 record 写盘）。spawn 形态再杀独立
-  // agent 子进程（孤儿仍烧 token）；appserver 形态常驻进程在宿主死亡后经
-  // stdin EOF 自退（有窗口期），清场仍按 pidfile 手工收割兜底，无 per-task
-  // pid 可杀
+  // 模拟 server 崩溃：杀 server（断掉 record 写盘）。常驻 app-server 进程在宿主
+  // 死亡后经 stdin EOF 自退（有窗口期），无 per-task pid 可杀
   server.kill('SIGKILL');
   await sleep(100);
-  if (line.agentPid !== null) {
-    try { process.kill(line.agentPid, 'SIGKILL'); } catch { /* 可能已自行退出 */ }
-  }
   CALLS.killedBeforeFlight += 1;
   await sleep(400);
 
@@ -592,28 +532,22 @@ test('E6 崩溃恢复：server 进程死亡后 recover 按 exec 形态分流（s
   const summary = await manager.recover();
   const rec = manager.status(line.id);
   assert.equal(rec.status, 'lost');
-  if (line.agentPid !== null) {
-    assert.ok(summary.dead.includes(line.id), `dead=[${summary.dead}] 应含 ${line.id}`);
-    assert.match(rec.lostReason, /已死|探活/);
-  } else {
-    // appserver：core 未暴露任务级探活面，W6a2 保守存活 → orphan 分流（如实
-    // 断言保守语义——常驻实际已随 EOF 自退，zsw 层不可知，cancel 后重发是
-    // 正确处置）
-    assert.ok(summary.orphan.includes(line.id), `orphan=[${summary.orphan}] 应含 ${line.id}（保守存活）`);
-    assert.ok(!summary.dead.includes(line.id), 'appserver 形态不得判死');
-    assert.match(rec.lostReason, /孤儿会话|进度未知/);
-  }
+  // appserver：core 未暴露任务级探活面，保守存活 → orphan 分流（如实断言保守
+  // 语义——常驻实际已随 EOF 自退，zsw 层不可知，cancel 后重发是正确处置）
+  assert.ok(summary.orphan.includes(line.id), `orphan=[${summary.orphan}] 应含 ${line.id}（保守存活）`);
+  assert.ok(!summary.dead.includes(line.id), 'appserver 形态不得判死');
+  assert.match(rec.lostReason, /孤儿会话|进度未知/);
   await sleep(GAP_MS);
 });
 
 // ------------------------------------------------------------------ E7
 
-test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 留痕 + exec 形态分支断言 → message 续聊报退役错误', scenarioOpts('E7'), async (t) => {
+test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 留痕 + appserver exec 断言 → message 续聊报退役错误', scenarioOpts('E7'), async (t) => {
   // 2c（D6-⑥）后的全链路形态：原 appserver 会话协议面场景（create/send/read
-  // 推送归因）随通道退役删除，漂移核对归 core 引擎探针（binary + version +
-  // golden 干跑）。本场景钉新通道的核心面：probe 真探过、start 真实模型
-  // 完成、record.engine 留痕（V3-①）、exec 形态按实际通道分支断言（缺省
-  // probe 过 = appserver 常驻；降级 = spawn 单轮）、续聊报可操作退役错误。
+  // 推送归因）随通道退役删除，漂移核对归 core 引擎探针（binary + version）。
+  // 本场景钉新通道的核心面：probe 真探过、start 真实模型完成、record.engine
+  // 留痕（V3-①）、exec 形态断言（单一 app-server：sessionRef 回填 + pid 恒空
+  // + poolKey 恒 'shared' + dbPath 宿主绝对路径）、续聊报可操作退役错误。
   const runner = new CoreRunner();
   const probe = await runner.probe();
   assert.ok(probe.ok, `core 引擎探针失败: ${probe.reason}`);
@@ -634,21 +568,19 @@ test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 
   assert.ok(res.result.includes('茄子紫'), `response=${JSON.stringify(res.result.slice(0, 200))}`);
 
   // V3-① 引擎留痕：record.engine 恒 zcode（zsw 唯一生产引擎）；runnerKind 是
-  // capabilities 保守台账基线（恒 'spawn'，非通道判定）；exec 形态按实际通道
-  // 分支断言（W6a2：appserver → kind 翻转 + sessionRef + pid 恒空；spawn → pid）
+  // capabilities 单一形态基线（恒 'appserver'）
   const rec = manager.status(res.subagentId);
   assert.ok(rec.exec, '终态 record 必须带 exec（running 事件序列化产物）');
   assert.equal(rec.engine, 'zcode', 'record.engine 留痕（core 路由产物）');
-  assert.equal(rec.runnerKind, 'spawn');
+  assert.equal(rec.runnerKind, 'appserver');
+  assert.equal(rec.exec.kind, 'appserver', '单一 app-server 形态');
   assert.equal(typeof rec.exec.sessionId, 'string', 'exec.sessionId 回填（P3 冷续聊定位锚）');
-  if (rec.exec.kind === 'appserver') {
-    assert.equal(rec.exec.pid, undefined, 'appserver 形态 exec.pid 恒空（core D6 边界）');
-    assert.ok(rec.exec.sessionRef && typeof rec.exec.sessionRef.sessionId === 'string',
-      'exec.sessionRef 回填（onHandleReady 消费链）');
-    assert.equal(typeof rec.exec.sessionRef.dbPath, 'string', 'sessionRef.dbPath 在场（read 面定位锚）');
-  } else {
-    assert.ok(Number.isInteger(rec.exec.pid), 'spawn 形态 exec.pid 回填（onChildSpawned）');
-  }
+  assert.equal(rec.exec.pid, undefined, 'exec.pid 恒空（core D6 边界）');
+  assert.equal(rec.exec.poolKey, 'shared', "poolKey 恒 'shared'（共享 HOME journal 分组锚）");
+  assert.ok(rec.exec.sessionRef && typeof rec.exec.sessionRef.sessionId === 'string',
+    'exec.sessionRef 回填（onHandleReady 消费链）');
+  assert.ok(typeof rec.exec.sessionRef.dbPath === 'string' && rec.exec.sessionRef.dbPath.startsWith('/'),
+    'sessionRef.dbPath 为宿主 HOME 绝对路径（read 面定位锚）');
 
   // 续聊面（同 E3 契约）：manager 入口直接拒绝，record 停留 idle 不翻转
   await assert.rejects(
@@ -660,31 +592,9 @@ test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 
 });
 
 // ------------------------------------------------------------------ E8
-
-test('E8 防递归轻验证：ZSW_NESTED=1 真实 env 下 tools/list 空', scenarioOpts('E8'), async () => {
-  const code = `
-    'use strict';
-    (async () => {
-      const config = require(${JSON.stringify(path.join(REPO, 'lib', 'config'))});
-      const { createServer } = require(${JSON.stringify(path.join(REPO, 'dist', 'mcp', 'server'))});
-      const s = createServer({ nested: config.NESTED });
-      const frames = await s.handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-      console.log('RESULT ' + config.NESTED + ' ' + frames[0].result.tools.length);
-    })().catch((e) => { console.log('ERR ' + e.message); process.exit(1); });
-  `;
-  const out = await new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, ['-e', code], {
-      env: { ...process.env, ZSW_NESTED: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let buf = '';
-    const t = setTimeout(() => reject(new Error('E8 子进程超时')), 15_000);
-    p.stdout.setEncoding('utf8');
-    p.stdout.on('data', (d) => { buf += d; });
-    p.on('close', () => { clearTimeout(t); resolve(buf.trim()); });
-  });
-  assert.match(out, /^RESULT true 0$/m, `期望 NESTED=true 且 tools 数为 0，实际输出: ${out}`);
-});
+// E8（ZSW_NESTED=1 下 MCP 面 tools/list 空）已随 2.0 MCP 壳退役删除——
+// 验证对象（dist/mcp/server.js）不存在。防递归边界的等价面 = CLI ensureNotNested
+// 黑盒（test/cli.test.js 嵌套用例）+ core 引擎 nesting-guard（ZSW_NESTED 剥离）。
 
 // ------------------------------------------- E9/E10（appserver 专有，已随 D6-⑥ 退役删除）
 // E9 apc-smoke（D3/G3 升级冒烟：session/create 扩面 + send + session/read 形态 +

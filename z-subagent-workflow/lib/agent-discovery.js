@@ -16,7 +16,8 @@
  *
  * 另有两面 core 硬编码/环境面被动进入扫描（不在 zsw 注入清单，但实际扫描面
  * 含它们；zsw 用户目录通常缺席，命中时按 core 槽位标签透传，标签映射见
- * dist/mcp/server.js 的 agentSourceLabel）：
+ * lib/zsub-actions.js 的 agentSourceLabel（1.x 曾在 dist/mcp/server.js，已随
+ * MCP 壳退役收口到 lib））：
  *   <wsRoot>/.pi/agents     → project-pi 槽（core 硬编码槽，pi 生态项目级布局）
  *   XYZ_EXTENSION_PATHS 下 agents/ → user-extension-paths 槽（扩展安装面，env 驱动）
  *
@@ -61,7 +62,7 @@
  * （发现→解析→frontmatter name 去重后写胜→码点序），AgentEntry 无执行
  * 字段与 source/filePath——执行字段场景（resolveDefaultAgent）按 path
  * 二次 parseFile 全量取；source 按条目 path 前缀归属反查（zsw 层薄投影，
- * 标签映射仍归 dist/mcp/server.js agentSourceLabel 消费）。
+ * 标签映射仍归 lib/zsub-actions.js agentSourceLabel 消费）。
  *
  * 引用契约（W6b：D-4a 收紧，与 pi 侧对齐）：agent 引用唯一形态 = .md 绝对
  * 路径（支持 ~/ 展开）；名字形态的「四根查找」已删除，传名由消费方经
