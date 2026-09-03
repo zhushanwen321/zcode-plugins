@@ -660,31 +660,9 @@ test('E7 core 引擎链路：probe 真探 → start（真实模型）→ engine 
 });
 
 // ------------------------------------------------------------------ E8
-
-test('E8 防递归轻验证：ZSW_NESTED=1 真实 env 下 tools/list 空', scenarioOpts('E8'), async () => {
-  const code = `
-    'use strict';
-    (async () => {
-      const config = require(${JSON.stringify(path.join(REPO, 'lib', 'config'))});
-      const { createServer } = require(${JSON.stringify(path.join(REPO, 'dist', 'mcp', 'server'))});
-      const s = createServer({ nested: config.NESTED });
-      const frames = await s.handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-      console.log('RESULT ' + config.NESTED + ' ' + frames[0].result.tools.length);
-    })().catch((e) => { console.log('ERR ' + e.message); process.exit(1); });
-  `;
-  const out = await new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, ['-e', code], {
-      env: { ...process.env, ZSW_NESTED: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let buf = '';
-    const t = setTimeout(() => reject(new Error('E8 子进程超时')), 15_000);
-    p.stdout.setEncoding('utf8');
-    p.stdout.on('data', (d) => { buf += d; });
-    p.on('close', () => { clearTimeout(t); resolve(buf.trim()); });
-  });
-  assert.match(out, /^RESULT true 0$/m, `期望 NESTED=true 且 tools 数为 0，实际输出: ${out}`);
-});
+// E8（ZSW_NESTED=1 下 MCP 面 tools/list 空）已随 2.0 MCP 壳退役删除——
+// 验证对象（dist/mcp/server.js）不存在。防递归边界的等价面 = CLI ensureNotNested
+// 黑盒（test/cli.test.js 嵌套用例）+ core 引擎 nesting-guard（ZSW_NESTED 剥离）。
 
 // ------------------------------------------- E9/E10（appserver 专有，已随 D6-⑥ 退役删除）
 // E9 apc-smoke（D3/G3 升级冒烟：session/create 扩面 + send + session/read 形态 +

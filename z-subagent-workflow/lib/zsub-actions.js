@@ -1,31 +1,24 @@
 'use strict';
 /**
- * zsub action 表（socket 面收口单源，D3）：action 名 → 执行。
+ * zsub action 表（CLI 单一入口，D3 表单源遗产）：action 名 → 执行。
  *
- * 为什么是表而不是三份 switch：CLI（bin/zsw.js --local）与 daemon handler
- * （dist/mcp/server.js 的 zsub 面）两入口查同一张表，执行语义由结构保证
- * 一致——加/改 action 只动这里（业务校验加 manager 层，D4），两入口零同步
- * 成本。CLI 的 argv → params 翻译（组参 switch）仍是各入口职责（D3 保留）；
- * start 的 wait 参数两入口有意分叉（daemon 不传 / --local 恒 true）在调用
- * 点可见，exec 单一。
+ * 为什么是表而不是内联 switch：执行语义单一来源——加/改 action 只动这里
+ * （业务校验加 manager 层，D4）。CLI 的 argv → params 翻译（组参 switch）
+ * 是 bin/zsw.js 的职责；start 的 wait 参数恒 true（CLI 进程活着才有执行体）。
+ * 历史形态：1.x 的 daemon socket 面与本表同源消费（dist/mcp/server.js handler），
+ * 2.0 随 daemon 退役，CLI 是唯一入口。
  *
  * exec 契约：
- * - 错误一律 throw 可操作消息（daemon-socket dispatch 统一映射 ok:false 帧；
- *   CLI --local 经 main catch 打印 + exit 1）——消息文本与收口前
- *   dist/mcp/server.js 各分支逐字一致（零行为变化基准）。
- * - 校验分层（D4，三层全保留）：本表只持原 daemon 面 handler 前置校验
- *   （subagentId 必填、message text 必填——随表迁移）；业务权威校验在
- *   lib/manager.js（start 入口与 message 四闸，不动）；CLI usage() 缺参
- *   提示在 bin/zsw.js（不动）。
- * - deps = { manager, waitHandler, ports }：manager 是主执行依赖；
- *   waitHandler 是 lib/wait-handler 工厂产物（lazy 初始化由 daemon 侧
- *   装配——构造期建会让无 pending 端口的 fake manager 在无关 action 上
- *   无谓炸穿；--local 无 wait 形态不注入）；ports 承载非 manager 端口
- *   （agents 的 agentResolver、models 的 modelRouter——D3 归属表，装配点
+ * - 错误一律 throw 可操作消息（CLI main catch 打印 + exit 1）——消息文本
+ *   与收口前 dist/mcp/server.js 各分支逐字一致（零行为变化基准）。
+ * - 校验分层（D4）：本表只持入口前置校验（subagentId 必填、message text
+ *   必填）；业务权威校验在 lib/manager.js（start 入口与 message 四闸）；
+ *   CLI usage() 缺参提示在 bin/zsw.js。
+ * - deps = { manager, ports }：manager 是主执行依赖；ports 承载非 manager
+ *   端口（agents 的 agentResolver、models 的 modelRouter——D3 归属表，装配点
  *   从 manager 公开端口字段取，单一实例防漂移）。
- * - ctx 由入口组装：cwd 必带；daemon 面额外带 signal（wait 的连接级取消）、
- *   不带 targetSessionId（socket 面无会话定向，D6）；--local 面带
- *   targetSessionId（CLI 的 --target-session 后门走 start params 同理）。
+ * - ctx 由入口组装：cwd 必带；targetSessionId 由 CLI 的 --target-session
+ *   透传（高级用法）。
  */
 
 const { PROVIDER_ID } = require('./model-router');
@@ -168,12 +161,6 @@ const zsubActions = {
       };
     },
   },
-  wait: {
-    // 语义在 lib/wait-handler（DESIGN-v4 D4：终态立即收、运行中挂
-    // pending promise 事件驱动唤醒、轮询兜底、abort 只取消等待不碰执行体）。
-    // lazy 创建在 daemon 侧装配（deps.waitHandler 是包装函数）
-    exec: (params, ctx, deps) => deps.waitHandler(params, { signal: ctx && ctx.signal }),
-  },
 };
 
 /**
@@ -183,7 +170,7 @@ const zsubActions = {
  */
 function unsupportedActionMessage(action) {
   return `不支持的 action "${String(action)}"。支持：${Object.keys(zsubActions).join(' | ')}。`
-    + '恢复指引：action 必须取 inputSchema 中的枚举值。';
+    + '恢复指引：action 必须取 usage 列出的枚举值。';
 }
 
 /**

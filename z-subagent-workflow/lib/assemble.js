@@ -130,6 +130,35 @@ function assertRunnerEnv() {
   );
 }
 
+/**
+ * records.jsonl 磁盘收敛挂点（自 dist/mcp/server.js 的 daemon 启动/接管挂点
+ * 迁来）：收敛「活跃全量 + 最近 N 终态」，恢复成本与磁盘封顶。
+ *
+ * 1.x 单属主由 daemon 角色保证；2.0 挂在 assembleManager 收尾 fire-and-forget
+ * ——CLI 组装路径单点覆盖，并发 CLI 调用的竞态由 RecordStore.compact 的
+ * D9② 双向复查兜住（读后复查前并发 append 变大 / 他者 compact rename 缩小
+ * → 均放弃 + temp 清理）。run 总数 ≤ keep 时秒级跳过（不触文件）；结果/放弃
+ * 一行 stderr 日志；失败不炸组装（compact 是旁路维护，下次调用幂等再试）。
+ * @param {object} manager 已重建索引的 manager（records = RecordStore）
+ * @param {string} phase 日志定位（2.0 恒 'cli'；保留参数兼容测试）
+ * @param {(msg: string) => void} log
+ */
+function compactRecords(manager, phase, log) {
+  try {
+    const keep = config.resolveRecordKeep();
+    const total = manager.records.records.size;
+    if (total <= keep) return; // 零成本跳过：总数不超 keep 则终态必不超
+    const r = manager.records.compact({ keep });
+    if (r.skipped) {
+      log(`record compact 放弃（台账被并发变更，下次启动再试）：phase=${phase} runs=${total} keep=${keep}`);
+    } else {
+      log(`record compact 完成：phase=${phase} removedRuns=${r.removedRuns} removedLines=${r.removedLines} keptRuns=${r.keptRuns} keep=${keep}`);
+    }
+  } catch (e) {
+    log(`record compact 失败（不影响服务，下次启动再试）: ${e && e.message || e}`);
+  }
+}
+
 async function assembleManager(opts = {}) {
   const { createRuntime } = require('./ports');
   const { RecordStore } = require('./record-store');
@@ -189,7 +218,12 @@ async function assembleManager(opts = {}) {
   // 组装之后：生产路径此时 orchestration-host.ensureConfigured 已 configureCore
   // （dataRoot 就绪，FileRunStore.stateDir 可解析）
   pruneWorkflowState();
+  // records.jsonl 收敛（compactRecords 头注）：同样 fire-and-forget 旁路维护。
+  // 注意时序：调用方（CLI main）在组装后还会 rebuildFromLog——compact 动文件
+  // 不动内存索引，rebuild 读到 compact 前后任一形态的合法事件流均一致（D9②
+  // 并发防护保证 rename 原子性）
+  compactRecords(manager, 'cli', log);
   return { manager, wfHost, notifier };
 }
 
-module.exports = { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT };
+module.exports = { assembleManager, assertRunnerEnv, pruneWorkflowState, resolveStateKeep, STATE_KEEP_DEFAULT, compactRecords };

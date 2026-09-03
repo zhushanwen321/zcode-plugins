@@ -790,8 +790,7 @@ class SubagentManager {
     if (rec.recordType !== undefined && rec.recordType !== 'subagent') {
       throw new Error(
         `"${id}" 是 ${rec.recordType} record，不经 zsub action 操作。`
-        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\``
-        + '（管理面默认经 daemon，--local 本地）。'
+        + `恢复指引：wf- 前缀的 runId 请用 CLI \`node "${config.zswCliPath()}" workflow --action abort|status --id <runId>\`。`
       );
     }
     return rec;

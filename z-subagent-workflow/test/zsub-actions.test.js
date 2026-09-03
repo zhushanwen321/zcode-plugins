@@ -1,18 +1,18 @@
 'use strict';
 
 /**
- * zsub action 表单元锚（D3：lib/zsub-actions.js 是两入口——CLI --local 与
- * daemon handler——的执行单源）。
+ * zsub action 表单元锚（D3：lib/zsub-actions.js 是 CLI 唯一入口的执行单源；
+ * 2.0 起 daemon socket 面已退役，wait action 随之移除）。
  *
  * 锚定两类不变量：
- * 1. 错误消息文本与收口前 dist/mcp/server.js 各分支逐字一致（零行为变化
- *    基准——「不支持的 action」全文、subagentId/text 前置校验、agents/models
- *    端口守卫文案）；
+ * 1. 错误消息文本（收口前 dist/mcp/server.js 各分支逐字一致的历史基准——
+ *    「不支持的 action」全文、subagentId/text 前置校验、agents/models 端口
+ *    守卫文案；尾句 MCP 面措辞已随 2.0 文案修订改为 usage 口径）；
  * 2. 表结构不变量：键集与顺序（顺序即「不支持的 action」报错名单序）、
  *    原型链键（如 "constructor"）不得命中、deps 消费形态（manager 直调 /
- *    ports / waitHandler）。
+ *    ports）。
  *
- * 本文件纯 lib 单元测试：不 require server.js / bin/zsw.js，无 env 预设置
+ * 本文件纯 lib 单元测试：不 require bin/zsw.js，无 env 预设置
  * 依赖（model-router 模块加载无副作用）。
  */
 
@@ -25,7 +25,7 @@ const {
   unsupportedActionMessage,
 } = require('../lib/zsub-actions');
 
-const SUPPORTED_LIST = 'start | list | status | cancel | message | close | agents | models | wait';
+const SUPPORTED_LIST = 'start | list | status | cancel | message | close | agents | models';
 
 // ----------------------------------------------「不支持的 action」全文锚
 
@@ -33,17 +33,17 @@ test('unsupportedActionMessage：全文与收口前 server.js default 分支逐�
   assert.equal(
     unsupportedActionMessage('bogus'),
     '不支持的 action "bogus"。支持：' + SUPPORTED_LIST + '。'
-    + '恢复指引：action 必须取 inputSchema 中的枚举值。',
+    + '恢复指引：action 必须取 usage 列出的枚举值。',
   );
-  // 尾句是 MCP 面时代措辞（socket 面无 inputSchema）——零行为变化基准下
-  // 逐字保留（D3：文案修订不属于收口范围）
-  assert.ok(unsupportedActionMessage('x').endsWith('恢复指引：action 必须取 inputSchema 中的枚举值。'));
+  // 尾句 2.0 起改为 usage 口径（原 MCP 面措辞「inputSchema 中的枚举值」
+  // 随 MCP 面退役失去指涉对象）
+  assert.ok(unsupportedActionMessage('x').endsWith('恢复指引：action 必须取 usage 列出的枚举值。'));
 });
 
 test('unsupportedActionMessage：非字符串 action 走 String() 插值（undefined/null/对象）', () => {
   assert.equal(
     unsupportedActionMessage(undefined),
-    `不支持的 action "undefined"。支持：${SUPPORTED_LIST}。恢复指引：action 必须取 inputSchema 中的枚举值。`,
+    `不支持的 action "undefined"。支持：${SUPPORTED_LIST}。恢复指引：action 必须取 usage 列出的枚举值。`,
   );
   assert.ok(unsupportedActionMessage(null).startsWith('不支持的 action "null"。'));
   assert.ok(unsupportedActionMessage({}).startsWith('不支持的 action "[object Object]"。'));
@@ -55,7 +55,7 @@ test('execZsubAction：未知 action → throw 同文本（两入口共用的查
     (e) => {
       assert.equal(
         e.message,
-        '不支持的 action "explode"。支持：' + SUPPORTED_LIST + '。恢复指引：action 必须取 inputSchema 中的枚举值。',
+        '不支持的 action "explode"。支持：' + SUPPORTED_LIST + '。恢复指引：action 必须取 usage 列出的枚举值。',
       );
       return true;
     },
@@ -75,7 +75,7 @@ test('execZsubAction：原型链键（constructor/toString）不得命中表—�
 
 test('表结构：键集与顺序（顺序即报错名单序，与收口前 switch 分支序一致）', () => {
   assert.deepEqual(Object.keys(zsubActions), [
-    'start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models', 'wait',
+    'start', 'list', 'status', 'cancel', 'message', 'close', 'agents', 'models',
   ]);
   // 每项都是 { exec } 形态
   for (const entry of Object.values(zsubActions)) {
@@ -202,24 +202,6 @@ test('message：id/text 解包后透传 manager.message（await async，R4）', 
   assert.deepEqual(calls, [['sa-1', '追问']]);
 });
 
-test('wait：deps.waitHandler 收 params + ctx.signal 透传（连接级取消）', async () => {
-  const seen = [];
-  const deps = {
-    manager: {},
-    waitHandler: (params, meta) => {
-      seen.push([params, meta]);
-      return { results: [] };
-    },
-  };
-  const ac = new AbortController();
-  const result = await execZsubAction('wait', { ids: ['sa-1'] }, { cwd: '/x', signal: ac.signal }, deps);
-  assert.deepEqual(result, { results: [] });
-  assert.deepEqual(seen, [[{ ids: ['sa-1'] }, { signal: ac.signal }]]);
-  // 无 signal（ctx 缺省）→ meta.signal undefined
-  await execZsubAction('wait', { ids: ['sa-1'] }, {}, deps);
-  assert.deepEqual(seen[1], [{ ids: ['sa-1'] }, { signal: undefined }]);
-});
-
 test('agents：ports.agentResolver 消费 + 视图拼装（截 200 / source 标签 / location 与 file 同值）', async () => {
   const deps = {
     manager: {},
@@ -275,20 +257,16 @@ test('models：缺省视图（provider/models/guidance）与 --all 视图（port
   assert.match(all.guidance, /全名/);
 });
 
-test('两入口同源结构锚（A3 自动化防漂移面）：bin --local 白名单 ⊆ action 表键，daemon handler 经 execZsubAction 查表', () => {
+test('CLI 单入口结构锚：bin 子命令白名单 ⊆ action 表键（查表执行单源不变）', () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const binSrc = fs.readFileSync(path.join(__dirname, '..', 'bin', 'zsw.js'), 'utf8');
-  const srvSrc = fs.readFileSync(path.join(__dirname, '..', 'dist', 'mcp', 'server.js'), 'utf8');
   const tableKeys = new Set(Object.keys(zsubActions));
-  const m = binSrc.match(/LOCAL_SUBCOMMANDS\s*=\s*new Set\(\[([^\]]*)\]/);
-  assert.ok(m, 'bin/zsw.js 应保留 LOCAL_SUBCOMMANDS 白名单（D3：--local 6-action 子集）');
+  const m = binSrc.match(/SUBCOMMANDS\s*=\s*new Set\(\[([^\]]*)\]/);
+  assert.ok(m, 'bin/zsw.js 应保留 SUBCOMMANDS 白名单（CLI 子命令面单点声明）');
   const names = [...m[1].matchAll(/'([a-z-]+)'/g)].map((x) => x[1]);
-  assert.ok(names.length >= 6, `白名单应覆盖 --local 可用子命令（实际 ${names.length} 个）`);
+  assert.ok(names.length >= 6, `白名单应覆盖可用子命令（实际 ${names.length} 个）`);
   for (const n of names) {
-    assert.ok(tableKeys.has(n), `白名单 action "${n}" 必须在 zsub-actions 表中（两入口查同一张表）`);
+    assert.ok(tableKeys.has(n), `白名单子命令 "${n}" 必须在 zsub-actions 表中（查表执行单源）`);
   }
-  assert.ok(srvSrc.includes('execZsubAction'), 'daemon zsub handler 应经 execZsubAction 查表（D3 归属表）');
-  assert.ok(!srvSrc.includes('okContent(') && !srvSrc.includes('unwrapContentResult('),
-    'daemon 内不应残留 MCP content 包装的调用形态（D5 终态；注释中的历史说明不算）');
 });

@@ -1,6 +1,6 @@
 # z-subagent-workflow — zcode subagent 编排 + workflow 插件
 
-> 两条能力线，1.0.0 起统一走 CLI（`node bin/zsw.js`，默认连常驻 daemon thin client；MCP 工具面已下线——tools/list 恒空、tools/call 指引走 CLI）：
+> 两条能力线，统一走 CLI（`node bin/zsw.js`；2.0.0 起纯本地一次性执行，无常驻 daemon——历史 MCP 壳/socket 面已整体退役）：
 > **zsub** — 无头 subagent 生命周期管理（start/list/status/cancel/message/close/wait/agents/models）。补足引擎原生后台 agent 缺少的能力：worktree 文件隔离、structured JSON 输出（仅保证可解析 JSON 对象提取，无 schema 校验——见「已知边界」）、agent .md 发现（core 发现面：vendored 内置 10 角色 + 项目/HOME 用户根，与 pi 生态同源）、per-start 模型路由、跨窗口 record。agent 参数只收 .md 绝对路径（与 pi 平台契约统一），缺省加载 `general-purpose` 内置角色；conversation 续聊暂不可用（多轮需求拆多次 start，见「已知边界」）。
 > **zflow** — 确定性多步编排（`zsw workflow` 子命令，九 action：run/abort/status/list/scripts/lint + 创作闭环 script-generate/script-save/script-delete）。回接 2b 起 workflow 运行时整体替换为 vendored `@zhushanwen/subagent-core` orchestration：内置 5 种（chain/parallel/map-reduce/scatter-gather/review-fix-loop，资产来自 core `workflows/`）+ core 契约自定义脚本（`@pi-meta` + top-level `agent()`，按 .js 绝对路径引用；`script-generate → lint → save → run → delete` 创作闭环全链 CLI 可用，W8/D-6）；run 同步阻塞出 scriptResult（配 Bash run_in_background 即完成原生唤醒）。**契约统一是行为 break——迁移对照见「subagent-core 收口 break 变更」节。**
 > 简单纯后台任务请直接用原生 `@agent`（frontmatter `background: true`，独立 turn 唤醒 + goal gate）——分流指引见 skill `zsub-zflow-orchestration`。
@@ -8,9 +8,8 @@
 ## 架构（端口/适配器内核）
 
 ```
-入口层   CLI（node bin/zsw.js，默认 daemon thin client）+ skill——MCP 工具面恒下线
-         （tools/list 恒空、tools/call 恒拒并指引走 CLI；zsub 九 action / zflow 九 action
-          保留为语义层名，见 CONTEXT.md）
+入口层   CLI（node bin/zsw.js，一次性进程；2.0 起唯一入口）+ skill
+         （zsub 九 action / zflow 九 action 保留为语义层名，见 CONTEXT.md）
 编排层   SubagentManager（subagent 生命周期，只依赖 lib/ports.js 契约）
          orchestration-host（workflow 编排宿主 = vendored subagent-core orchestration：
          configureCore 宿主端口 + FileRunStore + WorkerHostImpl + registry 内置资产注册，
@@ -32,7 +31,7 @@ core 资产消费形态：对 npm 包 `@zhushanwen/subagent-core` 的消费（�
 ## 安装（一次性）
 
 1. 注册插件目录：`~/.zcode/cli/config.json` 的 `plugins.dirs` 数组追加本插件绝对路径（`<repo>/z-subagent-workflow`），重启 ZCode。
-2. 验证：终端跑 `zcode plugins list` 应见 `z-subagent-workflow` enabled；再在任一 zcode 会话内用 Bash 跑 `node <插件绝对路径>/bin/zsw.js list`，能返回 JSON（首次为空列表）即 CLI→daemon 链路通。注意 MCP 工具面 1.0.0 起恒下线——会话内工具列表**不会**出现 `zsub`/`zflow`，这是预期形态而非安装失败。
+2. 验证：终端跑 `zcode plugins list` 应见 `z-subagent-workflow` enabled；再在任一 zcode 会话内用 Bash 跑 `node <插件绝对路径>/bin/zsw.js list`，能返回 JSON（首次为空列表）即 CLI 链路通。本插件不提供 MCP 工具（2.0 起连 MCP server 壳也已移除）——会话内工具列表不会出现 `zsub`/`zflow`，这是预期形态而非安装失败。
 
 （legacy）宿主引擎的 mailbox 开关 `ZCODE_MESSAGE_ENABLED=1` 无需设置：该通道只对 MCP 工具面时代的会话定向通知有效，工具面下线后 CLI/daemon 面恒无投递目标（句柄 notify 如实标 `none`）。env 仍影响 notifier 档位文案（未启用时 polling 档附轮询指引），完成唤醒不依赖它——唯一路径见「已知边界」第一条。
 
@@ -48,7 +47,7 @@ node bin/zsw.js message --id sa-xxxx --text "补充：重点看重试逻辑"   #
 node bin/zsw.js cancel --id sa-xxxx
 ```
 
-workflow 管理面（zflow 面九 action 的 CLI 入口；状态面 = `<zsw 数据根>/workflow-state/`。abort/status/list/scripts/script-save/script-delete 默认经 daemon——跨进程状态一致、abort 经 daemon 侧 core `abortRun` 真停 run、script-delete 的「运行中拒绝」由 daemon 侧 runs 真实状态裁决；run/lint/script-generate 恒本地）：
+workflow 管理面（zflow 面九 action 的 CLI 入口；状态面 = `<zsw 数据根>/workflow-state/`。全部 action 恒本地一次性执行——一次性进程只有本进程创建的 run 视图（历史 run 快照在 `workflow-state/*.jsonl` 直读）；取消运行中 run（bg bash 形态）用引擎 TaskStop 杀 CLI 进程）：
 
 ```bash
 # run（--action 缺省；恒本地同步执行，执行体 = CLI 进程，跑到终态退出并打报告。
@@ -72,8 +71,8 @@ node bin/zsw.js workflow --action lint --file <脚本路径>
 node bin/zsw.js workflow --action script-generate --name my-wf --script "<完整 JS 源码：@pi-meta 块 + top-level agent()>"
                                     # 校验（ESM 拒/meta 必需/agent() 必需/语法/@pi-meta round-trip 含行列）
                                     # → 合法落 ~/.zsw/workflows/.tmp/my-wf.js；非法 exit 1 + core 同源报错
-node bin/zsw.js workflow --action script-save --name my-wf     # tmp → ~/.zsw/workflows/ 固化（重名拒绝；默认经 daemon）
-node bin/zsw.js workflow --action script-delete --name my-wf   # 删 tmp/已固化脚本（运行中拒绝；默认经 daemon）
+node bin/zsw.js workflow --action script-save --name my-wf     # tmp → ~/.zsw/workflows/ 固化（重名拒绝）
+node bin/zsw.js workflow --action script-delete --name my-wf   # 删 tmp/已固化脚本
 ```
 
 **review-fix-loop（批次外环 + 质量内核，资产来自 core）**：唯一会写文件的内置 workflow（fix 阶段）。批次外环：`--batch1..--batchN` 串行（**值 = agent .md 绝对路径**，逗号分隔多 agent），前一批 clean 后一批才启动。每轮并行 review → LLM 聚合裁决（臆测/无证据条目降级，不进修复队列）→ 结构化契约 fix → R2 起逐条 ID 对账（fixed/not-fixed/regressed）→ 收敛/needs-redesign 状态机；run 目录由 core 资产自管（`~/.review-fix-loop/<repo-slug>/<runId>/`，含 state.json 与各轮报告）。
@@ -90,7 +89,7 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 
 **自定义 workflow 脚本（core 契约，script-save 后按名或路径引用）**：内置 5 种之外的编排用 core 契约脚本扩展，run 按 .js 绝对路径或 **saved 裸名**引用（`~/` 前缀可展开；D-E3 起 saved 裸名三入口放行——CLI/orchestration-host/daemon-MCP 同一 knownNames 口径；`script:<名>` 前缀维持拒收——D-4；与内置同名时内置优先并输出含双路径的遮蔽 warning）。发现面 = core 发现面（`~/.zsw/workflows` + `~/.agents/workflows` + `<ws>/.pi/workflows` + `<ws>/.agents/workflows`）+ zsw 特有根 `<ws>/.zsw/workflows`；脚本契约 = `/* @pi-meta */` meta 块 + top-level `agent()`/`parallel()`/`pipeline()`，参数经 `$ARGS`，返回值即 scriptResult。创作走闭环：`script-generate`（core 五道闸校验 + tmp 落盘）→ `lint` → `script-save`（固化 `~/.zsw/workflows/`）→ run 按名或路径引用 → `script-delete` 清理；完整契约与示例见 skill `zsub-zflow-orchestration`（旧契约迁移对照见下方「回接 2b break 变更」节）。
 
-`--local` 模式下 CLI 是一次性进程（本地执行，调试后门：无续聊/限流，CLI 退出即丢执行体）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景直接让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒。异步启动 + 聚合等待（`wait` / `start --wait`）走默认 daemon 模式（见下节）。
+2.0 起 CLI 是纯本地一次性进程（`--local` flag 接受但忽略——1.x 双形态遗产，本地是唯一形态）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒——这是长任务的标准承载方式（`wait` 子命令已随 daemon 移除）。
 
 ## 回接 2b break 变更（workflow 线换 vendored subagent-core orchestration）
 
@@ -153,7 +152,7 @@ return { summary, stats };                                  // scriptResult（�
 
 **D7 旧 wf- record 不可读**：旧 WorkflowManager 把 run 状态写 `~/.zcode/zsw/records.jsonl`（`recordType:'workflow'` 事件流）+ 报告落 `outputs/<runId>.md`，该线已退役——新 run 的状态面是 `<zsw 数据根>/workflow-state/<runId>.jsonl`（core FileRunStore append-only 快照，`status` action 的 `stateFile` 字段即此路径），报告不落盘（CLI stdout 直出 scriptResult）。旧 record/报告文件留在原位可人工查阅，但 CLI/MCP 不再解析。
 
-**daemon 重启恢复语义**：上一代 daemon 遗留的 `running` run 在新 daemon 启动/接管时统一标 `done,failed`（error = "daemon takeover: worker died with previous process"）——core worker 线程随宿主进程死亡，无进程可探活、不尝试续跑；这与 zsub 线 subagent 的探活/孤儿标记语义不同，是两线故意的差异。done run 内存保留上限 20 条（core `MAX_RETAINED_DONE_RUNS`），淘汰后 `status` 报可操作错误并指向 stateFile。
+**运行中 run 的生命周期**：core worker 线程随 CLI 进程死亡，无进程可探活、不尝试续跑——bg bash 形态下取消 run = 引擎 TaskStop 终止该 bash 任务；进程异常死亡留下的 running 快照留在 workflow-state/（下次 run 不重水合，直读文件可见终态前的最后状态）。done run 内存保留上限 20 条（core `MAX_RETAINED_DONE_RUNS`），淘汰后 `status` 报可操作错误并指向 stateFile。
 
 **run 参数面变化**：`--timeout-ms` 映射 RunSpec `budgetTimeMs`（整体墙钟预算，到期 `done,time_limited`）；`--model` 映射 `RunSpec.model`（run 级，agent() per-call 可覆盖）。`--max-concurrent` / `--timeout-per-phase` / `--subtask-count` 已废弃（core 编排无对应面），传入 stderr 显式 warning 不静默。review-fix-loop 的 `--reviewers` 显式报错（见上文）。
 
@@ -211,13 +210,13 @@ zsw 的共享面——agent 模板资产与发现、SessionStart 注入渲染、
 1. **子目录布局需平铺或建 symlink**：agent .md 放在发现根的子目录里（如 `~/.zcode/agents/refs/reviewer.md`）不再被扫到——平铺到根一层，或对单个 .md 建文件级 symlink（core 扫描 follow 文件级链接）。
 2. **目录 symlink 整库：库内容需平铺在库根一层**：发现根下指向个人技能库目录的一级目录 symlink（如 `agents/my-lib -> ~/Code/personal-agents/`）会被宿主层动态展开（同标签额外扫描根，realpath 防环）——但展开深度仅一层，库内子目录与库内嵌套链接不可见；库内容需平铺在库根一层。库更新可持续（每次发现时重新展开）。
 
-## CLI 默认形态：daemon thin client（1.0.0 起）
+## CLI 形态：纯本地一次性执行（2.0 起）
 
-1.0.0 起 CLI 默认即常驻 daemon thin client（不加任何 flag；unix socket；sock 默认 `~/.zcode/zsw/daemon.sock`，env `ZSW_SOCK` 可覆盖，测试隔离用）。执行体由 daemon 持有——CLI 退出不丢，`start` 默认异步启动，`start --wait` 为 start+wait sugar；`wait` 子命令：`zsw wait --id a [--id b ...] [--timeout-ms n]`（无 `--local` 形态——本地一次性进程没有可挂起的等待方），等待在 daemon 侧内存挂起（零轮询），多 id 全部终态才返回，`--timeout-ms` 到点回 partial 结果并以 exit 2 退出。
+2.0 起 CLI 是纯本地一次性进程，无常驻 daemon（1.x 的 socket thin client / `wait` 子命令 / MCP server 壳已整体退役——MCP 壳被工具检索类插件懒启动代理接管后永不 spawn，daemon 无宿主，详见仓库设计文档）。start/message/workflow run 的执行体就是 CLI 进程本身，命令阻塞到任务终态；`--wait` flag 接受但无差异（1.x 习惯形态兼容）。
 
-agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start --wait …` 或 `zsw wait --id …`——CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 task-notification 唤醒会话（idle 也唤醒），不依赖 mailbox env、无需 sleep 轮询。
+agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start …`——CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 task-notification 唤醒会话（idle 也唤醒），不依赖 mailbox env、无需 sleep 轮询。前台 Bash 有工具超时（默认 120s、上限 10 分钟），禁止承载长任务。
 
-生命周期：daemon 由启用插件的 zcode 会话自动拉起（MCP server 进程竞选，无额外安装步骤），挂靠任一会话的插件进程——**所有会话关闭则 daemon 退场**，其持有执行体的任务终止（record 已落盘，由下一次接管实例 recover 探活标记 orphan/dead，不产生静默僵尸）。daemon 不在场时 CLI 报错并给恢复指引（稍候重试，其他实例接管需 1-2s；在任一 zcode 会话确认插件已启用；或加 `--local` 走本地一次性执行——调试后门：无续聊/限流，CLI 退出即丢执行体）。`zsw workflow` 的 abort/status/list/scripts 管理面默认同走 daemon（跨进程 record 一致）；run/lint 恒本地——run 执行体 = CLI 进程本身，前台同步跑到终态，无 abort 面（bg bash 形态的取消用引擎 TaskStop 杀 CLI 进程）；abort 只作用于 daemon 内存中的 run——本地 CLI run 不在 daemon runs 表，经 daemon abort 报 not found。
+生命周期与状态：执行体生命周期 = CLI 进程生命周期，会话关闭等导致后台 bash 死亡时任务随亡（record/快照已落盘，list/status 可见非终态，必要时重发）。管理面（list/status/abort）只反映 record 与本进程视图；跨进程的任务协调（1.x daemon 的全局限流/续聊）不提供——单用户桌面场景按「同一时刻一个长任务执行体」使用。
 
 ## 从 dynamic-workflow 迁移
 
@@ -232,10 +231,10 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 ├── records.jsonl        append-only 事件流（zsub subagent 线；崩溃后重放恢复。回接 2b 起
 │                        workflow 线不再写入——旧 wf- record 留存可读但无消费方）
 ├── workflow-state/      workflow run 状态快照（core FileRunStore：<runId>.jsonl append-only，
-│                        末行有效行 = 最新状态；daemon 启动/接管时重水合孤儿 run）
+│                        末行有效行 = 最新状态）
 ├── outputs/             subagent 结果全文 + patch（workflow 报告线已退役，CLI stdout 直出）
-├── daemon.sock          daemon 控制面 unix socket（0.2.0+，ZSW_SOCK 可覆盖）
-├── daemon.sock.lock     daemon 竞选锁文件（O_EXCL 原子裁决）
+├── daemon.sock          （1.x 遗留，2.0 起不再创建；存量无害残留可手工清理）
+├── daemon.sock.lock     （同上）
 ├── logs/                core 编排日志（workflow-core.log）
 ├── engines/zcode/       core zcode 引擎数据（回接 2c：隔离 HOME 池 + journal，布局归 core
 │   home-*/              paths SSOT；spawn 回退 = home-<provider>-<m>/，常驻 = home-appserver(-N)/
@@ -253,7 +252,7 @@ agent 侧推荐组合：Bash 工具 `run_in_background=true` 包裹 `zsw start -
 - **执行通道 = core zcode engine：缺省 appserver 常驻 + 会话句柄，`XYZ_ZCODE_MODE=spawn` 定向回退单轮（回接 2c 接入、P3 回归常驻；1.x 宿主私连通道已退役，迁移对照见「回接 2c break 变更」节）**：`zsw start` 派发经 core `routeEngine` 真探（binary + version + golden 干跑，引擎实例内缓存——进程存活期不重探，CLI 升级后重启进程/首任务即暴露漂移）；probe 过即命中 appserver 常驻（exec 形态翻转为 `'appserver'` 并留 sessionRef 进 record，常驻引擎进程跨任务复用），workflow 的 agent() 轮走同一引擎。spawn 回退路径（`XYZ_ZCODE_MODE=spawn` 或引擎降级）下每任务一个独立无头 zcode 进程（`--json --mode yolo`，~1-2s 冷启动/轮）。引擎 preparer 内做模型校验（凭据源 `~/.zcode/v2/config.json`）与隔离 HOME 池引导（落 `<zsw 数据根>/engines/zcode/`），未知模型/缺凭据在任务启动时报含可用清单的可操作错误。取消/超时 = AbortSignal → core 杀链（SIGTERM→5s→SIGKILL）。
 - **conversation 续聊暂不可用（core EnginePort 面无 resume 入口）**：conversation 任务首轮照常（完成置 idle），`message` 续聊明确报可操作错误（含「重新 start」指引）；resume 缺口属 EnginePort 契约边界——P3 常驻已回归但入口未透出，1.x 的 `--resume` 冷续聊让渡（见「回接 2c break 变更」节）。busy 语义不变：running 中投递返回 busy 结果。多轮需求拆多次 start，上轮结论/结果路径写进下一轮 task。
 - **structured 输出仅保证「可解析 JSON 对象」，不校验 schema 符合性（zsw 壳层）**：schema 经 prompt MANDATORY 契约段约束 + `extractJsonObject` 三级容错提取，无 ajv 校验、无强化重试——模型输出违规 JSON 时仍以 structured 成功面返回（`parsedOutput` 为提取结果，提取失败则该字段缺省）。引擎侧差异：pi 引擎为 native 校验、core zcode 引擎为 emulated 校验+重试，zsw 壳层不透传 schema 到引擎。消费方对关键字段自行校验（workflow 脚本内对 `parsedOutput` 做类型/必填检查后再用）。
-- **workflow 中止语义（回接 2b 后）**：daemon 形态（socket 面派发、执行体 = daemon 进程内 core worker 线程）的 `abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；在飞 agent() 轮经 runner-core 的 AbortSignal → 引擎杀链立停（AbortSignal 直达引擎杀链，spawn 回退与常驻两形态均生效，e2e E4 按形态分支断言）。`zsw workflow run` 本地一次性进程的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的本地 run 用引擎 TaskStop。
+- **workflow 中止语义**：`--action abort` 走 core `abortRun`——worker 线程 terminate、run 立即落 `done,aborted` 并写快照；在飞 agent() 轮经 runner-core 的 AbortSignal → 引擎杀链立停（AbortSignal 直达引擎杀链，spawn 回退与常驻两形态均生效）。2.0 起执行体 = CLI 进程本身，`workflow run` 的中止是进程级：Ctrl-C/SIGTERM 下 CLI 与 worker 线程/引擎子进程一同退出；取消 bg bash 形态的 run 用引擎 TaskStop（一次性进程无跨进程 runs 表，abort 只作用于本进程视图内的 run）。
 - **`ZSW_RUNNER` 已退役（2c）**：'spawn' = 兼容 no-op（告警一次后忽略）；'appserver' / 未知值 = 启动即报错。引擎模式定向用 `XYZ_ZCODE_MODE`（见「回接 2c break 变更」节）。
 - **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（`zsw wait --id <id>`）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
 - **工具黑名单是引擎级硬拦截（两来源并集去重），白名单只有 prompt 软约束一层**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`，并集去重后落引擎 `--disallowed-tools` flag（2c 起两来源等价生效）。frontmatter `tools` 白名单经 prompt 工具约束段生效（软约束——只能约束意图不能拦截行为）；CLI `--allow-tools` 当前不进 prompt 也不进引擎通道（zcode CLI 无 allowlist flag，`--allowed-tools` 拒收），唯一效果是终态 record `toolsNote` 标注（请求未生效提示）——工具软约束一律经 agent .md frontmatter `tools` 字段声明。

@@ -1,7 +1,8 @@
 'use strict';
 /**
  * record compact 单元锚（socket-record 收口设计 §3.4 探针 + §4 A8 单元版；
- * 真实 daemon 场景 A5-A7/P-mount 由 /tmp 验收脚本覆盖，不在本文件）。
+ * 2.0 起挂点宿主 = lib/assemble.js（CLI 组装路径），原 daemon 启动/接管挂点
+ * 与真实 daemon 场景 A5-A7/P-mount 验收随 daemon 退役）。
  *
  * 锚定的行为面：
  *   - P-compact-equiv：compact 后文件仍是合法事件流，rebuild 与 compact 前
@@ -12,7 +13,7 @@
  *   - P-keep-env：ZSW_RECORD_KEEP 正整数生效/缺省回落/非法警告回落
  *     （resolveStateKeep 家族语义）。
  *   - A8 单元版：活跃 run 与 lost run 居文件中部不被删、终态超 keep 删最旧。
- *   - 挂点 helper（server.compactRecords）：总数 ≤ keep 零成本跳过 / 结果日志 /
+ *   - 挂点 helper（assemble.compactRecords）：总数 ≤ keep 零成本跳过 / 结果日志 /
  *     失败不外抛。
  */
 
@@ -24,8 +25,8 @@ const path = require('node:path');
 
 const { RecordStore } = require('../lib/record-store');
 const config = require('../lib/config');
-// server.js require 零副作用（头注声明），compactRecords 是挂点行为的可测面
-const { compactRecords } = require('../dist/mcp/server');
+// assemble.js require 零副作用（头注声明），compactRecords 是挂点行为的可测面
+const { compactRecords } = require('../lib/assemble');
 
 // ------------------------------------------------- fixture 构造
 
