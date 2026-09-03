@@ -635,6 +635,122 @@ const SUBCOMMANDS = new Set(['start', 'list', 'status', 'message', 'cancel', 'cl
 
 /** parseArgs 对重复 flag 只留末值；wait 的多 --id 形态已随 wait 退役。 */
 
+/**
+ * start 子命令 flag → params 翻译。start 恒阻塞（wait: true——CLI 进程活着
+ * 才有执行体）；--wait flag 接受但无差异（1.x start --wait 习惯形态的零改动兼容）。
+ */
+function buildStartParams(args) {
+  if (!args.task || !args.slug) usage();
+  if (args.noWait === true) {
+    // --no-wait 已移除：CLI 一次性进程下它必然丢执行体（轮死、record 卡
+    // running），没有任何常驻组件会接管。显式报错优于静默忽略。
+    process.stderr.write(
+      '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running）。'
+      + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
+      + '需要异步启动与完成通知，用 Bash run_in_background 包裹本命令'
+      + `（node "${zswCliPath()}" start --task "..." --slug x），完成即引擎原生 task-notification。\n`
+    );
+    process.exit(1);
+  }
+  return {
+    task: args.task,
+    slug: args.slug,
+    agent: args.agent,
+    model: args.model,
+    schema: schemaArg(args.schema),
+    worktree: args.worktree === true,
+    conversation: args.conversation === true,
+    wait: true, // CLI 进程活着才有后台执行体（--wait/--no-wait 见上）
+    timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
+    ...startCapabilityArgs(args), // thinking 与 CLI 工具限制参数面
+  };
+}
+
+/**
+ * zsub 子命令 flag → params 翻译（argv 组参是 CLI 特有职责；SUBCOMMANDS 白名单
+ * 已在调用侧过滤，default 不可达）。
+ */
+function buildZsubParams(cmd, args) {
+  switch (cmd) {
+    case 'start':
+      return buildStartParams(args);
+    case 'list':
+      return {};
+    case 'agents':
+      // agent .md 发现（core 发现面：vendored 内置角色 + 四根；D-4a 后 start
+      // 只收路径——不确定路径时先查，输出带 location/file 列）
+      return {};
+    case 'models':
+      // 模型路由清单；--all 出全 provider 视图（跨 provider 必须全名
+      // <provider>/<model>，兜底链闭合），缺省 = 默认 provider 视图
+      return args.all === true ? { all: true } : {};
+    case 'status':
+      return { subagentId: args.id };
+    case 'message':
+      // message 的续聊执行线已移除（manager.message 恒 throw）——该入口收敛为
+      // 纯错误路径（id 不存在 / 非 conversation / 状态非 idle），由表 exec 直返。
+      return { subagentId: args.id, text: args.text };
+    case 'cancel':
+      return { subagentId: args.id };
+    case 'close':
+      return { subagentId: args.id };
+    default:
+      return undefined; // 白名单已过滤，不可达
+  }
+}
+
+/** MF-5：start 的 exit code 契约（头注声明 cancelled/error/timeout/lost → 1）。
+ *  终态取 result.record.status：closed / idle（conversation 轮完成）→ 0，其余 → 1 */
+function applyStartExitCode(cmd, result) {
+  if (cmd === 'start' && result && result.record && typeof result.record.status === 'string') {
+    process.exitCode = (result.record.status === 'closed' || result.record.status === 'idle') ? 0 : 1;
+  }
+}
+
+/**
+ * zsub 面执行流程：parseArgs → 嵌套检查 → 组装（record 重建）→ 查表执行 → 输出。
+ * 返回 wfHost 供调用侧引擎收口（MF-4）。
+ */
+async function runZsubCommand(cmd, rest) {
+  const args = parseArgs(rest);
+  // MF2：嵌套拒绝（防递归边界：嵌套子会话内编排会递归 spawn 真实引擎进程）
+  ensureNotNested();
+
+  const { manager, wfHost } = await assembleManager();
+  activeWfHost = wfHost; // main catch 错误出口的引擎收口依据（MF-4）
+  // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
+  // list/status 看到历史。刻意不走探活——探活会对其他进程正在跑的任务误标
+  // orphan 落盘。副作用如实声明：非终态 record 在 CLI 视角显示 lost（CLI 无法
+  // 确知其他进程持有执行体的死活），这是内存态，退出即消，不污染事件流。
+  try { manager.records.rebuildFromLog(); } catch (e) {
+    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
+  }
+
+  const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
+  const ctx = {
+    cwd,
+    // CLI 无 _meta 通道；显式 --target-session 才有 mailbox 定向（高级用法）
+    targetSessionId: typeof args.targetSession === 'string' ? args.targetSession : undefined,
+  };
+
+  if (!SUBCOMMANDS.has(cmd)) {
+    process.stderr.write(`未知子命令: ${cmd}\n`);
+    usage();
+  }
+
+  const params = buildZsubParams(cmd, args);
+
+  // 查表执行（单一 action 表单源）；错误 throw 由 main catch 打印 [zsw] 错误
+  // + exit 1
+  const result = await execZsubAction(cmd, params, ctx, {
+    manager,
+    ports: { agentResolver: manager.resolver, modelRouter: manager.modelRouter },
+  });
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  applyStartExitCode(cmd, result);
+  return wfHost;
+}
+
 async function main() {
   // ZSW_RUNNER 校验前置（回接 2c）：立即报退役错误，不依赖组装时机
   // （hook/workflow 子命令不经组装面，但 env 误配同样应尽早在用户可见面出声）
@@ -664,108 +780,7 @@ async function main() {
     process.exit(1);
   }
 
-  const args = parseArgs(rest);
-  // MF2：嵌套拒绝（防递归边界：嵌套子会话内编排会递归 spawn 真实引擎进程）
-  ensureNotNested();
-
-  const { manager, wfHost } = await assembleManager();
-  activeWfHost = wfHost; // main catch 错误出口的引擎收口依据（MF-4）
-  // CLI 一次性进程：只重建 record 索引（rebuild 只改内存不落盘），让
-  // list/status 看到历史。刻意不走探活——探活会对其他进程正在跑的任务误标
-  // orphan 落盘。副作用如实声明：非终态 record 在 CLI 视角显示 lost（CLI 无法
-  // 确知其他进程持有执行体的死活），这是内存态，退出即消，不污染事件流。
-  try { manager.records.rebuildFromLog(); } catch (e) {
-    process.stderr.write(`[zsw] record 重建失败（继续）: ${e && e.message || e}\n`);
-  }
-
-  const cwd = process.env.ZCODE_PROJECT_DIR || process.cwd();
-  const ctx = {
-    cwd,
-    // CLI 无 _meta 通道；显式 --target-session 才有 mailbox 定向（高级用法）
-    targetSessionId: typeof args.targetSession === 'string' ? args.targetSession : undefined,
-  };
-
-  if (!SUBCOMMANDS.has(cmd)) {
-    process.stderr.write(`未知子命令: ${cmd}\n`);
-    usage();
-  }
-
-  // CLI flag → zsub params 翻译（argv 组参是 CLI 特有职责）。start 恒阻塞
-  // （wait: true——CLI 进程活着才有执行体）；--wait flag 接受但无差异（1.x
-  // start --wait 习惯形态的零改动兼容）。
-  let params;
-  switch (cmd) {
-    case 'start': {
-      if (!args.task || !args.slug) usage();
-      if (args.noWait === true) {
-        // --no-wait 已移除：CLI 一次性进程下它必然丢执行体（轮死、record 卡
-        // running），没有任何常驻组件会接管。显式报错优于静默忽略。
-        process.stderr.write(
-          '[zsw] --no-wait 已移除：CLI 一次性进程退出即丢执行体（轮死、record 卡 running）。'
-          + '恢复指引：去掉 --no-wait 让命令阻塞到本轮完成；'
-          + '需要异步启动与完成通知，用 Bash run_in_background 包裹本命令'
-          + `（node "${zswCliPath()}" start --task "..." --slug x），完成即引擎原生 task-notification。\n`
-        );
-        process.exit(1);
-      }
-      const schema = schemaArg(args.schema);
-      params = {
-        task: args.task,
-        slug: args.slug,
-        agent: args.agent,
-        model: args.model,
-        schema,
-        worktree: args.worktree === true,
-        conversation: args.conversation === true,
-        wait: true, // CLI 进程活着才有后台执行体（--wait/--no-wait 见上）
-        timeoutMs: args.timeoutMs ? Number(args.timeoutMs) : undefined,
-        ...startCapabilityArgs(args), // thinking 与 CLI 工具限制参数面
-      };
-      break;
-    }
-    case 'list':
-      params = {};
-      break;
-    case 'agents':
-      // agent .md 发现（core 发现面：vendored 内置角色 + 四根；D-4a 后 start
-      // 只收路径——不确定路径时先查，输出带 location/file 列）
-      params = {};
-      break;
-    case 'models':
-      // 模型路由清单；--all 出全 provider 视图（跨 provider 必须全名
-      // <provider>/<model>，兜底链闭合），缺省 = 默认 provider 视图
-      params = args.all === true ? { all: true } : {};
-      break;
-    case 'status':
-      params = { subagentId: args.id };
-      break;
-    case 'message':
-      // message 的续聊执行线已移除（manager.message 恒 throw）——该入口收敛为
-      // 纯错误路径（id 不存在 / 非 conversation / 状态非 idle），由表 exec 直返。
-      params = { subagentId: args.id, text: args.text };
-      break;
-    case 'cancel':
-      params = { subagentId: args.id };
-      break;
-    case 'close':
-      params = { subagentId: args.id };
-      break;
-    default:
-      break; // 白名单已过滤，不可达
-  }
-
-  // 查表执行（单一 action 表单源）；错误 throw 由 main catch 打印 [zsw] 错误
-  // + exit 1
-  const result = await execZsubAction(cmd, params, ctx, {
-    manager,
-    ports: { agentResolver: manager.resolver, modelRouter: manager.modelRouter },
-  });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  // MF-5：start 的 exit code 契约（头注声明 cancelled/error/timeout/lost → 1）。
-  // 终态取 result.record.status：closed / idle（conversation 轮完成）→ 0，其余 → 1
-  if (cmd === 'start' && result && result.record && typeof result.record.status === 'string') {
-    process.exitCode = (result.record.status === 'closed' || result.record.status === 'idle') ? 0 : 1;
-  }
+  const wfHost = await runZsubCommand(cmd, rest);
   // 一次性进程的引擎收口（start/message 跑完任务后 appserver 常驻子进程的
   // stdio 挂住事件循环，防 CLI 无法退出）
   await exitAfterEngineShutdown(wfHost);
