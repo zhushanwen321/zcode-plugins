@@ -51,7 +51,8 @@
  * --local flag：1.x 的 daemon/本地双形态遗产，2.0 起本地是唯一形态——
  * flag 接受但忽略（旧脚本零改动迁移）。
  *
- * start exit code：任务终态 closed → 0；cancelled/error/timeout/lost → 1。
+ * start exit code：任务终态 closed/idle（conversation 本轮完成）→ 0；
+ * cancelled/error/timeout/lost → 1。
  * workflow run exit 0 = reason=completed。
  *
  * 输出：stdout 一律 JSON（人读加 | jq）；workflow run 默认输出 markdown 报告
@@ -440,13 +441,17 @@ function renderScriptResultMarkdown(scriptResult) {
  * dispose 是 daemon 自己的退出面（stdin 关闭钩子），CLI 侧 socket 断开即可。
  */
 function exitAfterEngineShutdown(wfHost) {
+  const code = process.exitCode || 0;
+  // S-1：兜底 timer 在 shutdown 之前武装——dispose 挂起（pipe stdio 永不关）
+  // 时 shutdown promise 永不 resolve，事后武装的 250ms timer 无从调度
+  const hangGuard = setTimeout(() => process.exit(code), 5000).unref();
   return Promise.resolve()
     .then(() => (wfHost && typeof wfHost.shutdown === 'function' ? wfHost.shutdown() : undefined))
     .catch((e) => {
       process.stderr.write(`[zsw] engine 收口失败（继续退出）: ${e && e.message || e}\n`);
     })
     .then(() => {
-      const code = process.exitCode || 0;
+      clearTimeout(hangGuard);
       setTimeout(() => process.exit(code), 250).unref();
     });
 }
@@ -699,11 +704,14 @@ function buildZsubParams(cmd, args) {
   }
 }
 
-/** MF-5：start 的 exit code 契约（头注声明 cancelled/error/timeout/lost → 1）。
- *  终态取 result.record.status：closed / idle（conversation 轮完成）→ 0，其余 → 1 */
+/** MF-5：start 的 exit code 契约（头注声明 closed/idle → 0，其余 → 1）。
+ *  终态取顶层 result.status：manager.start(wait=true) 返回扁平对象
+ *  {subagentId, slug, status, ...}（无 record 键——record 只在内部
+ *  _runFirstRound 返回里；MF-1 修复前读 result.record.status 恒 undefined，
+ *  失败终态全部静默 exit 0）。CLI 恒 wait:true，start 出口必经此函数。 */
 function applyStartExitCode(cmd, result) {
-  if (cmd === 'start' && result && result.record && typeof result.record.status === 'string') {
-    process.exitCode = (result.record.status === 'closed' || result.record.status === 'idle') ? 0 : 1;
+  if (cmd === 'start' && result && typeof result.status === 'string') {
+    process.exitCode = (result.status === 'closed' || result.status === 'idle') ? 0 : 1;
   }
 }
 
@@ -800,6 +808,9 @@ module.exports = {
   scriptSaveAction,
   scriptDeleteAction,
   runningScriptPredicate,
+  // MF-7：start exit code 契约导出（测试钉住五终态 → exit code 映射，与 MF-1
+  // 修复联动——黑盒 start 须跑真引擎，契约由单测锁定）
+  applyStartExitCode,
 };
 
 if (require.main === module) {

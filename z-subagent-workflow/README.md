@@ -91,6 +91,8 @@ node bin/zsw.js workflow --workflow review-fix-loop \
 
 2.0 起 CLI 是纯本地一次性进程（`--local` flag 接受但忽略——1.x 双形态遗产，本地是唯一形态）：start/message 一律阻塞到本轮完成再退出（无 `--no-wait`——CLI 进程退出即丢执行体，record 会卡 running）。bash `run_in_background` 场景让 CLI 阻塞到完成，由引擎跟踪该 bash 任务并在完成时唤醒——这是长任务的标准承载方式（`wait` 子命令已随 daemon 移除）。
 
+start 终态 exit code：closed / idle（conversation 本轮完成）→ 0；cancelled / error / timeout / lost → 1（Bash run_in_background 消费方据此判定成败）。workflow run 的 exit 0 = reason=completed。
+
 ## 回接 2b break 变更（workflow 线换 vendored subagent-core orchestration）
 
 zsw 自有 workflow 运行时（WorkflowManager + lib/workflow/ 管线 + workflow-script 旧契约）已整体退役，编排层换成 vendored `@zhushanwen/subagent-core`（`lib/orchestration-host.js` 宿主 + `lib/agent-runner-adapter.js` 执行桥）。**以下是调用方可见的行为 break，旧用法按本表迁移**：

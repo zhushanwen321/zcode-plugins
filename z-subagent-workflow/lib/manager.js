@@ -363,7 +363,8 @@ class SubagentManager {
       return {
         busy: true,
         message: `该 subagent 正在运行，仅 idle 状态可投递。`
-          + `等待当前轮完成（node "${config.zswCliPath()}" wait --id ${id}）`
+          + `等待当前轮完成（node "${config.zswCliPath()}" status --id ${id} 轮询进度；`
+          + `承载 start 的后台 Bash 任务完成即原生 task-notification 唤醒）`
           + `或 node "${config.zswCliPath()}" cancel --id ${id} 取消后再投递`,
       };
     }
@@ -411,12 +412,17 @@ class SubagentManager {
     // 无句柄：created（排队中）/ idle（轮间无进程）可本进程直接终态化；
     // running / lost = 执行体在另一 CLI 进程内（2.0 多进程共享 records.jsonl，
     // 本进程无句柄可杀）——直接终态化会让对端 done 落 CAS 拒绝、台账与本进程
-    // 视图矛盾，且执行体照跑 token 照烧，必须报错（MF-2）
-    if (rec.status === 'running' || rec.status === 'lost') {
+    // 视图矛盾，且执行体照跑 token 照烧，必须报错（MF-2）。
+    // MF-5 例外：lost 且 _lostFrom='idle'（rebuildFromLog 把非终态标 lost 时留的
+    // 内存标记）= 曾 idle 的会话被本 CLI 视角误标，轮间本无进程，本地终态化
+    // （lost→cancelled 在 TRANSITIONS 合法）不影响跨进程 running 防护
+    if (rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle')) {
       throw new Error(
         `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
         + '本进程无法取消：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
-        + 'record 由持有执行体的对端进程终态化。恢复指引：zsw list 复查状态。',
+        + 'record 由持有执行体的对端进程终态化。若确认对端进程已退出后仍卡 lost：可手工向台账文件'
+        + `（records.jsonl）追加该 run 的终态事件，如 {"ts":${Date.now()},"type":"transition","id":"${id}","from":"lost","to":"cancelled"}，`
+        + '下次 rebuild 即恢复终态。恢复指引：zsw list 复查状态。',
       );
     }
     const note = rec.status === 'created'
@@ -435,9 +441,20 @@ class SubagentManager {
     if (!TERMINAL_STATUSES.has(rec.status)) {
       if (this.handles.has(id)) {
         await this._cancelCore(id); // 运行中：借取消链杀进程 + 终态落盘（同锁内直调，避免重入自等）
+      } else if (rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle')) {
+        // MF-3：与 cancel 同款守卫（同 root cause）——running / 非 idle 来源的
+        // lost = 执行体在他进程，跨进程终态化会让对端 done 落 CAS 拒绝，且下面
+        // 的 worktree.cleanup 会直接拆掉他进程正用的隔离目录（活任务 cwd 被拆）
+        throw new Error(
+          `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
+          + '本进程无法关闭：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
+          + 'record 由持有执行体的对端进程终态化后再 close 清理 worktree。若确认对端进程已退出后仍卡 lost：'
+          + '可手工向台账文件（records.jsonl）追加该 run 的终态事件（如 {"type":"transition","from":"lost","to":"cancelled"} 形态，'
+          + '补 ts/id 字段），下次 rebuild 恢复终态后再 close。恢复指引：zsw list 复查状态。',
+        );
       } else {
         const note = rec.status === 'lost'
-          ? 'closed（句柄丢失，进程可能残留）'
+          ? 'closed（rebuild 标 lost，原为 idle 无进程残留）'
           : 'closed-by-user';
         this.records.transition(id, rec.status, 'closed', { closedReason: note });
       }

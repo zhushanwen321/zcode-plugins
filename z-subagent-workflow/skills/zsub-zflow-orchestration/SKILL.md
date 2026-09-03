@@ -56,7 +56,7 @@ node bin/zsw.js list
 ```
 
 - **为什么配 `run_in_background=true`**：CLI 阻塞进程成为引擎进程内 background 任务，完成即触发引擎原生 `<task-notification>` 唤醒会话（idle 会话也唤醒）——这是唯一可靠的完成唤醒通道，勿用 `sleep N && status` 轮询替代。
-- start 终态 exit code：closed → 0；cancelled/error/timeout/lost → 1。
+- start 终态 exit code：closed / idle（conversation 本轮完成）→ 0；cancelled/error/timeout/lost → 1。
 - 执行体生命周期 = CLI 进程生命周期：会话关闭等导致后台 bash 进程死亡时任务随亡（record 已落盘，下次 list/status 可见非终态），必要时重新派发。
 
 ## 核心纪律

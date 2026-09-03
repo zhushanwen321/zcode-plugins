@@ -215,6 +215,22 @@ test('workflow --action abort/status 缺 --id → exit 1', async () => {
   assert.match(s.stderr, /--id/);
 });
 
+// MF-6：abort 的 not-in-process 分支是 2.0 语义变更点（daemon 代杀 → TaskStop
+// 指引），此前全仓零 CLI 面用例。一次性进程内存 runs 只有本进程创建的视图，
+// 任意历史/他进程 runId 必落入该分支
+test('workflow abort --id <非本进程 run> → exit 1 + TaskStop 指引 + {aborted:false, reason:not-in-process}', async () => {
+  const r = await run(['workflow', '--action', 'abort', '--id', 'wf-20990101-0001']);
+  assert.equal(r.code, 1, `stderr: ${r.stderr}`);
+  assert.match(r.stderr, /不在本进程/);
+  assert.match(r.stderr, /TaskStop/);
+  assert.match(r.stderr, /workflow-state/);
+  assert.deepEqual(JSON.parse(r.stdout), {
+    runId: 'wf-20990101-0001',
+    aborted: false,
+    reason: 'not-in-process',
+  });
+});
+
 test('workflow --action lint 缺 --file → exit 1', async () => {
   const r = await run(['workflow', '--action', 'lint']);
   assert.equal(r.code, 1);
@@ -244,7 +260,35 @@ return { final: 'done' };
 
 // parseArgs/csv 纯解析单测：bin/zsw.js 以 require.main 守卫导出解析函数——
 // 黑盒子进程测不到的 kebab→camel 映射与缺值布尔形态在此钉住
-const { parseArgs, csv } = require('../bin/zsw.js');
+const { parseArgs, csv, applyStartExitCode } = require('../bin/zsw.js');
+
+// MF-1/MF-7：start exit code 契约钉住——manager.start(wait=true) 返回扁平对象
+// {subagentId, slug, status, ...}（无 record 键），applyStartExitCode 须读顶层
+// result.status；修复前读 result.record.status 恒 undefined，失败终态全部
+// 静默 exit 0。黑盒 start 须跑真引擎，契约由此单测锁定（idle=0、cancelled=1 等
+// 五终态映射 + 非 start 子命令不设 exit code）
+test('applyStartExitCode：五终态 → exit code 映射（顶层 result.status）', () => {
+  const saved = process.exitCode;
+  try {
+    for (const [status, expected] of [
+      ['closed', 0], ['idle', 0], ['cancelled', 1], ['error', 1], ['timeout', 1], ['lost', 1],
+    ]) {
+      process.exitCode = undefined;
+      applyStartExitCode('start', { subagentId: 'sa-x', slug: 's', status });
+      assert.equal(process.exitCode, expected, `status=${status} 应映射 exit ${expected}`);
+    }
+    // 非 start 子命令：不设 exit code（保持 CLI 缺省 0）
+    process.exitCode = undefined;
+    applyStartExitCode('list', { status: 'error' });
+    assert.equal(process.exitCode, undefined, '非 start 子命令不得改写 exit code');
+    // record 嵌套形态（修复前的错误数据源）不得被消费——扁平对象无 record 键
+    process.exitCode = undefined;
+    applyStartExitCode('start', { record: { status: 'error' }, status: undefined });
+    assert.equal(process.exitCode, undefined, '无顶层 status 时不误设（start 出口必有 status，防御断言）');
+  } finally {
+    process.exitCode = saved;
+  }
+});
 
 test('F4 flag 解析：--thinking/--allow-tools/--deny-tools 的 kebab→camel 与值形态', () => {
   const a = parseArgs(['start', '--thinking', 'low', '--allow-tools', 'Read,Grep', '--deny-tools', 'Bash, WebSearch', '--task', 'x']);

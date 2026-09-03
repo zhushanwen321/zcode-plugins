@@ -393,7 +393,8 @@ test('message：running 中返回 busy；非 conversation 任务拒绝', async (
   const busy = await manager.message(h.subagentId, '现在怎么样了');
   assert.deepEqual(busy, {
     busy: true,
-    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（node "${zswCliPath()}" wait --id ${h.subagentId}）`
+    message: `该 subagent 正在运行，仅 idle 状态可投递。等待当前轮完成（node "${zswCliPath()}" status --id ${h.subagentId} 轮询进度；`
+      + `承载 start 的后台 Bash 任务完成即原生 task-notification 唤醒）`
       + `或 node "${zswCliPath()}" cancel --id ${h.subagentId} 取消后再投递`,
   });
 
@@ -456,6 +457,51 @@ test('cancel（重启后无句柄）：running/lost record 拒绝终态化——
     (e) => /执行体不在本进程/.test(e.message) && /TaskStop/.test(e.message),
   );
   assert.equal(records.get('sa-stale-1').status, 'running', 'record 不被本进程终态化（由对端收口）');
+});
+
+// ------------------------------------------------ MF-5 / S-5：_lostFrom 分支
+
+/** 造一个真实走事件流 + rebuildFromLog 的 lost(_lostFrom=src) run（内存标记，不落盘）。 */
+async function rebuildLostFrom(records, src) {
+  const id = `sa-lost-${src}`;
+  records.create({ subagentId: id, slug: src, exec: { kind: 'fake', pid: 414141 } });
+  records.transition(id, 'created', 'running');
+  if (src === 'idle') records.transition(id, 'running', 'idle', { closedReason: 'round-complete' });
+  const st = records.rebuildFromLog();
+  assert.equal(st.records, 1, '事件流全部重放成功');
+  assert.equal(records.get(id).status, 'lost', '非终态被 rebuild 标 lost');
+  return id;
+}
+
+test('MF-5 idle 来源 lost：cancel 本地终态化 → cancelled + record 终态（无句柄不抛）', async () => {
+  const { manager, records } = buildManager();
+  const id = await rebuildLostFrom(records, 'idle');
+  const out = await manager.cancel(id);
+  assert.equal(out.cancelled, true);
+  assert.equal(out.status, 'cancelled');
+  assert.match(out.note, /idle/);
+  assert.equal(records.get(id).status, 'cancelled', 'record 已落终态');
+});
+
+test('MF-5 idle 来源 lost：close 走 closed 本地路径 + note 含 idle 来源', async () => {
+  const { manager, records } = buildManager();
+  const id = await rebuildLostFrom(records, 'idle');
+  const out = await manager.close(id);
+  assert.equal(out.status, 'closed');
+  assert.equal(out.worktreeCleaned, null, '无 worktree 不触发清理');
+  const rec = records.get(id);
+  assert.equal(rec.status, 'closed');
+  assert.match(rec.closedReason, /idle/, 'closedReason 说明 rebuild 标 lost 前 idle');
+});
+
+test('MF-5/S-5 反向钉住：非 idle 来源 lost（rebuild 自 running）cancel 仍拒——执行体可能在别的 CLI 进程', async () => {
+  const { manager, records } = buildManager();
+  const id = await rebuildLostFrom(records, 'running');
+  await assert.rejects(
+    () => manager.cancel(id),
+    (e) => /执行体不在本进程/.test(e.message) && /TaskStop/.test(e.message),
+  );
+  assert.equal(records.get(id).status, 'lost', 'record 不被本进程终态化');
 });
 
 test('recover：死 pid → lost 落因，活 pid → 保留 + 孤儿标记', async () => {

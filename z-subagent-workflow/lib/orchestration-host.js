@@ -62,7 +62,8 @@ const BUILTIN_WORKFLOW_NAMES = [
  * 收口（原 11 键逐一保留语义，仅 +args/+action）：
  * - bin/zsw.js buildWorkflowRunParams 的 params 字面量组（workflow/task/
  *   workdir/model/timeoutMs 固定面 + maxConcurrent/timeoutMsPerPhase 废弃位）
- * - dist/mcp/server.js run 分支（action 剥离 + wait 同步/异步分流）
+ * - 1.x dist/mcp/server.js run 分支（action 剥离 + wait 同步/异步分流——已随
+ *   MCP 壳退役，历史对照保留）
  * - 本文件 resolveRun（workdir）与 normalizeRunParams（reviewers 报错、
  *   reviewTarget/target 的 sugar、subtaskCount 废弃 warning）
  * - args：pi 宿主语法的 args 对象信封键（C16 新兼容面，作 $ARGS 基座）

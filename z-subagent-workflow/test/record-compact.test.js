@@ -162,6 +162,41 @@ test('compact: 终态未超 keep 但总数超（大量 lost 在册）→ 不动�
   assert.ok(!fs.existsSync(tmp), '未写 temp');
 });
 
+// ------------------------------------------------- MF-4 前置闸触发分支
+
+test('MF-4 前置闸: 终态超 keep 但非终态 run 近窗内有事件 → skipped + 文件不动 + stderr 留痕', (t) => {
+  const now = Date.now();
+  const lines = [];
+  for (let i = 1; i <= 4; i++) lines.push(...termRun(`term-${i}`, now - 3600_000 + i * 10)); // 终态，远超窗
+  lines.push(...lostRun('lost-recent', now)); // 非终态（rebuild 后 lost），最后事件落在 10min 窗内
+  const store = tmpStore(t, lines);
+  store.rebuildFromLog();
+  const before = fs.readFileSync(store.filePath); // 字节级快照
+  const tmp = `${store.filePath}.compact-${process.pid}.tmp`;
+  let r;
+  const stderr = captureStderr(() => { r = store.compact({ keep: 2 }); });
+  assert.equal(r.skipped, true);
+  assert.equal(r.removedRuns, 0);
+  assert.deepEqual(fs.readFileSync(store.filePath), before, '原文件字节不变');
+  assert.ok(stderr.includes('record compact 跳过'), 'stderr 留痕');
+  assert.ok(!fs.existsSync(tmp), '未写 temp');
+});
+
+test('MF-4 前置闸边界: 非终态 run 最后事件恰在窗外（now-10min-ε）→ 闸放行正常 compact', (t) => {
+  const now = Date.now();
+  const lines = [];
+  for (let i = 1; i <= 4; i++) lines.push(...termRun(`term-${i}`, now - 3600_000 + i * 10));
+  const quiet = lostRun('lost-quiet', now - 10 * 60 * 1000 - 5000); // 窗外：闸放行（残余风险归 D9② 复查）
+  lines.push(...quiet);
+  const store = tmpStore(t, lines);
+  store.rebuildFromLog();
+  const r = store.compact({ keep: 2 });
+  assert.equal(r.skipped, undefined);
+  assert.equal(r.removedRuns, 2); // 最旧终态 term-1/2 正常删
+  const raw = fs.readFileSync(store.filePath, 'utf8');
+  for (const l of quiet) assert.ok(raw.includes(l), '窗外非终态 run 行保留');
+});
+
 // ------------------------------------------------- P-occ（D9② 双向复查两面）
 
 test('P-occ 面1: 读后复查前并发 append 变大 → 放弃 + temp 清理 + stderr 留痕', (t) => {
@@ -280,7 +315,7 @@ test('server.compactRecords: 超阈值执行并出结果日志；失败不外抛
   assert.ok(logs2[0].includes('disk full'));
 });
 
-test('server.compactRecords: compact 返回 skipped → 出放弃日志（并发变更让位，S-3）', () => {
+test('server.compactRecords: compact 返回 skipped → 出跳过日志（并发变更/前置闸让位，S-3/MF-4）', () => {
   const fake = {
     records: {
       records: { size: 1500 },
@@ -290,7 +325,7 @@ test('server.compactRecords: compact 返回 skipped → 出放弃日志（并发
   const logs = [];
   compactRecords(fake, 'cli', (m) => logs.push(m));
   assert.equal(logs.length, 1);
-  assert.ok(logs[0].includes('record compact 放弃'), '放弃留痕');
+  assert.ok(logs[0].includes('record compact 跳过'), '跳过留痕（D9② 复查放弃 / MF-4 前置闸，均不动文件、下次再试）');
   assert.ok(logs[0].includes('phase=cli'));
   assert.ok(logs[0].includes('runs=1500') && logs[0].includes('keep=1000'));
 });

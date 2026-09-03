@@ -27,6 +27,18 @@ const TRANSITIONS = {
   lost: ['running', 'idle', 'closed', 'cancelled', 'error', 'timeout'],
 };
 
+/**
+ * MF-4 前置闸窗口：非终态 run 的最后事件落在近窗内 = 可能有对端 CLI 进程正
+ * 持有执行体在写台账（2.0 compact 挂 assembleManager 收尾，任意 list/status
+ * 都触发），此时 compact 的复查-rename 微窗内新 append 会被覆盖丢弃——跳过
+ * 本次。窗口取 10 分钟：subagent 任务只在状态转移时写事件，长任务的最后事件
+ * 可能远早于窗口（task 仍活着但静默），此时闸放行——残余风险由 D9② 双向
+ * size 复查兜住（read→recheck 间 append 会让 size 变大而放弃）。纯「有 lost
+ * 即跳过」不可行：CLI 一次性进程 rebuild 后非终态常态标 lost，会令 compact
+ * 永不执行（caution 裁定）。
+ */
+const COMPACT_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+
 /** 行分组（由 compact 拆出）：created 按事件 subagentId，transition/update 按 id。 */
 function groupLogLineGroups(lines) {
   const groups = new Map(); // key -> { idxs: number[], lastTs: number }
@@ -205,6 +217,20 @@ class RecordStore {
       // 无可删（终态未超 keep——如大量 lost/孤儿在册）：不写 temp 不动文件
       return { removedRuns: 0, removedLines: 0, keptRuns };
     }
+    // MF-4 前置闸：非终态 run（含 lost）近窗内有事件 = 可能有对端进程在写，
+    // rename 覆盖丢新 append 的窗口被常态化放大——本次跳过（窗口语义见
+    // COMPACT_ACTIVE_WINDOW_MS 头注）
+    const now = Date.now();
+    for (const [key, g] of groups) {
+      const rec = this.records.get(key);
+      if (rec === undefined) continue;
+      if (!TERMINAL_STATUSES.has(rec.status) && g.lastTs > now - COMPACT_ACTIVE_WINDOW_MS) {
+        process.stderr.write(
+          `[zsub] record compact 跳过：非终态 run ${key} 近窗内有事件（疑似对端进程持有执行体），本次不动台账\n`,
+        );
+        return { removedRuns: 0, removedLines: 0, keptRuns: groups.size, skipped: true };
+      }
+    }
     let removedLines = 0;
     const dropIdx = new Set();
     for (const key of dropKeys) {
@@ -269,7 +295,13 @@ class RecordStore {
       else skipped++;
     }
     for (const rec of this.records.values()) {
-      if (!TERMINAL_STATUSES.has(rec.status) && rec.status !== 'lost') rec.status = 'lost';
+      if (!TERMINAL_STATUSES.has(rec.status) && rec.status !== 'lost') {
+        // MF-5：误标前的真实态留内存标记（不落盘）——manager 的 cancel/close
+        // 守卫据此区分「lost 来自 idle（轮间无进程，可本地终态化）」与
+        // 「lost 来自 running/created（执行体可能在别的 CLI 进程，须拒）」
+        rec._lostFrom = rec.status;
+        rec.status = 'lost';
+      }
     }
     return { applied, skipped, records: this.records.size };
   }

@@ -66,11 +66,11 @@ function resolveStateKeep(env = process.env) {
  * workflow-state 磁盘裁剪接线（C13，无声恶化项修复）：把
  * <zswRoot>/workflow-state/ 收敛到上限个最新 .jsonl（mtime 升序删最旧，语义
  * 由 core FileRunStore.pruneStateFilesBeyondCap 承担）。设计 V7 后半的装配点
- * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——经组装面的只有
- * daemon 启动（dist/mcp/server.js main → createManager）与 CLI 本地组装路径
- * （bin/zsw.js `--local` / workflow 子命令；hook 子命令与 daemon thin-client
- * 默认路径在组装前分流，不经 assembleManager），单点同时覆盖 daemon 启动与
- * session-start 两语义；workflow-state 只产生于经组装面的路径，hook/thin-client
+ * 裁决：本函数在 assembleManager 收尾 fire-and-forget 调用——2.0 经组装面的
+ * 只有 CLI 本地组装路径（bin/zsw.js zsub 子命令 / workflow 子命令；hook 子
+ * 命令在组装前分流，不经 assembleManager；1.x 的 daemon 启动挂点
+ * dist/mcp/server.js main → createManager 已随 MCP 壳退役），单点覆盖 CLI
+ * 各子命令语义；workflow-state 只产生于经组装面的路径，hook
  * 不落状态、无需 prune。server.js 不设第二调用点（同一次启动会双跑 prune，
  * 且状态目录与 wfHost.store 同源）。
  *
@@ -130,8 +130,8 @@ function assertRunnerEnv() {
 }
 
 /**
- * records.jsonl 磁盘收敛挂点（自 dist/mcp/server.js 的 daemon 启动/接管挂点
- * 迁来）：收敛「活跃全量 + 最近 N 终态」，恢复成本与磁盘封顶。
+ * records.jsonl 磁盘收敛挂点（1.x 自 dist/mcp/server.js 的 daemon 启动/接管
+ * 挂点迁来，daemon 已退役）：收敛「活跃全量 + 最近 N 终态」，恢复成本与磁盘封顶。
  *
  * 1.x 单属主由 daemon 角色保证；2.0 挂在 assembleManager 收尾 fire-and-forget
  * ——CLI 组装路径单点覆盖，并发 CLI 调用的竞态由 RecordStore.compact 的
@@ -149,7 +149,9 @@ function compactRecords(manager, phase, log) {
     if (total <= keep) return; // 零成本跳过：总数不超 keep 则终态必不超
     const r = manager.records.compact({ keep });
     if (r.skipped) {
-      log(`record compact 放弃（台账被并发变更，下次启动再试）：phase=${phase} runs=${total} keep=${keep}`);
+      // skipped 含两种成因：D9② 复查放弃 / MF-4 前置闸（非终态近窗内有事件，
+      // 疑似对端进程在写）——均为不动文件、下次再试语义
+      log(`record compact 跳过（台账被并发变更或非终态 run 疑似活跃，下次启动再试）：phase=${phase} runs=${total} keep=${keep}`);
     } else {
       log(`record compact 完成：phase=${phase} removedRuns=${r.removedRuns} removedLines=${r.removedLines} keptRuns=${r.keptRuns} keep=${keep}`);
     }
