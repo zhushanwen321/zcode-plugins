@@ -282,15 +282,15 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
 
 **app-server 常驻引擎进程是引擎唯一形态、预期形态，不要清场**：
 
-- **app-server 常驻引擎**（core engine 唯一形态，0.5.0 起无 spawn 回退）：共享宿主 HOME 形态**无 pidfile/派生目录**——判据 = `ps` 命令行 `zcode.cjs app-server --cwd <ZSW_ROOT>`（引擎进程级 `--cwd` = 引擎数据根，是唯一锚定判据）。并发任务数不等于进程数——多个任务共享一个常驻引擎。
+- **app-server 常驻引擎**（core engine 唯一形态，0.5.0 起无 spawn 回退）：共享宿主 HOME 形态**无 pidfile/派生目录**。**归属核对不能靠 ps command 字样**：zcode 进程启动后即改写 `process.title`（约 0.5s 初始化窗口后 `ps`/`pgrep` 的 command 列变为 `zcode-cli`，原始 argv 中的 `appserver-launcher.cjs app-server --cwd <ZSW_ROOT>` 字样失配）——归属判据用进程父子关系（`ps -eo pid,ppid,command` 中 ppid = 消费进程）或打开文件（`lsof -p <pid>`）。并发任务数不等于进程数——多个任务共享一个常驻引擎。
 
-清场口径（只收残留，勿杀健康常驻）：daemon/CLI 退出时经 runner shutdown → 引擎逐实例 dispose（close 帧 → SIGTERM → grace → SIGKILL）+ `killAllSpawnedChildren` 兜底收割，正常无残留。确需手工核对时**按命令行判据收割**：`pgrep -f 'zcode.cjs app-server --cwd'` 列出常驻进程，只处理「无会话/任务在跑而进程仍存活」的孤儿常驻（`kill <pid>`）。旧判据（pidfile 快照、`home-appserver(-N)` 多开派生目录、`--json --prompt` 单轮进程残留）已随 0.5.0 废弃——引擎不再产生这些形态；残留的旧池目录（`engines/zcode/` 下与顶层的 `home-*/`）是废弃布局的历史残留，删目录即可、不代表活进程。1.x 宿主私连通道的常驻进程已随通道退役不再出现——现在看到的 app-server 常驻进程是 core 引擎的预期形态，按上面口径处置，不要按「全部杀掉」的旧直觉清场。
+清场口径（只收残留，勿杀健康常驻）：daemon/CLI 退出时经 runner shutdown → 引擎逐实例 dispose（close 帧 → SIGTERM → grace → SIGKILL）+ `killAllSpawnedChildren` 兜底收割，正常无残留。确需手工核对时**按进程父子关系归属**：`ps -eo pid,ppid,command` 里 command 显示 `zcode-cli` 的进程（title 改写后 argv 不可见）无法靠 command 区分归属，先看 ppid——父进程已退出的孤儿（ppid=1）且确认无会话/任务在跑才可 `kill <pid>`。旧判据（pidfile 快照、`home-appserver(-N)` 多开派生目录、`--json --prompt` 单轮进程残留、按 command 中 `--cwd` 字样归属）已随 0.5.0 废弃或失真——残留的旧池目录（`engines/zcode/` 下与顶层的 `home-*/`）是废弃布局的历史残留，删目录即可、不代表活进程。1.x 宿主私连通道的常驻进程已随通道退役不再出现——现在看到的 `zcode-cli` 进程可能是 GUI 宿主自己的 CLI 会话（正常形态），不要按「全部杀掉」的旧直觉清场。
 
-**怎么判读**（`pgrep -fl 'zcode|app-server'` 的输出）：
+**怎么判读**（`ps -eo pid,ppid,command` 的输出；zcode 进程 title 改写后 command 列显示 `zcode-cli`）：
 
-- 1 个常驻引擎（`zcode.cjs app-server --cwd <ZSW_ROOT>`）：正常（常驻引擎承载在飞任务）。
-- 任务全终态后仍存活的 app-server 进程：孤儿常驻，`kill <pid>`（顽固时 `kill -9`；record 已落盘，下一次 recover 按 exec 形态分流处置）。
-- `--json --prompt` 单轮进程与 `home-appserver(-N)` 多开派生形态：0.5.0 起引擎不再产生——若 ps 中见到，属历史残留或非本插件进程，按命令行 `--cwd` 判归属后再处置。
+- 消费进程（GUI host / 发起 headless 任务的进程）名下的 `zcode-cli` 子进程：常驻引擎，正常（承载在飞任务）。
+- 父进程已退出（ppid=1）的孤儿 `zcode-cli` 且确认无会话/任务在跑：孤儿常驻，`kill <pid>`（顽固时 `kill -9`；record 已落盘，下一次 recover 按 exec 形态分流处置）。
+- `--json --prompt` 单轮进程与 `home-appserver(-N)` 多开派生形态：0.5.0 起引擎不再产生——若见到，属历史残留或非本插件进程，按 ppid 链判归属后再处置。
 
 **kill 会不会丢数据**：不会。会话记录落在宿主真实 `~/.zcode/cli/db/db.sqlite`（与 zcode GUI 共写同一 SQLite，WAL 并发安全）多进程可读，被杀引擎名下的会话换个引擎仍可 list / 复用；运行中的任务会以连接中断如实报错（重跑即可），已完成任务的结果不受影响。
 
@@ -304,7 +304,7 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
 | M4 | worktree | 干净主树 `node bin/zsw.js start --worktree --task "在 src/ 新增 hello.ts" --slug wt`（阻塞到完成） | 主树干净；结果含 patchFile；`git apply --check <patch>` 通过 |
 | M5 | 执行通道与续聊降级 | 不设任何 env 跑 `node bin/zsw.js start --wait`（单轮任务）；再跑 conversation 任务 + `message` | record.runnerKind='spawn'、record.engine='zcode' 留痕；conversation 首轮 idle、message 续聊报「无 resume 入口」可操作错误（2c 契约，见「回接 2c break 变更」节） |
 
-无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）；支持单场景入口 `node test/e2e.test.js --name E1`。1.x 私连通道的专有场景（E9 apc-smoke 冒烟 / E10 多会话并发）已随通道退役删除；常驻形态的覆盖由 exec 形态分支断言承担（E4 cancel 按 ps 命令行 `zcode.cjs app-server --cwd <ZSW_ROOT>` 锚定核对收割——共享宿主 HOME 形态无 pidfile；E6 recover 对 appserver 形态保守 orphan 分流；E7 engine 留痕 + exec 形态断言：kind 恒 `'appserver'`、pid 恒 undefined、sessionRef.dbPath 为绝对路径），E3/E7 的「message 续聊报退役错误」断言对单一引擎形态有效。
+无头 e2e（E1-E8，真实 zcode 无头进程 + 真实模型）见 `test/e2e.test.js`，`node --test test/e2e.test.js` 自动运行（注意模型 token 消耗与账户限流窗口）；支持单场景入口 `node test/e2e.test.js --name E1`。1.x 私连通道的专有场景（E9 apc-smoke 冒烟 / E10 多会话并发）已随通道退役删除；常驻形态的覆盖由 exec 形态分支断言承担（E4 cancel 按 ppid 锚定核对常驻进程收割——zcode 进程 title 改写使 ps command 字样判据失配，共享宿主 HOME 形态亦无 pidfile，ppid = 测试进程是唯一稳定锚；E6 recover 对 appserver 形态保守 orphan 分流；E7 engine 留痕 + exec 形态断言：kind 恒 `'appserver'`、pid 恒 undefined、sessionRef.dbPath 为绝对路径），E3/E7 的「message 续聊报退役错误」断言对单一引擎形态有效。
 
 ## SessionStart 资源注入验收手册（三段 XML 资源清单）
 

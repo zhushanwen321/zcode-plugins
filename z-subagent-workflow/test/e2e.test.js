@@ -404,18 +404,22 @@ test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', scenar
     return null;
   }, 10_000);
 
+  // ps 判据锚定有效性（防判据漂移静默失效——③ 在扫不到时恒真，判据坏了
+  // 也 pass，故必须在此证明判据真能锚定到进程）：in-flight 已证 sessionRef
+  // 回填 = 连接刚建立，此刻常驻进程必然存活。放在 cancel 之前——cancel 的
+  // D3 终局两可（优雅 stop 落定 → 常驻存活；grace 未落定 → killChain 连坐
+  // 收割共享进程）使 cancel 后「在场」不可靠（长任务 stop 不落定时进程会被
+  // 连坐杀掉），不作断言面。
+  assert.ok((await scanEngineAppServers()).length > 0, 'in-flight 引擎常驻进程应被 ps 判据锚定');
   const out = await manager.cancel(h.subagentId);
   assert.equal(out.cancelled, true);
   assert.equal(manager.status(h.subagentId).status, 'cancelled');
 
-  // appserver：无 per-task 进程。cancel 的 D3 终局两可：优雅 stop 落定 → 常驻
-  // 存活；grace 未落定 → killChain 连坐收割共享进程。「无残留」的确定性断言面：
-  // ① cancel 后引擎常驻进程在场（in-flight 已证连接建立——ps 按 --cwd 引擎
-  //    数据目录锚定扫描）；
+  // appserver：无 per-task 进程。「无残留」的确定性断言面：
+  // ① ps 判据锚定（上方，cancel 前）；
   // ② 显式收割（dispose：close 帧 + 杀链）——与 buildManager 的 t.after 收割
   //    幂等共存；
   // ③ 收割后轮询直到无引擎常驻进程（kill 链 SIGTERM→grace→SIGKILL 给足窗口）。
-  assert.ok((await scanEngineAppServers()).length > 0, 'in-flight 后引擎常驻进程应在场（ps 扫描）');
   await manager.runner.shutdown();
   const deadline = Date.now() + 8_000;
   let live = await scanEngineAppServers();
@@ -429,17 +433,28 @@ test('E4 cancel：bg 立即取消，record cancelled 且无残留进程', scenar
 });
 
 /**
- * 扫系统进程表：本测试 ZSW_ROOT 锚定的 zcode app-server 常驻进程（共享宿主
- * HOME 形态无 pidfile——0.5.0 起引擎进程级 --cwd = engineDataDir，ps 命令行
- * `zcode.cjs app-server --cwd <ZSW_ROOT>` 是唯一锚定判据）。返回 command 行数组。
+ * 扫系统进程表：本测试进程名下的 zcode app-server 常驻子进程（共享宿主 HOME
+ * 形态无 pidfile）。两个现实约束：① zcode 进程启动后改写 process.title
+ * （ps command 列变为 'zcode-cli'），任何 argv 字样判据（zcode.cjs /
+ * app-server / --cwd）在初始化窗口后必然失配——唯一稳定锚定是进程父子关系
+ * （ppid = 本测试进程，title 改写不影响 ppid）；② 排除 ps 自身与 --version
+ * 探针子进程（启动期瞬时存在）。app-server 是测试进程直接子进程
+ * （core AppServerConnection spawn，stdio pipe），ppid 锚定覆盖其全生命周期。
+ * 返回 command 行数组。
  */
 async function scanEngineAppServers() {
   return new Promise((resolve) => {
-    execFile('ps', ['-eo', 'command'], { timeout: 3000 }, (err, stdout) => {
+    execFile('ps', ['-eo', 'pid,ppid,command'], { timeout: 3000 }, (err, stdout) => {
       if (err) return resolve([]);
       resolve(
         stdout.split('\n')
-          .filter((line) => line.includes('zcode.cjs') && line.includes(`--cwd ${process.env.ZSW_ROOT}`))
+          .filter((line) => {
+            const cols = line.trim().split(/\s+/);
+            if (cols[1] !== String(process.pid)) return false;
+            if (!/zcode/i.test(line)) return false;
+            if (line.includes('--version') || line.includes('ps -eo')) return false;
+            return true;
+          })
           .map((line) => line.trim()),
       );
     });
