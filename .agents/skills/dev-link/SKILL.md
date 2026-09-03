@@ -48,7 +48,7 @@ unlink 恢复正式版 = 模拟 GUI 安装：更新 clone → marketplace.json �
 
 ## 约束
 
-- **删 worktree / 合并回 main 前先 unlink**：inline 指向 worktree 路径，worktree 删了 zcode 加载报错。
+- **删 worktree / 合并回 main 前先 unlink**：inline 指向 worktree 路径，worktree 删了 zcode 加载报错。merge skill 阶段 6a 已自动执行此步骤（status.sh 检测 + unlink-dev.sh 恢复正式版）。
 - 恢复正式版需联网更新 marketplace clone（gitee 直连）；失败降级用本地现状（版本可能落后）。
 - 所有 JSON 改写前自动备份（`config.json.bak-dev-link-<ts>` / `installed_plugins.json.bak-dev-link-<ts>`），反复运行会累积备份文件，可定期清理。
 - 脚本兼容 macOS 自带 bash 3.2。已知坑：`$var` 后紧跟全角字符会被 bash 3.2 吃进变量名（unbound variable），改脚本时用 `${var}` 形式。
