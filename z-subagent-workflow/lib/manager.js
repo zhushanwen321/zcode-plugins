@@ -52,6 +52,18 @@ const {
 const SUMMARY_HEAD_CHARS = 500;
 
 /**
+ * 无句柄时「执行体在他进程」守卫谓词（cancel/close 共享，MF-2/MF-3 单源——
+ * 两处条件漂移正是 MF-3 的 root cause）：running / 非 idle 来源的 lost =
+ * 执行体在另一 CLI 进程，本进程跨进程终态化会让对端 done 落 CAS 拒绝、台账与
+ * 本进程视图矛盾（close 还会拆掉他进程正用的 worktree）。MF-5 例外：lost 且
+ * _lostFrom='idle'（rebuildFromLog 标 lost 时留的内存标记）= 轮间本无进程，
+ * 放行本地终态化（lost→cancelled/closed 在 TRANSITIONS 合法）。
+ */
+function hasForeignExecutor(rec) {
+  return rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle');
+}
+
+/**
  * worktree 端口占位实现（缺省兜底：正常接线后不会被命中——server/CLI 注入
  * worktree-adapter 真实现；占位仅保留给「显式不想要 worktree 能力」的组装场景）。
  */
@@ -410,13 +422,10 @@ class SubagentManager {
       return { subagentId: id, status: this.records.get(id).status, cancelled: true };
     }
     // 无句柄：created（排队中）/ idle（轮间无进程）可本进程直接终态化；
-    // running / lost = 执行体在另一 CLI 进程内（2.0 多进程共享 records.jsonl，
-    // 本进程无句柄可杀）——直接终态化会让对端 done 落 CAS 拒绝、台账与本进程
-    // 视图矛盾，且执行体照跑 token 照烧，必须报错（MF-2）。
-    // MF-5 例外：lost 且 _lostFrom='idle'（rebuildFromLog 把非终态标 lost 时留的
-    // 内存标记）= 曾 idle 的会话被本 CLI 视角误标，轮间本无进程，本地终态化
-    // （lost→cancelled 在 TRANSITIONS 合法）不影响跨进程 running 防护
-    if (rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle')) {
+    // 其余（running / 非 idle 来源 lost）= 执行体在他进程，必须报错（MF-2，
+    // 条件单源 hasForeignExecutor）。错误文案给可操作恢复指引：kill 对端
+    // 承载任务的后台 Bash；死透的 lost 给手工终态事件形态。
+    if (hasForeignExecutor(rec)) {
       throw new Error(
         `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
         + '本进程无法取消：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'
@@ -441,10 +450,10 @@ class SubagentManager {
     if (!TERMINAL_STATUSES.has(rec.status)) {
       if (this.handles.has(id)) {
         await this._cancelCore(id); // 运行中：借取消链杀进程 + 终态落盘（同锁内直调，避免重入自等）
-      } else if (rec.status === 'running' || (rec.status === 'lost' && rec._lostFrom !== 'idle')) {
-        // MF-3：与 cancel 同款守卫（同 root cause）——running / 非 idle 来源的
-        // lost = 执行体在他进程，跨进程终态化会让对端 done 落 CAS 拒绝，且下面
-        // 的 worktree.cleanup 会直接拆掉他进程正用的隔离目录（活任务 cwd 被拆）
+      } else if (hasForeignExecutor(rec)) {
+        // MF-3：与 cancel 同款守卫（单源 hasForeignExecutor）——跨进程终态化
+        // 会让对端 done 落 CAS 拒绝，且下面的 worktree.cleanup 会直接拆掉
+        // 他进程正用的隔离目录（活任务 cwd 被拆）
         throw new Error(
           `subagentId=${id} 状态为 ${rec.status} 但执行体不在本进程（2.0 一次性 CLI 无常驻 daemon，跨进程无句柄可杀）。`
           + '本进程无法关闭：请 kill 承载该任务的后台 Bash 任务（引擎 TaskStop / kill 该 CLI 进程），'

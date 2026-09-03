@@ -512,7 +512,8 @@ async function dispatchWorkflowLocalAction(wfHost, action, args, cwd) {
       // core.abortRun 必 throw not found（跨进程执行体本进程无法终止）。如实
       // 返回指引而非让调用方吃无上下文的报错：kill 承载 run 的后台 Bash 任务
       // （引擎 TaskStop），stateFile 快照可直读对端终态
-      const local = Array.isArray(wfHost.list()) && wfHost.list().some((r) => r && r.runId === id);
+      const runs = wfHost.list();
+      const local = Array.isArray(runs) && runs.some((r) => r && r.runId === id);
       if (!local) {
         process.stderr.write(
           `[zsw] run ${id} 不在本进程（一次性 CLI 无跨进程 runs 表，无法代为中止）。`
