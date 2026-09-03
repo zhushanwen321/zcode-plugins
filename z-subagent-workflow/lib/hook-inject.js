@@ -62,7 +62,11 @@ const SUBAGENTS_GUIDE =
   + ' FIRST instead of doing it yourself — this keeps your context focused on orchestration.'
   + ` When starting one via node "${ZSW_CLI}" start, pass the <location> path (absolute .md path) as the`
   + ' --agent param — bare names are rejected. If no agent matches your task, omit --agent'
-  + ' (a general-purpose agent is used) and put all role-specific instructions in the task text.';
+  + ' (a general-purpose agent is used) and put all role-specific instructions in the task text.'
+  + ' Blocking calls (`start --wait` / `wait`) MUST run via the Bash tool with run_in_background=true:'
+  + ' a foreground Bash call is killed by the tool timeout and loses the result, while a background'
+  + ' task wakes you via task-notification on completion (no polling). Instant queries'
+  + ' (status/list/agents/models) may run in the foreground.';
 
 /**
  * zsw 版 workflows 段引导（workflow 引用契约：内置名或 .js 绝对路径——
@@ -78,7 +82,10 @@ const WORKFLOWS_GUIDE =
   + ' For parameter details, read the <location> script file (header @pi-meta has parameters + usage).'
   + ' Note: the `workflow run <name> --args k=v` form in the script header usage is pi-host syntax —'
   + ' the zsw CLI takes direct flags instead (e.g. --task/--workdir plus per-workflow flags);'
-  + ' see the @pi-meta parameters in the script header for parameter semantics.';
+  + ' see the @pi-meta parameters in the script header for parameter semantics.'
+  + ' `workflow run` is a synchronous blocking command that can run for many minutes — ALWAYS wrap it'
+  + ' in a Bash call with run_in_background=true (a foreground call is killed by the tool timeout);'
+  + ' completion delivers a task-notification automatically, so no polling.';
 
 /**
  * zsw 版 models 段引导（动态：快照时戳 + 当前默认模型）。旧块的「当前默认：」
