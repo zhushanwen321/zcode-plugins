@@ -6,10 +6,10 @@
  *   ~/.zcode/zsw/                  插件数据根（ZSW_ROOT 可覆盖，测试用）
  *     ├── records.jsonl            append-only record 事件流（D9）
  *     ├── outputs/<subagentId>.md  任务结果全文（+ <id>.patch）
- *     ├── engines/zcode/<pool>/    core zcode 引擎数据（回接 2c：per-provider+model
- *     │                            隔离 HOME 池 + journal，布局归 core paths SSOT；
- *     │                            旧 home-<provider>-<model>/ 池目录随自有 spawn
- *     │                            驱动退役，存量目录无害残留可手工清理）
+ *     ├── engines/zcode/shared/    core zcode 引擎 journal 分组目录（0.5.0 起共享
+ *     │                            宿主 HOME：poolKey 恒 'shared'，无隔离池；旧
+ *     │                            home-appserver 派生目录与 home-provider-model
+ *     │                            池目录随 HOME 池化退役，存量无害可手工清理）
  *     └── workflow-state/          core FileRunStore（workflow 线状态面）
  *
  * env 语义（Z10：MCP server 由引擎 spawn，继承引擎进程的全部字符串 env，

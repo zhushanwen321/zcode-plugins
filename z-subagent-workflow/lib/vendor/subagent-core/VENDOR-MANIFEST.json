@@ -1,8 +1,8 @@
 {
-  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/feat-subagent-core-host-surface/packages/subagent-core@0.3.0",
-  "sourceRev": "699a94afc32321022baa8a0c8e99c7d0fae1f783",
+  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/refactor-zcode-engine-shared-home/packages/subagent-core@0.5.0",
+  "sourceRev": "9520e5294f25178a3ec1035f6279df55bf81e597",
   "sourceDirty": false,
-  "fetchedAt": "2026-09-01T04:20:09.416Z",
+  "fetchedAt": "2026-09-03T12:06:46.988Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
@@ -35,7 +35,7 @@
     },
     {
       "path": "agents/orchestrator.md",
-      "sha256": "ac9b9cb53f6f7df88442bb2651ed6abb955e05aa14933ef427e2c5da2963fab1"
+      "sha256": "0d14d31cec28e9bb6ff74ecdea45196f005f30f83e7d7e72293bfa9e719781f3"
     },
     {
       "path": "agents/planner.md",
@@ -51,11 +51,11 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "98f443cb79332d85d76d2b5df26f85930ba60078d7cae896385cdab3b5b0cb42"
+      "sha256": "fb8dd27d243791b79fbb4695c212a5029b6f4e1788d5054c976515088427703e"
     },
     {
       "path": "package.json",
-      "sha256": "3b3659ccc8880dced0df3de1a6a7228d11c35b016f2631a68314e08c38165965"
+      "sha256": "3900e4ed0c26b77717b6a5d4cd17ef0393cad524cecb2a81f0758b3f2f02cc6e"
     },
     {
       "path": "workflows/_shared/agent-refs.cjs",

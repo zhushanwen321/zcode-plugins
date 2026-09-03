@@ -112,21 +112,20 @@ function assertRunnerEnv() {
   if (envRunner === 'spawn') {
     if (!warnedSpawnNoop) {
       warnedSpawnNoop = true;
-      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine；引擎模式定向用 XYZ_ZCODE_MODE=appserver|spawn），值被忽略');
+      log('ZSW_RUNNER=spawn 已无独立通道（执行统一走 core zcode engine 单一 app-server 形态），值被忽略');
     }
     return;
   }
   if (envRunner === 'appserver') {
     throw new Error(
       'ZSW_RUNNER=appserver：zsw 1.x 宿主私连通道已按设计 D6-⑥ 退役（执行统一走 core zcode engine，'
-      + '其内部已缺省 appserver 常驻——P3 回归完成，宿主层不再有独立通道开关）。'
-      + '恢复指引：去掉 ZSW_RUNNER（缺省即 core 引擎，appserver 常驻自动生效）；'
-      + '需定向 spawn 单轮改用 XYZ_ZCODE_MODE=spawn。'
+      + 'app-server 常驻自动生效——宿主层不再有独立通道开关）。'
+      + '恢复指引：去掉 ZSW_RUNNER（缺省即 core 引擎）。'
     );
   }
   throw new Error(
-    `ZSW_RUNNER=${JSON.stringify(envRunner)} 不是有效值（2c 后可选值仅 'spawn'，且为兼容 no-op）。`
-    + '恢复指引：去掉 ZSW_RUNNER 走缺省 core zcode engine，或设 ZSW_RUNNER=spawn。'
+    `ZSW_RUNNER=${JSON.stringify(envRunner)} 不是有效值（可选值仅 'spawn'，且为兼容 no-op）。`
+    + '恢复指引：去掉 ZSW_RUNNER 走缺省 core zcode engine。'
   );
 }
 

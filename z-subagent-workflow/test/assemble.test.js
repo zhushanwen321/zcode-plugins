@@ -51,7 +51,7 @@ test('组装 runner 恒为 CoreRunner（core zcode engine 适配），端口面�
   const { manager } = await assembleManager();
   const runner = manager.runner;
   assert.ok(runner instanceof CoreRunner, 'runner 是 CoreRunner 实例');
-  assert.equal(runner.capabilities().kind, 'spawn', 'capabilities().kind 恒 spawn（台账标注兼容）');
+  assert.equal(runner.capabilities().kind, 'appserver', 'capabilities().kind 恒 appserver（单一 app-server 形态基线）');
   for (const method of ['start', 'resume', 'alive', 'release', 'probe', 'capabilities']) {
     assert.equal(typeof runner[method], 'function', `runner.${method} 在场`);
   }
@@ -64,7 +64,7 @@ test('CoreRunner 构造幂等登记 core registry（registerZcodeEngine 覆盖�
   assert.doesNotThrow(() => CoreRunner.ensureZcodeEngineRegistered());
 });
 
-test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与引擎模式定向指引）', async () => {
+test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与恢复指引）', async () => {
   process.env.ZSW_RUNNER = 'appserver';
   try {
     await assert.rejects(
@@ -72,8 +72,7 @@ test('ZSW_RUNNER=appserver：显式废弃报错（信息含退役说明与引擎
       (err) => {
         assert.match(err.message, /D6-⑥ 退役/);
         assert.match(err.message, /core zcode engine/);
-        assert.match(err.message, /XYZ_ZCODE_MODE=spawn/);
-        assert.match(err.message, /P3/);
+        assert.match(err.message, /去掉 ZSW_RUNNER/);
         return true;
       },
     );

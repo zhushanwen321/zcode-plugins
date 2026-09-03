@@ -160,7 +160,7 @@ node bin/zsw.js workflow --action script-delete --name my-wf
 
 要点：
 
-- `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道 = core zcode engine，同 zsub 线：缺省 appserver 常驻引擎复用，`XYZ_ZCODE_MODE=spawn` 定向回退为单轮 spawn）；模型解析链 per-call model > run 级 `--model` > 默认。
+- `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道 = core zcode engine，同 zsub 线：单一 app-server 常驻引擎复用，共享宿主 HOME——直接消费宿主 `~/.zcode/` 凭据/模型配置/会话 db）；模型解析链 per-call model > run 级 `--model` > 默认。
 - 脚本抛错 / worker 崩溃 = run 落 `done,failed`（core error-recovery 含崩溃重试）；abort 后 pending 的 agent() 调用立即拒绝。
 - 脚本同目录依赖用 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱内相对路径以 cwd 为基准，不能写相对 require）。
 - 手工放置形态：写好 .js 直接放进发现根（上表目录）→ `scripts` 确认被发现 → run 按路径引用；或走上方创作闭环。
