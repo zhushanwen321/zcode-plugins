@@ -146,9 +146,10 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 
 门禁：阶段 4 exit 0（或阶段 5 发版验证 200）后才可执行。
 
-**[HISTORICAL] 删除后 bash ENOENT = 删除已成功的最强确认，不是错误**：若 session 启动
-目录在 feature worktree 内，删除后后续 bash 报 cwd 不存在。此时不要重试 bash、不要
-`git worktree list` 确认——直接输出总结收尾。（脚本明确 exit 非 0 才是业务失败，按输出排查。）
+**[MANDATORY] 6b 前收尾清零**：删除 worktree 前完成本会话所有剩余收尾操作，或明确放弃并告知用户。包括但不限于：阶段 5 发版的 tag push 与验证（处于「用户已确认、尚未执行」状态时禁止删除）、对用户承诺的「确认后执行」动作、外部引用修正。worktree 一旦删除，这些操作在本会话内再也无法执行（原因见下方 [HISTORICAL]）。
+
+**[HISTORICAL] 删除后 bash ENOENT = 删除已成功的最强确认，不是错误；且会话 spawn 层整体瘫痪**：若 session 启动目录在 feature worktree 内，删除后不止 bash 报 cwd 不存在——子代理派发、MCP server 启动等一切依赖 shell spawn 的通道全部 ENOENT，cwd 不可切换（session 启动目录固定），会话内无自救手段。此时不要重试 bash、不要
+`git worktree list` 确认——直接输出总结收尾。（脚本明确 exit 非 0 才是业务失败，按输出排查。）删除后用户追加操作（补 tag、查 CI、发版 push 等）时，正确做法是告知执行通道已死并给出可在终端手工执行的命令，而非重试或新派 subagent。
 
 清理后外部引用安全网：若曾把插件以 inline 形态注册进 `~/.zcode/cli/config.json`
 （`<path>` 指向被删 worktree），改回 main worktree 路径或删除条目，并重启 ZCode。
