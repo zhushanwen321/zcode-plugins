@@ -112,7 +112,7 @@ graph TD
 | u1 | committed | 1 | 增量 19/19 绿 + 全量 348/348 绿 + 真机 doctor 冒烟核数一致（∩库 49/总数 145/特征 47/subagent_child 6,434/tasks 33）；5 偏差全合理（tasks 匹配列实证为 task_id 非 session_id，已独立 pragma 核实）；commit 见 git log `feat(zsw): u1` |
 | u2 | committed | 1 | 增量 34/34 + cli 面 69/69 绿；真机 dry-run 与 doctor 同刻自洽（49/54/5,596；哨兵 0；tasks 32=33−7天内 child 按龄保留）；5 偏差全合理（含 exit flush bug 修复、哨兵对剔除前原始集断言——R2 教训）；commit `feat(zsw): u2` |
 | u3 | pending | 0 | — |
-| u4 | pending | 0 | — |
+| u4 | committed | 1 | 增量 48/48 绿（含跨模块口径锁定用例）；真机只读 plan 对数闭合（execStaleEmpty 4,352 = 独立探针分解 5,891−956−583）；5 偏差全合理；commit `feat(zsw): u4` |
 | u5 | pending | 0 | — |
 
 ## 7 残留风险与变更历史
