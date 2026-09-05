@@ -47,6 +47,10 @@
  *        （SessionStart hook 入口，stdout 输出资源快照协议 JSON；嵌套环境或
  *         任一异常降级 {} + exit 0，绝不阻断会话启动。引擎注册面用
  *         bin/zsw-hook.js；本子命令仅调试）
+ *   node bin/zsw.js doctor [--json]               # 会话残留只读体检（五面量级 +
+ *        白名单双口径 + 13 表行数 + 预估回收粗估；--json 出结构化报告）
+ *   node bin/zsw.js doctor clean                  # 清理执行器（后续单元接线，
+ *        当前仅体检可用；执行属停机窗口手动操作）
  *
  * --local flag：1.x 的 daemon/本地双形态遗产，2.0 起本地是唯一形态——
  * flag 接受但忽略（旧脚本零改动迁移）。
@@ -93,6 +97,8 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
     + '  node bin/zsw.js workflow --action list      # workflow run 清单（本进程视图）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
+    + '  node bin/zsw.js doctor [--json]              # 会话残留只读体检（五面量级 + 预估回收粗估）\n'
+    + '  node bin/zsw.js doctor clean                 # 清理执行器（后续单元接线，当前仅体检可用）\n'
     + '  node bin/zsw.js start --wait --task "..." --slug x   # start（恒阻塞到完成；--wait 接受但无差异）\n'
     + '                                                   # 长任务用 Bash run_in_background 包裹，完成即原生通知\n'
     + '  node bin/zsw.js list --local                  # --local 已无行为差异（接受但忽略）\n'
@@ -615,6 +621,43 @@ function runHookCommand(rest) {
   }
 }
 
+// ------------------------------------------------------ doctor 子命令（只读体检）
+
+/**
+ * doctor 子命令（u1 = 体检骨架；采集/渲染语义见 lib/doctor.js 头注）。
+ * 恒本地只读（不经 assembleManager 引擎组装面——与 workflow/hook 同为纯本地
+ * 命令，在 main 组装之前分流）。doctor 依赖 node:sqlite，故本函数内 lazy
+ * require（start 等主链路加载面不扩大）。
+ *
+ * rest[0] === 'clean'：清理执行器属 u3 领地，当前显式拒绝并给指引（exit 1，
+ * 不静默；--dry-run 同样走此分支——dry-run 渲染也随 u2/u3 接线）。
+ */
+function runDoctorCommand(rest) {
+  const { collect, renderText, renderJson } = require('../lib/doctor');
+  if (rest[0] === 'clean') {
+    process.stderr.write(
+      '[zsw] doctor clean 执行器在后续单元接线，当前仅体检可用。'
+      + `恢复指引：先跑 node "${zswCliPath()}" doctor 看残留量级；`
+      + '清理属停机窗口手动操作（退出 ZCode 后执行），随执行器单元交付。\n',
+    );
+    process.exit(1);
+  }
+  const args = parseArgs(rest);
+  let report;
+  try {
+    report = collect();
+  } catch (e) {
+    // node:sqlite 不可用：可操作错误（指向 Node 升级）+ exit 1，不 crash 无堆栈
+    if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
+      process.stderr.write(`[zsw] ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
+  if (args.json === true) process.stdout.write(renderJson(report));
+  else process.stdout.write(renderText(report));
+}
+
 // ------------------------------------------- 子命令公共面
 
 /**
@@ -776,6 +819,9 @@ async function main() {
   // hook 子命令同理在 manager 组装之前分流：恒本地（见 runHookCommand 头注），
   // 不走 parseArgs/assembleManager 任一路径
   if (cmd === 'hook') return runHookCommand(rest);
+  // doctor 同为纯本地只读命令（体检不经引擎组装面；node:sqlite 在函数内 lazy
+  // require，主链路加载面不扩大）
+  if (cmd === 'doctor') return runDoctorCommand(rest);
 
   // wait 已随 daemon 退役（2.0 无常驻物）：等待 = start 本身阻塞到任务终态，
   // 长任务异步化靠 Bash run_in_background 包裹 start（完成即引擎原生通知）。

@@ -109,7 +109,7 @@ graph TD
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
-| u1 | pending | 0 | — |
+| u1 | committed | 1 | 增量 19/19 绿 + 全量 348/348 绿 + 真机 doctor 冒烟核数一致（∩库 49/总数 145/特征 47/subagent_child 6,434/tasks 33）；5 偏差全合理（tasks 匹配列实证为 task_id 非 session_id，已独立 pragma 核实）；commit 见 git log `feat(zsw): u1` |
 | u2 | pending | 0 | — |
 | u3 | pending | 0 | — |
 | u4 | pending | 0 | — |
