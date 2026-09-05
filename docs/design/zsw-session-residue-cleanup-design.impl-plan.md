@@ -44,18 +44,20 @@ R1(6M+7S)→R2(4M+6S)→R3(2M+5S)→R4(0M+5S) 见设计 §6 变更历史。
 
 | Unit | 职责 | 领地（精确文件路径，相对 z-subagent-workflow/） | 依赖 | 隔离 | 验收条款 |
 |------|------|------|------|------|----------|
-| u1 | doctor 只读体检（=F1）+ CLI 骨架：五面量级采集（引擎库 session+13 表计数、白名单双口径、索引库 tasks/姊妹表、artifacts/log/exec 三目录）+ 预估回收 + 报告渲染（stdout 人读文本，`--json` 机器可读）；bin/zsw.js 注册 doctor 子命令与 doctor clean 分发骨架（clean 执行体 lazy require，未接线时明确报错）；usage 头注更新 | lib/doctor.js（新）、bin/zsw.js、test/doctor.test.js（新） | 无 | plain | ① test/doctor.test.js 绿（fixture 库+目录树上五面计数断言）② 真机 `node bin/zsw.js doctor` 只读跑通，关键计数与 sqlite3 直查一致（主 agent 核数） |
-| u2 | 识别器 + dry-run（=F2）：C6 白名单构造式（records.jsonl 全部 `"sessionId"` 值含嵌套层，仅此一类；总数/∩库双口径）、特征目录表（闭集常量+来源注释，路径段匹配 zsub-e2e- 前缀段 + 整串 /tmp/zsw-sidebar-probe、/tmp/pz2-work）、五类目标分治（subagent_child 按龄 / 白名单∩库 / 特征目录类 / 文件面 id 匹配 / 双库联动）、污染哨兵（删除集 ∩ targetSessionId 值域 = 0）、目录分布红灯（仅 interactive 识别类口径 + 机械阈值）、索引冲突预检（members/automations/off_peak，冲突会话双库整体剔除）、删除集结构化输出；dry-run 报告渲染入口挂 doctor.js | lib/clean-identify.js（新）、lib/doctor.js（dry-run 渲染）、test/clean-identify.test.js（新） | u1 | plain | ① 单测绿（构造式仅 sessionId、嵌套层提取、哨兵、特征表段/整串匹配、非特征临时目录不误伤、冲突剔除结构）② 真机 dry-run 只读跑通，删除集计数与 doctor 体检一致（主 agent 核数） |
+| u1 | doctor 只读体检（=F1）+ 识别基座 + CLI 骨架：**识别基座**（lib/clean-identify.js 前半，u2 分治复用）——C6 白名单构造式解析（records.jsonl 内全部 `"sessionId"` 字符串值含嵌套层、仅此一类，严格排除 targetSessionId；返回总数/∩库双口径）+ 特征目录表闭集常量（路径段 `zsub-e2e-` 前缀段 + 整串 `/tmp/zsw-sidebar-probe`、`/tmp/pz2-work`，带来源注释）；**五面量级采集**（引擎库 session/13 表计数、白名单双口径、特征目录类、subagent_child 总数+超龄、索引库 tasks 命中+姊妹表、artifacts/log/exec 三目录扫描、库体积）+ 预估回收（删除集占比×库体积粗估，标注估算性质）+ 报告渲染（stdout 人读文本，`--json` 机器可读）；bin/zsw.js 注册 doctor 子命令（纯本地分流，assembleManager 之前）与 `doctor clean` 未接线指引；usage 头注更新；node:sqlite 运行时检测降级报错 | lib/doctor.js（新）、lib/clean-identify.js（新，仅基座导出）、bin/zsw.js、test/doctor.test.js（新）、test/clean-identify.test.js（新，仅基座用例） | 无 | plain | ① 两测试文件绿（fixture 库+目录树上五面计数断言；构造式仅 sessionId、嵌套层提取、特征表段/整串匹配、非特征临时目录不误伤）② 真机 `node bin/zsw.js doctor` 只读跑通，关键计数与 sqlite3 直查一致（主 agent 核数） |
+| u2 | 识别器分治 + dry-run（=F2）：复用 u1 基座导出，实现五类目标分治（subagent_child 按龄 / 白名单∩库 / 特征目录类 / 文件面 id 匹配 / 双库联动）、污染哨兵（删除集 ∩ targetSessionId 值域 = 0）、目录分布红灯（仅 interactive 识别类口径 + 机械阈值）、索引冲突预检（members/automations/off_peak，冲突会话双库整体剔除）、删除集结构化输出；dry-run 报告渲染入口挂 doctor.js | lib/clean-identify.js（分治扩展）、lib/doctor.js（dry-run 渲染）、test/clean-identify.test.js（分治用例） | u1 | plain | ① 分治用例绿（五类分治结构、哨兵零交集断言、冲突剔除结构、红灯口径）② 真机 dry-run 只读跑通，删除集计数与 doctor 体检一致（主 agent 核数） |
 | u3 | 执行器 + 备份管理（=F3+F4）：四项停机校验（GUI 进程 / app-server 命令行 / ZSW_NESTED 子进程 / 双库 BEGIN EXCLUSIVE，--fs-only 同样全查）→ 三段磁盘校验 + SQLITE_TMPDIR 同卷 → 三件套备份（backup-<ts>/）→ 引擎库分块删除（≤200 会话/事务 + 批间 PASSIVE checkpoint + PRAGMA foreign_keys=ON）13 表 FK 列级联动（含 part 经 message 间接、session_task_link 双列、2 个 SET NULL 列、input_history 随删计数）→ 索引库 tasks/members 同事务联动 + 冲突剔除 → VACUUM → 报告；`--purge-backup`；还原指引输出（三件套整组覆盖步骤）；bin/zsw.js 的 doctor clean 执行分发正式接线 | lib/clean-exec.js（新）、bin/zsw.js（clean 分发接线）、test/clean-exec.test.js（新） | u2、u4 | plain | ① 单测绿（fixture 双库全流程：删除计数、13 表级联归零、备份三件套存在、purge 生效、四项停机校验各失败分支拒绝、三段磁盘校验分支、哨兵失败中止）② fixture 上 dry-run 与执行计数一致（A-4 的 fixture 版） |
 | u4 | 文件面清理（=F5）：artifacts 目录名∈删除集匹配；exec 限 sess_ 前缀（∈删除集 + 超龄空壳），排除 bash-startup 等引擎自有目录；log 按文件年龄整文件删（默认保留 14 天）；`--fs-only` 档（仅文件面，停机校验不豁免）；导出函数供 clean-exec 编排调用 | lib/clean-fs.js（新）、test/clean-fs.test.js（新） | u2 | plain | ① 单测绿（fixture 目录树：匹配删除、前缀限定、龄过滤、bash-startup 排除、计数报告）② 导出接口稳定可被 u3 消费 |
 | u5 | 周期档位 + 文档 + 收尾（=F6）：`--stale --older-than <Nd>` 识别集缩到超龄部分（subagent_child 按 time_created、文件面按 mtime）；README 维护章节（用法 + 停机窗口操作 + 还原步骤 + node:sqlite 前提声明）；测试补档位用例；全量测试 + 一致性脚本收尾 | lib/clean-identify.js（stale 语义）、README.md、test/clean-identify.test.js、test/clean-exec.test.js（档位用例） | u3、u4 | plain | ① --stale 档位单测绿（fixture：只清超龄，7 天内 subagent_child 与近期文件保留）② README 维护章节与实现一致 ③ 全量 `node --test` 绿 + check-sync/check-pack 绿 |
 
-不设 u-foundation：共享契约（identify 删除集结构 / clean-fs 导出签名）全部在串行边上游先行产出，
-无并行单元共改契约文件（dag-authoring 缺席条款成立）。
+不设独立 u-foundation：识别基座契约（构造式解析 + 特征表常量）在 u1 内先行产出（其领地含
+clean-identify.js 基座部分），u2 经串行边消费——无并行单元共改契约文件（dag-authoring 缺席条款成立）。
 
-对设计 §5 的两处领地再分配（登记为计划层偏差，非设计语义变更）：
+对设计 §5 的三处领地再分配（登记为计划层偏差，非设计语义变更）：
 1. F6 的 bin/zsw.js 接线并入 u1/u3（CLI 骨架 u1 一次建、clean 分发 u3 接）——u5 只做档位语义与文档；
-2. F3/F5 的并行改为 u4→u3 串行——clean-exec 编排需先读 clean-fs 导出，消解接口歧义（保守正确边）。
+2. F3/F5 的并行改为 u4→u3 串行——clean-exec 编排需先读 clean-fs 导出，消解接口歧义（保守正确边）；
+3. F2 的识别基座（构造式解析 + 特征表常量）前切进 u1（doctor 体检的识别类计数依赖基座，
+   依赖方向实为 doctor→基座，与设计 F1→F2 的交付顺序相反处按代码依赖修正）。
 
 ## 3 DAG 图
 
@@ -101,6 +103,7 @@ graph TD
 |---|------|------|------|
 | 1 | §2 表下两处领地再分配（F6 CLI 接线并入 u1/u3；F3/F5 并行改串行 u4→u3） | 接线点集中消解同文件并行写；编排依赖先写后读 | 已固化（§2） |
 | 2 | doctor 报告新增 `--json` 输出形态（设计 §3.1 只画了人读文本） | zsw CLI stdout JSON 惯例与 G4「与直查一致」的机检通道；人读文本仍为默认 | 待 u1 交付验证 |
+| 3 | doctor「预估库内可回收」行实现为删除集 session 占比 × 库体积的粗估并标注估算性质（设计 §3.1 的 3.7-4.2GB 无公式定义，系二轮分析经验值） | 不引入无依据的精确假象；真实回收以执行后 du 为准（A-1） | 待 u1 交付验证 |
 
 ## 6 状态表
 
@@ -127,3 +130,4 @@ graph TD
 | 日期 | 变更 | 触发 |
 |------|------|------|
 | 2026-09-06 | 初版 | 设计 R4 双零收敛后进入 dev-flow；用户豁免评审（「开始开发，不用经过我确认」） |
+| 2026-09-06 | u1/u2 领地细化 | doctor 体检的识别类计数依赖识别基座（构造式+特征表），基座从 u2 前切进 u1（偏差 3）；u1 交付期 discovery：预估回收粗估口径（偏差 3 同步） |
