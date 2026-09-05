@@ -1,6 +1,6 @@
 # zsw 会话残留清理 实施计划
 
-基线: （本文 commit 后回填）| 来源设计: docs/design/zsw-session-residue-cleanup-design.md | 日期: 2026-09-06
+基线: de120ee | 来源设计: docs/design/zsw-session-residue-cleanup-design.md | 日期: 2026-09-06
 
 用户评审：用户已在任务指令中显式豁免（「开始开发，不用经过我确认」）——切分/验收条款按本计划执行，偏差走 §5 合理偏差登记表。
 
