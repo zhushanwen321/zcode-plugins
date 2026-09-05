@@ -1,6 +1,6 @@
 'use strict';
 /**
- * zsw doctor 只读体检（u1 交付；u2 将在本文件扩展 dry-run 渲染入口）。
+ * zsw doctor 只读体检（u1）+ dry-run 预览采集与渲染（u2）。
  *
  * 五面只读采集（设计 §2.1 写入面 / §3.1 报告样张 / 实施计划 u1）：
  *   面① 引擎库 ~/.zcode/cli/db/db.sqlite（node:sqlite readOnly）
@@ -8,6 +8,13 @@
  *   面③④⑤ 文件面 artifacts/ log/ exec/
  * 全部路径参数可注入（测试传 fixture；缺省值按 lib/config.js 约定 + os.homedir()
  * 下 ~/.zcode 约定——config.js 未约定引擎侧路径，此处组装处均注释来源）。
+ *
+ * u2 增量（设计 §3.1 第二代码块 dry-run 样张 / §3.3 D1）：collectDryRun 组装
+ * 删除集链路（clean-identify 五类分治 → 污染哨兵 → 索引冲突预检 → 双库整体
+ * 剔除 → 目录分布红灯 → input_history 命中计数）+ 文件面量级，产出 JSON-safe
+ * 报告对象；renderDryRun 以 §3.1 样张为权威逐行渲染，返回 { text, exitCode }
+ * ——哨兵失败（非零交集）时 exitCode=1 且输出失败样例文案（第三代码块形态），
+ * dry-run 只读不写但报告必须醒目阻断。删除集构建与渲染的全部 DB 访问 readOnly。
  *
  * 红线：本模块对真实 ~/.zcode 只读（DatabaseSync readOnly / fs 只读 API），
  * 任何写删属 lib/clean-exec.js（u3）领地。
@@ -23,7 +30,16 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { parseRecordWhiteList, matchFeatureDirectory } = require('./clean-identify');
+const {
+  parseRecordWhiteList,
+  matchFeatureDirectory,
+  buildDeleteSet,
+  checkSentinel,
+  checkIndexConflicts,
+  excludeConflicts,
+  checkRedLight,
+  countInputHistoryHits,
+} = require('./clean-identify');
 const { recordsPath, zswRoot } = require('./config');
 
 /** subagent_child 默认只清 time_created 早于 7 天的（设计 §3.3 D1①）。 */
@@ -465,10 +481,187 @@ function renderJson(report) {
   return `${JSON.stringify(report, null, 2)}\n`;
 }
 
+// ---------------------------------------------------- u2 dry-run 预览
+
+/**
+ * dry-run 报告组装（设计 §3.1 第二代码块 / §3.3 D1）：删除集链路编排 + 文件面
+ * 量级。只读——引擎库/索引库全部 DatabaseSync readOnly，文件面仅 readdir/stat。
+ * 编排顺序（R3 作用域闭合 + 哨兵语义）：
+ *   1. buildDeleteSet       五类分治 → 原始删除集
+ *   2. checkSentinel        污染哨兵对**原始删除集**断言（冲突剔除可能碰巧掩盖
+ *                           污染——R2 的 sess_fc9b87dc 即靠冲突机制碰巧保留，
+ *                           哨兵必须把这种「碰巧」显式化，剔除前断言）
+ *   3. checkIndexConflicts  索引冲突预检（原始删除集）
+ *   4. excludeConflicts     冲突会话双库整体剔除 → 最终删除集
+ *   5. checkRedLight / countInputHistoryHits  按**最终删除集**口径
+ *      （红灯与 input_history 报告的都是「将删除的内容」；冲突剔除的会话不删，
+ *       计入会误导人工审红灯）
+ * 文件面复用 u1 collectFiles（artifacts/log/exec 三面量级，dry-run 与体检同源
+ * 同口径）；预估回收基于最终删除集占比 × 库三件套体积（u1 偏差 3 粗估口径）。
+ *
+ * 返回 JSON-safe 报告（集合字段 = 排序数组 + size 语义由 length 承担；--json
+ * 通道与文本渲染共同消费；u3 执行器领地应直接消费 clean-identify 原生结构）。
+ *
+ * @param {object} [options] 与 collect 同款路径注入 + olderThanDays：
+ *   engineDbPath / indexDbPath / recordsPath / artifactsDir / logDir / execDir /
+ *   now / olderThanDays
+ */
+function collectDryRun(options = {}) {
+  const now = typeof options.now === 'number' ? options.now : Date.now();
+  const engineDbPath = options.engineDbPath
+    || path.join(engineCliRoot(), 'db', 'db.sqlite');
+  const indexDbPath = options.indexDbPath
+    || path.join(os.homedir(), '.zcode', 'v2', 'tasks-index.sqlite');
+  const records = options.recordsPath || recordsPath();
+  const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
+  const logDir = options.logDir || path.join(engineCliRoot(), 'log');
+  const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
+
+  // 1-3：分治 + 哨兵 + 冲突预检（buildDeleteSet/checkIndexConflicts 各自只读开库）
+  const initial = buildDeleteSet({
+    engineDbPath,
+    indexDbPath,
+    recordsPath: records,
+    olderThanDays: options.olderThanDays,
+    now,
+  });
+  const sentinel = checkSentinel(initial, records);
+  const conflicts = checkIndexConflicts(initial.engineSessionIds, indexDbPath);
+  // 4：冲突剔除 → 最终删除集
+  const { deleteSet: finalSet, removed } = excludeConflicts(initial, conflicts);
+
+  // 5：红灯 + input_history 计数（最终集口径；顺带取 sessionTotal 供预估回收）
+  const { DatabaseSync } = loadSqlite();
+  let sessionTotal = undefined;
+  let redlight = { workspaceN: 0, tmpN: 0, ratio: 0, outsideFeatureHits: 0, triggered: false };
+  let inputHistoryHits = undefined;
+  const db = new DatabaseSync(engineDbPath, { readOnly: true });
+  try {
+    sessionTotal = db.prepare('SELECT COUNT(*) AS n FROM session').get().n;
+    redlight = checkRedLight(finalSet, db);
+    inputHistoryHits = countInputHistoryHits(finalSet.engineSessionIds, db);
+  } finally {
+    db.close();
+  }
+
+  const files = collectFiles(artifactsDir, logDir, execDir, now);
+  const dbBytes = dbTripleBytes(engineDbPath);
+  const deleteSetSize = finalSet.engineSessionIds.size;
+  const ratio = sessionTotal ? deleteSetSize / sessionTotal : 0;
+
+  return {
+    generatedAt: initial.generatedAt,
+    now,
+    olderThanDays: initial.olderThanDays,
+    paths: { engineDbPath, indexDbPath, recordsPath: records, artifactsDir, logDir, execDir },
+    deleteSet: {
+      engineSessionIds: [...finalSet.engineSessionIds].sort(),
+      byClass: finalSet.byClass,
+      indexTaskIds: [...finalSet.indexTaskIds].sort(),
+      interactiveClassIds: [...finalSet.interactiveClassIds].sort(),
+      removedByConflict: removed,
+    },
+    sentinel,
+    conflicts: {
+      available: conflicts.available,
+      members: conflicts.members,
+      automations: conflicts.automations,
+      offPeak: conflicts.offPeak,
+      conflictedSessionIds: [...conflicts.conflictedSessionIds].sort(),
+    },
+    redlight,
+    inputHistoryHits,
+    files,
+    estimate: {
+      deleteSetSize,
+      sessionTotal,
+      ratio,
+      dbBytes,
+      estimatedBytes: Math.round(ratio * dbBytes),
+      note: '粗估，真实以执行后 du 为准',
+    },
+  };
+}
+
+/**
+ * dry-run 人读渲染（设计 §3.1 第二代码块为权威样张，逐行对齐）。
+ * 返回 { text, exitCode }：exitCode = 哨兵 ok ? 0 : 1——哨兵失败时输出 §3.1
+ * 第三代码块形态的失败文案（中性归因 + 中止指引），且**仍输出删除清单**
+ * （失败文案要求「把 dry-run 清单交维护者判定」），但以 ✗ 块收尾并不给
+ * 「确认执行」行（醒目阻断：dry-run 只读不写，CLI 按 exitCode 退出）。
+ *
+ * @param {object} report collectDryRun 返回的 JSON-safe 报告
+ * @returns {{text:string, exitCode:number}}
+ */
+function renderDryRun(report) {
+  const ds = report.deleteSet;
+  const wl = ds.byClass.whitelist.length;
+  const ft = ds.byClass.feature.length;
+  const sc = ds.byClass.subagentChildStale.length;
+  const rl = report.redlight;
+  const interactiveN = rl.workspaceN + rl.tmpN;
+  const cf = report.conflicts;
+  const removed = ds.removedByConflict || [];
+  const lines = [];
+
+  lines.push('将删除（不写库）：');
+  lines.push(`  引擎库 session ${fmtCount(wl)}（白名单∩库）+ ${fmtCount(ft)}（特征目录类）`
+    + `+ ${fmtCount(sc)}（超龄 subagent_child）行；`);
+  lines.push('    按 FK 列级联（8 张 CASCADE 表 + part 经 message 间接级联 + session_task_link.child），');
+  lines.push(`    model_usage/turn_usage 统计行随之级联；input_history 命中 ${fmtCount(report.inputHistoryHits)} 行随删（GUI 手输与 RPC send 均写该表）`);
+
+  const s = report.sentinel || { ok: true, intersection: [] };
+  lines.push(s.ok
+    ? '  污染哨兵：删除集 ∩ targetSessionId 值域 = 0（非 0 中止——污染或嵌套合法重叠，逐条核查）'
+    : `  污染哨兵：删除集 ∩ targetSessionId 值域 = ${s.intersection.length}（${s.intersection.join(' / ')}）`);
+
+  lines.push(`  删除集 directory 分布（口径：仅 interactive 识别类——白名单∩库 + 特征目录类，共 ${fmtCount(interactiveN)}；`);
+  lines.push('    排除 subagent_child——其 directory 全为工作区类且识别键是 task_type，纳入只会稀释红灯）：');
+  lines.push(`    workspace 类 ${fmtCount(rl.workspaceN)} / 临时类（特征目录）${fmtCount(rl.tmpN)}`);
+  lines.push('    人工审红灯（机械阈值）：临时类占比 > 30%，或特征表之外的临时目录命中数非 0 → 停手核查');
+  if (rl.triggered) {
+    lines.push(`    ⚠ 红灯触发：临时类占比 ${(rl.ratio * 100).toFixed(1)}% / 特征表外临时目录命中 ${fmtCount(rl.outsideFeatureHits)} 处`
+      + ' → 停手核查（逐条核查命中会话的 directory/标题，确认识别无污染后再考虑执行）');
+  }
+
+  const conflictN = (cf.members ? cf.members.length : 0)
+    + (cf.automations ? cf.automations.length : 0)
+    + (cf.offPeak ? cf.offPeak.length : 0);
+  const conflictDesc = removed.length > 0
+    ? `姊妹表冲突 ${conflictN} 条 → 冲突会话 ${removed.length} 个已从双库删除集整体剔除`
+      + `（${removed.map((r) => `${r.id}[${r.source}]`).join('、')}）；下次 clean 重查后自然纳入；冲突机制保留为安全网`
+    : (cf.available === false ? '索引库 n/a；' : '当前无姊妹表冲突；') + '冲突机制保留为安全网';
+  lines.push(`  GUI 索引 tasks ${fmtCount(ds.indexTaskIds.length)} 行（${conflictDesc}）`);
+
+  const f = report.files || {};
+  lines.push(`  artifacts ${fmtCount(f.artifacts && f.artifacts.dirCount)} 目录`
+    + `；log 按执行日超龄文件（当前 ${fmtCount(f.log && f.log.olderThan14d)}）`
+    + `；exec sess_ 前缀空壳 ${fmtCount(f.exec && f.exec.sessPrefixed)} 目录`);
+
+  lines.push(`预估回收 ~${fmtBytes(report.estimate && report.estimate.estimatedBytes)}`
+    + `（${report.estimate && report.estimate.note} = 删除集占比 × 库体积；log 面随执行日增长；库内空间需 VACUUM 后生效）`);
+
+  if (!s.ok) {
+    lines.push('');
+    const show = s.intersection.slice(0, 8);
+    const more = s.intersection.length > show.length ? ' …' : '';
+    lines.push(`✗ 污染哨兵失败：删除集 ∩ targetSessionId 值域 = ${s.intersection.length}（${show.join(' / ')}${more}）。`);
+    lines.push('  命中可能是识别器污染（C6-被否：targetSessionId 是 zsw 调用方宿主会话=用户真实会话），');
+    lines.push('  也可能是嵌套调用的合法重叠（zsw 会话充当另一次 zsw 调用的宿主）。👉 中止不改库；');
+    lines.push('  逐条核查命中会话的 directory/标题后，把 dry-run 清单交维护者判定。');
+    return { text: `${lines.join('\n')}\n`, exitCode: 1 };
+  }
+  lines.push('👉 确认执行：退出 ZCode 后跑 zsw doctor clean');
+  return { text: `${lines.join('\n')}\n`, exitCode: 0 };
+}
+
 module.exports = {
   collect,
   renderText,
   renderJson,
+  // u2 dry-run
+  collectDryRun,
+  renderDryRun,
   REF_TABLES,
   SUBAGENT_MAX_AGE_MS,
   LOG_RETENTION_MS,

@@ -49,8 +49,11 @@
  *         bin/zsw-hook.js；本子命令仅调试）
  *   node bin/zsw.js doctor [--json]               # 会话残留只读体检（五面量级 +
  *        白名单双口径 + 13 表行数 + 预估回收粗估；--json 出结构化报告）
+ *   node bin/zsw.js doctor clean --dry-run [--json]
+ *        # 删除集预览（只读不写：五类分治 + 污染哨兵 + 冲突预检 + 红灯；
+ *        # 哨兵失败 exit 1 阻断；--json 出结构化删除集报告）
  *   node bin/zsw.js doctor clean                  # 清理执行器（后续单元接线，
- *        当前仅体检可用；执行属停机窗口手动操作）
+ *        当前仅 --dry-run 可用；执行属停机窗口手动操作）
  *
  * --local flag：1.x 的 daemon/本地双形态遗产，2.0 起本地是唯一形态——
  * flag 接受但忽略（旧脚本零改动迁移）。
@@ -98,7 +101,8 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow --action list      # workflow run 清单（本进程视图）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
     + '  node bin/zsw.js doctor [--json]              # 会话残留只读体检（五面量级 + 预估回收粗估）\n'
-    + '  node bin/zsw.js doctor clean                 # 清理执行器（后续单元接线，当前仅体检可用）\n'
+    + '  node bin/zsw.js doctor clean --dry-run [--json]  # 删除集预览（只读不写；哨兵失败 exit 1 阻断）\n'
+    + '  node bin/zsw.js doctor clean                 # 清理执行器（后续单元接线，当前仅 --dry-run 可用）\n'
     + '  node bin/zsw.js start --wait --task "..." --slug x   # start（恒阻塞到完成；--wait 接受但无差异）\n'
     + '                                                   # 长任务用 Bash run_in_background 包裹，完成即原生通知\n'
     + '  node bin/zsw.js list --local                  # --local 已无行为差异（接受但忽略）\n'
@@ -629,15 +633,41 @@ function runHookCommand(rest) {
  * 命令，在 main 组装之前分流）。doctor 依赖 node:sqlite，故本函数内 lazy
  * require（start 等主链路加载面不扩大）。
  *
- * rest[0] === 'clean'：清理执行器属 u3 领地，当前显式拒绝并给指引（exit 1，
- * 不静默；--dry-run 同样走此分支——dry-run 渲染也随 u2/u3 接线）。
+ * rest[0] === 'clean'：u2 起 `--dry-run` 接线（删除集构建 + 哨兵 + 冲突预检 +
+ * 红灯 + 渲染，全部只读）；非 dry-run 的执行分发仍属 u3 领地，显式拒绝并给
+ * 指引（exit 1，不静默）。dry-run 的污染哨兵失败 = exit 1（报告仍完整输出，
+ * 醒目阻断语义由 renderDryRun 的 ✗ 失败块承担）；`--json` 通道出 collectDryRun
+ * 的结构化报告（Set 已序列化为数组，JSON.parse 直接可用）。
  */
 function runDoctorCommand(rest) {
   const { collect, renderText, renderJson } = require('../lib/doctor');
   if (rest[0] === 'clean') {
+    const args = parseArgs(rest.slice(1));
+    if (args.dryRun) {
+      const { collectDryRun, renderDryRun } = require('../lib/doctor');
+      let report;
+      try {
+        report = collectDryRun();
+      } catch (e) {
+        // node:sqlite 不可用：可操作错误（指向 Node 升级）+ exit 1，不 crash 无堆栈
+        if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
+          process.stderr.write(`[zsw] ${e.message}\n`);
+          process.exit(1);
+        }
+        throw e;
+      }
+      // 哨兵失败 = 非零退出语义（dry-run 只读不写，报告本身已醒目阻断）。
+      // 用 process.exitCode 而非 process.exit：--json 报告可超管道缓冲（64KB），
+      // exit 会丢弃未 flush 的异步写块（实测 JSON 截断）；自然退出等 stdout
+      // drain 完毕，exit code 照常生效（doctor 无引擎执行体挂事件循环）
+      process.exitCode = report.sentinel && report.sentinel.ok ? 0 : 1;
+      if (args.json) process.stdout.write(renderJson(report));
+      else process.stdout.write(renderDryRun(report).text);
+      return;
+    }
     process.stderr.write(
-      '[zsw] doctor clean 执行器在后续单元接线，当前仅体检可用。'
-      + `恢复指引：先跑 node "${zswCliPath()}" doctor 看残留量级；`
+      '[zsw] doctor clean 执行器在后续单元接线，当前仅 --dry-run 预览可用。'
+      + `恢复指引：先跑 node "${zswCliPath()}" doctor clean --dry-run 看删除清单（只读不写）；`
       + '清理属停机窗口手动操作（退出 ZCode 后执行），随执行器单元交付。\n',
     );
     process.exit(1);
