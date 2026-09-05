@@ -4,7 +4,8 @@
  * §3.3 D2/D3/D4 + §2.1 面① FK 列粒度 + §3.1 执行样张；实施计划 u3）。
  *
  * 编排顺序（runClean，一切路径可注入，缺省 = 真实 ~/.zcode 约定）：
- *   1. buildDeleteSet        五类分治（只读，u2）
+ *   1. buildDeleteSet        五类分治（只读，u2；staleMode 档位语义权威源在
+ *                            clean-identify 头注——本层只透传）
  *   2. runShutdownChecks     四项停机校验（D2，--fs-only 同样全查不豁免）
  *   3. checkSentinel         污染哨兵复断言（对剔除前原始集——R2 教训，u2 同款）
  *   4. checkIndexConflicts + excludeConflicts  冲突会话双库整体剔除（D1⑤）
@@ -43,6 +44,13 @@
  *
  * 真实 ~/.zcode 红线：拒绝路径（停机校验/哨兵/磁盘）不产生任何写删；备份/删除/
  * VACUUM 仅在四项校验全过后执行。开发期真实库只读（探针全部 readOnly）。
+ *
+ * --stale 周期维护档边界（u5，设计 D5）：staleMode=true 时删除集缩到超龄部分
+ * （语义权威源 = clean-identify.buildDeleteSet 头注）。--older-than 天数**只**
+ * 作用于会话识别集，不跟随到文件面安全阈值——log 按龄保留 14 天、exec 空壳
+ * 7 天的档位（lib/clean-fs.js DEFAULT_LOG_RETENTION_DAYS /
+ * DEFAULT_EXEC_STALE_DAYS）在任何档位下保持各自默认：一个 flag 不暗改两处
+ * 安全阈值；文件面 id 匹配通道（artifacts/execInSet）随删除集收缩自然收缩。
  *
  * 零依赖 plain Node CJS（node:sqlite 内置；禁 npm 依赖）。
  */
@@ -608,6 +616,12 @@ function renderPreflightLine(report) {
 /** 执行成功报告的人读渲染（样张结构 + 实测数字）。 */
 function renderCleanReport(report) {
   const lines = [];
+  // --stale 档位行（缺省形态不输出——§3.1 执行样张逐字保持；文件面档位不跟随
+  // 的边界在档位行显式化，与 dry-run 渲染同口径）
+  if (report.staleMode === true) {
+    lines.push(`档位：--stale 周期维护（--older-than ${fmtCount(report.olderThanDays)} 天）——删除集缩到超龄部分；`
+      + '文件面档位不跟随（log 保留 14 天 / exec 空壳 7 天）');
+  }
   lines.push(renderPreflightLine(report));
 
   const sen = report.identify.sentinel;
@@ -687,7 +701,8 @@ function resolvePaths(options) {
  * {text, json, exitCode} 而非 throw（拒绝是正常输出面；exitCode 承载语义）；
  * 仅 node:sqlite 不可用/ps 不可用等环境级错误照 doctor 先例 throw（CLI 捕获）。
  *
- * @param {object} options 路径注入（resolvePaths）+ fsOnly / olderThanDays / now
+ * @param {object} options 路径注入（resolvePaths）+ fsOnly / staleMode（--stale
+ *   周期维护档，边界见文件头注）/ olderThanDays / now
  *   / psText（停机校验注入）/ freeBytesFn(volumePath, stage)（磁盘校验注入）/
  *   afterBatch（分块观测钩子）/ chunkSize
  * @returns {{text, json, exitCode}}
@@ -696,6 +711,7 @@ function runClean(options = {}) {
   const { DatabaseSync } = loadSqlite();
   const paths = resolvePaths(options);
   const fsOnly = options.fsOnly === true;
+  const staleMode = options.staleMode === true;
   const now = typeof options.now === 'number' ? options.now : Date.now();
   const freeBytesFn = typeof options.freeBytesFn === 'function' ? options.freeBytesFn : freeBytesOnVolume;
   const chunkSize = typeof options.chunkSize === 'number' && options.chunkSize > 0
@@ -707,6 +723,7 @@ function runClean(options = {}) {
   const report = {
     generatedAt: new Date(now).toISOString(),
     fsOnly,
+    staleMode,
     olderThanDays: typeof options.olderThanDays === 'number' ? options.olderThanDays : DEFAULT_OLDER_THAN_DAYS,
     paths,
     shutdown: null,
@@ -730,6 +747,7 @@ function runClean(options = {}) {
     indexDbPath: paths.indexDbPath,
     recordsPath: paths.recordsPath,
     olderThanDays: report.olderThanDays,
+    staleMode,
     now,
   });
 

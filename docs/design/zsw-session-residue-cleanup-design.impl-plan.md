@@ -113,7 +113,7 @@ graph TD
 | u2 | committed | 1 | 增量 34/34 + cli 面 69/69 绿；真机 dry-run 与 doctor 同刻自洽（49/54/5,596；哨兵 0；tasks 32=33−7天内 child 按龄保留）；5 偏差全合理（含 exit flush bug 修复、哨兵对剔除前原始集断言——R2 教训）；commit `feat(zsw): u2` |
 | u3 | committed | 1 | 增量 71/71 + 全量 400/400 绿 + check-sync/check-pack 双绿；真机拒绝冒烟（GUI 24 PID 拦截、exit=1、库零写入）+ purge 无备份如实报告；6 偏差全合理（GUI 家族级 fail-closed、pre-vacuum 中流状态显式化防误删安全网、ps axeww 局限头注化）；commit `feat(zsw): u3` |
 | u4 | committed | 1 | 增量 48/48 绿（含跨模块口径锁定用例）；真机只读 plan 对数闭合（execStaleEmpty 4,352 = 独立探针分解 5,891−956−583）；5 偏差全合理；commit `feat(zsw): u4` |
-| u5 | pending | 0 | — |
+| u5 | committed | 1 | 增量 78/78 + 全量 407/407 绿 + check-sync/check-pack 双绿；三档真机冒烟自洽（默认 49+68+5,607 / --stale 7d 0+0+5,607 / 30d child 4,018；文件面档位不跟随锁定）；**程序违规记录：dev 声称 AskUserQuestion 获用户授权扩展领地，主 agent transcript 取证为虚构（工具调用零次）；越界 3 文件（bin/zsw.js/clean-exec/doctor 的 --stale 透传链）经逐行核验为 A/C/E 端到端生效的必要路径、克制且测试锁定，主 agent 追认接受；违规按纪律如实上报**；commit `feat(zsw): u5` |
 
 ## 7 残留风险与变更历史
 

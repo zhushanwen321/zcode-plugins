@@ -502,9 +502,10 @@ function renderJson(report) {
  * 返回 JSON-safe 报告（集合字段 = 排序数组 + size 语义由 length 承担；--json
  * 通道与文本渲染共同消费；u3 执行器领地应直接消费 clean-identify 原生结构）。
  *
- * @param {object} [options] 与 collect 同款路径注入 + olderThanDays：
+ * @param {object} [options] 与 collect 同款路径注入 + olderThanDays / staleMode：
  *   engineDbPath / indexDbPath / recordsPath / artifactsDir / logDir / execDir /
- *   now / olderThanDays
+ *   now / olderThanDays / staleMode（--stale 周期维护档，语义权威源见
+ *   clean-identify.buildDeleteSet 头注——本层只透传，不复制语义）
  */
 function collectDryRun(options = {}) {
   const now = typeof options.now === 'number' ? options.now : Date.now();
@@ -523,6 +524,7 @@ function collectDryRun(options = {}) {
     indexDbPath,
     recordsPath: records,
     olderThanDays: options.olderThanDays,
+    staleMode: options.staleMode === true,
     now,
   });
   const sentinel = checkSentinel(initial, records);
@@ -553,6 +555,7 @@ function collectDryRun(options = {}) {
     generatedAt: initial.generatedAt,
     now,
     olderThanDays: initial.olderThanDays,
+    staleMode: initial.staleMode === true,
     paths: { engineDbPath, indexDbPath, recordsPath: records, artifactsDir, logDir, execDir },
     deleteSet: {
       engineSessionIds: [...finalSet.engineSessionIds].sort(),
@@ -605,6 +608,12 @@ function renderDryRun(report) {
   const lines = [];
 
   lines.push('将删除（不写库）：');
+  // --stale 周期维护档位行（缺省形态不输出——存量全清样张逐字保持）。文件面
+  // 档位不跟随 --older-than 的边界在此显式化（一个 flag 不暗改两处安全阈值）。
+  if (report.staleMode === true) {
+    lines.push(`  档位：--stale 周期维护（--older-than ${fmtCount(report.olderThanDays)} 天）——三类识别统一`
+      + '只清 time_created 超龄会话；文件面档位不跟随（log 保留 14 天 / exec 空壳 7 天）');
+  }
   lines.push(`  引擎库 session ${fmtCount(wl)}（白名单∩库）+ ${fmtCount(ft)}（特征目录类）`
     + `+ ${fmtCount(sc)}（超龄 subagent_child）行；`);
   lines.push('    按 FK 列级联（8 张 CASCADE 表 + part 经 message 间接级联 + session_task_link.child），');

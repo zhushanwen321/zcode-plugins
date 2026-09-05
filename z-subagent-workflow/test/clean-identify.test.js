@@ -313,6 +313,85 @@ test('buildDeleteSet 缺必传参数 → 可操作错误（不静默产出空删
   assert.throws(() => buildDeleteSet({ engineDbPath: '/tmp/nope.sqlite' }), /recordsPath/);
 });
 
+// ------------------------------------------------- --stale 周期维护档（u5，D5）
+
+// stale fixture：白名单/特征目录/child 三类各有「旧（10d）/ 新（1d）」一对 +
+// 两个边界行（恰 7d、time_created null）。语义权威口径（clean-identify 头注）：
+// --stale = 三类统一按 time_created 严格早于 cutoff 过滤（周期维护不删新会话）；
+// 缺省 = ②③存量全清（不加时间过滤）、①恒按龄（D1①）。
+function buildStaleFixture() {
+  const dir = u2Dir();
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  createU2EngineDb(engineDbPath, [
+    ['sw1', '/Users/u/stale-proj', 'interactive', NOW - 10 * DAY], // 白名单旧
+    ['sw2', '/Users/u/stale-proj', 'interactive', NOW - 1 * DAY], // 白名单新
+    ['sw3', '/Users/u/stale-proj', 'interactive', NOW - 7 * DAY], // 白名单恰等 7d
+    ['sx', '/Users/u/stale-proj', 'interactive', null], // time_created 非数值
+    ['sf1', '/tmp/x/zsub-e2e-stale/proj', 'interactive', NOW - 10 * DAY], // 特征旧
+    ['sf2', '/tmp/x/zsub-e2e-stale/proj', 'interactive', NOW - 1 * DAY], // 特征新
+    ['sc1', '/Users/u/stale-proj', 'subagent_child', NOW - 10 * DAY], // child 旧
+    ['sc2', '/Users/u/stale-proj', 'subagent_child', NOW - 1 * DAY], // child 新
+  ]);
+  const records = writeRecords([
+    JSON.stringify({ sessionId: 'sw1' }),
+    JSON.stringify({ sessionId: 'sw2' }),
+    JSON.stringify({ sessionId: 'sw3' }),
+    JSON.stringify({ sessionId: 'sx' }),
+  ]);
+  return { engineDbPath, indexDbPath: path.join(dir, 'tasks-index.sqlite'), records };
+}
+
+test('--stale 档位：三类统一按龄——只删超龄，新会话与 null 行保留；staleMode 字段透出', () => {
+  const fx = buildStaleFixture();
+  const ds = buildDeleteSet(identifyOptions(fx, { staleMode: true }));
+  assert.equal(ds.staleMode, true);
+  assert.deepEqual(ds.byClass.whitelist, ['sw1'], '白名单新（sw2 1d）/恰等 7d（sw3）/null（sx）全保留');
+  assert.deepEqual(ds.byClass.feature, ['sf1'], '特征目录类同样按龄（D5 识别集缩到超龄部分）');
+  assert.deepEqual(ds.byClass.subagentChildStale, ['sc1'], 'child 按龄语义不变（D1①）');
+  assert.deepEqual([...ds.engineSessionIds].sort(), ['sc1', 'sf1', 'sw1']);
+  assert.equal(ds.olderThanDays, DEFAULT_OLDER_THAN_DAYS, '未传 --older-than 回落缺省 7 天');
+});
+
+test('缺省（非 --stale）存量全清语义回归锁定：白名单/特征类不加时间过滤，child 恒按龄', () => {
+  const fx = buildStaleFixture();
+  const ds = buildDeleteSet(identifyOptions(fx));
+  assert.equal(ds.staleMode, false);
+  assert.deepEqual(ds.byClass.whitelist, ['sw1', 'sw2', 'sw3', 'sx'], '新/恰等/null 行全入集（存量全清）');
+  assert.deepEqual(ds.byClass.feature, ['sf1', 'sf2'], '特征类不受 1d「新鲜」影响');
+  assert.deepEqual(ds.byClass.subagentChildStale, ['sc1'], 'child 恒按龄（sc2 1d 保留）');
+  assert.deepEqual([...ds.engineSessionIds].sort(), ['sc1', 'sf1', 'sf2', 'sw1', 'sw2', 'sw3', 'sx']);
+});
+
+test('--stale 恰等 cutoff 边界：严格小于语义三类一致（olderThanDays=10 时 10d 行恰等不入集）', () => {
+  const fx = buildStaleFixture();
+  const ds = buildDeleteSet(identifyOptions(fx, { staleMode: true, olderThanDays: 10 }));
+  assert.deepEqual([...ds.engineSessionIds].sort(), [], 'sw1/sf1/sc1（恰 10d）全不超龄 → 空删除集');
+  const ds0 = buildDeleteSet(identifyOptions(fx, { staleMode: true, olderThanDays: 0 }));
+  assert.deepEqual(ds0.byClass.whitelist, ['sw1', 'sw2', 'sw3'], '0d = 全部严格早于 now 入集；sx null 仍保守保留');
+  assert.deepEqual(ds0.byClass.subagentChildStale, ['sc1', 'sc2']);
+});
+
+test('excludeConflicts 透传 staleMode（冲突剔除后的最终集档位字段不丢）', () => {
+  const fx = buildStaleFixture();
+  const ds = buildDeleteSet(identifyOptions(fx, { staleMode: true }));
+  const conflicts = { available: true, members: [], automations: [], offPeak: [], conflictedSessionIds: new Set() };
+  const { deleteSet: final } = excludeConflicts(ds, conflicts);
+  assert.equal(final.staleMode, true);
+  assert.deepEqual([...final.engineSessionIds].sort(), ['sc1', 'sf1', 'sw1']);
+});
+
+test('dry-run --stale：报告透出 staleMode + 渲染档位行（缺省形态不输出档位行）', () => {
+  const fx = buildStaleFixture();
+  const staleReport = collectDryRun(identifyOptions(fx, { staleMode: true }));
+  assert.equal(staleReport.staleMode, true);
+  const stale = renderDryRun(staleReport);
+  assert.match(stale.text, /档位：--stale 周期维护（--older-than 7 天）——三类识别统一/);
+  assert.match(stale.text, /文件面档位不跟随（log 保留 14 天 \/ exec 空壳 7 天）/);
+  const plainReport = collectDryRun(identifyOptions(fx));
+  assert.equal(plainReport.staleMode, false);
+  assert.equal(/档位：--stale/.test(renderDryRun(plainReport).text), false, '缺省样张逐字保持');
+});
+
 // ------------------------------------------------- 污染哨兵
 
 test('污染哨兵：零交集 ok；交集命中 ok:false 且 intersection 正确', () => {

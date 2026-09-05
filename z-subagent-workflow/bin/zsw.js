@@ -49,15 +49,17 @@
  *         bin/zsw-hook.js；本子命令仅调试）
  *   node bin/zsw.js doctor [--json]               # 会话残留只读体检（五面量级 +
  *        白名单双口径 + 13 表行数 + 预估回收粗估；--json 出结构化报告）
- *   node bin/zsw.js doctor clean --dry-run [--json]
+ *   node bin/zsw.js doctor clean --dry-run [--stale --older-than <Nd>] [--json]
  *        # 删除集预览（只读不写：五类分治 + 污染哨兵 + 冲突预检 + 红灯；
- *        # 哨兵失败 exit 1 阻断；--json 出结构化删除集报告）
+ *        # 哨兵失败 exit 1 阻断；--stale 档位语义同 clean；--json 出结构化删除集报告）
  *   node bin/zsw.js doctor clean [--fs-only] [--stale --older-than <Nd>] [--json]
  *        # 清理执行器（停机窗口手动操作：四项停机校验 → 三段磁盘校验 + SQLITE_TMPDIR
  *        # 同卷 → 双库三件套备份（keep-1）→ 引擎库分块删除（FK 列级联动 + 批间
  *        # checkpoint）+ VACUUM → 索引库联动 → 文件面清理；任一校验不过即拒绝并给
- *        # 恢复指引。--fs-only 只走文件面但停机校验不豁免；--stale 缩到超龄部分
- *        # （--older-than 天数，缺省 7；完整档位语义随周期维护单元交付）
+ *        # 恢复指引。--fs-only 只走文件面但停机校验不豁免。--stale 周期维护档
+ *        # （手动触发不自动化，D5）：删除集缩到超龄部分——三类识别统一按
+ *        # --older-than 天数（缺省 7）过滤 time_created；文件面档位不跟随
+ *        # （log 保留 14 天 / exec 空壳 7 天）
  *   node bin/zsw.js doctor clean --purge-backup    # 删除最近一次备份目录（释放备份空间；无备份如实报告）
  *
  * --local flag：1.x 的 daemon/本地双形态遗产，2.0 起本地是唯一形态——
@@ -634,9 +636,11 @@ function runHookCommand(rest) {
 // ------------------------------------------------------ doctor 子命令（只读体检）
 
 /**
- * --older-than 值解析（D5 档位形态）：接受 `30` / `30d`（天）。u3 仅透传给
- * buildDeleteSet 的 olderThanDays 语义；档位完整语义（含文件面按龄联动）随
- * 周期维护单元（u5）交付。非法值 warn + 忽略（回落缺省 7 天，容错不失败）。
+ * --older-than 值解析（D5 档位形态）：接受 `30` / `30d`（天）。u5 起语义闭环：
+ * 非 --stale 时只作用于 subagent_child 按龄（D1①）；--stale 时三类识别统一按龄
+ * （语义权威源 lib/clean-identify.js buildDeleteSet 头注；文件面档位不跟随——
+ * log 保留 14 天 / exec 空壳 7 天保持各自默认）。非法值 warn + 忽略（回落缺省
+ * 7 天，容错不失败）。
  */
 function parseOlderThanDays(v) {
   if (v === undefined || v === true) return undefined;
@@ -669,7 +673,10 @@ function runDoctorCommand(rest) {
       const { collectDryRun, renderDryRun } = require('../lib/doctor');
       let report;
       try {
-        report = collectDryRun({ olderThanDays: parseOlderThanDays(args.olderThan) });
+        report = collectDryRun({
+          olderThanDays: parseOlderThanDays(args.olderThan),
+          staleMode: args.stale === true, // --stale 周期维护档（语义权威源 clean-identify）
+        });
       } catch (e) {
         // node:sqlite 不可用：可操作错误（指向 Node 升级）+ exit 1，不 crash 无堆栈
         if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
@@ -705,6 +712,7 @@ function runDoctorCommand(rest) {
     try {
       outcome = runClean({
         fsOnly: args.fsOnly === true,
+        staleMode: args.stale === true, // --stale 周期维护档（边界见 clean-exec 头注）
         olderThanDays: parseOlderThanDays(args.olderThan),
       });
     } catch (e) {

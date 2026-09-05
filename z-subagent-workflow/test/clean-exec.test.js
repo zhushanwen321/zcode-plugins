@@ -850,6 +850,117 @@ test('--fs-only：库操作跳过、文件面执行、无备份', () => {
   assert.equal(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-') && n !== 'backup-old').length, 0);
 });
 
+// ---------------------------------------------------- --stale 周期维护档（u5）
+
+/**
+ * stale 端到端 fixture（A-5 fixture 版）：三类识别源各一对「旧（10d）/新（1d）」
+ * + 集外普通会话；文件面含集内目录、新会话非空壳目录、超龄空壳（独立 7d 龄档
+ * 通道）与 10d/20d 两档 log（log 保留 14 天，不跟随 --older-than 7）。
+ */
+function buildStaleE2EFixture() {
+  const dir = nextDir('stale-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  // session id 恒为 sess_ 前缀形态（与 u3 主 fixture / 真实库一致——文件面 exec
+  // 目录名 = session id 精确相等匹配，id 形态决定 exec 目录名）
+  createEngineDb(engineDbPath, {
+    sessions: [
+      ['sess_owl', '/Users/u/stale-proj', 'interactive', NOW - 10 * DAY],
+      ['sess_onew', '/Users/u/stale-proj', 'interactive', NOW - 1 * DAY],
+      ['sess_fold', '/tmp/x/zsub-e2e-stale/proj', 'interactive', NOW - 10 * DAY],
+      ['sess_fnew', '/tmp/x/zsub-e2e-stale/proj', 'interactive', NOW - 1 * DAY],
+      ['sess_cold', '/Users/u/stale-proj', 'subagent_child', NOW - 10 * DAY],
+      ['sess_cnew', '/Users/u/stale-proj', 'subagent_child', NOW - 1 * DAY],
+      ['keep1', '/Users/u/other', 'interactive', NOW - 1 * DAY],
+    ],
+    messages: [['mo', 'sess_owl'], ['mno', 'sess_onew'], ['mc', 'sess_cold'], ['mcn', 'sess_cnew']],
+    parts: [['po', 'mo', 'sess_owl'], ['pno', 'mno', 'sess_onew'], ['pc', 'mc', 'sess_cold'], ['pcn', 'mcn', 'sess_cnew']],
+    modelUsage: [['mu1', 'sess_owl']],
+    turnUsage: [['sess_onew', 'tu1']],
+    inputHistory: [['i1', 'sess_owl'], ['i2', 'sess_onew']],
+  });
+  const indexDbPath = path.join(dir, 'tasks-index.sqlite');
+  createIndexDb(indexDbPath, {
+    taskIds: ['sess_owl', 'sess_onew', 'sess_fold', 'sess_fnew', 'sess_cold', 'sess_cnew', 'tk9'],
+  });
+  const records = writeRecords(dir, [{ sessionId: 'sess_owl' }, { sessionId: 'sess_onew' }]);
+  const artifactsDir = path.join(dir, 'artifacts');
+  const execDir = path.join(dir, 'exec');
+  const logDir = path.join(dir, 'log');
+  for (const name of ['sess_owl', 'sess_fold', 'sess_cold', 'sess_onew', 'sess_fnew']) {
+    fs.mkdirSync(path.join(artifactsDir, name), { recursive: true });
+    fs.writeFileSync(path.join(artifactsDir, name, 'a.txt'), 'x');
+  }
+  fs.mkdirSync(path.join(execDir, 'sess_owl'), { recursive: true }); // ∈ 删除集 → execInSet
+  fs.mkdirSync(path.join(execDir, 'sess_onew'), { recursive: true }); // ∉ 集（新会话）+ 非空壳 → 不删
+  fs.writeFileSync(path.join(execDir, 'sess_onew', 'live.txt'), 'x');
+  fs.mkdirSync(path.join(execDir, 'sess_stale_shell'), { recursive: true }); // ∉ 集 + 超龄空壳 → execStaleEmpty（独立 7d 龄档）
+  fs.mkdirSync(path.join(execDir, 'bash-startup'), { recursive: true });
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(path.join(logDir, 'mid.log'), 'x'); // 10d 龄：< 14d log 档 → 保留（档位不跟随 --older-than 7）
+  fs.writeFileSync(path.join(logDir, 'ancient.log'), 'x'); // 20d 龄：> 14d → 删
+  const stale = NOW - 20 * DAY;
+  const mid = NOW - 10 * DAY;
+  setMtime(path.join(execDir, 'sess_stale_shell'), stale);
+  setMtime(path.join(execDir, 'bash-startup'), stale);
+  setMtime(path.join(logDir, 'mid.log'), mid);
+  setMtime(path.join(logDir, 'ancient.log'), stale);
+  const maintenanceDir = path.join(dir, 'maintenance');
+  fs.mkdirSync(maintenanceDir, { recursive: true });
+  return { dir, engineDbPath, indexDbPath, records, artifactsDir, execDir, logDir, maintenanceDir };
+}
+
+test('--stale 全流程：删除只命中超龄部分——新会话与其子表行/文件面完好，文件面档位不跟随', () => {
+  const fx = buildStaleE2EFixture();
+  const outcome = runClean(cleanOptions(fx, { staleMode: true }));
+  assert.equal(outcome.exitCode, 0, outcome.text);
+  const r = outcome.json;
+
+  assert.equal(r.staleMode, true);
+  assert.equal(r.engine.sessionDeleted, 3, 'owl/fold/cold 三类超龄行各删 1');
+  assert.deepEqual(query(fx.engineDbPath, 'SELECT id FROM session ORDER BY id').map((x) => x.id),
+    ['keep1', 'sess_cnew', 'sess_fnew', 'sess_onew'], '新会话与集外 keep1 保留');
+  // 新会话子表行完好；超龄会话的伴生行随删
+  assert.equal(query(fx.engineDbPath, "SELECT COUNT(*) n FROM message WHERE session_id='sess_onew'").at(0).n, 1);
+  assert.equal(query(fx.engineDbPath, "SELECT COUNT(*) n FROM part WHERE session_id='sess_onew'").at(0).n, 1);
+  assert.equal(query(fx.engineDbPath, "SELECT COUNT(*) n FROM turn_usage WHERE session_id='sess_onew'").at(0).n, 1);
+  assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM model_usage').at(0).n, 0, '超龄 sess_owl 的统计行随删');
+  assert.deepEqual(query(fx.engineDbPath, 'SELECT id FROM input_history ORDER BY id').map((x) => x.id), ['i2'],
+    '新会话输入历史保留，超龄会话的 i1 随删');
+  // 索引联动只命中超龄部分
+  assert.equal(r.index.tasksDeleted, 3);
+  assert.deepEqual(query(fx.indexDbPath, 'SELECT task_id FROM tasks ORDER BY task_id').map((x) => x.task_id),
+    ['sess_cnew', 'sess_fnew', 'sess_onew', 'tk9']);
+  // 文件面 id 匹配通道随删除集收缩：超龄删、新会话与集外留
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'sess_owl')), false);
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'sess_fold')), false);
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'sess_cold')), false);
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'sess_onew')), true, '新会话 artifacts 目录保留');
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'sess_fnew')), true);
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'sess_owl')), false);
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'sess_onew')), true, '新会话 exec 目录保留（非空壳不删）');
+  // 文件面档位不跟随 --older-than：exec 空壳 7d 独立通道照常、log 14d 档不变
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'sess_stale_shell')), false, '空壳超 7d 照删（exec 档位独立于 --older-than）');
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'bash-startup')), true);
+  assert.equal(fs.existsSync(path.join(fx.logDir, 'mid.log')), true, '10d 龄 log 保留——log 14d 档不跟随 --older-than 7');
+  assert.equal(fs.existsSync(path.join(fx.logDir, 'ancient.log')), false, '20d 龄 log 照删');
+  // 报告：staleMode 字段 + 档位行（缺省形态不输出）
+  assert.equal(r.files.result.totalFailureCount, 0);
+  assert.match(outcome.text, /档位：--stale 周期维护（--older-than 7 天）——删除集缩到超龄部分；/);
+  assert.match(outcome.text, /文件面档位不跟随（log 保留 14 天 \/ exec 空壳 7 天）/);
+  assert.match(outcome.text, /✓ 引擎库：分块删除（1 批 × ≤200 会话，/);
+});
+
+test('--stale 对照：同 fixture 缺省形态存量全清（白名单/特征类不加龄、child 恒按龄），报告无档位行', () => {
+  const fx = buildStaleE2EFixture();
+  const outcome = runClean(cleanOptions(fx));
+  assert.equal(outcome.exitCode, 0, outcome.text);
+  const r = outcome.json;
+  assert.equal(r.staleMode, false);
+  assert.equal(r.engine.sessionDeleted, 5, '存量全清：白名单/特征类新旧全删 + 超龄 child；1d 新 child（sess_cnew）按 D1① 保留');
+  assert.deepEqual(query(fx.engineDbPath, 'SELECT id FROM session ORDER BY id').map((x) => x.id), ['keep1', 'sess_cnew']);
+  assert.equal(/档位：--stale/.test(outcome.text), false, '缺省样张无档位行（§3.1 逐字保持）');
+});
+
 // ---------------------------------------------------- 文件面失败项不阻断库侧对账
 
 test('executeFileCleanup 失败项进 failures 不阻断库侧；planned=deleted+failures 闭合入报告', (t) => {

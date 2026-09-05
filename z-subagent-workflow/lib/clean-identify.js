@@ -189,19 +189,32 @@ function openDbReadOnly(dbPath, label) {
  *      （列名实证：tasks 无 session_id 列，task_id 值 = 引擎 session id，
  *      u1 交付期 pragma 核实）。
  *
+ * staleMode 档位语义分野（u5，设计 §3.3 D5「识别集缩到超龄部分」；本模块是
+ * 该语义的单一权威源，上游 bin/zsw.js / clean-exec / doctor 只透传不复制）：
+ *   false（缺省 = 存量全清）——②③白名单∩库与特征目录类**不加**时间过滤
+ *     （存量 zsw 会话一次清完，G1）；①subagent_child 恒按龄（D1① 既有语义：
+ *     GUI 会话详情页可能引用近期子代理记录）。
+ *   true（--stale = 周期维护按龄）——①②③统一要求 time_created **严格早于**
+ *     cutoff 才入集（周期维护不删刚产生的新会话；A-5 场景：清理后跑新任务
+ *     产生新数据，`clean --stale --older-than 1d` 只清新产生的超龄部分）。
+ *   time_created 非数值（null 等）在任何模式下都不判超龄、保守保留（与
+ *   u1 doctor 口径一致）。--older-than 的档位值**不**跟随到文件面（log 保留
+ *   14 天 / exec 空壳 7 天各自的档位在 lib/clean-fs.js，见其头注）——一个
+ *   flag 不暗改两处安全阈值。
+ *
  * 三类识别（②③①）不强制互斥（白名单∩库与特征目录类可重叠——byClass 各自
  * 独立记录，与设计 §3.1 样张「47 + 47」重叠分报口径一致）；engineSessionIds
- * 为三类并集去重。subagent_child 的 time_created 非数值（null 等）不判超龄
- * （保守保留，与 u1 doctor 口径一致）。
+ * 为三类并集去重。
  *
  * @param {object} options 全部显式入参：
  *   engineDbPath（必传，引擎库路径）/ indexDbPath（可选，索引库路径；缺省或
  *   打不开 → indexTaskIds 空集——索引面 n/a 不阻塞删除集）/ recordsPath
- *   （必传）/ olderThanDays（默认 7）/ now（时间基准 ms，默认 Date.now()）
+ *   （必传）/ olderThanDays（默认 7）/ staleMode（默认 false，语义分野见上）/
+ *   now（时间基准 ms，默认 Date.now()）
  * @returns {{engineSessionIds:Set, byClass:{whitelist:string[],feature:string[],
  *   subagentChildStale:string[]}, indexTaskIds:Set, interactiveClassIds:Set,
- *   olderThanDays:number, generatedAt:string}} interactiveClassIds = ②③并集
- *   （红灯口径的输入面）。
+ *   olderThanDays:number, staleMode:boolean, generatedAt:string}}
+ *   interactiveClassIds = ②③并集（红灯口径的输入面）。
  */
 function buildDeleteSet(options = {}) {
   const { engineDbPath, indexDbPath, recordsPath } = options;
@@ -214,6 +227,7 @@ function buildDeleteSet(options = {}) {
   const olderThanDays = typeof options.olderThanDays === 'number'
     && Number.isFinite(options.olderThanDays) && options.olderThanDays >= 0
     ? options.olderThanDays : DEFAULT_OLDER_THAN_DAYS;
+  const staleMode = options.staleMode === true;
   const now = typeof options.now === 'number' ? options.now : Date.now();
   const cutoff = now - olderThanDays * DAY_MS;
   const whiteList = parseRecordWhiteList(recordsPath);
@@ -224,10 +238,12 @@ function buildDeleteSet(options = {}) {
   const db = openDbReadOnly(engineDbPath, '引擎库');
   try {
     for (const row of db.prepare('SELECT id, directory, task_type, time_created FROM session').all()) {
-      if (whiteList.has(row.id)) whitelistClass.push(row.id);
-      if (matchFeatureDirectory(row.directory)) featureClass.push(row.id);
-      if (row.task_type === 'subagent_child'
-        && typeof row.time_created === 'number' && row.time_created < cutoff) {
+      // 超龄判定单点：严格早于 cutoff 才算（恰等于不算）；非数值保守不算。
+      // 非 staleMode 时 ②③ 不消费该判定（存量全清），① 恒消费（D1①）。
+      const olderThanCutoff = typeof row.time_created === 'number' && row.time_created < cutoff;
+      if (whiteList.has(row.id) && (!staleMode || olderThanCutoff)) whitelistClass.push(row.id);
+      if (matchFeatureDirectory(row.directory) && (!staleMode || olderThanCutoff)) featureClass.push(row.id);
+      if (row.task_type === 'subagent_child' && olderThanCutoff) {
         subagentChildStale.push(row.id);
       }
     }
@@ -267,6 +283,7 @@ function buildDeleteSet(options = {}) {
     indexTaskIds,
     interactiveClassIds: new Set([...whitelistClass, ...featureClass]),
     olderThanDays,
+    staleMode,
     generatedAt: new Date(now).toISOString(),
   };
 }
@@ -432,6 +449,7 @@ function excludeConflicts(deleteSet, conflictResult) {
       indexTaskIds: new Set([...deleteSet.indexTaskIds].filter(keep)),
       interactiveClassIds: new Set([...deleteSet.interactiveClassIds].filter(keep)),
       olderThanDays: deleteSet.olderThanDays,
+      staleMode: deleteSet.staleMode === true,
       generatedAt: deleteSet.generatedAt,
     },
     removed,
