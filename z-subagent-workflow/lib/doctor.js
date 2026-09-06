@@ -11,8 +11,10 @@
  *
  * u2 增量（设计 §3.1 第二代码块 dry-run 样张 / §3.3 D1）：collectDryRun 组装
  * 删除集链路（clean-identify 五类分治 → 污染哨兵 → 索引冲突预检 → 双库整体
- * 剔除 → 目录分布红灯 → input_history 命中计数）+ 文件面量级，产出 JSON-safe
- * 报告对象；renderDryRun 以 §3.1 样张为权威逐行渲染，返回 { text, exitCode }
+ * 剔除 → 目录分布红灯 → input_history 命中计数）+ 文件面删除集口径（filePlan
+ * = clean-fs planFileCleanup 产出，与执行报告 counts 同源对账 A-4），产出
+ * JSON-safe 报告对象；renderDryRun 以
+ * §3.1 样张为权威逐行渲染（文件面行按删除集口径），返回 { text, exitCode }
  * ——哨兵失败（非零交集）时 exitCode=1 且输出失败样例文案（第三代码块形态），
  * dry-run 只读不写但报告必须醒目阻断。删除集构建与渲染的全部 DB 访问 readOnly。
  *
@@ -39,11 +41,16 @@ const {
   excludeConflicts,
   checkRedLight,
   countInputHistoryHits,
+  DEFAULT_OLDER_THAN_DAYS,
 } = require('./clean-identify');
+const { planFileCleanup } = require('./clean-fs');
 const { recordsPath, zswRoot } = require('./config');
 
-/** subagent_child 默认只清 time_created 早于 7 天的（设计 §3.3 D1①）。 */
-const SUBAGENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** subagent_child 默认只清 time_created 早于 7 天的（设计 §3.3 D1①）。
+ *  7 天派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS（删除档位缺省值的单一
+ *  权威源）——体检 olderThan7d 观测口径与 clean 删除档位缺省值同源绑定，
+ *  不在本模块保留第二份独立的 7 天常数。 */
+const SUBAGENT_MAX_AGE_MS = DEFAULT_OLDER_THAN_DAYS * 24 * 60 * 60 * 1000;
 /** log 按文件年龄整文件删，默认保留 14 天（设计 §3.3 D7）。 */
 const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -256,6 +263,23 @@ function collectIndex(dbPath, coarseDeleteSet) {
       automationsWithTarget: countSafe(db, 'automations', 'target_task_id IS NOT NULL'),
       offPeakTasks: countSafe(db, 'off_peak_tasks'),
     };
+    // 姊妹表冲突命中（A-6 样张口径）：复用 clean-identify 的 checkIndexConflicts
+    // 对体检可判定的最完整口径（删除集粗口径）跑一次只读预检。体检不构建正式
+    // 删除集（哨兵/冲突剔除属 dry-run/执行链路），此处命中数是预检观测，最终
+    // 口径以 clean --dry-run 为准。预检失败（如 tasks 缺 off_peak_task_id 列）
+    // → available:false，渲染 n/a，不拖垮体检（单面失败容错口径）。
+    let conflicts = null;
+    try {
+      conflicts = checkIndexConflicts(coarseDeleteSet, dbPath);
+    } catch {
+      conflicts = null;
+    }
+    report.conflictHits = {
+      available: conflicts !== null && conflicts.available,
+      members: conflicts ? conflicts.members.length : undefined,
+      automations: conflicts ? conflicts.automations.length : undefined,
+      offPeak: conflicts ? conflicts.offPeak.length : undefined,
+    };
   } finally {
     db.close();
   }
@@ -455,10 +479,15 @@ function renderText(report) {
   lines.push(estLine);
 
   const idx = report.index;
+  // 姊妹表行 = 冲突命中在前（A-6 核对样张口径），表规模括注保留观测价值
+  const ct = idx.conflictHits;
+  const conflictText = ct && ct.available
+    ? `姊妹表冲突：members ${fmtCount(ct.members)} / automations ${fmtCount(ct.automations)} / off_peak ${fmtCount(ct.offPeak)}`
+    : '姊妹表冲突：n/a';
   lines.push(na(idx.available, `  GUI 索引行      tasks 总数 ${fmtCount(idx.tasksTotal)} / 粗口径命中 ${fmtCount(idx.tasksHit)} 行；`
-    + `姊妹表：members ${fmtCount(idx.sisterTables && idx.sisterTables.taskGroupMembers)} /`
+    + `${conflictText}（表规模：members ${fmtCount(idx.sisterTables && idx.sisterTables.taskGroupMembers)} /`
     + ` automations ${fmtCount(idx.sisterTables && idx.sisterTables.automationsWithTarget)}（target 非空）`
-    + ` / off_peak ${fmtCount(idx.sisterTables && idx.sisterTables.offPeakTasks)}`));
+    + ` / off_peak ${fmtCount(idx.sisterTables && idx.sisterTables.offPeakTasks)}）`));
 
   lines.push(na(f.artifacts && f.artifacts.available,
     `  artifacts/      ${fmtCount(f.artifacts && f.artifacts.dirCount)} 个会话目录（~${fmtBytes(f.artifacts && f.artifacts.bytes)}）`));
@@ -496,8 +525,12 @@ function renderJson(report) {
  *   5. checkRedLight / countInputHistoryHits  按**最终删除集**口径
  *      （红灯与 input_history 报告的都是「将删除的内容」；冲突剔除的会话不删，
  *       计入会误导人工审红灯）
- * 文件面复用 u1 collectFiles（artifacts/log/exec 三面量级，dry-run 与体检同源
- * 同口径）；预估回收基于最终删除集占比 × 库三件套体积（u1 偏差 3 粗估口径）。
+ * 文件面口径（MF-1/A-4 对账面）：filePlan = planFileCleanup（lib/clean-fs，
+ * 只读 plan，不执行删除）——在删除集最终态确定后以最终删除集与注入根路径调用，
+ * 与执行器 clean-exec 的 plan/counts 完全同一清单源，dry-run 渲染行与执行报告
+ * 逐项可对账（差异为 0）。全量观测面（体检同源口径）只保留在 doctor collect 的
+ * files 面（体检观测职责），dry-run 不重复携带。预估回收基于最终删除集占比 ×
+ * 库三件套体积（u1 偏差 3 粗估口径）。
  *
  * 返回 JSON-safe 报告（集合字段 = 排序数组 + size 语义由 length 承担；--json
  * 通道与文本渲染共同消费；u3 执行器领地应直接消费 clean-identify 原生结构）。
@@ -546,7 +579,15 @@ function collectDryRun(options = {}) {
     db.close();
   }
 
-  const files = collectFiles(artifactsDir, logDir, execDir, now);
+  // 删除集口径（A-4 对账面）：最终删除集 + 注入根路径走 clean-fs 只读 plan，
+  // 与执行器 clean-exec 同一清单源（其 report.files.plan / report.counts 逐项同构）
+  const filePlan = planFileCleanup({
+    engineSessionIds: finalSet.engineSessionIds,
+    artifactsDir,
+    logDir,
+    execDir,
+    now,
+  });
   const dbBytes = dbTripleBytes(engineDbPath);
   const deleteSetSize = finalSet.engineSessionIds.size;
   const ratio = sessionTotal ? deleteSetSize / sessionTotal : 0;
@@ -574,7 +615,7 @@ function collectDryRun(options = {}) {
     },
     redlight,
     inputHistoryHits,
-    files,
+    filePlan,
     estimate: {
       deleteSetSize,
       sessionTotal,
@@ -642,10 +683,14 @@ function renderDryRun(report) {
     : (cf.available === false ? '索引库 n/a；' : '当前无姊妹表冲突；') + '冲突机制保留为安全网';
   lines.push(`  GUI 索引 tasks ${fmtCount(ds.indexTaskIds.length)} 行（${conflictDesc}）`);
 
-  const f = report.files || {};
-  lines.push(`  artifacts ${fmtCount(f.artifacts && f.artifacts.dirCount)} 目录`
-    + `；log 按执行日超龄文件（当前 ${fmtCount(f.log && f.log.olderThan14d)}）`
-    + `；exec sess_ 前缀空壳 ${fmtCount(f.exec && f.exec.sessPrefixed)} 目录`);
+  // 文件面行 = 删除集口径（filePlan，与执行 counts 同构——A-4「各面计数一致
+  // （差异为 0）」的对账面）：artifacts ∈删除集 N 目录；exec ∈删除集 N +
+  // 超龄空壳 M；log 超龄 K 文件（含字节）
+  const fp = report.filePlan || {};
+  const logBytes = (fp.logFiles || []).reduce((s, x) => s + (x.bytes || 0), 0);
+  lines.push(`  artifacts ∈删除集 ${fmtCount((fp.artifacts || []).length)} 目录`
+    + `；exec ∈删除集 ${fmtCount((fp.execInSet || []).length)} + 超龄空壳 ${fmtCount((fp.execStaleEmpty || []).length)} 目录`
+    + `；log 超龄 ${fmtCount((fp.logFiles || []).length)} 文件（~${fmtBytes(logBytes)}）`);
 
   lines.push(`预估回收 ~${fmtBytes(report.estimate && report.estimate.estimatedBytes)}`
     + `（${report.estimate && report.estimate.note} = 删除集占比 × 库体积；log 面随执行日增长；库内空间需 VACUUM 后生效）`);

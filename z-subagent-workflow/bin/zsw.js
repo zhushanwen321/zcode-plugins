@@ -639,15 +639,25 @@ function runHookCommand(rest) {
  * --older-than 值解析（D5 档位形态）：接受 `30` / `30d`（天）。u5 起语义闭环：
  * 非 --stale 时只作用于 subagent_child 按龄（D1①）；--stale 时三类识别统一按龄
  * （语义权威源 lib/clean-identify.js buildDeleteSet 头注；文件面档位不跟随——
- * log 保留 14 天 / exec 空壳 7 天保持各自默认）。非法值 warn + 忽略（回落缺省
- * 7 天，容错不失败）。
+ * log 保留 14 天 / exec 空壳 7 天保持各自默认）。
+ *
+ * 非法值 fail-fast（MF-2，2026-09-06 修复循环）：--older-than 只被 doctor clean
+ * 两路径消费（--dry-run 预览 + 执行），都是删除集语义——删除档位解析失败继续跑
+ * 会把用户意图的保守档（如 30 天）静默降级为缺省 7 天，越小的档删除集越大，
+ * 故 coded 错误拒收（CLI 面输出 stderr 可操作指引 + exit 1），不做容错回落。
+ * 裸 `doctor` 体检不消费 --older-than（无删除语义，传了也被忽略，不做校验）。
  */
 function parseOlderThanDays(v) {
   if (v === undefined || v === true) return undefined;
   const m = /^(\d+)d?$/i.exec(String(v).trim());
   if (!m) {
-    process.stderr.write(`[zsw] --older-than 值非法：${v}（需天数，如 30 或 30d）。已忽略，回落缺省 7 天。\n`);
-    return undefined;
+    const err = new Error(
+      `--older-than 值非法：${v}（需天数，合法形态如 30 或 30d）。`
+      + '删除档位解析失败不回落缺省（防保守档被静默降级为 7 天、删除集被动扩大）。'
+      + '👉 用合法形态重跑，如 node bin/zsw.js doctor clean --dry-run --older-than 30。',
+    );
+    err.code = 'INVALID_OLDER_THAN';
+    throw err;
   }
   return Number(m[1]);
 }
@@ -669,12 +679,24 @@ function runDoctorCommand(rest) {
   const { collect, renderText, renderJson } = require('../lib/doctor');
   if (rest[0] === 'clean') {
     const args = parseArgs(rest.slice(1));
+    // MF-2：删除档位非法值 fail-fast（--dry-run 预览与执行同语义）——exit 1 +
+    // stderr 可操作文案，在触碰任何库/文件面之前失败
+    let olderThanDays;
+    try {
+      olderThanDays = parseOlderThanDays(args.olderThan);
+    } catch (e) {
+      if (e && e.code === 'INVALID_OLDER_THAN') {
+        process.stderr.write(`[zsw] ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
     if (args.dryRun) {
       const { collectDryRun, renderDryRun } = require('../lib/doctor');
       let report;
       try {
         report = collectDryRun({
-          olderThanDays: parseOlderThanDays(args.olderThan),
+          olderThanDays,
           staleMode: args.stale === true, // --stale 周期维护档（语义权威源 clean-identify）
         });
       } catch (e) {
@@ -713,7 +735,7 @@ function runDoctorCommand(rest) {
       outcome = runClean({
         fsOnly: args.fsOnly === true,
         staleMode: args.stale === true, // --stale 周期维护档（边界见 clean-exec 头注）
-        olderThanDays: parseOlderThanDays(args.olderThan),
+        olderThanDays,
       });
     } catch (e) {
       if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
@@ -932,6 +954,8 @@ async function main() {
 module.exports = {
   parseArgs,
   csv,
+  // MF-2：删除档位解析（非法值 coded 错误拒收，不回落缺省）——单测钉住拒绝语义
+  parseOlderThanDays,
   // MF-1：W8 创作闭环（D-6）+ workflow 引用契约（D-4/D-E3）实现已收口
   // lib/workflow-actions.js，此处 re-export 维持既有消费面（测试与旧引用）不变
   validateWorkflowRef,

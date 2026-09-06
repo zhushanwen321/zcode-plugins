@@ -118,13 +118,15 @@ function createRecords() {
   return p;
 }
 
-/** 伪索引库（tasks.task_id = 引擎 session id；姊妹表最小列集）。 */
+/** 伪索引库（tasks.task_id = 引擎 session id；姊妹表最小列集。tasks 带
+ *  off_peak_task_id 列——真实库 pragma 实证（u2），体检冲突预检
+ *  checkIndexConflicts 的 SELECT 需要该列）。 */
 function createIndexDb(dbPath) {
   const db = new DatabaseSync(dbPath);
-  db.exec('CREATE TABLE tasks (task_id TEXT, archived INTEGER)');
+  db.exec('CREATE TABLE tasks (task_id TEXT, archived INTEGER, off_peak_task_id TEXT)');
   db.exec('CREATE TABLE task_group_members (group_id TEXT, task_id TEXT)');
   db.exec('CREATE TABLE automations (automation_id TEXT, target_task_id TEXT)');
-  db.exec('CREATE TABLE off_peak_tasks (session_id TEXT)');
+  db.exec('CREATE TABLE off_peak_tasks (off_peak_task_id TEXT, session_id TEXT)');
   // s1..s4 ∈ 删除集粗口径 + s6 不在引擎库 → 总 5 命中 4
   const t = db.prepare('INSERT INTO tasks (task_id, archived) VALUES (?, 1)');
   for (const id of ['s1', 's2', 's3', 's4', 's6']) t.run(id);
@@ -222,6 +224,14 @@ test('五面计数：fixture 上白名单双口径 / 特征类 / subagent_child 
   assert.equal(r.index.tasksTotal, 5);
   assert.equal(r.index.tasksHit, 4, '命中按 task_id ∈ 删除集粗口径（s1..s4；s6 不在删除集）');
   assert.deepEqual(r.index.sisterTables, { taskGroupMembers: 2, automationsWithTarget: 2, offPeakTasks: 1 });
+  // 姊妹表冲突命中（MF-2：体检复用 checkIndexConflicts 对删除集粗口径的只读预检）：
+  // members g1→s2 命中（g1→s9 集外）；automations a1→s2 命中（a3→s8 集外）；
+  // off_peak_tasks.session_id s3 命中（tasks.off_peak_task_id 全 null 无反向命中）
+  assert.deepEqual(
+    r.index.conflictHits,
+    { available: true, members: 1, automations: 1, offPeak: 1 },
+    '冲突命中口径 = 删除集粗口径（体检可判定的最完整口径）',
+  );
 
   // 面③④⑤ 文件面
   assert.deepEqual(
@@ -258,6 +268,11 @@ test('renderText：人读样张关键行（白名单双口径 / 预估回收标�
   assert.match(text, /subagent_child 2 个（其中 >7 天 1）/);
   assert.match(text, /粗估，真实以执行后 du 为准/, '预估回收必须标注估算性质（计划偏差 3）');
   assert.match(text, /tasks 总数 5 \/ 粗口径命中 4 行/);
+  assert.match(
+    text,
+    /姊妹表冲突：members 1 \/ automations 1 \/ off_peak 1（表规模：members 2 \/ automations 2（target 非空） \/ off_peak 1）/,
+    '姊妹表行 = 冲突命中在前（A-6 样张口径）+ 表规模括注（观测口径）',
+  );
   assert.match(text, /artifacts\/\s+2 个会话目录/);
   assert.match(text, /超 14 天日志 1 个/);
   assert.match(text, /sess_ 前缀目录 2 个/);
@@ -335,4 +350,12 @@ test('缺目录：exec 目录不存在 → 该面 n/a，其余面照常', () => 
   assert.equal(r.files.exec.available, false);
   assert.equal(r.files.log.available, false, 'log 同目录缺失口径');
   assert.equal(r.engine.sessionTotal, 5);
+});
+
+test('MF-3 同源绑定：SUBAGENT_MAX_AGE_MS 派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS', () => {
+  const { SUBAGENT_MAX_AGE_MS } = require('../lib/doctor');
+  const { DEFAULT_OLDER_THAN_DAYS } = require('../lib/clean-identify');
+  assert.equal(SUBAGENT_MAX_AGE_MS, DEFAULT_OLDER_THAN_DAYS * DAY,
+    '体检 olderThan7d 观测口径与删除档位缺省值同源绑定（单一权威源）');
+  assert.equal(SUBAGENT_MAX_AGE_MS, 7 * DAY, 'D1① 缺省 7 天语义不变');
 });

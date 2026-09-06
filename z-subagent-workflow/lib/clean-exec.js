@@ -299,13 +299,16 @@ function evalDiskStage(stage, { free, dbBytesTotal, backupBytes }) {
 /**
  * SQLITE_TMPDIR 钉死与库同卷（D4）：mkdtemp 于 <maintenanceDir>/tmp-<ts>-
  * （与 ~/.zcode 结构性同卷），statSync dev 双重断言；设置进程 env 供 SQLite
- * 临时文件（VACUUM/大事务 spill）落同卷。返回 previous 供调用方 finally 还原。
+ * 临时文件（VACUUM/大事务 spill）落同卷。返回 previous 供调用方 finally 还原
+ * （sameVolume=false 时 env 未被触碰，previous 透传现值，teardown 安全）。
+ * @param {object} p maintenanceDir / engineDbPath / devFn（同卷判定的 dev 采集
+ *   注入，仅测试用——缺省真 devOfPath）
  */
-function setupSqliteTmpdir({ maintenanceDir, engineDbPath }) {
+function setupSqliteTmpdir({ maintenanceDir, engineDbPath, devFn = devOfPath }) {
   fs.mkdirSync(maintenanceDir, { recursive: true });
   const dir = fs.mkdtempSync(path.join(maintenanceDir, `tmp-${timestamp()}-`));
-  const dbDev = devOfPath(path.dirname(engineDbPath));
-  const tmpDev = devOfPath(dir);
+  const dbDev = devFn(path.dirname(engineDbPath));
+  const tmpDev = devFn(dir);
   const sameVolume = dbDev === tmpDev;
   const previous = process.env.SQLITE_TMPDIR;
   if (sameVolume) process.env.SQLITE_TMPDIR = dir;
@@ -574,13 +577,18 @@ function renderDiskRefusal(stage, { free, needed, dbBytesTotal, backupBytes, mid
   return `${lines.join('\n')}\n`;
 }
 
-/** SQLITE_TMPDIR 同卷失败（D4 临时卷纪律）。 */
-function renderTmpdirRefusal(tmp) {
+/**
+ * SQLITE_TMPDIR 同卷失败（D4 临时卷纪律）。文案指向 maintenance 目录（MF-1：
+ * 该拒绝发生在备份之前——旧指引「手工把备份目录与库迁至同卷」引用了尚不存在
+ * 的对象，误导）。
+ */
+function renderTmpdirRefusal(tmp, maintenanceDir) {
   return [
     '✗ 前置校验失败：SQLITE_TMPDIR 无法钉到与库同卷'
       + `（库卷 dev=${tmp.dbDev} / 临时目录 dev=${tmp.tmpDev}）。`,
     `  SQLite 临时文件落盘卷由 SQLITE_TMPDIR 决定，分卷环境下校验的卷和断粮的卷可能不是同一个（D4）。`,
-    `  👉 检查 ${tmp.dir} 是否被独立挂载，或手工把备份目录与库迁至同卷后重跑。`,
+    `  👉 检查 ${maintenanceDir}（本命令的 SQLITE_TMPDIR 临时目录所在，本次尚未产生备份）是否被独立挂载，`,
+    '  否则把 maintenance 目录（或整个 ~/.zcode/zsw）迁至与库同卷后重跑。',
   ].join('\n') + '\n';
 }
 
@@ -669,8 +677,9 @@ function renderCleanReport(report) {
   lines.push(`  ${vacuumLine}`);
 
   const idx = report.index;
-  lines.push(`✓ GUI 索引：删除 tasks ${fmtCount(idx.tasksDeleted)} 行；`
-    + `input_history 随删 ${fmtCount(e.inputHistoryDeleted)} 行（索引库不做 VACUUM——设计未要求）`);
+  // MF-6：input_history 是引擎库表（计数在上方「✓ 引擎库」行内），不挂 GUI 索引行
+  lines.push(`✓ GUI 索引：删除 tasks ${fmtCount(idx.tasksDeleted)} 行`
+    + '（索引库不做 VACUUM——设计未要求）');
 
   const fr = report.files.result;
   lines.push(`✓ 文件面：artifacts ${fmtCount(fr.artifacts.deletedCount)} 目录、`
@@ -704,6 +713,7 @@ function resolvePaths(options) {
  * @param {object} options 路径注入（resolvePaths）+ fsOnly / staleMode（--stale
  *   周期维护档，边界见文件头注）/ olderThanDays / now
  *   / psText（停机校验注入）/ freeBytesFn(volumePath, stage)（磁盘校验注入）/
+ *   devFn(p)（SQLITE_TMPDIR 同卷判定的 dev 采集注入，仅测试）/
  *   afterBatch（分块观测钩子）/ chunkSize
  * @returns {{text, json, exitCode}}
  */
@@ -804,10 +814,13 @@ function runClean(options = {}) {
     return finish(renderCleanReport(report), result.totalFailureCount > 0 ? 1 : 0);
   }
 
-  // 引擎库必须存在（缺失时禁静默空删——删除连接会凭空建库）
+  // 引擎库必须存在（禁静默空删——删除连接会凭空建库）。防御性冗余（MF-3，与
+  // 前置拦截同语义 fail-closed）：正常路径识别管线（缺库 DB_OPEN_FAILED 先抛）
+  // 与停机校验④（缺失=失败，禁静默跳过）已先行拦截，不应到达此处；保留只为
+  // 守住下方删除连接 new DatabaseSync 对缺文件凭空建空库的空洞形态。
   if (!fs.existsSync(paths.engineDbPath)) {
     return refuse([
-      `✗ 前置校验失败：引擎库不存在：${paths.engineDbPath}`,
+      `✗ 防御拦截：引擎库不存在：${paths.engineDbPath}（防御性冗余——识别管线与停机校验④已先行拦截，正常路径不应到达此处）。`,
       '  👉 先跑 node bin/zsw.js doctor 确认各面状态；库缺失时 clean 无事可做（禁静默空删）。',
     ].join('\n') + '\n');
   }
@@ -820,19 +833,28 @@ function runClean(options = {}) {
   diskStages.push({ stage: 'pre-backup', ok: st1.ok, free: free0, needed: st1.needed, backupBytes: 0 });
   if (!st1.ok) return refuse(renderDiskRefusal('pre-backup', { free: free0, needed: st1.needed, dbBytesTotal }));
 
-  // 7. SQLITE_TMPDIR 同卷钉死（8-15 全程包 try/finally：拒绝/失败/成功路径都还原 env + 清临时目录）
-  tmp = setupSqliteTmpdir({ maintenanceDir: paths.maintenanceDir, engineDbPath: paths.engineDbPath });
+  // 7. SQLITE_TMPDIR 同卷钉死（8-15 全程包 try/finally：拒绝/失败/成功路径都还原
+  //    env + 清临时目录）。同卷失败拒绝路径同样先 teardown 再 return（MF-1：
+  //    env 未被设置时 teardown 仅删目录，安全）——否则 tmp-<ts> 空目录无人清理，
+  //    反复触发即累积残留。
+  tmp = setupSqliteTmpdir({
+    maintenanceDir: paths.maintenanceDir,
+    engineDbPath: paths.engineDbPath,
+    devFn: options.devFn, // undefined 时取真 devOfPath（仅测试注入）
+  });
   report.disk.sqliteTmpdir = { dir: tmp.dir, sameVolume: tmp.sameVolume };
-  if (tmp.sameVolume) {
-    try {
-      const outcome = runDbFlow({ options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages });
-      return outcome;
-    } finally {
-      teardownSqliteTmpdir(tmp);
-      report.disk.sqliteTmpdir.cleaned = true;
-    }
+  if (!tmp.sameVolume) {
+    teardownSqliteTmpdir(tmp);
+    report.disk.sqliteTmpdir.cleaned = true;
+    return refuse(renderTmpdirRefusal(tmp, paths.maintenanceDir));
   }
-  return refuse(renderTmpdirRefusal(tmp));
+  try {
+    const outcome = runDbFlow({ options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages });
+    return outcome;
+  } finally {
+    teardownSqliteTmpdir(tmp);
+    report.disk.sqliteTmpdir.cleaned = true;
+  }
 }
 
 /**
@@ -902,16 +924,22 @@ function runDbFlow(ctx) {
     }));
   }
 
-  // 13. 索引库联动（tasks + members 同事务；索引库缺文件 → 跳过并注记）
-  if (fs.existsSync(paths.indexDbPath)) {
-    const idb = new DatabaseSync(paths.indexDbPath);
-    try {
-      report.index = deleteIndexTasks({ db: idb, ids: finalIndexIds });
-    } finally {
-      try { idb.close(); } catch { /* 尽力 */ }
-    }
-  } else {
-    report.index = { tasksDeleted: 0, membersDeleted: 0, note: `索引库不存在，跳过：${paths.indexDbPath}` };
+  // 13. 索引库联动（tasks + members 同事务）。防御性冗余（MF-3，与④同语义
+  // fail-closed）：正常路径停机校验④已把库缺失判为失败（禁静默跳过——旧
+  // 「跳过并注记」与④自相矛盾，已废）；此处仅为守住索引连接对缺文件凭空建
+  // 空库的空洞形态。到此处引擎库删除可能已提交，拒绝文案指向备份安全网。
+  if (!fs.existsSync(paths.indexDbPath)) {
+    return refuse([
+      `✗ 防御拦截：索引库不存在：${paths.indexDbPath}（防御性冗余——停机校验④已先行拦截，正常路径不应到达此处）。`,
+      `  当前状态：引擎库删除已提交、索引库未动；备份安全网在：${report.backup ? report.backup.dir : '(未知)'}。`,
+      '  👉 按还原指引整库回滚，或确认索引库路径后重跑（重跑只处理剩余部分，幂等）。',
+    ].join('\n') + '\n');
+  }
+  const idb = new DatabaseSync(paths.indexDbPath);
+  try {
+    report.index = deleteIndexTasks({ db: idb, ids: finalIndexIds });
+  } finally {
+    try { idb.close(); } catch { /* 尽力 */ }
   }
 
   // 14. 文件面 plan + execute

@@ -224,7 +224,9 @@ function buildMainFixture() {
     JSON.stringify({ sessionId: 'w1' }),
     JSON.stringify({ exec: { sessionId: 'w6' }, targetSessionId: 'w5' }),
   ]);
-  // 文件面目录树（dry-run 渲染的量级行）
+  // 文件面目录树（dry-run 渲染的量级行）：
+  //   artifacts/w5 与 exec/sess_stale_old 是 MF-1 用例的删除集外项——
+  //   w5 ∉ 删除集（目录在而会话不删）、sess_stale_old ∉ 集但超龄空壳（入将删清单）
   const artifactsDir = path.join(dir, 'artifacts');
   const logDir = path.join(dir, 'log');
   const execDir = path.join(dir, 'exec');
@@ -232,10 +234,16 @@ function buildMainFixture() {
   fs.mkdirSync(path.join(artifactsDir, 'w2'), { recursive: true });
   fs.writeFileSync(path.join(artifactsDir, 'w1', 'a.txt'), 'x');
   fs.writeFileSync(path.join(artifactsDir, 'w2', 'b.txt'), 'x');
+  fs.mkdirSync(path.join(artifactsDir, 'w5'), { recursive: true });
+  fs.writeFileSync(path.join(artifactsDir, 'w5', 'c.txt'), 'x');
   fs.mkdirSync(logDir, { recursive: true });
   fs.writeFileSync(path.join(logDir, 'new.log'), 'x');
   fs.mkdirSync(path.join(execDir, 'sess_w1'), { recursive: true });
   fs.mkdirSync(path.join(execDir, 'bash-startup'), { recursive: true });
+  const staleShell = path.join(execDir, 'sess_stale_old');
+  fs.mkdirSync(staleShell, { recursive: true });
+  const old = new Date(NOW - 30 * DAY);
+  fs.utimesSync(staleShell, old, old);
   return { engineDbPath, indexDbPath: path.join(dir, 'tasks-index.sqlite'), records, artifactsDir, logDir, execDir };
 }
 
@@ -267,7 +275,12 @@ function buildConflictFixture() {
     JSON.stringify({ sessionId: 'c1' }),
     JSON.stringify({ sessionId: 'c5' }),
   ]);
-  return { engineDbPath, indexDbPath, records };
+  // 文件面空目录（同 buildStaleFixture：dry-run 文件面 plan 钉到 fixture）
+  const artifactsDir = path.join(dir, 'artifacts');
+  const logDir = path.join(dir, 'log');
+  const execDir = path.join(dir, 'exec');
+  for (const d of [artifactsDir, logDir, execDir]) fs.mkdirSync(d, { recursive: true });
+  return { engineDbPath, indexDbPath, records, artifactsDir, logDir, execDir };
 }
 
 function identifyOptions(fx, extra = {}) {
@@ -338,7 +351,12 @@ function buildStaleFixture() {
     JSON.stringify({ sessionId: 'sw3' }),
     JSON.stringify({ sessionId: 'sx' }),
   ]);
-  return { engineDbPath, indexDbPath: path.join(dir, 'tasks-index.sqlite'), records };
+  // 文件面空目录（collectDryRun 会做只读文件面 plan——钉到 fixture，不扫真实 ~/.zcode）
+  const artifactsDir = path.join(dir, 'artifacts');
+  const logDir = path.join(dir, 'log');
+  const execDir = path.join(dir, 'exec');
+  for (const d of [artifactsDir, logDir, execDir]) fs.mkdirSync(d, { recursive: true });
+  return { engineDbPath, indexDbPath: path.join(dir, 'tasks-index.sqlite'), records, artifactsDir, logDir, execDir };
 }
 
 test('--stale 档位：三类统一按龄——只删超龄，新会话与 null 行保留；staleMode 字段透出', () => {
@@ -547,6 +565,12 @@ test('collectDryRun + renderDryRun：样张关键行齐备 + exitCode 0（哨兵
   assert.equal(report.estimate.deleteSetSize, 4);
   assert.deepEqual(report.conflicts.conflictedSessionIds, []);
   assert.deepEqual(report.deleteSet.removedByConflict, []);
+  // 文件面删除集口径（MF-1）：filePlan 与执行 counts 同源同构
+  assert.deepEqual(report.filePlan.artifacts.map((a) => a.name), ['w1', 'w2'], 'w5 ∉ 删除集不入将删清单');
+  assert.deepEqual(report.filePlan.execInSet, [],
+    '本 fixture 会话 id 非 sess_ 形态：目录名须精确等于会话 id 才入集内通道（真实 id 恒为 sess_*，该通道由 clean-fs/clean-exec 的 sess_ 形态 fixture 覆盖）');
+  assert.deepEqual(report.filePlan.execStaleEmpty.map((a) => a.name), ['sess_stale_old'], '超龄空壳通道照常');
+  assert.deepEqual(report.filePlan.logFiles, []);
   const { text, exitCode } = renderDryRun(report);
   assert.equal(exitCode, 0);
   assert.match(text, /将删除（不写库）：/);
@@ -559,9 +583,25 @@ test('collectDryRun + renderDryRun：样张关键行齐备 + exitCode 0（哨兵
   assert.match(text, /红灯触发/, '主 fixture triggered：临时类占比 66.7% + 特征表外 1 处');
   assert.match(text, /GUI 索引 tasks 4 行/);
   assert.match(text, /当前无姊妹表冲突；冲突机制保留为安全网/);
-  assert.match(text, /artifacts 2 目录/);
+  assert.match(text, /artifacts ∈删除集 2 目录/, '文件面行 = 删除集口径（A-4 对账面）');
+  assert.match(text, /exec ∈删除集 0 \+ 超龄空壳 1 目录/);
+  assert.match(text, /log 超龄 0 文件/);
   assert.match(text, /预估回收 ~/);
   assert.match(text, /👉 确认执行：退出 ZCode 后跑 zsw doctor clean/);
+});
+
+test('dry-run 文件面 = 删除集口径：删除集外目录不计入渲染行与 filePlan（A-4 口径同源）', () => {
+  const fx = buildMainFixture();
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'w5')), true, '前置：删除集外目录真实在 artifacts/ 下');
+  const report = collectDryRun(identifyOptions(fx));
+  // filePlan（将删清单）排除删除集外目录 w5
+  assert.equal(report.filePlan.artifacts.some((a) => a.name === 'w5'), false);
+  assert.equal(report.filePlan.artifacts.length, 2);
+  // 渲染行口径与执行报告 counts 同构：artifacts ∈删除集 N / exec ∈删除集 N + 超龄空壳 M / log 超龄 K
+  const { text } = renderDryRun(report);
+  assert.match(text, /artifacts ∈删除集 2 目录/);
+  assert.equal(/artifacts ∈删除集 3 目录/.test(text), false, '删除集外目录不得计入 dry-run 文件面行');
+  assert.equal(/sess_ 前缀空壳/.test(text), false, '旧全量口径文案不再出现（防双口径混淆）');
 });
 
 test('renderDryRun：冲突剔除形态——GUI 索引行列出被剔除项并保留安全网说明', () => {
@@ -610,5 +650,9 @@ test('dry-run --json 通道：collectDryRun 报告 JSON 序列化往返可解析
   assert.equal(parsed.conflicts.available, true);
   assert.equal(parsed.olderThanDays, 7);
   assert.ok(parsed.estimate.estimatedBytes >= 0);
-  assert.ok(parsed.files.artifacts.available);
+  assert.deepEqual(parsed.filePlan.artifacts.map((a) => a.name), ['w1', 'w2'], 'filePlan 随 --json 通道透出');
+  assert.equal(parsed.filePlan.execInSet.length, 0);
+  assert.equal(parsed.filePlan.execStaleEmpty.length, 1);
+  assert.deepEqual(parsed.filePlan.logFiles, []);
+  assert.equal(typeof parsed.filePlan.totalReclaimableBytes, 'number');
 });

@@ -48,6 +48,8 @@ const {
   DEFAULT_CHUNK_SIZE,
 } = require('../lib/clean-exec');
 const { collectDryRun } = require('../lib/doctor');
+// MF-2：CLI 面删除档位解析（bin 模块加载零副作用——require.main 守卫，cli.test.js 同款复用）
+const { parseOlderThanDays } = require('../bin/zsw');
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;
@@ -469,6 +471,25 @@ test('setupSqliteTmpdir：env 钉死 + 同卷判定 + teardown 还原 env 并删
   assert.equal(process.env.SQLITE_TMPDIR, undefined);
 });
 
+test('MF-1：同卷失败拒绝路径——tmp-<ts> 目录已清、env 未污染、无备份产生（修复前该路径泄漏空目录）', () => {
+  const fx = buildMainFixture();
+  const dbDir = path.dirname(fx.engineDbPath);
+  const outcome = runClean(cleanOptions(fx, {
+    devFn: (p) => (p === dbDir ? 111 : 222), // 假异卷：库卷 111 / maintenance 侧 222
+  }));
+  assert.equal(outcome.exitCode, 1);
+  assert.equal(outcome.json.disk.sqliteTmpdir.sameVolume, false);
+  assert.equal(outcome.json.disk.sqliteTmpdir.cleaned, true, '拒绝路径同样清理临时目录');
+  assert.equal(fs.existsSync(outcome.json.disk.sqliteTmpdir.dir), false, '临时目录不留残留');
+  assert.deepEqual(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('tmp-')), [],
+    'maintenance 下无 tmp- 空目录累积');
+  assert.equal(process.env.SQLITE_TMPDIR, undefined, 'sameVolume=false 分支不污染 env');
+  assert.match(outcome.text, /✗ 前置校验失败：SQLITE_TMPDIR 无法钉到与库同卷/);
+  assert.match(outcome.text, /maintenance 目录/,
+    '指引迁 maintenance 目录（此时备份尚未产生，不再误导「迁备份目录」）');
+  assert.equal(outcome.json.backup, null, '拒绝发生在备份之前');
+});
+
 test('backupDatabases：存在才拷（三件套形态），字节与源逐 Buffer 相等', () => {
   const dir = nextDir('bk');
   const dbPath = path.join(dir, 'db.sqlite');
@@ -588,7 +609,8 @@ test('全流程：删除计数 / 13 表 FK 列级联 / 备份等值 + keep-1 / V
   assert.match(outcome.text, new RegExp(`✓ 快照备份：${r.backup.dir}/ 内双库三件套`));
   assert.match(outcome.text, /✓ 引擎库：分块删除（1 批 × ≤200 会话，/);
   assert.match(outcome.text, /VACUUM 完成（/);
-  assert.match(outcome.text, /✓ GUI 索引：删除 tasks 5 行；input_history 随删 1 行/);
+  assert.match(outcome.text, /✓ GUI 索引：删除 tasks 5 行（索引库不做 VACUUM——设计未要求）/);
+  assert.match(outcome.text, /input_history 随删 1 行/, 'input_history 计数保留在「✓ 引擎库」行（MF-6：不挂 GUI 索引行）');
   assert.match(outcome.text, /✓ 文件面：artifacts 2 目录、log 按龄 1 文件、exec sess_ 2 目录/);
   assert.match(outcome.text, /如有异常，还原：①退出 ZCode；②删除原位 db\.sqlite\/-wal\/-shm 与/);
   assert.match(outcome.text, /zsw doctor clean --purge-backup 释放备份空间。/);
@@ -635,10 +657,11 @@ test('A-4 fixture 版：dry-run 与执行报告逐面计数一致（全覆盖文
   assert.equal(counts.subagentChildStale, dry.deleteSet.byClass.subagentChildStale.length);
   assert.equal(counts.indexTaskIds, dry.deleteSet.indexTaskIds.length);
   assert.equal(counts.inputHistoryHits, dry.inputHistoryHits, 'input_history 命中 = 实删');
-  // 文件面三口径（dry-run 全量扫描 == 执行清单：全覆盖形态）
-  assert.equal(dry.files.artifacts.dirCount, counts.artifacts);
-  assert.equal(dry.files.exec.sessPrefixed, counts.execInSet + counts.execStaleEmpty);
-  assert.equal(dry.files.log.olderThan14d, counts.logFiles);
+  // 文件面三面（dry-run filePlan 删除集口径 == 执行清单：同一 planFileCleanup 清单源，全覆盖形态）
+  assert.equal(dry.filePlan.artifacts.length, counts.artifacts);
+  assert.equal(dry.filePlan.execInSet.length + dry.filePlan.execStaleEmpty.length,
+    counts.execInSet + counts.execStaleEmpty);
+  assert.equal(dry.filePlan.logFiles.length, counts.logFiles);
   // 实删与计划一致（无失败项）
   const res = outcome.json.files.result;
   assert.equal(res.totalFailureCount, 0);
@@ -803,6 +826,12 @@ test('冲突剔除：automations 命中会话双侧收缩；删除后该 tasks �
     .run('a-conflict', '* * * * *', 'p', 'wk', 'wl1', NOW, NOW);
   idb.close();
 
+  // MF-5：A-4 冲突形态对账基准——同刻 dry-run（只读，先于执行）
+  const dry = collectDryRun({
+    now: NOW, engineDbPath: fx.engineDbPath, indexDbPath: fx.indexDbPath, recordsPath: fx.records,
+    artifactsDir: fx.artifactsDir, logDir: fx.logDir, execDir: fx.execDir,
+  });
+
   const outcome = runClean(cleanOptions(fx));
   assert.equal(outcome.exitCode, 0, outcome.text);
   const r = outcome.json;
@@ -817,6 +846,19 @@ test('冲突剔除：automations 命中会话双侧收缩；删除后该 tasks �
   assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'wl1')), true, '文件面同步保留');
   // 报告行：冲突剔除明细（automations 单源命中）
   assert.match(outcome.text, /✓ 索引冲突预检：命中 1 条 → 冲突会话 1 个已从双库删除集整体剔除（wl1\[automations\]）/);
+  // MF-5：A-4 冲突形态对账——dry-run 与执行 counts 双侧一致（含冲突剔除）
+  const counts = r.counts;
+  assert.deepEqual(dry.deleteSet.engineSessionIds, r.deleteSet.engineSessionIds, '引擎删除集双侧一致（wl1 已剔除）');
+  assert.deepEqual(dry.deleteSet.indexTaskIds, r.deleteSet.indexTaskIds, '索引删除集双侧一致（含冲突剔除）');
+  assert.deepEqual(r.identify.conflicts.removed, dry.deleteSet.removedByConflict, '冲突剔除明细双侧一致');
+  assert.equal(counts.engineSessionIds, dry.deleteSet.engineSessionIds.length);
+  assert.equal(counts.indexTaskIds, dry.deleteSet.indexTaskIds.length);
+  assert.equal(counts.whitelist, dry.deleteSet.byClass.whitelist.length, 'byClass 双侧一致（白名单剔除 wl1 后收缩）');
+  assert.equal(counts.feature, dry.deleteSet.byClass.feature.length);
+  assert.equal(counts.subagentChildStale, dry.deleteSet.byClass.subagentChildStale.length);
+  assert.equal(counts.inputHistoryHits, dry.inputHistoryHits, 'input_history 命中按剔除后最终集口径双侧一致');
+  assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM input_history').at(0).n, 3,
+    '冲突会话 wl1 的 i1 随其保留，input_history 三行全在');
 });
 
 // ---------------------------------------------------- --fs-only 档
@@ -845,9 +887,38 @@ test('--fs-only：库操作跳过、文件面执行、无备份', () => {
   assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 8, '引擎库零改动');
   assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 6, '索引库零改动');
   assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'wl1')), false, '文件面照常执行');
-  assert.equal(fs.existsSync(path.join(fx.execDir, 'wl1')), false);
+  // MF-4：断言真实 exec 清单（此前断言 exec/wl1——fixture 从未创建该目录，恒真无验证力）
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'sess_wl2')), false, '集内 exec 目录已删');
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'sess_old_empty')), false, '超龄空壳通道');
+  assert.equal(fs.existsSync(path.join(fx.execDir, 'bash-startup')), true, '引擎自有目录不动');
   assert.match(outcome.text, /✓ 文件面（--fs-only，库操作已跳过、未做备份）/);
   assert.equal(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-') && n !== 'backup-old').length, 0);
+});
+
+// ---------------------------------------------------- --older-than 删除档位 fail-fast（MF-2）
+
+test('parseOlderThanDays：合法形态 30/30d；非法值 coded 错误拒收，不回落缺省 7 天', () => {
+  assert.equal(parseOlderThanDays(undefined), undefined, '未传 = 缺省档');
+  assert.equal(parseOlderThanDays(true), undefined, '--older-than 裸 flag（parseArgs 无值形态）= 缺省档');
+  assert.equal(parseOlderThanDays('30'), 30);
+  assert.equal(parseOlderThanDays('30d'), 30);
+  assert.equal(parseOlderThanDays(' 7D '), 7);
+  assert.throws(() => parseOlderThanDays('30x'), (e) => {
+    assert.equal(e.code, 'INVALID_OLDER_THAN');
+    assert.match(e.message, /--older-than 值非法：30x/);
+    assert.match(e.message, /30 或 30d/, '文案含合法形态示例');
+    assert.match(e.message, /不回落/, '声明拒绝回落语义');
+    return true;
+  }, '删除类操作的参数解析失败必须 fail-fast——静默降级会把保守档变成更大的删除集');
+});
+
+test('MF-2 CLI 面：doctor clean --older-than 30x → exit 1 + stderr 可操作指引（解析失败先于任何库访问）', () => {
+  const { spawnSync } = require('node:child_process');
+  const cli = path.join(__dirname, '..', 'bin', 'zsw.js');
+  const r = spawnSync(process.execPath, [cli, 'doctor', 'clean', '--dry-run', '--older-than', '30x'], { encoding: 'utf8' });
+  assert.equal(r.status, 1, `exit code 应为 1：stderr=${r.stderr}`);
+  assert.match(r.stderr, /\[zsw\] --older-than 值非法：30x/);
+  assert.match(r.stderr, /30 或 30d/);
 });
 
 // ---------------------------------------------------- --stale 周期维护档（u5）
