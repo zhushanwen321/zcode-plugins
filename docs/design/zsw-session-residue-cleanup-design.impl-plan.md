@@ -114,6 +114,8 @@ graph TD
 
 ## 6 状态表
 
+> 阶段 3/4 已清零（2026-09-06）：双区一致性审查（识别域 3 unreasonable / 执行域 5 unreasonable / 1 doc_error）当轮全修（commit 83394dd）+ 文档同步（5aa2ef5）+ 定向复审 pass（10/10 项、全量 412/412、零回归、3 条 INFO 不构成缺口）。
+
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|
 | u1 | committed | 1 | 增量 19/19 绿 + 全量 348/348 绿 + 真机 doctor 冒烟核数一致（∩库 49/总数 145/特征 47/subagent_child 6,434/tasks 33）；5 偏差全合理（tasks 匹配列实证为 task_id 非 session_id，已独立 pragma 核实）；commit 见 git log `feat(zsw): u1` |
