@@ -44,10 +44,18 @@ const {
   pruneOldBackups,
   purgeLatestBackup,
   runClean,
+  deleteEngineSessionsChunked,
+  cleanLockPath,
+  pidAlive,
+  readCleanLockInfo,
+  acquireCleanLock,
+  releaseCleanLock,
   CASCADE_SESSION_TABLES,
   DEFAULT_CHUNK_SIZE,
 } = require('../lib/clean-exec');
-const { collectDryRun } = require('../lib/doctor');
+const { collectDryRun, renderDryRun } = require('../lib/doctor');
+// T3：索引库缺失降级链 / coded 拒绝的两个识别管线入口（collectDryRun 的上游同源）
+const { buildDeleteSet, checkIndexConflicts } = require('../lib/clean-identify');
 // MF-2：CLI 面删除档位解析（bin 模块加载零副作用——require.main 守卫，cli.test.js 同款复用）
 const { parseOlderThanDays } = require('../bin/zsw');
 
@@ -492,17 +500,38 @@ test('MF-1：同卷失败拒绝路径——tmp-<ts> 目录已清、env 未污染
   assert.equal(outcome.json.backup, null, '拒绝发生在备份之前');
 });
 
-test('backupDatabases：存在才拷（三件套形态），字节与源逐 Buffer 相等', () => {
+test('backupDatabases：真 SQLite 库三件套形态（活跃 WAL 连接），字节与源逐 Buffer 相等', () => {
   const dir = nextDir('bk');
   const dbPath = path.join(dir, 'db.sqlite');
-  fs.writeFileSync(dbPath, 'MAIN-BYTES');
-  fs.writeFileSync(dbPath + '-wal', 'WAL-BYTES');
-  fs.writeFileSync(dbPath + '-shm', Buffer.alloc(8, 7));
-  const r = backupDatabases({ engineDbPath: dbPath, indexDbPath: path.join(dir, 'no-index.sqlite'), backupDir: path.join(dir, 'backup-x') });
+  createEngineDb(dbPath, { sessions: [['s1', '/d', 'interactive', NOW]] }); // 真 SQLite 库（干净关闭）
+  // keeper 连接制造真实 WAL 伴生文件（M5 拷贝的源形态）：备份连接会对库 BEGIN
+  // EXCLUSIVE——纯文本假库文件在打开时即抛 file is not a database，必须真库
+  const keeper = new DatabaseSync(dbPath);
+  keeper.exec("INSERT INTO input_history (id, project_id, session_id, text, kind, time_created) VALUES ('ih1', 'p', NULL, 't', 'user', 1)");
+  // 拷贝时点快照：无并发写者（keeper 空闲）+ BEGIN EXCLUSIVE 锁窗口，字节稳定
+  const sources = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]
+    .filter((p) => fs.existsSync(p))
+    .map((p) => ({ name: path.basename(p), bytes: fs.readFileSync(p) }));
+  assert.equal(sources.length, 3, '活跃 WAL 连接下三件套齐备');
+  const r = backupDatabases({
+    engineDbPath: dbPath,
+    indexDbPath: path.join(dir, 'no-index.sqlite'),
+    backupDir: path.join(dir, 'backup-x'),
+  });
   assert.deepEqual(r.files.map((f) => f.name), ['db.sqlite', 'db.sqlite-wal', 'db.sqlite-shm'], '缺失索引库跳过；三件套存在才拷');
-  assert.equal(fs.readFileSync(path.join(r.backupDir, 'db.sqlite')).toString(), 'MAIN-BYTES');
-  assert.equal(fs.readFileSync(path.join(r.backupDir, 'db.sqlite-wal')).toString(), 'WAL-BYTES');
-  assert.equal(r.totalBytes, 10 + 9 + 8);
+  for (const { name, bytes } of sources) {
+    const backupBytes = fs.readFileSync(path.join(r.backupDir, name));
+    if (name.endsWith('-shm')) {
+      // -shm 是 WAL-index 易变索引（任一连接的打开/BEGIN EXCLUSIVE 都会更新其 header
+      // 与锁区），字节不稳定是文件本质属性而非备份缺陷——数据一致性承载在 main+wal。
+      // 对 -shm 断言拷贝面覆盖：大小等值（三件套齐整的还原语义）。
+      assert.equal(backupBytes.length, bytes.length, `${name} 拷贝面覆盖（大小等值）`);
+    } else {
+      assert.equal(backupBytes.equals(bytes), true, `${name} 逐字节一致`);
+    }
+  }
+  assert.equal(r.totalBytes, sources.reduce((s, x) => s + x.bytes.length, 0), 'totalBytes = 三件套实占之和');
+  keeper.close();
 });
 
 test('keep-1 与 purge：pruneOldBackups 只留新备份；purgeLatestBackup 删最新/无备份如实报告', () => {
@@ -726,10 +755,29 @@ test('停机校验①②③：ps 文本注入 GUI/app-server/双嵌套标记（Z
       psText: '     1 /sbin/launchd\n 13791 ZCode\n 13807 /Applications/ZCode.app/Contents/Frameworks/ZCode Helper.app/Contents/MacOS/ZCode Helper --type=gpu\n',
       pidText: '13791、13807',
       head: '✗ 前置校验失败：检测到 ZCode 进程（PID 13791、13807）正在运行。',
+      guidance: '👉 退出 ZCode（含菜单栏常驻）后重跑本命令。',
     },
-    { name: 'app-server', psText: ' 500 node /x/zcode.cjs app-server --cwd /tmp/w\n', pidText: '500', head: '✗ 前置校验失败：检测到 zcode app-server 进程（PID 500）正在运行。' },
-    { name: 'nested', psText: ' 600 sh -c ZSW_NESTED=1 node agent.js\n', pidText: '600', head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 600）正在运行。' },
-    { name: 'nested-core', psText: ' 601 node /x/zcode.cjs XYZ_AGENT_SUBAGENT=1\n', pidText: '601', head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 601）正在运行。' },
+    {
+      name: 'app-server',
+      psText: ' 500 node /x/zcode.cjs app-server --cwd /tmp/w\n',
+      pidText: '500',
+      head: '✗ 前置校验失败：检测到 zcode app-server 进程（PID 500）正在运行。',
+      guidance: '👉 退出 ZCode（app-server 进程随之退出）后重跑本命令。',
+    },
+    {
+      name: 'nested',
+      psText: ' 600 sh -c ZSW_NESTED=1 node agent.js\n',
+      pidText: '600',
+      head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 600）正在运行。',
+      guidance: '👉 回到主会话/非嵌套终端执行本命令。',
+    },
+    {
+      name: 'nested-core',
+      psText: ' 601 node /x/zcode.cjs XYZ_AGENT_SUBAGENT=1\n',
+      pidText: '601',
+      head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 601）正在运行。',
+      guidance: '👉 回到主会话/非嵌套终端执行本命令。',
+    },
   ];
   for (const c of cases) {
     const fx = buildMainFixture();
@@ -738,7 +786,7 @@ test('停机校验①②③：ps 文本注入 GUI/app-server/双嵌套标记（Z
     assert.equal(outcome.exitCode, 1, c.name);
     assert.ok(outcome.text.startsWith(c.head), `${c.name} 首行逐字：${outcome.text.split('\n')[0]}`);
     assert.ok(outcome.text.includes(c.pidText), `${c.name} 文案含 PID`);
-    assert.match(outcome.text, /👉 退出 ZCode（含菜单栏常驻）后重跑本命令。|👉 /, '恢复指引');
+    assert.ok(outcome.text.includes(c.guidance), `${c.name} 专属指引行逐字（T5 拆细）：${c.guidance}`);
     assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, before, '拒绝路径库零改动');
     assert.equal(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-') && n !== 'backup-old').length, 0, '未产生新备份');
   }
@@ -761,13 +809,224 @@ test('停机校验④：fixture 库被另一连接 BEGIN EXCLUSIVE 持锁 → �
   }
 });
 
-test('runShutdownChecks：ps 注入不落盘；独占开锁对缺文件报可操作失败', () => {
-  const r = runShutdownChecks({ psText: PS_CALM, engineDbPath: '/no/such.sqlite', indexDbPath: '/no/such2.sqlite' });
-  assert.equal(r.ok, false);
+test('runShutdownChecks：ps 注入不落盘；库文件缺失 → 跳过开锁探测（缺文件 ≠ 有锁，M3）+ stderr 告警 + lockSkipped', () => {
+  const warnings = [];
+  const origWrite = process.stderr.write;
+  process.stderr.write = (chunk) => { warnings.push(String(chunk)); return true; };
+  let r;
+  try {
+    r = runShutdownChecks({ psText: PS_CALM, engineDbPath: '/no/such.sqlite', indexDbPath: '/no/such2.sqlite' });
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  assert.equal(r.ok, true, '缺文件 ≠ 有锁——跳过而非失败（M3：无 GUI 机器 --fs-only 不再被缺文件永久拒）');
   assert.equal(r.psSource, 'injected');
   assert.equal(r.processViolations.length, 0, '进程面干净');
-  assert.deepEqual(r.lockFailures.map((f) => f.label), ['引擎库', '索引库']);
-  assert.match(r.lockFailures[0].message, /不存在/);
+  assert.deepEqual(r.lockFailures, [], '无锁失败');
+  assert.deepEqual(r.lockSkipped.map((x) => x.label), ['引擎库', '索引库'], '缺失双库逐一如实记入 lockSkipped');
+  assert.match(warnings.join(''), /⚠ 独占开锁跳过：引擎库文件不存在：\/no\/such\.sqlite/, 'stderr 一行告警');
+  assert.match(warnings.join(''), /索引库文件不存在：\/no\/such2\.sqlite/);
+});
+
+test('runShutdownChecks：索引库存在但被持锁 → 仍拒绝（锁竞争路径不因缺文件跳过逻辑丢失）', () => {
+  const fx = buildMainFixture();
+  const holder = new DatabaseSync(fx.indexDbPath);
+  try {
+    holder.exec('BEGIN EXCLUSIVE');
+    const r = runShutdownChecks({ psText: PS_CALM, engineDbPath: fx.engineDbPath, indexDbPath: fx.indexDbPath });
+    assert.equal(r.ok, false, '锁竞争照旧拒绝');
+    assert.deepEqual(r.lockFailures.map((f) => f.label), ['索引库'], '持锁库记入 lockFailures');
+    assert.deepEqual(r.lockSkipped, [], '无跳过项');
+  } finally {
+    holder.close(); // 关闭即回滚并释放
+  }
+});
+
+// ---------------------------------------------------- REG-1：损坏库文件 ≠ 锁竞争
+
+/** stderr 捕获（与 M3 用例同手法）：换入收集器执行 fn，返回收集到的全部输出。 */
+function captureStderr(fn) {
+  const warnings = [];
+  const origWrite = process.stderr.write;
+  process.stderr.write = (chunk) => { warnings.push(String(chunk)); return true; };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = origWrite;
+  }
+  return warnings.join('');
+}
+
+test('checkExclusiveLocks：损坏/非库文件 → 归入 skipped（reason=suspect-corrupt）+ stderr 告警，不记锁失败；缺文件 reason=missing 同 channel', () => {
+  const dir = nextDir('reg1-lock-');
+  const corruptEngine = path.join(dir, 'corrupt.sqlite');
+  fs.writeFileSync(corruptEngine, 'this is not a sqlite database at all....');
+  const warnings = captureStderr(() => {
+    const r = runShutdownChecks({ psText: PS_CALM, engineDbPath: corruptEngine, indexDbPath: path.join(dir, 'no-index.sqlite') });
+    assert.equal(r.ok, true, '损坏 ≠ 锁竞争——跳过而非拒绝（REG-1：修复前渲染 lsof 死路）');
+    assert.deepEqual(r.lockFailures, [], '损坏不进 failures');
+    assert.deepEqual(r.lockSkipped, [
+      { label: '引擎库', dbPath: corruptEngine, reason: 'suspect-corrupt' },
+      { label: '索引库', dbPath: path.join(dir, 'no-index.sqlite'), reason: 'missing' },
+    ], '两类跳过同 channel、reason 区分（--json 机读可辨）');
+  });
+  assert.match(warnings, /⚠ 独占开锁失败（疑似损坏或非库文件）：跳过引擎库锁探测，交由识别\/体检管线诊断/);
+  assert.match(warnings, /file is not a database/, '告警含底层消息（取证面）');
+  assert.match(warnings, /⚠ 独占开锁跳过：索引库文件不存在/);
+});
+
+test('REG-1 引擎库损坏全链路：④ 探测跳过后识别管线 coded DB_OPEN_FAILED（含底层消息与恢复指引），无 lsof 死路，锁不残留', () => {
+  const fx = buildMainFixture();
+  fs.writeFileSync(fx.engineDbPath, 'this is not a sqlite database at all....');
+  let err;
+  captureStderr(() => {
+    try {
+      runClean(cleanOptions(fx));
+    } catch (e) {
+      err = e;
+    }
+  });
+  assert.ok(err, '损坏引擎库 = 环境级 coded 错误（CLI main catch 输出 [zsw] 错误 + exit 1）');
+  assert.equal(err.code, 'DB_OPEN_FAILED');
+  assert.match(err.message, /引擎库打不开（file is not a database）/, 'coded 错误含底层消息');
+  assert.match(err.message, /恢复指引/);
+  assert.equal(/lsof/.test(err.message), false, '不再出现 lsof 死路指引');
+  assert.equal(fs.existsSync(cleanLockPath(fx.maintenanceDir)), false, 'throw 路径锁仍被 finally 释放');
+  assert.equal(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-') && n !== 'backup-old').length, 0,
+    '识别阶段失败，未产生备份');
+});
+
+test('REG-1 索引库损坏全链路：④ 探测跳过后识别管线 coded INDEX_DB_UNAVAILABLE（T3 语义在 runClean 全链路成立），无 lsof 死路', () => {
+  const fx = buildMainFixture();
+  fs.writeFileSync(fx.indexDbPath, 'this is not a sqlite database at all....');
+  let err;
+  captureStderr(() => {
+    try {
+      runClean(cleanOptions(fx));
+    } catch (e) {
+      err = e;
+    }
+  });
+  assert.ok(err);
+  assert.equal(err.code, 'INDEX_DB_UNAVAILABLE');
+  assert.match(err.message, /索引库存在但打开\/查询失败（file is not a database）/);
+  assert.match(err.message, /恢复指引/);
+  assert.equal(/lsof/.test(err.message), false);
+  assert.equal(fs.existsSync(cleanLockPath(fx.maintenanceDir)), false, '锁不残留');
+});
+
+// ---------------------------------------------------- M4 锁生命周期（REG-5）
+
+/** 预置锁文件（acquireCleanLock 同 payload 形态：JSON + 尾换行）。 */
+function writeLock(maintenanceDir, payload) {
+  const lockPath = cleanLockPath(maintenanceDir);
+  fs.writeFileSync(lockPath, payload === null ? '' : `${JSON.stringify(payload)}\n`);
+  return lockPath;
+}
+
+test('锁原语纯函数：pidAlive 探活口径（EPERM 保守算活）；readCleanLockInfo 坏形态归 null（无主锁按 stale 处理）', () => {
+  assert.equal(pidAlive(process.pid), true, '自身进程恒活');
+  assert.equal(pidAlive(999999999), false, '不存在 pid → ESRCH → 死（stale 接管判定面）');
+  const dir = nextDir('lock-prim-');
+  const lockPath = cleanLockPath(dir);
+  fs.mkdirSync(dir, { recursive: true });
+  assert.equal(readCleanLockInfo(lockPath), null, '锁文件不存在 → null');
+  fs.writeFileSync(lockPath, 'not-json{{');
+  assert.equal(readCleanLockInfo(lockPath), null, '坏 JSON → null');
+  fs.writeFileSync(lockPath, '');
+  assert.equal(readCleanLockInfo(lockPath), null, '空文件 → null');
+  fs.writeFileSync(lockPath, '{"startedAt":"2026-09-06T00:00:00.000Z"}\n');
+  assert.equal(readCleanLockInfo(lockPath), null, '缺 pid 字段 → null（不可探活即无主）');
+  fs.writeFileSync(lockPath, '{"pid": 42, "startedAt": "2026-09-06T00:00:00.000Z"}\n');
+  assert.deepEqual(readCleanLockInfo(lockPath), { pid: 42, startedAt: '2026-09-06T00:00:00.000Z' });
+});
+
+test('活锁拒绝（runClean）：预置本进程 pid 的 .clean.lock → CLEAN_LOCK_BUSY exit 1 + json.refusal 机读形态（REG-3）+ 锁保留', () => {
+  const fx = buildMainFixture();
+  const lockPath = writeLock(fx.maintenanceDir, { pid: process.pid, startedAt: '2026-09-06T00:00:00.000Z' });
+  const outcome = runClean(cleanOptions(fx));
+  assert.equal(outcome.exitCode, 1);
+  assert.ok(outcome.text.startsWith('✗ 无法开始清理：另一个 clean 正在运行（PID '), 'text 面首行（错误 → 原因 → 恢复动作）');
+  assert.match(outcome.text, /ps -p \d+/, '恢复指引含探活命令');
+  assert.deepEqual(outcome.json.refusal, {
+    kind: 'CLEAN_LOCK_BUSY', pid: process.pid, lockPath,
+  }, '--json 机读可区分拒绝类型/持锁方/锁路径（REG-3：修复前 --json 输出空壳报告）');
+  assert.equal(outcome.json.shutdown, null, '锁忙拒绝发生在停机校验之前');
+  assert.equal(fs.existsSync(lockPath), true, '活锁文件保留（拒绝路径不动他人锁）');
+  assert.equal(fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-') && n !== 'backup-old').length, 0,
+    '未产生备份');
+});
+
+test('活锁拒绝（purgeLatestBackup）：coded CLEAN_LOCK_BUSY 抛出（含 pid/lockPath 机读字段），锁与备份都不动', () => {
+  const maint = nextDir('purge-lock-');
+  fs.mkdirSync(path.join(maint, 'backup-2026-09-06T00-00-00-000Z'), { recursive: true });
+  const lockPath = writeLock(maint, { pid: process.pid, startedAt: '2026-09-06T00:00:00.000Z' });
+  assert.throws(() => purgeLatestBackup({ maintenanceDir: maint }), (e) => {
+    assert.equal(e.code, 'CLEAN_LOCK_BUSY');
+    assert.equal(e.pid, process.pid);
+    assert.equal(e.lockPath, lockPath);
+    assert.match(e.message, /另一个 clean 正在运行/);
+    assert.match(e.message, /恢复指引/);
+    return true;
+  }, 'M4：并发 purge 会互删进行中 clean 的备份安全网——锁忙必须 coded 拒绝');
+  assert.equal(fs.existsSync(lockPath), true, '锁保留');
+  assert.equal(fs.readdirSync(maint).filter((n) => n.startsWith('backup-')).length, 1, '备份未动');
+});
+
+test('stale 接管三形态：死 pid / 空文件 / 坏 JSON → 接管成功正常执行，跑完锁不残留', () => {
+  const forms = [
+    { name: '死pid', payload: { pid: 999999999, startedAt: '2026-09-06T00:00:00.000Z' } },
+    { name: '空文件', payload: null },
+    { name: '坏JSON', payload: 'not-json{{' },
+  ];
+  for (const form of forms) {
+    const fx = buildMainFixture();
+    const lockPath = writeLock(fx.maintenanceDir, form.payload);
+    const warnings = captureStderr(() => {
+      const outcome = runClean(cleanOptions(fx));
+      assert.equal(outcome.exitCode, 0, `${form.name}：stale 接管后应正常执行：${outcome.text}`);
+      assert.equal(outcome.json.engine.sessionDeleted, 5, `${form.name}：删除集正常执行`);
+    });
+    assert.match(warnings, /⚠ 清理锁 stale（持锁进程 .* 已不在），接管：删除旧锁重试/, `${form.name}：接管有 stderr 说明`);
+    assert.equal(fs.existsSync(lockPath), false, `${form.name}：跑完锁不残留（release 语义）`);
+  }
+});
+
+test('release 语义：正常跑完 .clean.lock 不残留；releaseCleanLock 只删 pid=自己的锁（他人锁不误删）', () => {
+  const fx = buildMainFixture();
+  const outcome = runClean(cleanOptions(fx));
+  assert.equal(outcome.exitCode, 0, outcome.text);
+  assert.equal(fs.existsSync(cleanLockPath(fx.maintenanceDir)), false, '正常完成锁已释放');
+
+  // 他人 pid 的锁（pid=1 launchd 恒在——release 不探活，只比对 pid 归属）
+  const maint = nextDir('release-foreign-');
+  fs.mkdirSync(maint, { recursive: true });
+  const foreignLock = writeLock(maint, { pid: 1, startedAt: '2026-09-06T00:00:00.000Z' });
+  releaseCleanLock(foreignLock);
+  assert.equal(fs.existsSync(foreignLock), true, '他人锁不误删（stale 接管竞窗下保护他人新锁）');
+  // 自己 pid 的锁才删
+  writeLock(maint, { pid: process.pid, startedAt: '2026-09-06T00:00:00.000Z' });
+  releaseCleanLock(foreignLock);
+  assert.equal(fs.existsSync(foreignLock), false, '自己的锁释放');
+  // 非字符串入参防御（purgeLatestBackup 的 finally 形态）
+  assert.doesNotThrow(() => releaseCleanLock(undefined));
+});
+
+test('acquireCleanLock：全新目录原子建锁成功（payload 含本进程 pid），二次获取同锁 → CLEAN_LOCK_BUSY', () => {
+  const maint = nextDir('acquire-');
+  const lockPath = acquireCleanLock(maint);
+  assert.equal(lockPath, cleanLockPath(maint));
+  const info = readCleanLockInfo(lockPath);
+  assert.equal(info.pid, process.pid, '锁内容记录本进程 pid');
+  assert.ok(typeof info.startedAt === 'string');
+  assert.throws(() => acquireCleanLock(maint), (e) => {
+    assert.equal(e.code, 'CLEAN_LOCK_BUSY');
+    assert.equal(e.pid, process.pid);
+    return true;
+  }, '同进程二次获取同样拒绝（互斥语义与 pid 归属无关）');
+  releaseCleanLock(lockPath);
+  assert.equal(acquireCleanLock(maint), lockPath, '释放后可重新获取');
+  releaseCleanLock(lockPath);
 });
 
 // ---------------------------------------------------- 三段磁盘校验（D4）
@@ -803,11 +1062,14 @@ test('磁盘校验③ VACUUM 前不足 → 拒绝；删除已提交、VACUUM 跳
   // 门槛 = 库三件套×1.1（小库 KB 级）：注入 0 才能真实击穿
   const outcome = runClean(cleanOptions(fx, { freeBytesFn: (vol, stage) => (stage === 'pre-vacuum' ? 0 : freeGenerous()) }));
   assert.equal(outcome.exitCode, 1);
-  assert.match(outcome.text, /✗ 前置校验失败：VACUUM 前剩余空间不足——备份已占/);  assert.match(outcome.text, /当前状态：引擎库删除已提交（分块事务生效），VACUUM 未执行——删除已生效但空间尚未回收。/);
+  assert.match(outcome.text, /✗ 前置校验失败：VACUUM 前剩余空间不足——备份已占/);
+  assert.match(outcome.text, /当前状态：引擎库删除与 GUI 索引联动均已提交生效，VACUUM 未执行——删除已生效但空间尚未回收。/);
   assert.match(outcome.text, /备份保留在原位（回滚安全网仍在）/);
   assert.equal(outcome.json.engine.vacuum, null, 'VACUUM 跳过');
   assert.equal(outcome.json.engine.sessionDeleted, 5, '删除已提交');
   assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 3);
+  assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 1,
+    '索引联动已先于磁盘③完成（M1 编排序：删除集 5 行 tasks 已删，仅 tk9 保留）');
 });
 
 // ---------------------------------------------------- 污染哨兵复断言
@@ -915,12 +1177,19 @@ test('--fs-only：库操作跳过、文件面执行、无备份', () => {
 
 // ---------------------------------------------------- --older-than 删除档位 fail-fast（MF-2）
 
-test('parseOlderThanDays：合法形态 30/30d；非法值 coded 错误拒收，不回落缺省 7 天', () => {
+test('parseOlderThanDays：合法形态 30/30d；非法值与裸 flag coded 拒收，不回落缺省 7 天', () => {
   assert.equal(parseOlderThanDays(undefined), undefined, '未传 = 缺省档');
-  assert.equal(parseOlderThanDays(true), undefined, '--older-than 裸 flag（parseArgs 无值形态）= 缺省档');
   assert.equal(parseOlderThanDays('30'), 30);
   assert.equal(parseOlderThanDays('30d'), 30);
   assert.equal(parseOlderThanDays(' 7D '), 7);
+  // 裸 --older-than（parseArgs 无值形态产出布尔 true）与非法值同因同罚：缺值静默
+  // 回落 7 天档同样被动扩大删除集——已从回落缺省档改为 coded fail-fast（MF-2 延伸）
+  assert.throws(() => parseOlderThanDays(true), (e) => {
+    assert.equal(e.code, 'INVALID_OLDER_THAN');
+    assert.match(e.message, /--older-than 缺值：裸 --older-than 后未跟天数。/);
+    assert.match(e.message, /不回落/, '声明拒绝回落语义');
+    return true;
+  }, '裸 --older-than 必须拒收而非回落缺省档');
   assert.throws(() => parseOlderThanDays('30x'), (e) => {
     assert.equal(e.code, 'INVALID_OLDER_THAN');
     assert.match(e.message, /--older-than 值非法：30x/);
@@ -949,7 +1218,7 @@ test('MF-2 CLI 面：doctor clean --older-than 30x → exit 1 + stderr 可操作
  * 路径解析 → runDoctorCommand 分发 → stdout/exitCode」的完整编排链（MF-2 先例
  * 同为 spawnSync 形态；CI ubuntu 无 GUI 也确定性收敛，见 --fs-only 用例注）。
  */
-function buildCliSpawnHome() {
+function buildCliSpawnHome({ sentinelHit = false } = {}) {
   const home = nextDir('clihome-');
   const engineDbPath = path.join(home, '.zcode', 'cli', 'db', 'db.sqlite');
   fs.mkdirSync(path.dirname(engineDbPath), { recursive: true });
@@ -962,9 +1231,11 @@ function buildCliSpawnHome() {
   fs.mkdirSync(path.dirname(indexDbPath), { recursive: true });
   createIndexDb(indexDbPath, { taskIds: ['sess_cli'] });
   fs.mkdirSync(path.join(home, '.zcode', 'zsw'), { recursive: true });
+  const recordLines = [JSON.stringify({ sessionId: 'sess_cli' })];
+  if (sentinelHit) recordLines.push(JSON.stringify({ targetSessionId: 'sess_cli' })); // T1：哨兵命中行
   fs.writeFileSync(
     path.join(home, '.zcode', 'zsw', 'records.jsonl'),
-    `${JSON.stringify({ sessionId: 'sess_cli' })}\n`,
+    `${recordLines.join('\n')}\n`,
   );
   return { home, engineDbPath };
 }
@@ -1046,6 +1317,25 @@ test('CLI 面：doctor clean --fs-only → 停机校验拒绝 exit 1（--fs-only
   } finally {
     holder.close(); // 关闭即回滚并释放
   }
+});
+
+test('CLI 面：dry-run --json 哨兵失败 → exit 1 + 报告 sentinel.ok=false（哨兵编排契约穿透 spawn 边界，T1）', () => {
+  const fx = buildCliSpawnHome({ sentinelHit: true });
+  const r = spawnZsw(['doctor', 'clean', '--dry-run', '--json'], fx.home);
+  assert.equal(r.status, 1, `哨兵失败应 exit 1：stdout=${r.stdout} stderr=${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.sentinel.ok, false);
+  assert.deepEqual(report.sentinel.intersection, ['sess_cli'], '交集 = 删除集 ∩ targetSessionId 值域');
+  assert.deepEqual(report.deleteSet.engineSessionIds, ['sess_cli'], '失败仍输出删除清单（交维护者判定的样张契约）');
+});
+
+test('CLI 面：dry-run 非 --json 哨兵失败 → stdout 含样张清单行 + ✗ 哨兵失败块，不给「确认执行」行（T1）', () => {
+  const fx = buildCliSpawnHome({ sentinelHit: true });
+  const r = spawnZsw(['doctor', 'clean', '--dry-run'], fx.home);
+  assert.equal(r.status, 1, `哨兵失败应 exit 1：stdout=${r.stdout}`);
+  assert.ok(r.stdout.includes('将删除（不写库）：'), '删除清单仍输出（renderDryRun 失败形态保留清单）');
+  assert.ok(r.stdout.includes('✗ 污染哨兵失败：删除集 ∩ targetSessionId 值域 = 1（sess_cli）。'), '哨兵失败块逐字头行');
+  assert.equal(r.stdout.includes('确认执行'), false, '失败形态不给「确认执行」行（醒目阻断）');
 });
 
 // ---------------------------------------------------- --stale 周期维护档（u5）
@@ -1215,18 +1505,259 @@ test('引擎库不存在 → buildDeleteSet 抛可操作错误（DB_OPEN_FAILED�
 
 // ---------------------------------------------------- 事务中止形态
 
-test('引擎库删除中途抛错 → 失败报告含备份路径与还原指引，exitCode 1', () => {
+test('REG-2：索引连接构造失败（删除时点 chmod 000 竞窗）→ indexError 三态渲染，不穿透 runClean 裸抛', (t) => {
+  if (process.getuid && process.getuid() === 0) {
+    return t.skip('root 下 chmod 000 不构成打开屏障，用例仅对普通用户有意义');
+  }
   const fx = buildMainFixture();
-  // 缺 workflow_run 表：第 4 条块内语句必抛（严格中止——删除链路禁静默）
+  // afterBatch 在引擎块 COMMIT+checkpoint 之后、索引连接构造（步骤 13）之前触发：
+  // 恰好复现「备份/门禁时索引库可开、删除时点打开失败」的窄竞窗（EACCES 形态）
+  const outcome = runClean(cleanOptions(fx, {
+    afterBatch: () => fs.chmodSync(fx.indexDbPath, 0o000),
+  }));
+  assert.equal(outcome.exitCode, 1);
+  // 修复前：构造在 try 外 → EACCES 裸抛穿透 runClean（CLI 顶层堆栈）；修复后归
+  // indexError 走 renderMidFlowFailure('index') 三态文案
+  assert.match(outcome.text, /✗ 清理执行失败：GUI 索引联动删除失败：/);
+  assert.match(outcome.text, /当前阶段：引擎库删除已全部提交生效，索引库联动在事务边界中止/);
+  assert.ok(outcome.text.includes(`备份安全网在：${outcome.json.backup.dir}`), '文本面备份路径同源');
+  assert.match(outcome.text, /重跑不补删索引面/);
+  assert.equal(outcome.json.engine.sessionDeleted, 5, '引擎删除已提交生效');
+  assert.equal(outcome.json.index, null, '索引联动未执行（机读面如实）');
+  assert.equal(fs.existsSync(cleanLockPath(fx.maintenanceDir)), false, '失败路径锁仍释放');
+  assert.equal(fs.existsSync(path.join(fx.artifactsDir, 'wl1')), true, '失败路径文件面未执行');
+  fs.chmodSync(fx.indexDbPath, 0o644); // after 清理可删
+});
+
+test('引擎库删除中途抛错 → 三态 engineError 失败报告（索引联动未执行 + 重跑不补删索引面），exitCode 1', () => {
+  const fx = buildMainFixture();
+  // 缺 workflow_run 表：块内语句必抛（严格中止——删除链路禁静默）
   const db = new DatabaseSync(fx.engineDbPath);
   db.exec('DROP TABLE workflow_run');
   db.close();
   const outcome = runClean(cleanOptions(fx));
   assert.equal(outcome.exitCode, 1);
-  assert.match(outcome.text, /✗ 清理执行失败：/);
-  assert.match(outcome.text, new RegExp(`备份安全网在：${fx.maintenanceDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/backup-`));
-  assert.match(outcome.text, /按还原指引整库回滚，或排除错误后重跑/);
+  assert.match(outcome.text, /✗ 清理执行失败：no such table: workflow_run/);
+  // 三态 renderMidFlowFailure 的 engineError 态关键句（「幂等」字样已移除——对索引面是假承诺）
+  assert.match(outcome.text, /当前阶段：引擎库删除中止于事务边界（已提交的批次保持生效），索引侧联动尚未执行；/);
+  assert.match(outcome.text, /重跑不补删索引面：重跑识别集只收引擎库现存会话，已删会话的 GUI tasks 行不会进入重跑删除集。/);
+  assert.match(outcome.text, /👉 按还原指引整库回滚后重跑（索引面一并重来）；或接受删除现状，对照 --json 报告 deleteSet\.indexTaskIds/);
+  assert.equal(/幂等/.test(outcome.text), false, '「幂等」字样已移除');
+  // engineError 态索引面如实未动（联动被跳过）
+  assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 6, '索引 tasks 行全在（联动未执行）');
+  // 文本面备份路径与 json 报告面同源（runDbFlow 传 pre.backup.backupDir，字段名错位会渲染 undefined）
+  assert.match(outcome.json.backup.dir, /\/backup-[^/]+$/, 'json 报告的 backup.dir 是正确路径');
+  assert.ok(outcome.text.includes(`备份安全网在：${outcome.json.backup.dir}`), '文本面备份路径为真实路径');
   assert.match(outcome.text, /如有异常，还原：①退出 ZCode/);
+});
+
+// ---------------------------------------------------- 幂等重跑 / 批间中断（T2/T4）
+
+/**
+ * 批量 fixture（T2 批间中断重跑 / T4 批间部分提交共用）：n 个超龄 subagent_child
+ * 会话（cs000..cs{n-1}）+ 索引库 tasks 全量同 id + 空 records + 独立 maintenance。
+ * 不建文件面目录（文件面清单为空，聚焦库面批级行为）。
+ */
+function buildBulkFixture(n) {
+  const dir = nextDir('bulk-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  const sessions = [];
+  for (let i = 0; i < n; i++) sessions.push([`cs${String(i).padStart(3, '0')}`, '/Users/u/proj', 'subagent_child', NOW - 10 * DAY]);
+  createEngineDb(engineDbPath, { sessions });
+  const indexDbPath = path.join(dir, 'tasks-index.sqlite');
+  createIndexDb(indexDbPath, { taskIds: sessions.map((s) => s[0]) });
+  const records = writeRecords(dir, []);
+  const maintenanceDir = path.join(dir, 'maintenance');
+  fs.mkdirSync(maintenanceDir, { recursive: true });
+  return {
+    engineDbPath, indexDbPath, records, maintenanceDir,
+    artifactsDir: path.join(dir, 'a'), logDir: path.join(dir, 'l'), execDir: path.join(dir, 'e'),
+  };
+}
+
+test('幂等重跑（T2）：同一 fixture 连跑两次——第二次空集零删、库与文件面状态不变、备份 keep-1 恰一份', () => {
+  const fx = buildMainFixture();
+  const first = runClean(cleanOptions(fx));
+  assert.equal(first.exitCode, 0, first.text);
+  const sessionIdsAfterFirst = query(fx.engineDbPath, 'SELECT id FROM session ORDER BY id').map((x) => x.id);
+  const tasksAfterFirst = query(fx.indexDbPath, 'SELECT task_id FROM tasks ORDER BY task_id').map((x) => x.task_id);
+  const artifactsAfterFirst = fs.readdirSync(fx.artifactsDir).sort();
+  assert.deepEqual(sessionIdsAfterFirst, ['keep1', 'keep2', 'scfresh'], '第一次跑后库基线');
+
+  const second = runClean(cleanOptions(fx));
+  assert.equal(second.exitCode, 0, second.text);
+  assert.equal(second.json.engine.sessionDeleted, 0, '重跑删除集为空（已清会话不在识别集）');
+  assert.deepEqual(query(fx.engineDbPath, 'SELECT id FROM session ORDER BY id').map((x) => x.id), sessionIdsAfterFirst, '引擎库行数不变');
+  assert.deepEqual(query(fx.indexDbPath, 'SELECT task_id FROM tasks ORDER BY task_id').map((x) => x.task_id), tasksAfterFirst, '索引库行数不变');
+  assert.deepEqual(fs.readdirSync(fx.artifactsDir).sort(), artifactsAfterFirst, '文件面不变');
+  const backups = fs.readdirSync(fx.maintenanceDir).filter((n) => n.startsWith('backup-'));
+  assert.equal(backups.length, 1, 'keep-1：重跑新建备份并 prune 上一次，恒恰一份');
+});
+
+test('批间中断后重跑（T2）：引擎剩余超龄会话被补删，先批已删会话的索引 tasks 孤儿行保留（重跑不补删索引面）', () => {
+  const fx = buildBulkFixture(450);
+  // 中断手法：批 0（COMMIT + checkpoint 完成）后 afterBatch 抛错 → engineError 态
+  // （索引联动被跳过）；与 T4 的 DROP 表 sabotage 同为「已提交批保持生效」形态
+  const first = runClean(cleanOptions(fx, {
+    chunkSize: 200,
+    afterBatch: () => { throw new Error('批间 sabotage：第 1 批已提交后中断'); },
+  }));
+  assert.equal(first.exitCode, 1, first.text);
+  assert.match(first.json.engine.error, /批间 sabotage/, 'engineError 如实入报告');
+  assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 250, '已提交批 200 生效（450-200=250）');
+  assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 450, '索引联动未执行（tasks 全在）');
+
+  const second = runClean(cleanOptions(fx, { chunkSize: 200 }));
+  assert.equal(second.exitCode, 0, second.text);
+  assert.equal(second.json.engine.sessionDeleted, 250, '重跑补删引擎剩余 250');
+  assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 0, '引擎超龄会话清空');
+  assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 200,
+    '孤儿 tasks 恰留 200（先批 200 行的索引面不进重跑识别集——文档化行为实证）');
+  assert.equal(query(fx.indexDbPath, "SELECT COUNT(*) n FROM tasks WHERE task_id='cs000'").at(0).n, 1, '孤儿=先批会话（cs000 在）');
+  assert.equal(query(fx.indexDbPath, "SELECT COUNT(*) n FROM tasks WHERE task_id='cs250'").at(0).n, 0, '重跑删的是补删批（cs250 不在）');
+});
+
+test('批间部分提交（T4）：批 1 提交后 DROP 批 2 所用表 → exit 1、已提交 200 生效、索引联动未执行、三态 engineError 文案', () => {
+  const fx = buildBulkFixture(450);
+  const first = runClean(cleanOptions(fx, {
+    chunkSize: 200,
+    afterBatch: (i) => {
+      if (i !== 0) return;
+      // 批 0 已 COMMIT + checkpoint：第二连接 DROP 批 1 首条语句的 message 表
+      // （reset 态 statement 不阻止 DDL；批 1 的 DELETE FROM message 必抛 no such table）
+      const saboteur = new DatabaseSync(fx.engineDbPath);
+      try { saboteur.exec('DROP TABLE message'); } finally { saboteur.close(); }
+    },
+  }));
+  assert.equal(first.exitCode, 1, first.text);
+  assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 250, '已提交批 200 生效（450-250=剩余）');
+  assert.equal(query(fx.indexDbPath, 'SELECT COUNT(*) n FROM tasks').at(0).n, 450, '索引联动未执行（tasks 全在）');
+  assert.match(first.json.engine.error, /no such table: message/, 'engineError 如实透传 sabotaged schema');
+  // 三态 engineError 关键句（与 mid-flow 用例同口径，这里验证跨批形态）
+  assert.match(first.text, /当前阶段：引擎库删除中止于事务边界（已提交的批次保持生效），索引侧联动尚未执行；/);
+  assert.match(first.text, /重跑不补删索引面/);
+  // 备份路径：文本面与 json 报告面同源（字段名错位会渲染 undefined）
+  assert.match(first.json.backup.dir, /\/backup-[^/]+$/, 'json 面备份路径正确');
+  assert.ok(first.text.includes(`备份安全网在：${first.json.backup.dir}`), '文本面备份路径为真实路径');
+});
+
+// ---------------------------------------------------- 索引库缺失降级链 / coded 拒绝（T3）
+
+test('索引库缺失降级链（T3）：buildDeleteSet 空集 + checkIndexConflicts n/a + dry-run 渲染「索引库 n/a」，引擎面照常', () => {
+  const dir = nextDir('noindex-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  createEngineDb(engineDbPath, {
+    sessions: [['sess_x', '/Users/u/proj', 'interactive', NOW - 1 * DAY]],
+    messages: [['m1', 'sess_x']],
+    inputHistory: [['i1', 'sess_x']],
+  });
+  const records = writeRecords(dir, [{ sessionId: 'sess_x' }]);
+  const indexDbPath = path.join(dir, 'tasks-index.sqlite'); // 故意不建索引库（合法环境态 n/a）
+  const set = buildDeleteSet({ engineDbPath, indexDbPath, recordsPath: records, now: NOW });
+  assert.equal(set.engineSessionIds.size, 1, '引擎面识别不受索引缺失影响');
+  assert.equal(set.indexTaskIds.size, 0, '索引库缺文件 → indexTaskIds 空集');
+  const cf = checkIndexConflicts(set.engineSessionIds, indexDbPath);
+  assert.equal(cf.available, false, '冲突预检 n/a（安全网不阻塞主流程）');
+
+  const dry = collectDryRun({
+    now: NOW, engineDbPath, indexDbPath, recordsPath: records,
+    artifactsDir: path.join(dir, 'a'), logDir: path.join(dir, 'l'), execDir: path.join(dir, 'e'),
+  });
+  assert.deepEqual(dry.deleteSet.indexTaskIds, []);
+  assert.equal(dry.conflicts.available, false);
+  assert.equal(dry.inputHistoryHits, 1, 'input_history 表在 → 正常计数（对照面）');
+  const rendered = renderDryRun(dry).text;
+  assert.match(rendered, /GUI 索引 tasks 0 行（索引库 n\/a；冲突机制保留为安全网）/, '渲染含索引 n/a 行');
+  assert.match(rendered, /input_history 命中 1 行随删/);
+});
+
+test('缺 input_history 表（T3）：collectDryRun inputHistoryHits 严格 null（MCP-6 归一，非 undefined）+ 渲染 n/a', () => {
+  const dir = nextDir('noih-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  // 故意不建 input_history 表：只建 session 表（collectDryRun 引擎查询面最小集）
+  const db = new DatabaseSync(engineDbPath);
+  db.exec(`CREATE TABLE session (
+    id text primary key, project_id text not null, parent_id text,
+    directory text not null, title text not null,
+    time_created integer not null, time_updated integer not null,
+    task_type text not null default 'interactive')`);
+  db.prepare('INSERT INTO session (id, project_id, directory, title, time_created, time_updated, task_type) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run('sess_y', 'p', '/Users/u/proj', 't', NOW - 1 * DAY, NOW - 1 * DAY, 'interactive');
+  db.close();
+  const records = writeRecords(dir, [{ sessionId: 'sess_y' }]);
+  const dry = collectDryRun({
+    now: NOW, engineDbPath, indexDbPath: path.join(dir, 'no-index.sqlite'), recordsPath: records,
+    artifactsDir: path.join(dir, 'a'), logDir: path.join(dir, 'l'), execDir: path.join(dir, 'e'),
+  });
+  assert.equal(dry.inputHistoryHits, null, '缺表 undefined 归 null：--json 机读可区分「键缺失」与「命中 0」');
+  assert.notEqual(dry.inputHistoryHits, undefined, '严格非 undefined（归一契约）');
+  assert.match(renderDryRun(dry).text, /input_history 命中 n\/a 行随删/, '渲染面缺表 n/a');
+});
+
+test('索引库存在但损坏（T3）→ coded INDEX_DB_UNAVAILABLE 拒绝（M6 收紧：无静默空集路径）', () => {
+  const dir = nextDir('corrupt-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  createEngineDb(engineDbPath, { sessions: [['sess_z', '/Users/u/proj', 'interactive', NOW - 1 * DAY]] });
+  const records = writeRecords(dir, [{ sessionId: 'sess_z' }]);
+  const indexDbPath = path.join(dir, 'tasks-index.sqlite');
+  fs.writeFileSync(indexDbPath, 'this is not a sqlite database');
+  assert.throws(() => buildDeleteSet({ engineDbPath, indexDbPath, recordsPath: records, now: NOW }), (e) => {
+    assert.equal(e.code, 'INDEX_DB_UNAVAILABLE');
+    assert.match(e.message, /索引库存在但打开\/查询失败/);
+    assert.match(e.message, /恢复指引/);
+    return true;
+  }, '删除集构建对损坏索引库 coded 拒绝，不吞为空集');
+  assert.throws(() => checkIndexConflicts(new Set(['sess_z']), indexDbPath), (e) => {
+    assert.equal(e.code, 'INDEX_DB_UNAVAILABLE');
+    return true;
+  }, '冲突预检同口径 coded 拒绝（静默空安全网会让冲突会话漏剔除）');
+});
+
+// ---------------------------------------------------- 哨兵截断展示（T6）/ FK 守卫（T7）
+
+test('哨兵截断展示（T6）：9 条命中恰展示前 8 条 + 尾部省略号，第 9 条不出现', () => {
+  const dir = nextDir('sentinel-trunc-');
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  const ids = Array.from({ length: 9 }, (_, i) => `t${i}`);
+  createEngineDb(engineDbPath, { sessions: ids.map((id) => [id, '/Users/u/proj', 'interactive', NOW - 1 * DAY]) });
+  createIndexDb(path.join(dir, 'tasks-index.sqlite'), { taskIds: ids });
+  const records = writeRecords(dir, [
+    ...ids.map((id) => ({ sessionId: id })),
+    ...ids.map((id) => ({ targetSessionId: id })),
+  ]);
+  const outcome = runClean(cleanOptions({
+    engineDbPath, indexDbPath: path.join(dir, 'tasks-index.sqlite'), records,
+    artifactsDir: path.join(dir, 'a'), logDir: path.join(dir, 'l'), execDir: path.join(dir, 'e'),
+    maintenanceDir: path.join(dir, 'maintenance'),
+  }));
+  assert.equal(outcome.exitCode, 1);
+  assert.match(outcome.text,
+    /✗ 污染哨兵失败：删除集 ∩ targetSessionId 值域 = 9（t0 \/ t1 \/ t2 \/ t3 \/ t4 \/ t5 \/ t6 \/ t7 …）。/,
+    '恰展示前 8 条 + 尾部「…」（renderSentinelRefusal slice(0,8) 语义）');
+  assert.equal(outcome.text.includes('t8'), false, '第 9 条不出现（截断生效，不假装全量展示）');
+  assert.equal(query(engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 9, '哨兵拒绝库零改动');
+});
+
+test('FK 守卫（T7）：未开 PRAGMA foreign_keys=ON 的连接调用 deleteEngineSessionsChunked → 守卫文案拒收，库零改动', () => {
+  const dir = nextDir('fkguard-');
+  const dbPath = path.join(dir, 'db.sqlite');
+  createEngineDb(dbPath, {
+    sessions: [['s1', '/d', 'interactive', NOW], ['s2', '/d', 'interactive', NOW]],
+    messages: [['m1', 's1']],
+  });
+  // node:sqlite 缺省 enableForeignKeyConstraints=true（C1 依赖面）；显式关掉构造守卫目标形态
+  const db = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false });
+  try {
+    assert.throws(() => deleteEngineSessionsChunked({ db, ids: ['s1', 's2'] }), (e) => {
+      assert.match(e.message, /PRAGMA foreign_keys=ON 未生效/);
+      assert.match(e.message, /中止删除，不改库/);
+      return true;
+    }, 'C1：engine 声明 CASCADE 但 foreign_keys=0 时 DELETE session 不级联——守卫必须先行');
+    assert.equal(query(dbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 2, '守卫先于任何删除——库零改动');
+    assert.equal(query(dbPath, 'SELECT COUNT(*) n FROM message').at(0).n, 1, '伴生行同样不动');
+  } finally {
+    db.close();
+  }
 });
 
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));

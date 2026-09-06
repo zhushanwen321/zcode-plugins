@@ -89,9 +89,12 @@ sqlite3 -readonly ~/.zcode/cli/db/db.sqlite 'SELECT COUNT(*) FROM session;'
 
 ## 6. 还原/逃生路径
 
-- **停机校验拒绝**（最常见）：按文案退出对应进程后重跑。`检测到 ZCode 进程`→ 退出 GUI；`app-server 进程`→ 随 GUI 退出，孤儿时 `ps -eo pid,ppid,command` 看 ppid=1 的 zcode-cli 可 kill；`双库独占开锁失败`→ 全部进程退出仍失败用 `lsof ~/.zcode/cli/db/db.sqlite` 找持锁方。
-- **磁盘不足**：`VACUUM 前剩余空间不足`时备份已保留原位（回滚安全网仍在）——先 `node bin/zsw.js doctor clean --fs-only` 清文件面腾空间（同样需停机），再重跑全量 clean；确认放弃回滚后才可删备份目录。
-- **执行中报错中止**：删除中止于事务边界、已提交批次保持生效、备份安全网在——按 §5 整组回滚，或排除错误后重跑（重跑只处理剩余部分，幂等）。
+- **停机校验拒绝**（最常见）：按文案退出对应进程后重跑。`检测到 ZCode 进程`→ 退出 GUI；`app-server 进程`→ 随 GUI 退出，孤儿时 `ps -eo pid,ppid,command` 看 ppid=1 的 zcode-cli 可 kill；`双库独占开锁失败`→ 全部进程退出仍失败用 `lsof ~/.zcode/cli/db/db.sqlite` 找持锁方（库文件缺失不是锁——校验会跳过并告警，不会因此拒绝）。
+- **并发锁拒绝**（`另一个 clean 正在运行`）：等当前 clean 结束；确认无并发（`ps -p <PID>`）后 `rm ~/.zcode/zsw/maintenance/.clean.lock` 再重跑。
+- **磁盘不足**：`VACUUM 前剩余空间不足`时备份已保留原位（回滚安全网仍在）——先 `node bin/zsw.js doctor clean --fs-only` 清文件面腾空间（同样需停机），再重跑全量 clean；仍不足才在确认放弃回滚后删备份目录。此拒绝态引擎与索引删除均已生效，重跑即空删除集直达 VACUUM。
+- **执行中报错中止**（按失败阶段区分，无统一的「重跑幂等」）：
+  - 引擎库删除中止于事务边界（已提交批次保持生效、索引联动尚未执行）：按 §5 整组回滚后重跑（索引面一并重来）；或接受删除现状，对照 --json 报告 `deleteSet.indexTaskIds` 手工核查索引残留——**重跑不补删索引面**（已删会话的 tasks 行不在重跑识别集内）。
+  - 引擎与索引删除均完成、仅 VACUUM 失败：无需回滚，排除磁盘/环境问题后直接重跑（删除集为空，直达 VACUUM 重试）。
 - **清理后一切正常**：`node bin/zsw.js doctor clean --purge-backup` 释放 ~6.7GB。
 
 ## 7. 周期维护（长期）

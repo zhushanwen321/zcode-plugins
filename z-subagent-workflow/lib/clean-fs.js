@@ -19,18 +19,19 @@
  * 与 lib/doctor.js collectFiles 的计数口径一致性（clean-fs.test.js 跨模块
  * 用例锁定）：目录计数（artifacts 全量目录 / exec 只数 sess_ 前缀）、超龄定义
  * （mtime **严格早于** now - N*DAY，恰等于阈值不算）、体积合计（递归正则文件
- * 字节和，readdir/stat 竞态与权限错误跳过）三处同语义。本模块 engineCliRoot /
- * treeBytesSafe 镜像 doctor.js 同名私有实现（doctor 未导出；且本模块纯文件面
- * 不应经 require('./doctor') 间接背上 node:sqlite 依赖面——clean-identify 的
- * loadSqliteOperational 双实现同款先例），防漂移靠上述跨模块锁定用例。
+ * 字节和，readdir/stat 竞态与权限错误跳过）三处同语义。treeBytesSafe 镜像
+ * doctor.js 同名私有实现（doctor 未导出；本模块纯文件面，不经 require('./doctor')
+ * 背上 node:sqlite 依赖面——clean-identify 的 loadSqliteOperational 双实现
+ * 同款先例；lib/config.js 是零依赖叶子，require 它不破坏此纪律），防漂移靠
+ * 上述跨模块锁定用例。
  *
  * execStaleDays 默认 7 天的依据（设计 D7 只说「超龄空壳」未定档）：对齐 D1①
  * subagent_child 的 7 天保留逻辑（GUI 会话详情页可能引用近期会话的伴生目录）
  * 与 GUI taskAutoArchiveOlderThanDays 默认 7 天——同一「近期引用窗口」语义
  * 取同值，宁保守勿激进。
  *
- * 零依赖 plain Node CJS；根路径全部可注入（测试传 fixture；缺省 os.homedir()
- * 下 ~/.zcode/cli 约定，与 lib/doctor.js engineCliRoot 同源）。真实 ~/.zcode
+ * 零依赖 plain Node CJS；根路径全部可注入（测试传 fixture；引擎侧缺省路径
+ * 统一由 lib/config.js resolveEnginePaths 组装）。真实 ~/.zcode
  * 上只应调用 planFileCleanup（只读）；executeFileCleanup 仅在停机窗口（u3
  * 四项停机校验通过后）对真实路径调用。
  *
@@ -42,20 +43,16 @@
  */
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const { resolveEnginePaths } = require('./config');
 
 /** 一天的毫秒数（按龄判定的基准单位，clean-identify 同值）。 */
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** log 按文件年龄整文件删，默认保留 14 天（设计 §3.3 D7；doctor.LOG_RETENTION_MS 同源）。 */
+/** log 按文件年龄整文件删，默认保留 14 天（设计 §3.3 D7；档位权威源在本模块，
+ *  doctor.LOG_RETENTION_MS 由此派生）。 */
 const DEFAULT_LOG_RETENTION_DAYS = 14;
 /** exec 空壳按龄档阈值，默认 7 天（依据见头注；与 D1① 7 天保留同源）。 */
 const DEFAULT_EXEC_STALE_DAYS = 7;
-
-/** 引擎侧 ~/.zcode/cli 根（doctor.js engineCliRoot 同款镜像，见头注）。 */
-function engineCliRoot() {
-  return path.join(os.homedir(), '.zcode', 'cli');
-}
 
 /** 数值天数选项归一（buildDeleteSet olderThanDays 同款：非有限/负值 → 默认）。 */
 function daysOption(value, fallback) {
@@ -207,9 +204,10 @@ function planFileCleanup(options = {}) {
   const logRetentionDays = daysOption(options.logRetentionDays, DEFAULT_LOG_RETENTION_DAYS);
   const execStaleDays = daysOption(options.execStaleDays, DEFAULT_EXEC_STALE_DAYS);
   const now = typeof options.now === 'number' ? options.now : Date.now();
-  const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
-  const logDir = options.logDir || path.join(engineCliRoot(), 'log');
-  const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
+  const defaults = resolveEnginePaths();
+  const artifactsDir = options.artifactsDir || defaults.artifactsDir;
+  const logDir = options.logDir || defaults.logDir;
+  const execDir = options.execDir || defaults.execDir;
 
   // ① artifacts：精确 id 匹配（D7 纪律一）
   const artifacts = listTopDirs(artifactsDir)
@@ -322,9 +320,10 @@ function deleteItems(items, root) {
  *   planned = deletedCount + failures.length（面级与总计皆成立）。
  */
 function executeFileCleanup(plan, options = {}) {
-  const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
-  const logDir = options.logDir || path.join(engineCliRoot(), 'log');
-  const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
+  const defaults = resolveEnginePaths();
+  const artifactsDir = options.artifactsDir || defaults.artifactsDir;
+  const logDir = options.logDir || defaults.logDir;
+  const execDir = options.execDir || defaults.execDir;
   const items = plan && typeof plan === 'object' ? plan : {};
 
   const artifacts = deleteItems(items.artifacts, artifactsDir);

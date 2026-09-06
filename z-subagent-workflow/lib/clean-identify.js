@@ -15,8 +15,8 @@
  * 零依赖 plain Node CJS；u1 基座两导出保持纯函数（路径入参、无全局态）。
  * u2 分治函数按设计只读访问数据：records 文件读取与引擎/索引库 DatabaseSync
  * readOnly 查询——任何写删属 lib/clean-exec.js（u3）领地。路径一律显式入参
- * （缺省路径组装留在 lib/doctor.js，本模块不做 env/homedir 推导，测试可注入
- * fixture 路径）。
+ * （引擎侧缺省路径组装统一在 lib/config.js resolveEnginePaths，本模块不做
+ * env/homedir 推导，测试可注入 fixture 路径）。
  */
 
 /**
@@ -159,20 +159,34 @@ function loadSqliteOperational() {
   }
 }
 
+/**
+ * 损坏/非库文件类错误消息分类器（REG-1，clean-exec ④ 独占开锁与识别管线共用
+ * 同一口径，禁两处漂移）。探针实测（2026-09-06，node:sqlite）：readOnly 构造
+ * 不读文件头，损坏类错误在首个查询才浮出；`file is not a database` 是 SQLite
+ * 对坏 magic header 的标准报错，malformed/corrupt/encrypted 为同族。
+ */
+const DB_CORRUPT_MESSAGE_RE = /file is not a database|file is encrypted|malformed|corrupt/i;
+
+/** DB_OPEN_FAILED coded 错误组装单点（构造期与查询期损坏共用同一文案口径）。 */
+function engineOpenFailed(label, dbPath, causeMessage) {
+  const err = new Error(
+    `${label}打不开（${causeMessage}）：${dbPath}。`
+    + '恢复指引：确认文件存在且可读，可先跑 node bin/zsw.js doctor 体检确认各面状态。',
+  );
+  err.code = 'DB_OPEN_FAILED';
+  return err;
+}
+
 /** 只读打开 SQLite（DatabaseSync readOnly）。打不开（文件不存在/损坏/权限）
  *  抛 code=DB_OPEN_FAILED 的可操作错误（指向体检命令），不静默吞——dry-run
- *  没有删除集就无事可做。索引库例外：打不开走空集降级（见 buildDeleteSet）。 */
+ *  没有删除集就无事可做。索引库例外口径见 collectIndexTaskIds（缺文件 n/a
+ *  空集；存在而打不开同样 coded 拒绝，M6 收紧后无静默降级路径）。 */
 function openDbReadOnly(dbPath, label) {
   const { DatabaseSync } = loadSqliteOperational();
   try {
     return new DatabaseSync(dbPath, { readOnly: true });
   } catch (e) {
-    const err = new Error(
-      `${label}打不开（${e && e.message || e}）：${dbPath}。`
-      + '恢复指引：确认文件存在且可读，可先跑 node bin/zsw.js doctor 体检确认各面状态。',
-    );
-    err.code = 'DB_OPEN_FAILED';
-    throw err;
+    throw engineOpenFailed(label, dbPath, (e && e.message) || String(e));
   }
 }
 
@@ -187,7 +201,9 @@ function openDbReadOnly(dbPath, label) {
  *   ④ 文件面：本单元只产出 id 并集供 u4 目录名匹配，不扫目录；
  *   ⑤ 双库联动：index 侧 indexTaskIds = tasks.task_id ∈ 引擎删除集
  *      （列名实证：tasks 无 session_id 列，task_id 值 = 引擎 session id，
- *      u1 交付期 pragma 核实）。
+ *      u1 交付期 pragma 核实）。索引库缺文件 → 空集（合法环境态 n/a）；
+ *      存在而打开/查询失败 → coded INDEX_DB_UNAVAILABLE 拒绝（M6 收紧，
+ *      无静默空集路径）。
  *
  * staleMode 档位语义分野（u5，设计 §3.3 D5「识别集缩到超龄部分」；本模块是
  * 该语义的单一权威源，上游 bin/zsw.js / clean-exec / doctor 只透传不复制）：
@@ -208,7 +224,8 @@ function openDbReadOnly(dbPath, label) {
  *
  * @param {object} options 全部显式入参：
  *   engineDbPath（必传，引擎库路径）/ indexDbPath（可选，索引库路径；缺省或
- *   打不开 → indexTaskIds 空集——索引面 n/a 不阻塞删除集）/ recordsPath
+ *   文件不存在 → indexTaskIds 空集——索引面 n/a 不阻塞删除集；文件存在而
+ *   打开/查询失败 → INDEX_DB_UNAVAILABLE 拒绝，M6 收紧）/ recordsPath
  *   （必传）/ olderThanDays（默认 7）/ staleMode（默认 false，语义分野见上）/
  *   now（时间基准 ms，默认 Date.now()）
  * @returns {{engineSessionIds:Set, byClass:{whitelist:string[],feature:string[],
@@ -251,7 +268,10 @@ function classifyEngineRow(row, ctx) {
   return classes;
 }
 
-/** 引擎库三类收集（②③①，只读打开即关）：全表拉取逐行三分类入桶。 */
+/** 引擎库三类收集（②③①，只读打开即关）：全表拉取逐行三分类入桶。
+ *  损坏类错误在查询期才浮出（readOnly 构造不读文件头，探针实测）——归并到
+ *  openDbReadOnly 既有 DB_OPEN_FAILED coded 口径（含底层消息与恢复指引），
+ *  不裸抛无指引的死路消息；其余查询错误（schema 漂移等）维持原样上抛。 */
 function collectEngineClasses(engineDbPath, ctx) {
   const classes = { whitelist: [], feature: [], subagentChildStale: [] };
   const db = openDbReadOnly(engineDbPath, '引擎库');
@@ -259,29 +279,57 @@ function collectEngineClasses(engineDbPath, ctx) {
     for (const row of db.prepare('SELECT id, directory, task_type, time_created FROM session').all()) {
       for (const cls of classifyEngineRow(row, ctx)) classes[cls].push(row.id);
     }
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (DB_CORRUPT_MESSAGE_RE.test(msg)) throw engineOpenFailed('引擎库', engineDbPath, msg);
+    throw e;
   } finally {
     db.close();
   }
   return classes;
 }
 
-/** ⑤ index 侧命中：tasks.task_id ∈ 引擎删除集。索引库缺文件/打不开 → 空集
- *  （真机可能无此文件；体检 collect 对该面同口径 n/a，不拖垮主流程）。 */
+/**
+ * 索引库文件存在而打开/查询失败的 coded 可操作错误（M6 收紧：catch-all 静默
+ * 空集会把 GUI 退出瞬间的索引读 BUSY 变成空联动删除集/空冲突预检——引擎删了
+ * 而 tasks 行全留 = 幽灵任务，恰是本功能要消灭的残留形态）。
+ */
+function throwIndexUnavailable(dbPath, cause) {
+  const err = new Error(
+    `索引库存在但打开/查询失败（${cause}）：${dbPath}。`
+    + '恢复指引：确认 ZCode 已完全退出后重跑（瞬时 BUSY 重跑即过）；'
+    + '仍失败跑 node bin/zsw.js doctor 体检索引面状态，勿绕过本错误继续清理。',
+  );
+  err.code = 'INDEX_DB_UNAVAILABLE';
+  throw err;
+}
+
+/** ⑤ index 侧命中：tasks.task_id ∈ 引擎删除集。索引库文件不存在 → 空集
+ *  （真机可能无此文件，合法环境态 n/a）；文件存在而打开/查询失败 → coded
+ *  INDEX_DB_UNAVAILABLE 拒绝（M6 收紧：不再吞为空集）。 */
 function collectIndexTaskIds(indexDbPath, engineSessionIds) {
   const indexTaskIds = new Set();
   if (typeof indexDbPath !== 'string' || indexDbPath === '') return indexTaskIds;
+  if (!require('node:fs').existsSync(indexDbPath)) return indexTaskIds;
+  const DatabaseSync = loadSqliteOperational().DatabaseSync;
+  let handle;
   try {
-    const DatabaseSync = loadSqliteOperational().DatabaseSync;
-    const handle = new DatabaseSync(indexDbPath, { readOnly: true });
+    handle = new DatabaseSync(indexDbPath, { readOnly: true });
+  } catch (e) {
+    throwIndexUnavailable(indexDbPath, (e && e.message) || String(e));
+  }
+  try {
+    let rows;
     try {
-      for (const r of handle.prepare('SELECT task_id FROM tasks').all()) {
-        if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
-      }
-    } finally {
-      handle.close();
+      rows = handle.prepare('SELECT task_id FROM tasks').all();
+    } catch (e) {
+      throwIndexUnavailable(indexDbPath, (e && e.message) || String(e));
     }
-  } catch {
-    // 索引面 n/a（缺文件/缺 tasks 表/权限）→ indexTaskIds 空集
+    for (const r of rows) {
+      if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
+    }
+  } finally {
+    handle.close();
   }
   return indexTaskIds;
 }
@@ -349,10 +397,13 @@ function checkSentinel(deleteSet, recordsPath) {
  * @param {string} indexPath tasks-index.sqlite 路径
  * @returns {{available:boolean, members:Array, automations:Array, offPeak:Array,
  *   conflictedSessionIds:Set<string>>}} 命中条目含来源明细；conflictedSessionIds
- *   = 冲突会话全集（供 excludeConflicts 从双库删除集整体剔除）
+ *   = 冲突会话全集（供 excludeConflicts 从双库删除集整体剔除）。索引库缺文件 →
+ *   available:false（n/a，合法环境态）；存在而打开/查询失败 → coded
+ *   INDEX_DB_UNAVAILABLE（M6 收紧：静默空安全网会让冲突会话漏剔除、进入删除集）。
  */
-/** 索引库静默打开（readOnly）：node:sqlite 不可用或打不开 → null——空安全网
- *  降级，可用性报错由引擎库打开路径先行承担，此处不重复报错。 */
+/** 索引库打开（readOnly）：文件不存在 → null（合法环境态 n/a，与体检同口径）；
+ *  node:sqlite 不可用 → null（可用性由引擎库打开路径先行报错）；文件存在而
+ *  打不开 → coded INDEX_DB_UNAVAILABLE（M6 收紧，无静默降级）。 */
 function openIndexDbSilently(indexPath) {
   let DatabaseSync;
   try {
@@ -360,19 +411,24 @@ function openIndexDbSilently(indexPath) {
   } catch {
     return null; // node:sqlite 不可用：可用性由引擎库打开路径先行报错，此处保持空安全网
   }
+  if (!require('node:fs').existsSync(indexPath)) return null;
   try {
     return new DatabaseSync(indexPath, { readOnly: true });
-  } catch {
-    return null;
+  } catch (e) {
+    throwIndexUnavailable(indexPath, (e && e.message) || String(e));
   }
 }
 
-/** 缺表安全的全行查询：姊妹表查询失败（缺表/权限）→ 空行集，该源记空，不 crash。 */
-function queryIndexRowsSafely(handle, sql) {
+/** 姊妹表全行查询：表不存在 → 空行集（schema 容错——旧版索引库可能缺姊妹表，
+ *  该源记空不 crash）；表存在而查询失败（BUSY/权限/损坏）→ coded 错误（M6：
+ *  静默空集 = 冲突源漏检，冲突会话不被剔除即进删除集）。 */
+function queryIndexRowsSafely(handle, indexPath, sql) {
   try {
     return handle.prepare(sql).all();
-  } catch {
-    return [];
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    if (/no such table/i.test(msg)) return [];
+    throwIndexUnavailable(indexPath, msg);
   }
 }
 
@@ -391,8 +447,8 @@ function collectTasksSource(handle, engineSessionIds) {
 }
 
 /** 冲突源 members：task_group_members.task_id ∈ index 侧删除集。 */
-function collectMembersConflicts(handle, indexTaskIds, result) {
-  for (const r of queryIndexRowsSafely(handle, 'SELECT group_id, task_id FROM task_group_members')) {
+function collectMembersConflicts(handle, indexPath, indexTaskIds, result) {
+  for (const r of queryIndexRowsSafely(handle, indexPath, 'SELECT group_id, task_id FROM task_group_members')) {
     if (indexTaskIds.has(r.task_id)) {
       result.members.push({ sessionId: r.task_id, groupId: r.group_id });
       result.conflictedSessionIds.add(r.task_id);
@@ -401,8 +457,8 @@ function collectMembersConflicts(handle, indexTaskIds, result) {
 }
 
 /** 冲突源 automations：automations.target_task_id ∈ index 侧删除集。 */
-function collectAutomationsConflicts(handle, indexTaskIds, result) {
-  for (const r of queryIndexRowsSafely(handle, 'SELECT automation_id, target_task_id FROM automations')) {
+function collectAutomationsConflicts(handle, indexPath, indexTaskIds, result) {
+  for (const r of queryIndexRowsSafely(handle, indexPath, 'SELECT automation_id, target_task_id FROM automations')) {
     if (r.target_task_id !== null && r.target_task_id !== undefined && indexTaskIds.has(r.target_task_id)) {
       result.automations.push({ sessionId: r.target_task_id, automationId: r.automation_id });
       result.conflictedSessionIds.add(r.target_task_id);
@@ -411,8 +467,8 @@ function collectAutomationsConflicts(handle, indexTaskIds, result) {
 }
 
 /** 冲突源 off_peak（off_peak_tasks.session_id ∈ engineSessionIds，引擎侧命中）。 */
-function collectOffPeakTableConflicts(handle, engineSessionIds, result) {
-  for (const r of queryIndexRowsSafely(handle, 'SELECT off_peak_task_id, session_id FROM off_peak_tasks')) {
+function collectOffPeakTableConflicts(handle, indexPath, engineSessionIds, result) {
+  for (const r of queryIndexRowsSafely(handle, indexPath, 'SELECT off_peak_task_id, session_id FROM off_peak_tasks')) {
     if (r.session_id !== null && r.session_id !== undefined && engineSessionIds.has(r.session_id)) {
       result.offPeak.push({ sessionId: r.session_id, offPeakTaskId: r.off_peak_task_id, via: 'off_peak_tasks.session_id' });
       result.conflictedSessionIds.add(r.session_id);
@@ -443,12 +499,17 @@ function checkIndexConflicts(engineSessionIds, indexPath) {
   if (handle === null) return result;
   try {
     const { indexTaskIds, taskOffPeakRefs } = collectTasksSource(handle, engineSessionIds);
-    // 逐源清查（姊妹表缺表 → 该源空，不 crash）
-    collectMembersConflicts(handle, indexTaskIds, result);
-    collectAutomationsConflicts(handle, indexTaskIds, result);
-    collectOffPeakTableConflicts(handle, engineSessionIds, result);
+    // 逐源清查（姊妹表缺表 → 该源空；表在而查询失败 → coded，见 queryIndexRowsSafely）
+    collectMembersConflicts(handle, indexPath, indexTaskIds, result);
+    collectAutomationsConflicts(handle, indexPath, indexTaskIds, result);
+    collectOffPeakTableConflicts(handle, indexPath, engineSessionIds, result);
     collectOffPeakRefsConflicts(taskOffPeakRefs, indexTaskIds, result);
     result.available = true;
+  } catch (e) {
+    if (e && e.code === 'INDEX_DB_UNAVAILABLE') throw e;
+    // tasks 主表查询失败（collectTasksSource 原实现即向上抛）统一转 coded：
+    // 主表在而不可查 = 冲突预检整面不可信，禁以空清单继续
+    throwIndexUnavailable(indexPath, (e && e.message) || String(e));
   } finally {
     handle.close();
   }
@@ -610,4 +671,6 @@ module.exports = {
   checkRedLight,
   countInputHistoryHits,
   DEFAULT_OLDER_THAN_DAYS,
+  // REG-1：损坏/非库文件错误消息分类器（clean-exec ④ 独占开锁共用同口径）
+  DB_CORRUPT_MESSAGE_RE,
 };

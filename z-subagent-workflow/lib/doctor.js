@@ -6,8 +6,8 @@
  *   面① 引擎库 ~/.zcode/cli/db/db.sqlite（node:sqlite readOnly）
  *   面② GUI 索引库 ~/.zcode/v2/tasks-index.sqlite（readOnly；真机可能无此文件）
  *   面③④⑤ 文件面 artifacts/ log/ exec/
- * 全部路径参数可注入（测试传 fixture；缺省值按 lib/config.js 约定 + os.homedir()
- * 下 ~/.zcode 约定——config.js 未约定引擎侧路径，此处组装处均注释来源）。
+ * 全部路径参数可注入（测试传 fixture；引擎侧缺省路径统一由 lib/config.js
+ * resolveEnginePaths 组装——单一权威源，clean-fs/clean-exec 同源消费）。
  *
  * u2 增量（设计 §3.1 第二代码块 dry-run 样张 / §3.3 D1）：collectDryRun 组装
  * 删除集链路（clean-identify 五类分治 → 污染哨兵 → 索引冲突预检 → 双库整体
@@ -30,7 +30,6 @@
  */
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const {
   parseRecordWhiteList,
@@ -43,16 +42,19 @@ const {
   countInputHistoryHits,
   DEFAULT_OLDER_THAN_DAYS,
 } = require('./clean-identify');
-const { planFileCleanup } = require('./clean-fs');
-const { recordsPath, zswRoot } = require('./config');
+const { planFileCleanup, DEFAULT_LOG_RETENTION_DAYS } = require('./clean-fs');
+const { recordsPath, zswRoot, resolveEnginePaths } = require('./config');
+const { fmtBytes, fmtCount } = require('./clean-format');
 
 /** subagent_child 默认只清 time_created 早于 7 天的（设计 §3.3 D1①）。
  *  7 天派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS（删除档位缺省值的单一
  *  权威源）——体检 olderThan7d 观测口径与 clean 删除档位缺省值同源绑定，
  *  不在本模块保留第二份独立的 7 天常数。 */
 const SUBAGENT_MAX_AGE_MS = DEFAULT_OLDER_THAN_DAYS * 24 * 60 * 60 * 1000;
-/** log 按文件年龄整文件删，默认保留 14 天（设计 §3.3 D7）。 */
-const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+/** log 按文件年龄整文件删，默认保留 14 天（设计 §3.3 D7）。档位权威源 =
+ *  clean-fs DEFAULT_LOG_RETENTION_DAYS（执行与体检同一保留窗），此处只派生
+ *  毫秒值，不保留独立字面量。 */
+const LOG_RETENTION_MS = DEFAULT_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * 引擎库 13 张 session 引用表（设计 §2.1 面①，sqlite_master 穷举 + FK 列粒度）：
@@ -80,12 +82,6 @@ function loadSqlite() {
     err.code = 'NODE_SQLITE_UNAVAILABLE';
     throw err;
   }
-}
-
-/** 引擎侧 ~/.zcode/cli 根（设计 §2.1 面①③④⑤；config.js 未约定引擎侧路径，
- *  os.homedir() 组装；HOME 覆写场景（测试）经 options 注入，不走此缺省）。 */
-function engineCliRoot() {
-  return path.join(os.homedir(), '.zcode', 'cli');
 }
 
 /** 三件套体积合计：db.sqlite / -wal / -shm（WAL 库伴生文件一并计量，设计 C3）。 */
@@ -192,6 +188,7 @@ function collectEngine(db, options) {
   const ids = new Set();
   const featureIds = new Set();
   const subagentIds = new Set();
+  const subagentStaleIds = new Set();
   let subagentOlderThan7d = 0;
   const cutoff = now - SUBAGENT_MAX_AGE_MS;
   for (const row of db.prepare('SELECT id, directory, task_type, time_created FROM session').all()) {
@@ -199,7 +196,10 @@ function collectEngine(db, options) {
     if (matchFeatureDirectory(row.directory)) featureIds.add(row.id);
     if (row.task_type === 'subagent_child') {
       subagentIds.add(row.id);
-      if (typeof row.time_created === 'number' && row.time_created < cutoff) subagentOlderThan7d++;
+      if (typeof row.time_created === 'number' && row.time_created < cutoff) {
+        subagentOlderThan7d++;
+        subagentStaleIds.add(row.id);
+      }
     }
   }
   report.whiteListTotal = whiteList.size;
@@ -224,10 +224,15 @@ function collectEngine(db, options) {
     shm: statSizeSafe(engineDbPath + '-shm'),
   };
 
-  // 删除集粗口径（doctor 只报数；正式删除集 = u2 分治 + 哨兵 + 冲突预检的领地）
+  // 删除集粗口径（doctor 只报数；正式删除集 = u2 分治 + 哨兵 + 冲突预检的领地）。
+  // subagent_child 只并超龄部分（与上方 olderThan7d 同一判定式）：缺省 clean
+  // 实删口径是 D1① 恒按龄，未超龄子代理不删——粗口径并入全部会让索引命中/
+  // 冲突预检/预估回收系统性偏高，与实删口径不闭合。体检 collect 无 --stale
+  // 档位选项，口径对齐缺省档 clean；--stale 的删除集走 collectDryRun 完整
+  // 链路（buildDeleteSet），不经本粗口径。
   const coarseDeleteSet = new Set([...whiteList].filter((id) => ids.has(id)));
   for (const id of featureIds) coarseDeleteSet.add(id);
-  for (const id of subagentIds) coarseDeleteSet.add(id);
+  for (const id of subagentStaleIds) coarseDeleteSet.add(id);
   report.coarseDeleteSetSize = coarseDeleteSet.size;
   return { report, coarseDeleteSet };
 }
@@ -274,11 +279,15 @@ function collectIndex(dbPath, coarseDeleteSet) {
     } catch {
       conflicts = null;
     }
+    // 预检不可用（conflicts === null）时三键归 null 而非缺省 undefined：
+    // JSON.stringify 丢弃 undefined 键，--json 机读方将无法区分「预检不可用」
+    // 与「命中 0」（--json 契约字段恒在；渲染面 fmtCount(null) 与
+    // fmtCount(undefined) 同为 n/a，文本零变化）。
     report.conflictHits = {
       available: conflicts !== null && conflicts.available,
-      members: conflicts ? conflicts.members.length : undefined,
-      automations: conflicts ? conflicts.automations.length : undefined,
-      offPeak: conflicts ? conflicts.offPeak.length : undefined,
+      members: conflicts ? conflicts.members.length : null,
+      automations: conflicts ? conflicts.automations.length : null,
+      offPeak: conflicts ? conflicts.offPeak.length : null,
     };
   } finally {
     db.close();
@@ -339,20 +348,21 @@ function collectFiles(artifactsDir, logDir, execDir, now) {
   return report;
 }
 
-/** collect/collectDryRun 共用的路径与时间基准解析（options 全量可注入，缺省值
- *  按 lib/config.js 约定 + os.homedir() 下 ~/.zcode 约定组装——两个采集入口
- *  逐字段同构，单一实现保口径不漂移）。 */
+/** collect/collectDryRun 共用的路径与时间基准解析（options 全量可注入，引擎侧
+ *  缺省路径统一由 lib/config.js resolveEnginePaths 组装——单一权威源，两个
+ *  采集入口逐字段同构，保口径不漂移）。 */
 function resolveCollectOptions(options) {
   const now = typeof options.now === 'number' ? options.now : Date.now();
-  const engineDbPath = options.engineDbPath
-    || path.join(engineCliRoot(), 'db', 'db.sqlite');
-  const indexDbPath = options.indexDbPath
-    || path.join(os.homedir(), '.zcode', 'v2', 'tasks-index.sqlite');
-  const records = options.recordsPath || recordsPath();
-  const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
-  const logDir = options.logDir || path.join(engineCliRoot(), 'log');
-  const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
-  return { now, engineDbPath, indexDbPath, records, artifactsDir, logDir, execDir };
+  const defaults = resolveEnginePaths();
+  return {
+    now,
+    engineDbPath: options.engineDbPath || defaults.engineDbPath,
+    indexDbPath: options.indexDbPath || defaults.indexDbPath,
+    records: options.recordsPath || recordsPath(),
+    artifactsDir: options.artifactsDir || defaults.artifactsDir,
+    logDir: options.logDir || defaults.logDir,
+    execDir: options.execDir || defaults.execDir,
+  };
 }
 
 /**
@@ -438,23 +448,8 @@ function collect(options = {}) {
   return report;
 }
 
-/** 千分位（样张 6,425 形态）。 */
-function fmtCount(n) {
-  return typeof n === 'number' ? n.toLocaleString('en-US') : 'n/a';
-}
-
-/** 体积人读（GB 口径 = 1000 进制，与设计 §2.1 实测数字同口径：6,729,084,928B → 6.7GB）。 */
-function fmtBytes(n) {
-  if (typeof n !== 'number' || !Number.isFinite(n)) return 'n/a';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1000 && i < units.length - 1) {
-    v /= 1000;
-    i++;
-  }
-  return `${i === 0 ? v : v.toFixed(1)}${units[i]}`;
-}
+// fmtCount / fmtBytes 实现在 lib/clean-format.js（叶子模块，执行器共用；
+// 本模块 re-export 保持既有导出面不变）。
 
 function na(available, text) {
   return available ? text : 'n/a';
@@ -657,7 +652,9 @@ function collectDryRun(options = {}) {
       conflictedSessionIds: [...conflicts.conflictedSessionIds].sort(),
     },
     redlight,
-    inputHistoryHits,
+    // undefined（input_history 缺表 n/a）归 null：JSON.stringify 丢 undefined
+    // 键，--json 机读方无法区分「键缺失」与「命中 0」；渲染面两者同为 n/a。
+    inputHistoryHits: inputHistoryHits === undefined ? null : inputHistoryHits,
     filePlan,
     estimate: {
       deleteSetSize,

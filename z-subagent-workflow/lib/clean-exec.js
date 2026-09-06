@@ -3,27 +3,43 @@
  * 会话残留清理执行器（u3 = 设计 docs/design/zsw-session-residue-cleanup-design.md
  * §3.3 D2/D3/D4 + §2.1 面① FK 列粒度 + §3.1 执行样张；实施计划 u3）。
  *
- * 编排顺序（runClean，一切路径可注入，缺省 = 真实 ~/.zcode 约定）：
- *   1. buildDeleteSet        五类分治（只读，u2；staleMode 档位语义权威源在
- *                            clean-identify 头注——本层只透传）
- *   2. runShutdownChecks     四项停机校验（D2，--fs-only 同样全查不豁免）
- *   3. checkSentinel         污染哨兵复断言（对剔除前原始集——R2 教训，u2 同款）
+ * 编排顺序（runClean → runCleanLocked → runDbFlow，一切路径可注入，缺省 = 真实
+ * ~/.zcode 约定；M6/M1 修复后：停机校验先于删除集构建、索引联动先于磁盘③/VACUUM，
+ * 后者回归设计 §5 F3 编排序）：
+ *   0. 跨进程互斥锁         <maintenanceDir>/.clean.lock（'wx' 原子建 + pid 探活
+ *                           + stale 接管；M4——并发 clean 的 keep-1 prune 会互删
+ *                           对方备份安全网，锁先于一切写面动作）
+ *   1. runShutdownChecks    四项停机校验（D2，--fs-only 同样全查不豁免；M6 修复：
+ *                           先于删除集构建——识别管线的索引库读失败必须发生在停机
+ *                           确认之后，杜绝「GUI 退出瞬间 BUSY → 空集识别 → 校验
+ *                           通过 → 删除」的错序链）
+ *   2. buildDeleteSet       五类分治（只读，u2；staleMode 档位语义权威源在
+ *                           clean-identify 头注——本层只透传。索引库存在而打开/
+ *                           查询失败即 coded 拒绝，缺文件才 n/a 空集——M6 收紧）
+ *   3. checkSentinel        污染哨兵复断言（对剔除前原始集——R2 教训，u2 同款）
  *   4. checkIndexConflicts + excludeConflicts  冲突会话双库整体剔除（D1⑤）
  *   5. [--fs-only] planFileCleanup + executeFileCleanup → 报告（库操作全部跳过）
  *   6. 磁盘校验① 备份前「剩余 ≥ 库三件套×1.1」（D4）
  *   7. SQLITE_TMPDIR 钉死与库同卷（mkdtemp 于 <maintenance>/tmp-<ts>，用后清理）
- *   8. 三件套备份 → keep-1 清旧备份（D3）
- *   9. 磁盘校验② 删除前「剩余−备份实占 ≥ 1GB」（基准时点 = 备份完成后）
- *  10. 引擎库分块删除（≤200 会话/事务 + 批间 wal_checkpoint(PASSIVE)；
+ *   8. 三件套一致性备份 → keep-1 清旧备份（D3；M5：逐库 BEGIN EXCLUSIVE 保持
+ *      事务期间拷贝 → ROLLBACK，锁窗口内无并发写者，拷贝集同提交点；写连接
+ *      busy_timeout 骑过瞬时锁残留）
+ *   9. 索引库存在防御拦截（删除连接对缺文件凭空建库——任何删除开始前 fail-closed）
+ *  10. 磁盘校验② 删除前「剩余−备份实占 ≥ 1GB」（基准时点 = 备份完成后）
+ *  11. ④ 独占开锁复探测（M5③：停机校验是时点探测，到删除连接间隔可达分钟级
+ *      （多 GB 库备份）——本步为删除连接打开前最后一道门禁，重跑收窄无写者窗口）
+ *  12. 引擎库分块删除（≤200 会话/事务 + 批间 wal_checkpoint(PASSIVE)；
  *      PRAGMA foreign_keys=ON 后 8 张 CASCADE 表直删、part 经 message 级联、
  *      session_task_link 双列分处理、workflow_run/workflow_activity 置空、
  *      input_history 随删计数、session 最后删——§2.1 面① FK 列粒度）
- *  11. 磁盘校验③ VACUUM 前「剩余−备份实占 ≥ 库三件套×1.1」（基准 = 删除完成后）
- *  12. VACUUM（page_count×page_size 前后计入报告）
- *  13. 索引库 tasks + task_group_members 同事务联动删除（C4；automations/off_peak
+ *  13. 索引库 tasks + task_group_members 同事务联动删除（C4；M1 修复：紧随引擎
+ *      删除、先于磁盘③/VACUUM——旧序下 pre-vacuum 拒绝/中途中止三条路径停在
+ *      「引擎行已删、tasks 行未删」，且重跑不补删索引面；automations/off_peak
  *      只在冲突预检报告，不删——冲突会话已整体剔除，D1⑤）
- *  14. 文件面 plan + execute（u4 clean-fs）
- *  15. 报告渲染（§3.1 第三代码块样张；--json 出结构化报告；A-4 对账 counts）
+ *  14. 磁盘校验③ VACUUM 前「剩余−备份实占 ≥ 库三件套×1.1」（基准 = 删除完成后）
+ *  15. VACUUM（page_count×page_size 前后计入报告）
+ *  16. 文件面 plan + execute（u4 clean-fs）
+ *  17. 报告渲染（§3.1 第三代码块样张；--json 出结构化报告；A-4 对账 counts）
  *
  * D4 头注纪律：批间 wal_checkpoint(PASSIVE) **不截断** -wal 文件（文件保留峰值
  * 体积直至连接关闭）——勿以 -wal 文件大小判断 checkpoint 失效，以批级行数与
@@ -62,7 +78,6 @@
  */
 
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 const {
@@ -71,12 +86,15 @@ const {
   checkIndexConflicts,
   excludeConflicts,
   DEFAULT_OLDER_THAN_DAYS,
+  DB_CORRUPT_MESSAGE_RE,
 } = require('./clean-identify');
 const { planFileCleanup, executeFileCleanup } = require('./clean-fs');
-const { recordsPath: defaultRecordsPath, zswRoot } = require('./config');
-const { fmtBytes, fmtCount } = require('./doctor');
+const { recordsPath: defaultRecordsPath, zswRoot, resolveEnginePaths } = require('./config');
+// fmtBytes/fmtCount 走叶子模块 clean-format：执行器不 require('./doctor')——
+// 那会把体检模块（连带其依赖面）拉进执行器依赖图（clean-fs 头注同款纪律）。
+const { fmtBytes, fmtCount } = require('./clean-format');
 
-/** GB 口径 1000 进制（doctor fmtBytes 同口径：1e9）。 */
+/** GB 口径 1000 进制（clean-format fmtBytes 同口径：1e9）。 */
 const GB = 1000 * 1000 * 1000;
 /** 分块大小：≤200 会话/事务（设计 D4；~6,290 行 ≈ 32 批）。 */
 const DEFAULT_CHUNK_SIZE = 200;
@@ -84,6 +102,11 @@ const DEFAULT_CHUNK_SIZE = 200;
 const DISK_SAFETY_FACTOR = 1.1;
 /** WAL 三件套后缀（C3：-wal/-shm 伴生文件一并处理；存在才拷/才计）。 */
 const TRIPLE_SUFFIXES = Object.freeze(['', '-wal', '-shm']);
+/** 写连接 busy_timeout（M5②）：停机校验已确保无运行中写者，取值只需骑过瞬时锁
+ *  残留（进程刚退出的锁释放延迟 / WAL 恢复）——5s 为 SQLite 生态常用缺省
+ *  （Python sqlite3 同值）：更短会把瞬时残留放大成失败，更长把停机窗口卡成悬挂。
+ *  ④ 探测连接不设（残留句柄不会自行释放，等 5s 是纯悬挂，立即拒绝才可操作）。 */
+const BUSY_TIMEOUT_MS = 5000;
 
 /**
  * 8 张直接 FK→session 且 CASCADE 的表（设计 §2.1 面①，sqlite_master 穷举 +
@@ -211,8 +234,15 @@ function collectPsText() {
 /**
  * ④ 双库 BEGIN EXCLUSIVE 独占开锁（D2④ 兜底）。探测连接 BEGIN 成功后立即
  * ROLLBACK 释放——无数据变更（WAL 下 -wal/-shm 若因连接产生，干净关闭自动清理）。
- * 库文件缺失 = 失败（clean 无事可做，禁静默跳过——静默会让空库备份/空删除伪装成功）。
- * @returns {{ok:boolean, failures:Array<{label,dbPath,message}>}}
+ * 库文件缺失 ≠ 有锁（M3 修复：原把缺失记为锁失败 → 无 GUI 机器 --fs-only 永久
+ * 被拒、lsof 指引成死路）：缺失 → 跳过该库探测 + stderr 一行告警（fail-closed
+ * 针对的是锁竞争；引擎库缺失仍由识别管线 DB_OPEN_FAILED fail-closed，索引库
+ * 缺失为合法环境态 n/a）；损坏/非库文件同样 ≠ 有锁（REG-1 修复：原被 catch-all
+ * 记为锁失败 → 渲染「库仍被持有 + lsof 指引」死路，而损坏库该走识别/体检管线的
+ * DB_OPEN_FAILED / INDEX_DB_UNAVAILABLE 专业诊断）：与缺文件同型归入 skipped
+ * （reason 区分，--json 机读可辨）+ stderr 告警，流程继续；锁竞争 → 记入
+ * failures 由调用方拒绝。
+ * @returns {{ok:boolean, failures:Array<{label,dbPath,message}>, skipped:Array<{label,dbPath,reason}>}}
  */
 function checkExclusiveLocks({ engineDbPath, indexDbPath }) {
   const { DatabaseSync } = loadSqlite();
@@ -221,9 +251,12 @@ function checkExclusiveLocks({ engineDbPath, indexDbPath }) {
     { label: '索引库', dbPath: indexDbPath },
   ];
   const failures = [];
+  const skipped = [];
   for (const { label, dbPath } of targets) {
     if (typeof dbPath !== 'string' || dbPath === '' || !fs.existsSync(dbPath)) {
-      failures.push({ label, dbPath, message: `库文件不存在：${dbPath}` });
+      skipped.push({ label, dbPath, reason: 'missing' });
+      process.stderr.write(`⚠ 独占开锁跳过：${label}文件不存在：${dbPath || '(未提供)'}`
+        + '（缺文件 ≠ 有锁；引擎库缺失由识别管线 fail-closed）\n');
       continue;
     }
     let db = null;
@@ -232,12 +265,20 @@ function checkExclusiveLocks({ engineDbPath, indexDbPath }) {
       db.exec('BEGIN EXCLUSIVE');
       db.exec('ROLLBACK');
     } catch (e) {
-      failures.push({ label, dbPath, message: (e && e.message) || String(e) });
+      const message = (e && e.message) || String(e);
+      if (DB_CORRUPT_MESSAGE_RE.test(message)) {
+        // 损坏/非库文件开不出锁 ≠ 锁竞争：跳过探测交由识别/体检管线报专业诊断
+        skipped.push({ label, dbPath, reason: 'suspect-corrupt' });
+        process.stderr.write(`⚠ 独占开锁失败（疑似损坏或非库文件）：跳过${label}锁探测，`
+          + `交由识别/体检管线诊断：${dbPath}（${message}）\n`);
+      } else {
+        failures.push({ label, dbPath, message });
+      }
     } finally {
       try { if (db) db.close(); } catch { /* 关闭失败不改变判定 */ }
     }
   }
-  return { ok: failures.length === 0, failures };
+  return { ok: failures.length === 0, failures, skipped };
 }
 
 /**
@@ -251,13 +292,13 @@ function runShutdownChecks(options = {}) {
   const psText = injected ? options.psText : collectPsText();
   const processViolations = classifyProcessViolations(psText);
   if (processViolations.length > 0) {
-    return { ok: false, psSource: injected ? 'injected' : 'ps', processViolations, lockFailures: [] };
+    return { ok: false, psSource: injected ? 'injected' : 'ps', processViolations, lockFailures: [], lockSkipped: [] };
   }
   const locks = checkExclusiveLocks({ engineDbPath: options.engineDbPath, indexDbPath: options.indexDbPath });
   if (!locks.ok) {
-    return { ok: false, psSource: injected ? 'injected' : 'ps', processViolations, lockFailures: locks.failures };
+    return { ok: false, psSource: injected ? 'injected' : 'ps', processViolations, lockFailures: locks.failures, lockSkipped: locks.skipped };
   }
-  return { ok: true, psSource: injected ? 'injected' : 'ps', processViolations: [], lockFailures: [] };
+  return { ok: true, psSource: injected ? 'injected' : 'ps', processViolations: [], lockFailures: [], lockSkipped: locks.skipped };
 }
 
 // ---------------------------------------------------- D4 磁盘三段校验 + SQLITE_TMPDIR
@@ -343,21 +384,61 @@ function timestamp() {
 }
 
 /**
- * 双库三件套备份（D3）：引擎库与索引库各 .sqlite/-wal/-shm（存在才拷——干净
- * 关闭后 -wal/-shm 不恒在）cp 到 backupDir。返回逐文件清单（字节为源文件
- * 实测值，copyFileSync 逐字节副本，测试按 Buffer 相等断言）。
+ * 双库既有三件套文件清单（M5 备份拷贝集基准）。在停机校验通过后、识别管线
+ * 运行前快照——识别管线的 readOnly 连接会给 WAL 库留下空 -wal/-shm（read-only
+ * 关闭无法 checkpoint 清理，node:sqlite 实测），备份若按拷贝时点判断会把本进程
+ * 的瞬态伴生文件当源文件拷入备份。
+ * @returns {{engine:string[], index:string[]}}
  */
-function backupDatabases({ engineDbPath, indexDbPath, backupDir }) {
+function collectBackupSources({ engineDbPath, indexDbPath }) {
+  const list = (base) => (typeof base === 'string' && base !== ''
+    ? TRIPLE_SUFFIXES.map((suffix) => base + suffix).filter((p) => fs.existsSync(p))
+    : []);
+  return { engine: list(engineDbPath), index: list(indexDbPath) };
+}
+
+/**
+ * 双库三件套一致性备份（D3 + M5）：逐库开写连接 BEGIN EXCLUSIVE **保持事务**
+ * 期间完成该库既有三件套的 copyFileSync，再 ROLLBACK——EXCLUSIVE 写锁窗口内
+ * 无并发写者（TRUNCATE checkpoint 需写锁，同样被挡），main/-wal 拷贝集必然处于
+ * 同一提交点。原逐文件裸拷在「拷完 main、拷 -wal 前」遇写者 checkpoint 会产出
+ * 旧 main + 新 -wal 的撕裂备份，却被字典序「最新备份」当有效安全网展示。
+ * 拷贝集 = sources（停机确认后的快照，runClean 主链路传入）；缺省回落为打开
+ * 连接**前**的即时快照（直接调用形态，如单测）。「存在才拷」语义保持（备份
+ * 连接自身的瞬态 -wal/-shm 不入备份）。任一文件拷贝失败 → 删除本次半成品
+ * backup 目录后重抛（半套备份会被 keep-1/字典序判为最新）。库文件缺失照旧
+ * 跳过（索引库缺文件 = 合法环境态；引擎库缺失已被上游拦截）。
+ */
+function backupDatabases({ engineDbPath, indexDbPath, backupDir, sources }) {
+  const { DatabaseSync } = loadSqlite();
   fs.mkdirSync(backupDir, { recursive: true });
   const files = [];
-  for (const [db, base] of [['engine', engineDbPath], ['index', indexDbPath]]) {
-    if (typeof base !== 'string' || base === '' || !fs.existsSync(base)) continue;
-    for (const suffix of TRIPLE_SUFFIXES) {
-      const src = base + suffix;
-      if (!fs.existsSync(src)) continue;
-      fs.copyFileSync(src, path.join(backupDir, path.basename(src)));
-      files.push({ db, name: path.basename(src), bytes: fs.statSync(src).size });
+  try {
+    for (const [db, base] of [['engine', engineDbPath], ['index', indexDbPath]]) {
+      if (typeof base !== 'string' || base === '' || !fs.existsSync(base)) continue;
+      const sourcesForDb = sources && Array.isArray(sources[db])
+        ? sources[db].filter((p) => fs.existsSync(p))
+        : TRIPLE_SUFFIXES.map((suffix) => base + suffix).filter((p) => fs.existsSync(p));
+      const conn = new DatabaseSync(base);
+      try {
+        conn.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+        conn.exec('BEGIN EXCLUSIVE');
+        try {
+          for (const src of sourcesForDb) {
+            fs.copyFileSync(src, path.join(backupDir, path.basename(src)));
+            files.push({ db, name: path.basename(src), bytes: fs.statSync(src).size });
+          }
+        } finally {
+          try { conn.exec('ROLLBACK'); } catch { /* 释放失败交由 close 收尾 */ }
+        }
+      } finally {
+        try { conn.close(); } catch { /* 尽力关闭；最后连接关闭时 SQLite 自动 checkpoint */ }
+      }
     }
+  } catch (e) {
+    // M5 顺带：半成品备份目录清理——半套备份会被字典序判为「最新备份」展示
+    try { fs.rmSync(backupDir, { recursive: true, force: true }); } catch { /* 清理尽力，不掩盖原错误 */ }
+    throw e;
   }
   return { backupDir, files, totalBytes: files.reduce((s, f) => s + f.bytes, 0) };
 }
@@ -394,20 +475,118 @@ function pruneOldBackups({ maintenanceDir, keepName }) {
 }
 
 /**
- * --purge-backup（D3/F4）：删除最新 backup-* 目录。无备份 → purged:null（如实
- * 报告，不伪装成功）。只删 zsw 自有备份目录，不触任何库。
+ * --purge-backup（D3/F4 + M4）：删除最新 backup-* 目录。无备份 → purged:null（如实
+ * 报告，不伪装成功）。只删 zsw 自有备份目录，不触任何库。受 clean 互斥锁约束——
+ * 并发下 purge 会删掉进行中 clean 刚建的安全网（M4 危害链末端）；锁被占用时抛
+ * coded CLEAN_LOCK_BUSY（CLI main catch 输出 [zsw] 错误 + exit 1）。
  */
 function purgeLatestBackup(options = {}) {
   const maintenanceDir = options.maintenanceDir || defaultMaintenanceDir();
-  const latest = findLatestBackupName(maintenanceDir);
-  if (!latest) return { purged: null, path: null, maintenanceDir };
-  const target = path.join(maintenanceDir, latest);
-  fs.rmSync(target, { recursive: true, force: true });
-  return { purged: latest, path: target, maintenanceDir };
+  const lockPath = acquireCleanLock(maintenanceDir);
+  try {
+    const latest = findLatestBackupName(maintenanceDir);
+    if (!latest) return { purged: null, path: null, maintenanceDir };
+    const target = path.join(maintenanceDir, latest);
+    fs.rmSync(target, { recursive: true, force: true });
+    return { purged: latest, path: target, maintenanceDir };
+  } finally {
+    releaseCleanLock(lockPath);
+  }
 }
 
 function defaultMaintenanceDir() {
   return path.join(zswRoot(), 'maintenance');
+}
+
+// ---------------------------------------------------- M4 clean 跨进程互斥锁
+
+/** clean 执行互斥锁文件名（maintenanceDir 下；backup- 与 tmp- 前缀清单均不受影响）。 */
+const CLEAN_LOCK_FILENAME = '.clean.lock';
+
+function cleanLockPath(maintenanceDir) {
+  return path.join(maintenanceDir, CLEAN_LOCK_FILENAME);
+}
+
+/** 探活：kill(pid,0) 无信号探测；EPERM = 进程存在但属他主，按活进程保守处理。 */
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return Boolean(e && e.code === 'EPERM');
+  }
+}
+
+/** 读锁内容；损坏/被并发删除 → null（无主锁按 stale 处理，不让坏锁永久阻断维护）。 */
+function readCleanLockInfo(lockPath) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+    return parsed && typeof parsed.pid === 'number' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 获取 clean 跨进程互斥锁（M4）：'wx'（O_CREAT|O_EXCL）原子建
+ * `<maintenanceDir>/.clean.lock`，内容 {pid, startedAt}。已存在时读 pid 探活：
+ * 活进程 → coded CLEAN_LOCK_BUSY 拒绝（错误 → 原因 → 恢复动作闭环）；死进程/
+ * 内容损坏 → stale 接管（stderr 说明后删旧重试）。两进程同时判 stale 的理论
+ * 竞窗由「单人手动停机窗口 + O_EXCL 原子建」收敛：至多一方建锁成功，另一方
+ * EEXIST 后探活拒绝；release 只删 pid = 自己的锁，不误删接管竞窗下他人的新锁。
+ * @returns {string} lockPath（releaseCleanLock 消费）
+ */
+function acquireCleanLock(maintenanceDir) {
+  fs.mkdirSync(maintenanceDir, { recursive: true });
+  const lockPath = cleanLockPath(maintenanceDir);
+  const payload = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let fd;
+    try {
+      fd = fs.openSync(lockPath, 'wx');
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') throw e;
+      const info = readCleanLockInfo(lockPath);
+      if (info && pidAlive(info.pid)) {
+        const err = new Error(
+          `另一个 clean 正在运行（PID ${info.pid}，锁文件：${lockPath}）。`
+            + `恢复指引：等待其结束；确认无并发 clean（ps -p ${info.pid}）后手工删除锁文件再重跑。`,
+        );
+        err.code = 'CLEAN_LOCK_BUSY';
+        // 机读载体（REG-3）：runClean 把其填进 report.refusal——--json 形态
+        // 可区分拒绝类型/持锁方，不依赖人读文案解析
+        err.pid = info.pid;
+        err.lockPath = lockPath;
+        throw err;
+      }
+      process.stderr.write(`⚠ 清理锁 stale（持锁进程 ${info ? info.pid : '未知'} 已不在），接管：删除旧锁重试（${lockPath}）\n`);
+      try { fs.rmSync(lockPath, { force: true }); } catch { /* 重试 openSync 以 EEXIST 再报 */ }
+      continue;
+    }
+    try {
+      fs.writeFileSync(fd, payload);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return lockPath;
+  }
+  const err = new Error(
+    `清理锁获取失败（stale 接管后仍被占用）：${lockPath}。`
+      + '恢复指引：确认无并发 clean 后手工删除锁文件再重跑。',
+  );
+  err.code = 'CLEAN_LOCK_BUSY';
+  err.pid = null; // stale 接管竞窗态无确定持锁方，机读面如实为 null
+  err.lockPath = lockPath;
+  throw err;
+}
+
+/** 释放自己的锁：仅当锁内容 pid = 本进程才删（stale 接管竞窗下不误删他人新锁）。 */
+function releaseCleanLock(lockPath) {
+  if (typeof lockPath !== 'string') return;
+  const info = readCleanLockInfo(lockPath);
+  if (info && info.pid === process.pid) {
+    try { fs.rmSync(lockPath, { force: true }); } catch { /* 释放失败不掩盖主流程错误 */ }
+  }
 }
 
 // ---------------------------------------------------- 引擎库分块删除 / VACUUM / 索引联动
@@ -542,13 +721,21 @@ function renderProcessRefusal(violations) {
   return `${lines.join('\n')}\n`;
 }
 
-/** ④ 独占开锁拒绝（D2④ 兜底口径 + lsof 排查指引）。 */
-function renderLockRefusal(lockFailures) {
+/** ④ 独占开锁拒绝（D2④ 兜底口径 + lsof 排查指引）。midFlowBackupDir = 删除前
+ *  复探测（M5③）拒绝时附当前状态行——备份已落盘、尚未开始删除。 */
+function renderLockRefusal(lockFailures, midFlowBackupDir) {
   const lines = ['✗ 前置校验失败：双库独占开锁失败（库仍被其他进程/残留句柄持有）：'];
   for (const f of lockFailures) lines.push(`  ${f.label}：${f.message}`);
   lines.push('  D2④ 兜底：无进程名的持库 fd / crash 残留句柄由此拦截。'
     + '👉 确认全部 ZCode 进程退出后重跑；仍失败用 lsof <库路径> 排查持锁方。');
+  if (midFlowBackupDir) lines.push(`  当前状态：尚未开始删除，备份安全网已先行落盘：${midFlowBackupDir}。`);
   return `${lines.join('\n')}\n`;
+}
+
+/** 并发 clean 锁忙拒绝（M4；错误详情含 PID/锁文件路径/恢复动作，由
+ *  acquireCleanLock 组装，此处只加拒绝头）。 */
+function renderLockBusyRefusal(message) {
+  return `✗ 无法开始清理：${message}\n`;
 }
 
 /** 污染哨兵拒绝（§3.1 失败样例逐字，与 renderDryRun 同文案）。 */
@@ -579,13 +766,15 @@ function renderDiskRefusal(stage, { free, needed, dbBytesTotal, backupBytes, mid
   }
   const lines = [head];
   if (stage === 'pre-vacuum') {
-    lines.push('  当前状态：引擎库删除已提交（分块事务生效），VACUUM 未执行——删除已生效但空间尚未回收。');
+    lines.push('  当前状态：引擎库删除与 GUI 索引联动均已提交生效，VACUUM 未执行——删除已生效但空间尚未回收。');
   }
-  lines.push('  备份 + VACUUM 临时空间峰值 ≈ 2× 库体积（分阶段校验见 D4）。👉 删除备份目录后先跑');
+  lines.push('  备份 + VACUUM 临时空间峰值 ≈ 2× 库体积（分阶段校验见 D4）。👉 先跑');
   lines.push('  zsw doctor clean --fs-only 清文件面腾空间，再重跑全量 clean。');
   lines.push('  注意 --fs-only 同样执行全量停机校验——artifacts 删除会破坏运行中会话的转录引用，');
   lines.push('  log 删除破坏写入句柄，不停机一样不安全，不设豁免。');
-  if (midFlow) lines.push(`  备份保留在原位（回滚安全网仍在）：确认放弃回滚后才可删除备份目录。`);
+  // M1③：指引顺序——先 --fs-only（不动备份安全网），删备份降为最后手段
+  lines.push('  仍不足时：确认放弃回滚后才可删除备份目录（备份是回滚唯一安全网，最后手段）。');
+  if (midFlow) lines.push('  备份保留在原位（回滚安全网仍在）。');
   return `${lines.join('\n')}\n`;
 }
 
@@ -612,11 +801,22 @@ const RESTORE_GUIDANCE = [
   'WAL 不一致）。确认无异常后 zsw doctor clean --purge-backup 释放备份空间。',
 ].join('\n');
 
+/** ✓ 前置校验行（四项 + 磁盘三段 + SQLITE_TMPDIR；fs-only 形态注明豁口）。开锁探测
+ *  跳过的库逐一如实注记（M3：缺失 ≠ 有锁；REG-1：损坏 ≠ 有锁——按 reason 区分
+ *  文案，不伪装「开锁成功」）。 */
+function lockSkipNote(shutdown) {
+  const skipped = shutdown && Array.isArray(shutdown.lockSkipped) ? shutdown.lockSkipped : [];
+  return skipped.length
+    ? `（${skipped.map((x) => `${x.label}${x.reason === 'suspect-corrupt' ? '疑似损坏/非库文件' : '缺文件'}，开锁探测跳过 n/a`).join('、')}）`
+    : '';
+}
+
 /** ✓ 前置校验行（四项 + 磁盘三段 + SQLITE_TMPDIR；fs-only 形态注明豁口）。 */
 function renderPreflightLine(report) {
   const s = report.shutdown;
   if (report.fsOnly) {
-    return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功\n'
+    return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功'
+      + `${lockSkipNote(s)}\n`
       + '  （--fs-only：库操作已跳过——磁盘三段校验与 SQLITE_TMPDIR 仅全量 clean 需要）';
   }
   const stages = report.disk.stages.map((st) => {
@@ -628,7 +828,8 @@ function renderPreflightLine(report) {
     }
     return `VACUUM 前「剩余−备份」${fmtBytes(st.base)} ≥ 库三件套×1.1（${fmtBytes(st.needed)}）`;
   }).join('；');
-  return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功；\n'
+  return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功'
+    + `${lockSkipNote(s)}；\n`
     + `  磁盘三段校验过（${stages}）；\n`
     + `  SQLITE_TMPDIR 已钉死与库同卷（${report.disk.sqliteTmpdir.dir}）`;
 }
@@ -703,24 +904,31 @@ function renderCleanReport(report) {
 
 // ---------------------------------------------------- 编排入口
 
-/** 缺省路径组装（与 doctor/clean-fs 同源约定；全部可被 options 覆盖）。 */
+/** 缺省路径组装：引擎侧统一走 config.resolveEnginePaths 单一权威源
+ *  （doctor/clean-fs/clean-exec 同源消费）；zsw 侧 records/maintenance 归
+ *  config.zswRoot；全部可被 options 覆盖。 */
 function resolvePaths(options) {
-  const cliRoot = path.join(os.homedir(), '.zcode', 'cli');
+  const defaults = resolveEnginePaths();
   return {
-    engineDbPath: options.engineDbPath || path.join(cliRoot, 'db', 'db.sqlite'),
-    indexDbPath: options.indexDbPath || path.join(os.homedir(), '.zcode', 'v2', 'tasks-index.sqlite'),
+    engineDbPath: options.engineDbPath || defaults.engineDbPath,
+    indexDbPath: options.indexDbPath || defaults.indexDbPath,
     recordsPath: options.recordsPath || defaultRecordsPath(),
-    artifactsDir: options.artifactsDir || path.join(cliRoot, 'artifacts'),
-    logDir: options.logDir || path.join(cliRoot, 'log'),
-    execDir: options.execDir || path.join(cliRoot, 'exec'),
+    artifactsDir: options.artifactsDir || defaults.artifactsDir,
+    logDir: options.logDir || defaults.logDir,
+    execDir: options.execDir || defaults.execDir,
     maintenanceDir: options.maintenanceDir || defaultMaintenanceDir(),
   };
 }
 
 /**
- * doctor clean 执行编排（见文件头注顺序）。任何拒绝/失败路径都返回
+ * doctor clean 执行编排入口（步骤 0-17 见文件头注）。任何拒绝/失败路径都返回
  * {text, json, exitCode} 而非 throw（拒绝是正常输出面；exitCode 承载语义）；
- * 仅 node:sqlite 不可用/ps 不可用等环境级错误照 doctor 先例 throw（CLI 捕获）。
+ * 仅 node:sqlite 不可用/ps 不可用/识别管线 coded 错误等环境级错误照 doctor
+ * 先例 throw（CLI 捕获）。
+ *
+ * M4：锁覆盖 clean 执行全程（含 --fs-only 的不可逆文件删除），先于一切写面
+ * 动作——并发 clean 的 keep-1 prune 会互删对方备份安全网。锁忙是拒绝输出面
+ * （exit 1 文案）；锁的建/删本身异常照环境级错误上抛。
  *
  * @param {object} options 路径注入（resolvePaths）+ fsOnly / staleMode（--stale
  *   周期维护档，边界见文件头注）/ olderThanDays / now
@@ -740,7 +948,6 @@ function runClean(options = {}) {
     ? options.chunkSize : DEFAULT_CHUNK_SIZE;
 
   const diskStages = [];
-  let tmp = null;
 
   const report = {
     generatedAt: new Date(now).toISOString(),
@@ -756,6 +963,9 @@ function runClean(options = {}) {
     engine: null,
     index: null,
     files: null,
+    // 锁忙拒绝形态字段（REG-3：恒在——JSON.stringify 丢 undefined 键，机读方
+    // 需区分「拒绝类型/持锁方」与「未拒绝」；成功路径恒 null）
+    refusal: null,
   };
   const finish = (text, exitCode) => {
     report.exitCode = exitCode;
@@ -763,17 +973,34 @@ function runClean(options = {}) {
   };
   const refuse = (text) => finish(text, 1);
 
-  // 1. 五类分治（只读；fs-only 也需要删除集做文件面 id 匹配）
-  const initial = buildDeleteSet({
-    engineDbPath: paths.engineDbPath,
-    indexDbPath: paths.indexDbPath,
-    recordsPath: paths.recordsPath,
-    olderThanDays: report.olderThanDays,
-    staleMode,
-    now,
-  });
+  // 0. M4 跨进程互斥（--purge-backup 路径在 purgeLatestBackup 内单独受锁）
+  let lockPath;
+  try {
+    lockPath = acquireCleanLock(paths.maintenanceDir);
+  } catch (e) {
+    if (e && e.code === 'CLEAN_LOCK_BUSY') {
+      // 机读拒绝载体（REG-3）：text 面不变，--json 形态经 refusal 字段区分拒绝类型
+      report.refusal = { kind: 'CLEAN_LOCK_BUSY', pid: e.pid === undefined ? null : e.pid, lockPath: e.lockPath || null };
+      return refuse(renderLockBusyRefusal(e.message));
+    }
+    throw e;
+  }
+  try {
+    return runCleanLocked({ options, paths, report, refuse, finish, fsOnly, staleMode, now, freeBytesFn, chunkSize, diskStages });
+  } finally {
+    releaseCleanLock(lockPath);
+  }
+}
 
-  // 2. 四项停机校验（D2；fs-only 不豁免）
+/**
+ * 步骤 1-7 + 委派 runDbFlow（锁已持有）。M6 修复：停机校验（1）先于删除集构建
+ * （2）——识别管线的索引库读失败（coded）必须发生在停机确认之后。
+ */
+function runCleanLocked(ctx) {
+  const { options, paths, report, refuse, finish, fsOnly, staleMode, now, freeBytesFn, chunkSize, diskStages } = ctx;
+  let tmp = null;
+
+  // 1. 四项停机校验（D2；fs-only 不豁免）
   const shutdown = runShutdownChecks({
     engineDbPath: paths.engineDbPath,
     indexDbPath: paths.indexDbPath,
@@ -784,6 +1011,19 @@ function runClean(options = {}) {
     if (shutdown.processViolations.length > 0) return refuse(renderProcessRefusal(shutdown.processViolations));
     return refuse(renderLockRefusal(shutdown.lockFailures));
   }
+
+  // 2. 五类分治（只读；fs-only 也需要删除集做文件面 id 匹配）
+  // M5 备份源快照：停机确认后立即固化双库既有三件套清单——识别管线 readOnly
+  // 连接留下的瞬态 -wal/-shm 不得混入备份拷贝集（见 collectBackupSources 头注）
+  const backupSources = collectBackupSources({ engineDbPath: paths.engineDbPath, indexDbPath: paths.indexDbPath });
+  const initial = buildDeleteSet({
+    engineDbPath: paths.engineDbPath,
+    indexDbPath: paths.indexDbPath,
+    recordsPath: paths.recordsPath,
+    olderThanDays: report.olderThanDays,
+    staleMode,
+    now,
+  });
 
   // 3. 污染哨兵复断言（剔除前原始集——R2 教训；样本失败文案逐字）
   const sentinel = checkSentinel(initial, paths.recordsPath);
@@ -828,11 +1068,11 @@ function runClean(options = {}) {
 
   // 引擎库必须存在（禁静默空删——删除连接会凭空建库）。防御性冗余（一致性
   // 审查补强：与前置拦截同语义 fail-closed）：正常路径识别管线（缺库 DB_OPEN_FAILED 先抛）
-  // 与停机校验④（缺失=失败，禁静默跳过）已先行拦截，不应到达此处；保留只为
+  // 已先行拦截，停机校验④对缺失跳过（缺文件 ≠ 有锁，M3），不应到达此处；保留只为
   // 守住下方删除连接 new DatabaseSync 对缺文件凭空建空库的空洞形态。
   if (!fs.existsSync(paths.engineDbPath)) {
     return refuse([
-      `✗ 防御拦截：引擎库不存在：${paths.engineDbPath}（防御性冗余——识别管线与停机校验④已先行拦截，正常路径不应到达此处）。`,
+      `✗ 防御拦截：引擎库不存在：${paths.engineDbPath}（防御性冗余——识别管线已先行拦截，正常路径不应到达此处）。`,
       '  👉 先跑 node bin/zsw.js doctor 确认各面状态；库缺失时 clean 无事可做（禁静默空删）。',
     ].join('\n') + '\n');
   }
@@ -845,7 +1085,7 @@ function runClean(options = {}) {
   diskStages.push({ stage: 'pre-backup', ok: st1.ok, free: free0, needed: st1.needed, base: st1.base, backupBytes: 0 });
   if (!st1.ok) return refuse(renderDiskRefusal('pre-backup', { free: free0, needed: st1.needed, dbBytesTotal }));
 
-  // 7. SQLITE_TMPDIR 同卷钉死（8-15 全程包 try/finally：拒绝/失败/成功路径都还原
+  // 7. SQLITE_TMPDIR 同卷钉死（8-17 全程包 try/finally：拒绝/失败/成功路径都还原
   //    env + 清临时目录）。同卷失败拒绝路径同样先 teardown 再 return（一致性
   //    审查修复：补此 teardown 防 tmp-<ts> 空目录无人清理、反复触发累积残留；
   //    env 未被设置时 teardown 仅删目录，安全）。
@@ -861,7 +1101,7 @@ function runClean(options = {}) {
     return refuse(renderTmpdirRefusal(tmp, paths.maintenanceDir));
   }
   try {
-    const outcome = runDbFlow({ options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages });
+    const outcome = runDbFlow({ options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages, backupSources });
     return outcome;
   } finally {
     teardownSqliteTmpdir(tmp);
@@ -870,97 +1110,87 @@ function runClean(options = {}) {
 }
 
 /**
- * 步骤 8-15（备份 → 磁盘② → 分块删除 → 磁盘③ → VACUUM → 索引联动 → 文件面 →
- * 报告）。独立成函数使 SQLITE_TMPDIR 的 try/finally 覆盖全部拒绝路径。
+ * 步骤 8-17 编排（备份与删除前门禁见 runBackupAndGates、删除执行体见
+ * runDeleteAndVacuum、成功收尾见 finishCleanSuccess）。独立成函数使
+ * SQLITE_TMPDIR 的 try/finally 覆盖全部拒绝路径。
  */
 function runDbFlow(ctx) {
-  const { options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages } = ctx;
-  const { DatabaseSync } = loadSqlite();
+  const { options, paths, report, refuse, finish, finalIds, finalIndexIds, finalSet, plan, dbBytesTotal, volumePath, freeBytesFn, chunkSize, diskStages, backupSources } = ctx;
 
-  // 8. 三件套备份 + keep-1
+  // 8-11. 备份 + 删除前门禁（索引存在防御 → 磁盘② → ④ 复探测）——任一拒绝即返回
+  const pre = runBackupAndGates({ paths, report, refuse, dbBytesTotal, volumePath, freeBytesFn, diskStages, backupSources });
+  if (pre.refusal) return pre.refusal;
+
+  // 12-15. 引擎分块删除 → 索引联动（先于磁盘③/VACUUM，设计 §5 F3 顺序）→ 磁盘③ → VACUUM
+  const flow = runDeleteAndVacuum({ options, paths, finalIds, finalIndexIds, dbBytesTotal, backup: pre.backup, volumePath, freeBytesFn, chunkSize, diskStages });
+  report.index = flow.indexCounts;
+  report.engine = flow.engineCounts
+    ? { ...flow.engineCounts, chunkSize, vacuum: flow.vacuum }
+    : { chunkSize, vacuum: null, error: flow.engineError && flow.engineError.message };
+
+  if (flow.engineError || flow.indexError || flow.vacuumError) {
+    const kind = flow.engineError ? 'engine' : (flow.indexError ? 'index' : 'vacuum');
+    const error = flow.engineError || flow.indexError || flow.vacuumError;
+    return finish(renderMidFlowFailure(kind, error, pre.backup.backupDir), 1);
+  }
+  if (!flow.st3.ok) {
+    return refuse(renderDiskRefusal('pre-vacuum', {
+      free: flow.free2, needed: flow.st3.needed, dbBytesTotal, backupBytes: pre.backup.totalBytes, midFlow: true,
+    }));
+  }
+  return finishCleanSuccess({ report, finish, finalIds, finalIndexIds, finalSet, plan });
+}
+
+/**
+ * 步骤 8-11：三件套一致性备份 + keep-1 → 索引库存在防御拦截 → 磁盘校验② →
+ * ④ 独占开锁复探测。拒绝路径返回 {refusal}；通过返回 {backup}。
+ */
+function runBackupAndGates({ paths, report, refuse, dbBytesTotal, volumePath, freeBytesFn, diskStages, backupSources }) {
+  // 8. 三件套一致性备份 + keep-1（M5：锁窗口内一致拷贝；失败清理半成品后重抛）
   const backupDir = path.join(paths.maintenanceDir, `backup-${timestamp()}`);
-  const backup = backupDatabases({ engineDbPath: paths.engineDbPath, indexDbPath: paths.indexDbPath, backupDir });
+  const backup = backupDatabases({ engineDbPath: paths.engineDbPath, indexDbPath: paths.indexDbPath, backupDir, sources: backupSources });
   const pruned = pruneOldBackups({ maintenanceDir: paths.maintenanceDir, keepName: path.basename(backupDir) });
   report.backup = { dir: backupDir, files: backup.files, totalBytes: backup.totalBytes, pruned };
 
-  // 9. 磁盘校验② 删除前（基准时点 = 备份完成后实算）
+  // 9. 索引库必须存在（删除面防御）：停机校验④对缺失跳过（缺文件 ≠ 有锁，M3）、
+  //    识别管线 n/a 容忍，但删除连接对缺文件会凭空建空库——任何删除开始前
+  //    fail-closed。此处尚未删除，无「引擎已删索引未动」撕裂态。
+  if (!fs.existsSync(paths.indexDbPath)) {
+    return { refusal: refuse([
+      `✗ 防御拦截：索引库不存在：${paths.indexDbPath}（删除面 fail-closed——删除连接对缺文件会凭空建空库）。`,
+      `  当前状态：尚未开始任何删除，无撕裂态；备份已先行落盘：${backupDir}。`,
+      '  👉 确认索引库路径正确（缺省 = ~/.zcode/v2/tasks-index.sqlite）；本机 GUI 从未运行、索引库确不存在时，',
+      '  引擎面也无 GUI tasks 残留可联动——维护者确认后可 zsw doctor clean --purge-backup 释放本次备份。',
+    ].join('\n') + '\n') };
+  }
+
+  // 10. 磁盘校验② 删除前（基准时点 = 备份完成后实算）
   const free1 = freeBytesFn(volumePath, 'pre-delete');
   const st2 = evalDiskStage('pre-delete', { free: free1, dbBytesTotal, backupBytes: backup.totalBytes });
   diskStages.push({ stage: 'pre-delete', ok: st2.ok, free: free1, needed: st2.needed, base: st2.base, backupBytes: backup.totalBytes });
   if (!st2.ok) {
-    return refuse(renderDiskRefusal('pre-delete', {
+    return { refusal: refuse(renderDiskRefusal('pre-delete', {
       free: free1, needed: st2.needed, dbBytesTotal, backupBytes: backup.totalBytes,
-    }));
+    })) };
   }
 
-  // 10. 引擎库分块删除（FK ON + 每块一事务 + 批间 PASSIVE checkpoint）
-  let engineCounts = null;
-  let engineError = null;
-  let vacuum = null;
-  let st3 = null;
-  let free2 = null;
-  const db = new DatabaseSync(paths.engineDbPath);
-  try {
-    db.exec('PRAGMA foreign_keys = ON');
-    engineCounts = deleteEngineSessionsChunked({
-      db, ids: finalIds, chunkSize, afterBatch: options.afterBatch,
-    });
+  // 11. ④ 独占开锁复探测（M5③）：停机校验是时点探测，到删除连接间隔可达分钟级
+  //     （多 GB 库备份），本步为删除连接打开前最后一道门禁，重跑收窄无写者窗口。
+  //     拒绝态 = 备份在、零删除。
+  const reprobe = checkExclusiveLocks({ engineDbPath: paths.engineDbPath, indexDbPath: paths.indexDbPath });
+  if (!reprobe.ok) {
+    return { refusal: refuse(renderLockRefusal(reprobe.failures, backupDir)) };
+  }
+  return { backup };
+}
 
-    // 11. 磁盘校验③ VACUUM 前（基准时点 = 删除完成后）
-    free2 = freeBytesFn(volumePath, 'pre-vacuum');
-    st3 = evalDiskStage('pre-vacuum', { free: free2, dbBytesTotal, backupBytes: backup.totalBytes });
-    diskStages.push({
-      stage: 'pre-vacuum', ok: st3.ok, free: free2, needed: st3.needed, base: st3.base, backupBytes: backup.totalBytes,
-    });
-    // 12. VACUUM（同一连接、无活跃事务；C2 删行不还空间）
-    if (st3.ok) vacuum = vacuumEngineDb(db);
-  } catch (e) {
-    engineError = e;
-  } finally {
-    try { db.close(); } catch { /* 尽力关闭 */ }
-  }
-  report.engine = engineCounts
-    ? { ...engineCounts, chunkSize, vacuum } : { chunkSize, vacuum: null, error: engineError && engineError.message };
-  if (engineError) {
-    const lines = [
-      `✗ 清理执行失败：${engineError.message}`,
-      `  引擎库删除中止于事务边界（已提交的批次保持生效）；备份安全网在：${backupDir}`,
-      '  👉 按还原指引整库回滚，或排除错误后重跑（重跑只处理剩余部分，幂等）。',
-      RESTORE_GUIDANCE,
-    ];
-    return finish(`${lines.join('\n')}\n`, 1);
-  }
-  if (!st3.ok) {
-    return refuse(renderDiskRefusal('pre-vacuum', {
-      free: free2, needed: st3.needed, dbBytesTotal, backupBytes: backup.totalBytes, midFlow: true,
-    }));
-  }
-
-  // 13. 索引库联动（tasks + members 同事务）。防御性冗余（一致性审查补强：
-  // 与④同语义 fail-closed）：正常路径停机校验④已把库缺失判为失败（禁静默跳过——旧
-  // 「跳过并注记」与④自相矛盾，已废）；此处仅为守住索引连接对缺文件凭空建
-  // 空库的空洞形态。到此处引擎库删除可能已提交，拒绝文案指向备份安全网。
-  if (!fs.existsSync(paths.indexDbPath)) {
-    return refuse([
-      `✗ 防御拦截：索引库不存在：${paths.indexDbPath}（防御性冗余——停机校验④已先行拦截，正常路径不应到达此处）。`,
-      `  当前状态：引擎库删除已提交、索引库未动；备份安全网在：${report.backup ? report.backup.dir : '(未知)'}。`,
-      '  👉 按还原指引整库回滚，或确认索引库路径后重跑（重跑只处理剩余部分，幂等）。',
-    ].join('\n') + '\n');
-  }
-  const idb = new DatabaseSync(paths.indexDbPath);
-  try {
-    report.index = deleteIndexTasks({ db: idb, ids: finalIndexIds });
-  } finally {
-    try { idb.close(); } catch { /* 尽力 */ }
-  }
-
-  // 14. 文件面 plan + execute
+/** 步骤 16-17：文件面 plan + execute → 对账 counts → 报告渲染（A-4 同构）。 */
+function finishCleanSuccess({ report, finish, finalIds, finalIndexIds, finalSet, plan }) {
   const fileResult = executeFileCleanup(plan, {
-    artifactsDir: paths.artifactsDir, logDir: paths.logDir, execDir: paths.execDir,
+    artifactsDir: report.paths.artifactsDir, logDir: report.paths.logDir, execDir: report.paths.execDir,
   });
   report.files = { plan, result: fileResult };
 
-  // 15. 报告（A-4 对账 counts：与 collectDryRun 字段同构）
   report.counts = {
     whitelist: finalSet.byClass.whitelist.length,
     feature: finalSet.byClass.feature.length,
@@ -982,6 +1212,101 @@ function runDbFlow(ctx) {
       + '详情见 --json 报告逐项 failures。\n';
   }
   return finish(text, exitCode);
+}
+
+/**
+ * 步骤 12-15 执行体：引擎分块删除 → 索引联动 → 磁盘③ → VACUUM。三阶段错误
+ * 分开捕获（engineError / indexError / vacuumError）——失败报告按阶段如实区分
+ * （M1：VACUUM 失败 ≠ 删除中止，不得输出整库回滚指引误导）。
+ * 索引联动紧随引擎删除、先于磁盘③/VACUUM（M1 回归设计 §5 F3 编排序）：旧序下
+ * pre-vacuum 拒绝/引擎中途中止两条路径停在「引擎行已删、tasks 行未删」，且重跑
+ * 不补删（识别集只收引擎库现存会话，已删会话的 tasks 行进不了重跑删除集）。
+ * @returns {{engineCounts, engineError, indexError, vacuumError, vacuum, st3, free2}}
+ */
+function runDeleteAndVacuum({ options, paths, finalIds, finalIndexIds, dbBytesTotal, backup, volumePath, freeBytesFn, chunkSize, diskStages }) {
+  const { DatabaseSync } = loadSqlite();
+  const out = { engineCounts: null, engineError: null, indexError: null, indexCounts: null, vacuumError: null, vacuum: null, st3: null, free2: null };
+
+  // 12. 引擎库分块删除（FK ON + 每块一事务 + 批间 PASSIVE checkpoint）
+  const db = new DatabaseSync(paths.engineDbPath);
+  try {
+    // M5②：写连接立即设 busy_timeout——停机校验已确保无运行中写者，取值只需
+    // 骑过瞬时锁残留（进程刚退出的锁释放延迟 / WAL 恢复），不把停机窗口卡成悬挂
+    db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.exec('PRAGMA foreign_keys = ON');
+    out.engineCounts = deleteEngineSessionsChunked({
+      db, ids: finalIds, chunkSize, afterBatch: options.afterBatch,
+    });
+  } catch (e) {
+    out.engineError = e;
+  }
+
+  // 13. 索引库联动（tasks + members 同事务；engineError 时索引面未动——失败文案如实声明）。
+  //     REG-2：连接构造（new DatabaseSync）同在 try 内——构造抛错（EACCES/EROFS
+  //     窄竞窗）也归 indexError 走 renderMidFlowFailure('index')，不穿透到 CLI
+  //     main catch 绕过三态渲染。
+  if (!out.engineError) {
+    let idb = null;
+    try {
+      idb = new DatabaseSync(paths.indexDbPath);
+      idb.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      out.indexCounts = deleteIndexTasks({ db: idb, ids: finalIndexIds });
+    } catch (e) {
+      out.indexError = e;
+    } finally {
+      try { if (idb) idb.close(); } catch { /* 尽力 */ }
+    }
+  }
+
+  // 14/15. 磁盘校验③（基准 = 删除完成后）+ VACUUM（同一连接、无活跃事务；C2）
+  try {
+    if (!out.engineError && !out.indexError) {
+      out.free2 = freeBytesFn(volumePath, 'pre-vacuum');
+      out.st3 = evalDiskStage('pre-vacuum', { free: out.free2, dbBytesTotal, backupBytes: backup.totalBytes });
+      diskStages.push({
+        stage: 'pre-vacuum', ok: out.st3.ok, free: out.free2, needed: out.st3.needed, base: out.st3.base, backupBytes: backup.totalBytes,
+      });
+      if (out.st3.ok) out.vacuum = vacuumEngineDb(db);
+    }
+  } catch (e) {
+    out.vacuumError = e;
+  } finally {
+    try { db.close(); } catch { /* 尽力关闭 */ }
+  }
+  return out;
+}
+
+/**
+ * 中流失败三态文案（M1：错误 → 阶段事实 → 恢复动作，按完成度如实区分；
+ * 「重跑只处理剩余部分，幂等」对索引面是假承诺——已删会话的 tasks 行不在
+ * 重跑识别集内，统一改为手工核查指引，不再出现「幂等」字样）。
+ */
+function renderMidFlowFailure(kind, error, backupDir) {
+  const message = (error && error.message) || String(error);
+  if (kind === 'engine') {
+    return [
+      `✗ 清理执行失败：${message}`,
+      `  当前阶段：引擎库删除中止于事务边界（已提交的批次保持生效），索引侧联动尚未执行；备份安全网在：${backupDir}`,
+      '  重跑不补删索引面：重跑识别集只收引擎库现存会话，已删会话的 GUI tasks 行不会进入重跑删除集。',
+      '  👉 按还原指引整库回滚后重跑（索引面一并重来）；或接受删除现状，对照 --json 报告 deleteSet.indexTaskIds',
+      '  手工核查索引残留（sqlite3 -readonly ~/.zcode/v2/tasks-index.sqlite 逐条核对孤儿 tasks 行）。',
+      RESTORE_GUIDANCE,
+    ].join('\n') + '\n';
+  }
+  if (kind === 'index') {
+    return [
+      `✗ 清理执行失败：GUI 索引联动删除失败：${message}`,
+      `  当前阶段：引擎库删除已全部提交生效，索引库联动在事务边界中止（tasks/task_group_members 行未删，单事务原子）；备份安全网在：${backupDir}`,
+      '  重跑不补删索引面：重跑识别集只收引擎库现存会话，已删会话的 GUI tasks 行不会进入重跑删除集。',
+      '  👉 按还原指引整库回滚后重跑；或接受删除现状，对照 --json 报告 deleteSet.indexTaskIds 手工核查索引残留。',
+      RESTORE_GUIDANCE,
+    ].join('\n') + '\n';
+  }
+  return [
+    `✗ 清理执行失败：VACUUM 失败：${message}`,
+    `  当前阶段：删除已全部完成（引擎库 + GUI 索引联动均生效），仅空间回收未完成；备份安全网在：${backupDir}`,
+    '  👉 无需回滚：排除磁盘/环境问题后直接重跑 zsw doctor clean——删除集为空，直达 VACUUM 重试。',
+  ].join('\n') + '\n';
 }
 
 module.exports = {
@@ -1013,6 +1338,13 @@ module.exports = {
   deleteIndexTasks,
   runClean,
   renderCleanReport,
+  // M4 锁生命周期原语（导出增量：锁生命周期单测直接消费，不破坏既有导出面）
+  CLEAN_LOCK_FILENAME,
+  cleanLockPath,
+  pidAlive,
+  readCleanLockInfo,
+  acquireCleanLock,
+  releaseCleanLock,
   // 常量
   CASCADE_SESSION_TABLES,
   DEFAULT_CHUNK_SIZE,

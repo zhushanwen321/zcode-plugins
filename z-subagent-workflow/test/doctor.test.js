@@ -38,13 +38,17 @@ const NOW = 1_700_000_000_000;
 //   s3 subagent_child 超龄（10d）+ 白名单内
 //   s4 subagent_child 新鲜（1d）+ 白名单内（records 数组嵌套层）
 //   s5 interactive 白名单外（records 只有 targetSessionId: s5——干扰行，不得入集）
-//   删除集粗口径 = {s1,s2,s3,s4}（4/5 = 0.8）；特征目录类 = {s1}
+//   s7 subagent_child 新鲜（1d）+ 白名单外 + 非特征目录（BIZ-5 区分度锚点：
+//      粗口径 subagent_child 只并超龄部分——若实现错并全部 child，s7 会虚增）
+//   删除集粗口径 = {s1,s2,s3,s4}（4/6）；特征目录类 = {s1}；
+//   s4 借白名单通道入集、s7 不入——两行合围「child 是否按龄」的判定面
 const SESSIONS = [
   ['s1', '/tmp/x/zsub-e2e-abc/e1-proj', 'interactive', NOW - 1 * DAY],
   ['s2', '/Users/u/real-proj', 'interactive', NOW - 2 * DAY],
   ['s3', '/Users/u/real-proj', 'subagent_child', NOW - 10 * DAY],
   ['s4', '/Users/u/real-proj', 'subagent_child', NOW - 1 * DAY],
   ['s5', '/Users/u/other-proj', 'interactive', NOW - 3 * DAY],
+  ['s7', '/Users/u/real-proj', 'subagent_child', NOW - 1 * DAY],
 ];
 
 /** 建微型引擎库（schema 按真实库关键列摘抄；withRefTables=false 造缺表场景）。 */
@@ -127,9 +131,10 @@ function createIndexDb(dbPath) {
   db.exec('CREATE TABLE task_group_members (group_id TEXT, task_id TEXT)');
   db.exec('CREATE TABLE automations (automation_id TEXT, target_task_id TEXT)');
   db.exec('CREATE TABLE off_peak_tasks (off_peak_task_id TEXT, session_id TEXT)');
-  // s1..s4 ∈ 删除集粗口径 + s6 不在引擎库 → 总 5 命中 4
+  // s1..s4 ∈ 删除集粗口径 + s6 不在引擎库 + s7（新鲜 child 白名单外）不入粗口径
+  //   → 总 6 命中 4（BIZ-5：s7 若被错并入粗口径，tasksHit 会虚增到 5）
   const t = db.prepare('INSERT INTO tasks (task_id, archived) VALUES (?, 1)');
-  for (const id of ['s1', 's2', 's3', 's4', 's6']) t.run(id);
+  for (const id of ['s1', 's2', 's3', 's4', 's6', 's7']) t.run(id);
   const m = db.prepare('INSERT INTO task_group_members (group_id, task_id) VALUES (?, ?)');
   m.run('g1', 's2');
   m.run('g1', 's9');
@@ -204,25 +209,28 @@ test('五面计数：fixture 上白名单双口径 / 特征类 / subagent_child 
 
   // 面① 引擎库
   assert.equal(r.engine.available, true);
-  assert.equal(r.engine.sessionTotal, 5);
+  assert.equal(r.engine.sessionTotal, 6);
   assert.equal(r.engine.taskTypeDistribution.interactive, 3);
-  assert.equal(r.engine.taskTypeDistribution.subagent_child, 2);
+  assert.equal(r.engine.taskTypeDistribution.subagent_child, 3, 's3/s4/s7');
   assert.equal(r.engine.whiteListTotal, 4, '白名单总数：s1..s4（targetSessionId:s5 与坏行不入式）');
   assert.equal(r.engine.whiteListInDb, 4, '白名单∩库：4 个全在库');
   assert.equal(r.engine.featureDirectoryCount, 1, '特征目录类：仅 s1（zsub-e2e- 段）');
-  assert.deepEqual(r.engine.subagentChild, { total: 2, olderThan7d: 1 }, 's3 超龄 / s4 新鲜');
+  assert.deepEqual(r.engine.subagentChild, { total: 3, olderThan7d: 1 }, '超龄仅 s3；s4/s7 新鲜');
   assert.equal(Object.keys(r.engine.refTables).length, 13, '13 表逐表计数齐全');
   assert.equal(r.engine.refTables.message, 3);
   assert.equal(r.engine.refTables.part, 2);
   assert.equal(r.engine.refTables.input_history, 1);
   assert.equal(r.engine.refTables.session_task_link, 1);
   assert.ok(r.engine.dbBytes.total > 0);
-  assert.equal(r.engine.coarseDeleteSetSize, 4, '删除集粗口径 = 白名单∩库 ∪ 特征类 ∪ subagent_child');
+  // BIZ-5 区分度锚点：粗口径 = 白名单∩库 ∪ 特征类 ∪ **超龄** subagent_child。
+  // s4（新鲜 child）借白名单通道入集、s7（新鲜 child 白名单外）不入——若实现
+  // 错并全部 subagent_child，此处会虚增到 5 且 s7 的 tasks 行被误计命中
+  assert.equal(r.engine.coarseDeleteSetSize, 4, '删除集粗口径 = 白名单∩库 ∪ 特征类 ∪ 超龄 subagent_child（s4 借白名单通道在集内；s7 新鲜 child 白名单外不入——D1① 恒按龄）');
 
   // 面② 索引库
   assert.equal(r.index.available, true);
-  assert.equal(r.index.tasksTotal, 5);
-  assert.equal(r.index.tasksHit, 4, '命中按 task_id ∈ 删除集粗口径（s1..s4；s6 不在删除集）');
+  assert.equal(r.index.tasksTotal, 6);
+  assert.equal(r.index.tasksHit, 4, '命中按 task_id ∈ 删除集粗口径（s1..s4；s6 不在引擎库、s7 不入粗口径）');
   assert.deepEqual(r.index.sisterTables, { taskGroupMembers: 2, automationsWithTarget: 2, offPeakTasks: 1 });
   // 姊妹表冲突命中（体检复用 checkIndexConflicts 对删除集粗口径的只读预检——
   // 阶段 3/4 一致性审查修复项）：
@@ -248,14 +256,14 @@ test('五面计数：fixture 上白名单双口径 / 特征类 / subagent_child 
   );
 
   // 预估回收 = 删除集占比 × 库三件套体积（计划偏差 3 粗估口径）
-  assert.equal(r.estimate.ratio, 0.8);
-  assert.equal(r.estimate.estimatedBytes, Math.round(0.8 * (r.engine.dbBytes.total)));
+  assert.equal(r.estimate.ratio, 4 / 6, '删除集 4 / 会话总数 6（含 s7：新鲜 child 不入集）');
+  assert.equal(r.estimate.estimatedBytes, Math.round((4 / 6) * (r.engine.dbBytes.total)));
 });
 
 test('预估回收：estimatedBytes = round(ratio × 库三件套实际合计体积)', () => {
   const { options, dbBytesTotal } = buildMainFixture();
   const r = collect(options);
-  assert.equal(r.estimate.estimatedBytes, Math.round(0.8 * dbBytesTotal));
+  assert.equal(r.estimate.estimatedBytes, Math.round((4 / 6) * dbBytesTotal));
 });
 
 // ------------------------------------------------- 渲染
@@ -266,9 +274,9 @@ test('renderText：人读样张关键行（白名单双口径 / 预估回收标�
   assert.match(text, /zsw 会话残留体检（/, '标题行（全角括号，照样张）');
   assert.match(text, /白名单∩库 4 个（白名单总数 4）/);
   assert.match(text, /特征目录类 1 个/);
-  assert.match(text, /subagent_child 2 个（其中 >7 天 1）/);
+  assert.match(text, /subagent_child 3 个（其中 >7 天 1）/);
   assert.match(text, /粗估，真实以执行后 du 为准/, '预估回收必须标注估算性质（计划偏差 3）');
-  assert.match(text, /tasks 总数 5 \/ 粗口径命中 4 行/);
+  assert.match(text, /tasks 总数 6 \/ 粗口径命中 4 行/);
   assert.match(
     text,
     /姊妹表冲突：members 1 \/ automations 1 \/ off_peak 1（表规模：members 2 \/ automations 2（target 非空） \/ off_peak 1）/,
@@ -334,6 +342,39 @@ test('缺库：索引库文件不存在 → 面② n/a；引擎库缺失 → 面
   assert.match(text, /n\/a/);
 });
 
+test('冲突预检失败（索引库 tasks 缺 off_peak_task_id 列）→ conflicts 归 null → conflictHits 三键严格 null（--json 机读区分「预检不可用」与「命中 0」）', () => {
+  const dir = path.join(TMP, 'conflict-null');
+  fs.mkdirSync(dir, { recursive: true });
+  const engineDbPath = path.join(dir, 'db.sqlite');
+  createEngineDb(engineDbPath);
+  // 索引库 tasks 表缺 off_peak_task_id 列（旧版 schema 形态）：tasks 本体可查
+  // （collectIndex available=true），checkIndexConflicts 的 tasks 源查询失败 →
+  // INDEX_DB_UNAVAILABLE → collectIndex 容错归 null（doctor.js 预检 try/catch 分支）
+  const indexDbPath = path.join(dir, 'tasks-index.sqlite');
+  const db = new DatabaseSync(indexDbPath);
+  db.exec('CREATE TABLE tasks (task_id TEXT, archived INTEGER)');
+  db.prepare('INSERT INTO tasks (task_id, archived) VALUES (?, 1)').run('s1');
+  db.close();
+  const r = collect({
+    now: NOW,
+    engineDbPath,
+    indexDbPath,
+    recordsPath: createRecords(),
+    artifactsDir: path.join(dir, 'artifacts'),
+    logDir: path.join(dir, 'log'),
+    execDir: path.join(dir, 'exec'),
+  });
+  assert.equal(r.index.available, true, '索引库本体可读（区别于整面 n/a 形态）');
+  assert.equal(r.index.tasksTotal, 1);
+  assert.deepEqual(r.index.conflictHits, { available: false, members: null, automations: null, offPeak: null },
+    '预检不可用 → available:false + 三键 null（键恒在——JSON.stringify 丢 undefined，机读方需区分键缺失与命中 0）');
+  for (const key of ['members', 'automations', 'offPeak']) {
+    assert.equal(r.index.conflictHits[key], null);
+    assert.notEqual(r.index.conflictHits[key], undefined, `${key} 严格非 undefined（归一契约）`);
+  }
+  assert.match(renderText(r), /姊妹表冲突：n\/a/, '文本渲染面预检不可用 = n/a');
+});
+
 test('缺目录：exec 目录不存在 → 该面 n/a，其余面照常', () => {
   const dir = path.join(TMP, 'missing-exec');
   fs.mkdirSync(dir, { recursive: true });
@@ -350,7 +391,7 @@ test('缺目录：exec 目录不存在 → 该面 n/a，其余面照常', () => 
   });
   assert.equal(r.files.exec.available, false);
   assert.equal(r.files.log.available, false, 'log 同目录缺失口径');
-  assert.equal(r.engine.sessionTotal, 5);
+  assert.equal(r.engine.sessionTotal, 6);
 });
 
 test('同源绑定：SUBAGENT_MAX_AGE_MS 派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS（单一权威源）', () => {

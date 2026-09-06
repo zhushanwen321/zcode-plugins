@@ -646,16 +646,21 @@ function runHookCommand(rest) {
  * 两路径消费（--dry-run 预览 + 执行），都是删除集语义——删除档位解析失败继续跑
  * 会把用户意图的保守档（如 30 天）静默降级为缺省 7 天，
  * 故 coded 错误拒收（CLI 面输出 stderr 可操作指引 + exit 1），不做容错回落。
+ * 裸 `--older-than`（漏写值，parseArgs 产出布尔 true）与非法值同因同罚：
+ * 缺值静默回落 7 天档同样被动扩大删除集，不走 warn-回落。
  * 解析先于 dry-run/执行/purge 三态分流：非法值对 purge 同样 fail-fast 拒绝
  * （purge 无删除档位语义，拒绝保守无害）。裸 `doctor` 体检不消费 --older-than
  * （无删除语义，传了也被忽略，不做校验）。
  */
 function parseOlderThanDays(v) {
-  if (v === undefined || v === true) return undefined;
-  const m = /^(\d+)d?$/i.exec(String(v).trim());
+  if (v === undefined) return undefined;
+  const isBare = v === true; // parseArgs 对裸 `--older-than`（漏写值）产出 true
+  const m = isBare ? null : /^(\d+)d?$/i.exec(String(v).trim());
   if (!m) {
     const err = new Error(
-      `--older-than 值非法：${v}（需天数，合法形态如 30 或 30d）。`
+      (isBare
+        ? '--older-than 缺值：裸 --older-than 后未跟天数。'
+        : `--older-than 值非法：${v}（需天数，合法形态如 30 或 30d）。`)
       + '删除档位解析失败不回落缺省（防保守档被静默降级为 7 天、删除集被动扩大）。'
       + '👉 用合法形态重跑，如 node bin/zsw.js doctor clean --dry-run --older-than 30。',
     );
@@ -709,7 +714,7 @@ function runDoctorCleanDryRun(args, olderThanDays) {
   // exit 会丢弃未 flush 的异步写块（实测 JSON 截断）；自然退出等 stdout
   // drain 完毕，exit code 照常生效（doctor 无引擎执行体挂事件循环）
   process.exitCode = report.sentinel && report.sentinel.ok ? 0 : 1;
-  if (args.json) process.stdout.write(renderJson(report));
+  if (args.json === true) process.stdout.write(renderJson(report));
   else process.stdout.write(renderDryRun(report).text);
 }
 
@@ -721,7 +726,7 @@ function runDoctorCleanPurgeBackup(args) {
   const { purgeLatestBackup } = require('../lib/clean-exec');
   const r = purgeLatestBackup();
   process.exitCode = 0;
-  if (args.json) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
+  if (args.json === true) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
   else if (r.purged) {
     process.stdout.write(`已删除备份目录：${r.path}\n`
       + '注意：备份是整库回滚的唯一安全网——确认无异常后再执行本命令。\n');
@@ -744,7 +749,7 @@ function runDoctorCleanExecute(args, olderThanDays) {
     exitOrRethrowSqliteUnavailable(e);
   }
   process.exitCode = outcome.exitCode;
-  if (args.json) process.stdout.write(`${JSON.stringify(outcome.json, null, 2)}\n`);
+  if (args.json === true) process.stdout.write(`${JSON.stringify(outcome.json, null, 2)}\n`);
   else process.stdout.write(outcome.text);
 }
 
