@@ -47,6 +47,20 @@
  *        （SessionStart hook 入口，stdout 输出资源快照协议 JSON；嵌套环境或
  *         任一异常降级 {} + exit 0，绝不阻断会话启动。引擎注册面用
  *         bin/zsw-hook.js；本子命令仅调试）
+ *   node bin/zsw.js doctor [--json]               # 会话残留只读体检（五面量级 +
+ *        白名单双口径 + 13 表行数 + 预估回收粗估；--json 出结构化报告）
+ *   node bin/zsw.js doctor clean --dry-run [--stale --older-than <Nd>] [--json]
+ *        # 删除集预览（只读不写：五类分治 + 污染哨兵 + 冲突预检 + 红灯；
+ *        # 哨兵失败 exit 1 阻断；--stale 档位语义同 clean；--json 出结构化删除集报告）
+ *   node bin/zsw.js doctor clean [--fs-only] [--stale --older-than <Nd>] [--json]
+ *        # 清理执行器（停机窗口手动操作：四项停机校验 → 三段磁盘校验 + SQLITE_TMPDIR
+ *        # 同卷 → 双库三件套备份（keep-1）→ 引擎库分块删除（FK 列级联动 + 批间
+ *        # checkpoint）+ VACUUM → 索引库联动 → 文件面清理；任一校验不过即拒绝并给
+ *        # 恢复指引。--fs-only 只走文件面但停机校验不豁免。--stale 周期维护档
+ *        # （手动触发不自动化，D5）：删除集缩到超龄部分——三类识别统一按
+ *        # --older-than 天数（缺省 7）过滤 time_created；文件面档位不跟随
+ *        # （log 保留 14 天 / exec 空壳 7 天）
+ *   node bin/zsw.js doctor clean --purge-backup    # 删除最近一次备份目录（释放备份空间；无备份如实报告）
  *
  * --local flag：1.x 的 daemon/本地双形态遗产，2.0 起本地是唯一形态——
  * flag 接受但忽略（旧脚本零改动迁移）。
@@ -93,6 +107,10 @@ function usage(exitCode = 1) {
     + '  node bin/zsw.js workflow 2>&1 | head -40   # workflow 子命令完整用法\n'
     + '  node bin/zsw.js workflow --action list      # workflow run 清单（本进程视图）\n'
     + '  node bin/zsw.js hook session-start           # SessionStart hook 快照输出（异常降级 {}）\n'
+    + '  node bin/zsw.js doctor [--json]              # 会话残留只读体检（五面量级 + 预估回收粗估）\n'
+    + '  node bin/zsw.js doctor clean --dry-run [--json]  # 删除集预览（只读不写；哨兵失败 exit 1 阻断）\n'
+    + '  node bin/zsw.js doctor clean [--fs-only] [--stale --older-than <Nd>]   # 清理执行器（停机窗口手动操作；拒绝路径给恢复指引）\n'
+    + '  node bin/zsw.js doctor clean --purge-backup   # 删除最近一次备份目录（释放备份空间）\n'
     + '  node bin/zsw.js start --wait --task "..." --slug x   # start（恒阻塞到完成；--wait 接受但无差异）\n'
     + '                                                   # 长任务用 Bash run_in_background 包裹，完成即原生通知\n'
     + '  node bin/zsw.js list --local                  # --local 已无行为差异（接受但忽略）\n'
@@ -615,6 +633,170 @@ function runHookCommand(rest) {
   }
 }
 
+// ------------------------------------------------------ doctor 子命令（只读体检）
+
+/**
+ * --older-than 值解析（D5 档位形态）：接受 `30` / `30d`（天）。u5 起语义闭环：
+ * 非 --stale 时只作用于 subagent_child 按龄（D1①）；--stale 时三类识别统一按龄
+ * （语义权威源 lib/clean-identify.js buildDeleteSet 头注；文件面档位不跟随——
+ * log 保留 14 天 / exec 空壳 7 天保持各自默认）。
+ *
+ * 非法值 fail-fast（阶段 3/4 一致性审查修复：--older-than 非法值原静默回落缺省
+ * 7 天，越小的档删除集越大、被动扩大删除面）：--older-than 只被 doctor clean
+ * 两路径消费（--dry-run 预览 + 执行），都是删除集语义——删除档位解析失败继续跑
+ * 会把用户意图的保守档（如 30 天）静默降级为缺省 7 天，
+ * 故 coded 错误拒收（CLI 面输出 stderr 可操作指引 + exit 1），不做容错回落。
+ * 裸 `--older-than`（漏写值，parseArgs 产出布尔 true）与非法值同因同罚：
+ * 缺值静默回落 7 天档同样被动扩大删除集，不走 warn-回落。
+ * 解析先于 dry-run/执行/purge 三态分流：非法值对 purge 同样 fail-fast 拒绝
+ * （purge 无删除档位语义，拒绝保守无害）。裸 `doctor` 体检不消费 --older-than
+ * （无删除语义，传了也被忽略，不做校验）。
+ */
+function parseOlderThanDays(v) {
+  if (v === undefined) return undefined;
+  const isBare = v === true; // parseArgs 对裸 `--older-than`（漏写值）产出 true
+  const m = isBare ? null : /^(\d+)d?$/i.exec(String(v).trim());
+  if (!m) {
+    const err = new Error(
+      (isBare
+        ? '--older-than 缺值：裸 --older-than 后未跟天数。'
+        : `--older-than 值非法：${v}（需天数，合法形态如 30 或 30d）。`)
+      + '删除档位解析失败不回落缺省（防保守档被静默降级为 7 天、删除集被动扩大）。'
+      + '👉 用合法形态重跑，如 node bin/zsw.js doctor clean --dry-run --older-than 30。',
+    );
+    err.code = 'INVALID_OLDER_THAN';
+    throw err;
+  }
+  return Number(m[1]);
+}
+
+/**
+ * node:sqlite 不可用的统一出口（体检/预览/执行三处采集入口共用同一失败语义）：
+ * coded 错误给可操作指引（指向 Node 升级）+ exit 1，不 crash 无堆栈转储；
+ * 其他错误原样重抛给 main catch。
+ */
+function exitOrRethrowSqliteUnavailable(e) {
+  if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
+    process.stderr.write(`[zsw] ${e.message}\n`);
+    process.exit(1);
+  }
+  throw e;
+}
+
+/** doctor 体检（缺省形态，u1）：只读采集 + 渲染（--json 出结构化报告）。 */
+function runDoctorInspect(rest) {
+  const { collect, renderText, renderJson } = require('../lib/doctor');
+  const args = parseArgs(rest);
+  let report;
+  try {
+    report = collect();
+  } catch (e) {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  if (args.json === true) process.stdout.write(renderJson(report));
+  else process.stdout.write(renderText(report));
+}
+
+/** doctor clean --dry-run（u2）：删除集只读预览，哨兵失败 exit 1 阻断。 */
+function runDoctorCleanDryRun(args, olderThanDays) {
+  const { collectDryRun, renderDryRun, renderJson } = require('../lib/doctor');
+  let report;
+  try {
+    report = collectDryRun({
+      olderThanDays,
+      staleMode: args.stale === true, // --stale 周期维护档（语义权威源 clean-identify）
+    });
+  } catch (e) {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  // 哨兵失败 = 非零退出语义（dry-run 只读不写，报告本身已醒目阻断）。
+  // 用 process.exitCode 而非 process.exit：--json 报告可超管道缓冲（64KB），
+  // exit 会丢弃未 flush 的异步写块（实测 JSON 截断）；自然退出等 stdout
+  // drain 完毕，exit code 照常生效（doctor 无引擎执行体挂事件循环）
+  process.exitCode = report.sentinel && report.sentinel.ok ? 0 : 1;
+  if (args.json === true) process.stdout.write(renderJson(report));
+  else process.stdout.write(renderDryRun(report).text);
+}
+
+/**
+ * doctor clean --purge-backup：删除最近一次备份目录（不跑停机校验——只触
+ * zsw 自有备份，不碰任何库；无备份如实报告）。
+ */
+function runDoctorCleanPurgeBackup(args) {
+  const { purgeLatestBackup } = require('../lib/clean-exec');
+  const r = purgeLatestBackup();
+  process.exitCode = 0;
+  if (args.json === true) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
+  else if (r.purged) {
+    process.stdout.write(`已删除备份目录：${r.path}\n`
+      + '注意：备份是整库回滚的唯一安全网——确认无异常后再执行本命令。\n');
+  } else {
+    process.stdout.write(`无备份可清理（${r.maintenanceDir} 下无 backup-* 目录）。\n`);
+  }
+}
+
+/** doctor clean 执行器（u3，停机窗口手动操作）：exitCode 承载语义，拒绝路径与成功报告走 stdout。 */
+function runDoctorCleanExecute(args, olderThanDays) {
+  const { runClean } = require('../lib/clean-exec');
+  let outcome;
+  try {
+    outcome = runClean({
+      fsOnly: args.fsOnly === true,
+      staleMode: args.stale === true, // --stale 周期维护档（边界见 clean-exec 头注）
+      olderThanDays,
+    });
+  } catch (e) {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  process.exitCode = outcome.exitCode;
+  if (args.json === true) process.stdout.write(`${JSON.stringify(outcome.json, null, 2)}\n`);
+  else process.stdout.write(outcome.text);
+}
+
+/**
+ * doctor clean 删除档位解析：非法值 fail-fast——exit 1 + stderr 可操作文案，
+ * 在触碰任何库/文件面之前失败（阶段 3/4 一致性审查修复：原静默回落 7 天扩大
+ * 删除集；--dry-run 预览与执行同语义）。
+ */
+function resolveOlderThanDaysOrFail(raw) {
+  try {
+    return parseOlderThanDays(raw);
+  } catch (e) {
+    if (e && e.code === 'INVALID_OLDER_THAN') {
+      process.stderr.write(`[zsw] ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
+}
+
+/** doctor clean 子命令编排：档位 fail-fast 解析先于 dry-run/执行/purge 三态分流（purge 无删除档位语义，非法值同拒，保守无害）。 */
+function runDoctorClean(rest) {
+  const args = parseArgs(rest);
+  const olderThanDays = resolveOlderThanDaysOrFail(args.olderThan);
+  if (args.dryRun) return runDoctorCleanDryRun(args, olderThanDays);
+  if (args.purgeBackup) return runDoctorCleanPurgeBackup(args);
+  return runDoctorCleanExecute(args, olderThanDays);
+}
+
+/**
+ * doctor 子命令（u1 = 体检骨架；u2 = dry-run；u3 = clean 执行分发。
+ * 采集/渲染语义见 lib/doctor.js、lib/clean-exec.js 头注）。
+ * 恒本地（不经 assembleManager 引擎组装面——与 workflow/hook 同为纯本地
+ * 命令，在 main 组装之前分流）。doctor/clean 依赖 node:sqlite，故各路径
+ * 函数内 lazy require（start 等主链路加载面不扩大）。
+ *
+ * rest[0] === 'clean'：`--dry-run` 只读预览（哨兵失败 exit 1 阻断）；
+ * 非 dry-run = 执行器（停机窗口手动操作）——拒绝路径（停机校验/哨兵/磁盘）
+ * 与成功报告都走 stdout 文本（--json 出结构化报告），exitCode 承载语义；
+ * `--purge-backup` 删除最近备份目录（不跑停机校验）。NODE_SQLITE_UNAVAILABLE
+ * 经统一出口给可操作错误。
+ */
+function runDoctorCommand(rest) {
+  if (rest[0] === 'clean') return runDoctorClean(rest.slice(1));
+  return runDoctorInspect(rest);
+}
+
 // ------------------------------------------- 子命令公共面
 
 /**
@@ -776,6 +958,9 @@ async function main() {
   // hook 子命令同理在 manager 组装之前分流：恒本地（见 runHookCommand 头注），
   // 不走 parseArgs/assembleManager 任一路径
   if (cmd === 'hook') return runHookCommand(rest);
+  // doctor 同为纯本地只读命令（体检不经引擎组装面；node:sqlite 在函数内 lazy
+  // require，主链路加载面不扩大）
+  if (cmd === 'doctor') return runDoctorCommand(rest);
 
   // wait 已随 daemon 退役（2.0 无常驻物）：等待 = start 本身阻塞到任务终态，
   // 长任务异步化靠 Bash run_in_background 包裹 start（完成即引擎原生通知）。
@@ -801,6 +986,8 @@ async function main() {
 module.exports = {
   parseArgs,
   csv,
+  // 删除档位解析（非法值 coded 错误拒收，不回落缺省——阶段 3/4 一致性审查修复）——单测钉住拒绝语义
+  parseOlderThanDays,
   // MF-1：W8 创作闭环（D-6）+ workflow 引用契约（D-4/D-E3）实现已收口
   // lib/workflow-actions.js，此处 re-export 维持既有消费面（测试与旧引用）不变
   validateWorkflowRef,

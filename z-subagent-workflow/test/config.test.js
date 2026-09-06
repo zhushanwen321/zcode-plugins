@@ -16,7 +16,7 @@ const { spawn } = require('node:child_process');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { isNestedEnv, zswCliPath } = require('../lib/config');
+const { isNestedEnv, zswCliPath, resolveEnginePaths } = require('../lib/config');
 const CONFIG = path.join(__dirname, '..', 'lib', 'config.js');
 
 /** 子进程加载 config，打印 DEFAULTS.maxConcurrent；返回 {value, stderr}。
@@ -112,6 +112,36 @@ test('NESTED 模块加载期求值：子进程 env 双标记分别置位 → NES
   assert.equal(await loadNestedWithEnv({ ZSW_NESTED: null, XYZ_AGENT_SUBAGENT: '1' }), 'true',
     'core 引擎嵌套标记（XYZ_AGENT_SUBAGENT=1）单独命中即 NESTED=true');
   assert.equal(await loadNestedWithEnv({ ZSW_NESTED: null, XYZ_AGENT_SUBAGENT: null }), 'false');
+});
+
+// ------------------------------------------------- resolveEnginePaths（观察 4）
+
+/**
+ * 缺省路径组装单一权威源的直接单测：doctor/clean-fs/clean-exec 三消费方经
+ * resolvePaths 同构消费，字段集缺一即运行期 undefined 传染——字段集完整性
+ * 与双根（cliRoot 派生面 / v2 索引库独立面）布局在此钉死。
+ */
+test('resolveEnginePaths：显式 homeDir → 双根布局派生；字段集完整（6 键闭集）', () => {
+  const home = path.join('fixtures', 'home-x'); // 相对形态即可验拼接，不触真实 FS
+  const r = resolveEnginePaths(home);
+  assert.equal(r.cliRoot, path.join(home, '.zcode', 'cli'));
+  assert.equal(r.engineDbPath, path.join(home, '.zcode', 'cli', 'db', 'db.sqlite'));
+  assert.equal(r.indexDbPath, path.join(home, '.zcode', 'v2', 'tasks-index.sqlite'),
+    '索引库不在 cliRoot 下（GUI v2 独立根——clean 删除面防御拦截的路径前提）');
+  assert.equal(r.artifactsDir, path.join(home, '.zcode', 'cli', 'artifacts'));
+  assert.equal(r.logDir, path.join(home, '.zcode', 'cli', 'log'));
+  assert.equal(r.execDir, path.join(home, '.zcode', 'cli', 'exec'));
+  assert.deepEqual(Object.keys(r).sort(),
+    ['artifactsDir', 'cliRoot', 'engineDbPath', 'execDir', 'indexDbPath', 'logDir'],
+    '6 键闭集（消费方依赖面字段恒在，防 undefined 传染）');
+});
+
+test('resolveEnginePaths：缺省回落 os.homedir()（与显式传 homedir 同值；不触真实 ~/.zcode 文件）', () => {
+  const os = require('node:os');
+  const r = resolveEnginePaths();
+  const explicit = resolveEnginePaths(os.homedir());
+  assert.deepEqual(r, explicit, '缺省 = 显式 os.homedir() 同值（engineCliRoot 单点回落）');
+  assert.ok(r.engineDbPath.startsWith(path.join(os.homedir(), '.zcode', 'cli', 'db')));
 });
 
 // ------------------------------------------------- F12：zswCliPath 单源
