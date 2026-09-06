@@ -921,6 +921,115 @@ test('MF-2 CLI 面：doctor clean --older-than 30x → exit 1 + stderr 可操作
   assert.match(r.stderr, /30 或 30d/);
 });
 
+// ---------------------------------------------------- CLI 面 spawn 黑盒（doctor 正常路径编排契约）
+
+/**
+ * spawn 级 fixture（HOME 注入形态）：doctor/clean 的缺省路径全部由进程 env 推导
+ * （engineCliRoot = os.homedir()/.zcode/cli，records/maintenance = ZSW_ROOT），
+ * env 注入即可让真实 CLI 子进程落到本文件临时目录——真实 ~/.zcode 零触碰。
+ * 与 lib 级 fixture 的本质差异：不经 options 注入，锁定的是「进程 env → 缺省
+ * 路径解析 → runDoctorCommand 分发 → stdout/exitCode」的完整编排链（MF-2 先例
+ * 同为 spawnSync 形态；CI ubuntu 无 GUI 也确定性收敛，见 --fs-only 用例注）。
+ */
+function buildCliSpawnHome() {
+  const home = nextDir('clihome-');
+  const engineDbPath = path.join(home, '.zcode', 'cli', 'db', 'db.sqlite');
+  fs.mkdirSync(path.dirname(engineDbPath), { recursive: true });
+  createEngineDb(engineDbPath, {
+    sessions: [['sess_cli', '/Users/u/proj', 'interactive', NOW - 2 * DAY]],
+    messages: [['m1', 'sess_cli']],
+    parts: [['p1', 'm1', 'sess_cli']],
+  });
+  const indexDbPath = path.join(home, '.zcode', 'v2', 'tasks-index.sqlite');
+  fs.mkdirSync(path.dirname(indexDbPath), { recursive: true });
+  createIndexDb(indexDbPath, { taskIds: ['sess_cli'] });
+  fs.mkdirSync(path.join(home, '.zcode', 'zsw'), { recursive: true });
+  fs.writeFileSync(
+    path.join(home, '.zcode', 'zsw', 'records.jsonl'),
+    `${JSON.stringify({ sessionId: 'sess_cli' })}\n`,
+  );
+  return { home, engineDbPath };
+}
+
+/** spawn 真实 CLI：HOME/ZSW_ROOT 双钉（缺省路径的两条推导根），其余 env 继承。 */
+function spawnZsw(args, home) {
+  const { spawnSync } = require('node:child_process');
+  return spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'zsw.js'), ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home, ZSW_ROOT: path.join(home, '.zcode', 'zsw') },
+  });
+}
+
+test('CLI 面：doctor --json → exit 0 + 体检结构顶层键（engine/index/files/estimate，--json 出 renderJson 通道）', () => {
+  const fx = buildCliSpawnHome();
+  const r = spawnZsw(['doctor', '--json'], fx.home);
+  assert.equal(r.status, 0, `exit 0：stderr=${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  for (const key of ['generatedAt', 'now', 'paths', 'engine', 'index', 'files', 'estimate', 'backup']) {
+    assert.ok(key in report, `体检报告缺顶层键 ${key}`);
+  }
+  assert.equal(report.engine.available, true, 'HOME 注入生效：CLI 缺省路径解析到 fixture 引擎库');
+  assert.equal(report.engine.whiteListInDb, 1, '白名单∩库 = records 唯一 sessionId');
+  assert.equal(report.estimate.sessionTotal, 1);
+});
+
+test('CLI 面：doctor clean --dry-run --json → exit 0 + deleteSet/sentinel/filePlan 结构（只读预览编排链）', () => {
+  const fx = buildCliSpawnHome();
+  const r = spawnZsw(['doctor', 'clean', '--dry-run', '--json'], fx.home);
+  assert.equal(r.status, 0, `哨兵 ok 应 exit 0：stdout=${r.stdout} stderr=${r.stderr}`);
+  const report = JSON.parse(r.stdout);
+  for (const key of ['deleteSet', 'sentinel', 'filePlan', 'staleMode']) {
+    assert.ok(key in report, `dry-run 报告缺顶层键 ${key}`);
+  }
+  assert.equal(report.staleMode, false, '缺省形态无 --stale');
+  assert.equal(report.sentinel.ok, true);
+  assert.deepEqual(report.deleteSet.engineSessionIds, ['sess_cli'], '删除集 = 白名单∩库唯一会话');
+});
+
+test('CLI 面：--stale 透传 → dry-run 报告 staleMode=true（CLI flag → collectDryRun 编排不丢参）', () => {
+  const fx = buildCliSpawnHome();
+  const r = spawnZsw(['doctor', 'clean', '--stale', '--dry-run', '--json'], fx.home);
+  assert.equal(r.status, 0, `exit 0：stdout=${r.stdout}`);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.staleMode, true, '--stale 必须透传进报告结构（CLI 面编排契约）');
+  assert.deepEqual(report.deleteSet.engineSessionIds, ['sess_cli']);
+});
+
+test('CLI 面：--purge-backup → exit 0；无备份/有备份两态如实报告（fixture maintenance 目录，真实 ~/.zcode 零触碰）', () => {
+  const fx = buildCliSpawnHome();
+  const maintenanceDir = path.join(fx.home, '.zcode', 'zsw', 'maintenance');
+  let r = spawnZsw(['doctor', 'clean', '--purge-backup'], fx.home);
+  assert.equal(r.status, 0, `exit 0：stdout=${r.stdout}`);
+  assert.match(r.stdout, /无备份可清理（.*下无 backup-\* 目录）。/);
+  const backup = path.join(maintenanceDir, 'backup-2026-09-06T00-00-00-000Z');
+  fs.mkdirSync(backup, { recursive: true });
+  fs.writeFileSync(path.join(backup, 'db.sqlite'), 'x');
+  r = spawnZsw(['doctor', 'clean', '--purge-backup'], fx.home);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /已删除备份目录：/);
+  assert.match(r.stdout, /备份是整库回滚的唯一安全网/);
+  assert.equal(fs.existsSync(backup), false, 'backup-* 目录已被 purge 删除');
+});
+
+test('CLI 面：doctor clean --fs-only → 停机校验拒绝 exit 1（--fs-only 不豁免），拒绝文案走 stdout + 恢复指引', () => {
+  // 持锁方：GUI 在跑的环境由校验①（进程面）拒绝，无 GUI 环境（CI）由校验④
+  // （独占开锁）兜底拒绝——两态都验证同一编排契约：拒绝是正常输出面（stdout），
+  // exitCode 承载语义，--fs-only 不改变停机门禁判定。
+  const fx = buildCliSpawnHome();
+  const holder = new DatabaseSync(fx.engineDbPath);
+  try {
+    holder.exec('BEGIN EXCLUSIVE');
+    const r = spawnZsw(['doctor', 'clean', '--fs-only'], fx.home);
+    assert.equal(r.status, 1, `拒绝路径应 exit 1：stdout=${r.stdout}`);
+    assert.match(r.stdout, /✗ 前置校验失败/);
+    assert.match(r.stdout, /👉 .*重跑/, '含恢复指引');
+    assert.equal(r.stdout.includes('将删除'), false, '拒绝路径不输出执行报告');
+    assert.equal(query(fx.engineDbPath, 'SELECT COUNT(*) n FROM session').at(0).n, 1, '拒绝路径库零改动');
+  } finally {
+    holder.close(); // 关闭即回滚并释放
+  }
+});
+
 // ---------------------------------------------------- --stale 周期维护档（u5）
 
 /**
