@@ -262,6 +262,32 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
  含 state.json 与各轮 reviewer 报告——不在 zsw 数据根下。）
 ```
 
+## 会话残留维护（zsw doctor / doctor clean）
+
+**问题一句话**：zsw 引擎自 0.5.0 起共享宿主 HOME，会话写入真实 `~/.zcode/cli/db/db.sqlite`（与 ZCode GUI 共库）——每跑一个任务/子代理都落库，且侧边栏数据源、用量统计表、artifacts/log/exec 三个文件目录伴生写入，存量已堆积 ~9.1GB 且无任何引擎侧清理通道。完整问题分析与方案设计见仓库 `docs/design/zsw-session-residue-cleanup-design.md`（本节只写操作面与安全须知，不复制设计）。
+
+**前提声明**：doctor/clean 依赖内置 `node:sqlite`，需 **Node ≥22.5（推荐 24）**，不满足时报可操作错误；操作对象是 `~/.zcode/cli/db/db.sqlite`（引擎库）与 `~/.zcode/v2/tasks-index.sqlite`（GUI 索引库）双库 + `~/.zcode/cli/{artifacts,log,exec}` 三目录；备份落在 `~/.zcode/zsw/maintenance/backup-<时间戳>/`。
+
+命令族一览（全部纯本地，cwd 任意）：
+
+```bash
+node bin/zsw.js doctor                          # 只读体检：五面量级 + 白名单双口径 + 13 表行数 + 预估回收粗估。任何时刻可跑，零风险
+node bin/zsw.js doctor clean --dry-run          # 预览删除清单（只读不写）。识别无污染再考虑执行
+node bin/zsw.js doctor clean                    # 执行清理。必须退出 ZCode 后的停机窗口执行（见下）
+node bin/zsw.js doctor clean --fs-only          # 只清文件面（artifacts/log/exec），库操作跳过；停机校验不豁免
+node bin/zsw.js doctor clean --stale --older-than 30d   # 周期维护档：只清超龄部分（存量清完后的日常档）
+node bin/zsw.js doctor clean --purge-backup     # 确认无异常后删除最近备份，释放备份空间
+```
+
+- **`zsw doctor`（只读体检）**：报告引擎库会话行（白名单∩库 / 特征目录类 / subagent_child 按龄）、库体积与预估回收、GUI 索引命中、三文件面量级、上次备份。只读，随时可跑。
+- **`zsw doctor clean --dry-run`（预览）**：逐类列出将删除的会话与文件面清单，内置三道安全网——① 污染哨兵（删除集与 records 全部 targetSessionId 值域必须零交集，非 0 中止 exit 1：可能是识别器污染，也可能是嵌套调用的合法重叠，逐条核查）；② 索引冲突预检（被任务分组/自动化/off-peak 引用的冲突会话从双库删除集整体剔除并逐条报告）；③ 目录分布红灯（识别会话落在特征表之外的临时目录等形态 → ⚠ 提示停手核查）。
+- **`zsw doctor clean`（执行）**：**必须完全退出 ZCode（含菜单栏常驻）后的停机窗口执行**——运行中清理会与 GUI 内存态/同步器/引擎库写入冲突。执行自动完成：四项停机校验（GUI 进程 / app-server 进程 / 嵌套标记（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1）子进程 / 双库独占开锁，任一不过即拒绝）→ 三段磁盘校验（备份/删除/VACUUM 三阶段空间门槛，不足时给 `--fs-only` 腾空间指引）→ 双库三件套快照备份（`*.sqlite` + `-wal` + `-shm`，keep-1）→ 引擎库分块删除（≤200 会话/事务 + 批间 checkpoint，13 张引用表 FK 列级联动）+ VACUUM 回收空间 → 索引库联动 → 文件面清理。结果逐项报数。
+- **`--fs-only`**：只清文件面（artifacts 集内目录 / exec sess_ 前缀，删除集命中 + 超龄空壳两通道 / log 超 14 天整文件）。**停机校验不豁免**——artifacts 删除会破坏运行中会话的转录引用、log 删除破坏写入句柄，不停机一样不安全。
+- **`--stale --older-than <Nd>`（周期维护档）**：识别集缩到超龄部分——白名单∩库 / 特征目录类 / subagent_child 三类统一只清 `time_created` 早于 N 天的会话（缺省 7 天），周期维护不删刚产生的新会话。**手动触发，不做 cron/launchd 自动化**（删除操作无人值守 + 停机窗口要求无法自动保证，设计 D5 被否谱系）；建议日常配合 ZCode 设置中的「任务自动归档」（`taskAutoArchiveEnabled`）保持侧边栏干净。注意 `--older-than` 只作用于会话识别集，**文件面档位不跟随**：log 按龄保留 14 天、exec 空壳 7 天的阈值保持各自默认，一个 flag 不暗改两处安全阈值。
+- **`--purge-backup`**：备份是整库回滚的唯一安全网——确认清理后宿主表面无异常（侧边栏只剩真实会话、真实会话可正常打开）再执行本命令释放空间。
+
+**还原三步（清理后如有异常）**：① 退出 ZCode；② 删除原位 `db.sqlite`/`-wal`/`-shm` 与 `tasks-index.sqlite`/`-wal`/`-shm` 六个文件；③ 将备份目录内三件套**整组** `cp` 回原路径。半套覆盖（只拷主库不拷伴生文件）会产生 WAL 不一致——必须整组。已知边界：整库回滚会抹掉「清理之后 → 回滚之前」窗口内新产生的会话（无二级备份）；窗口超 7 天建议放弃整库回滚，改从备份库挑行恢复。
+
 ## 已知边界（如实声明）
 
 - **mailbox 完成通知是 legacy 通道（仅 MCP 工具面时代有效）**：mailbox 投递需要会话定向（targetSessionId），只有 MCP 工具调用携带；1.0.0 工具面下线后 CLI/daemon 面恒无投递目标，notifyCompletion 必不投递（句柄 notify 字段如实标 `none`，不写 `mailbox` 误导「会自动回流」）。M1 默认形态（CLI）任务的完成唤醒唯一路径 = CLI 阻塞进程（start 恒阻塞，`--wait` 兼容形态无差异）配 Bash `run_in_background`，成为引擎进程内 background 任务、完成即触发原生 `<task-notification>`（idle 也唤醒，不依赖任何 env）。需要「完成即唤醒 + goal gate」的简单任务仍可直接用原生 `@agent`。
@@ -273,7 +299,7 @@ agent 侧标准姿势：Bash 工具 `run_in_background=true` 包裹 `zsw start �
 - **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（承载 start 的后台任务完成即 task-notification 唤醒）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
 - **工具黑名单是引擎级硬拦截（两来源并集去重），白名单只有 prompt 软约束一层**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`，并集去重后落引擎 `--disallowed-tools` flag（2c 起两来源等价生效）。frontmatter `tools` 白名单经 prompt 工具约束段生效（软约束——只能约束意图不能拦截行为）；CLI `--allow-tools` 当前不进 prompt 也不进引擎通道（zcode CLI 无 allowlist flag，`--allowed-tools` 拒收），唯一效果是终态 record `toolsNote` 标注（请求未生效提示）——工具软约束一律经 agent .md frontmatter `tools` 字段声明。
 - **subagent 并发池与 workflow 并发治理已分治（回接 2b 后）**：subagent 池默认 3（`ZSW_MAX_CONCURRENT` 可调）仅约束 zsub start 线；workflow 线的 agent() 并发**不受 core 配额池约束**（core 的 maxConcurrent=6 挂在 pi 宿主 SubagentService，zsw workflow 线绕过该池）——为全并发派发（引擎层仍有序调度），大批量 `--items`/`--perspectives` 时注意 token 消耗与机器负载。zsw 侧不再有独立 workflow 槽位池，`--max-concurrent` 已废弃。
-- **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
+- **并发深度分层当前为预留**：嵌套环境（双标记 ZSW_NESTED / XYZ_AGENT_SUBAGENT）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 
 ## 排障

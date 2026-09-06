@@ -36,6 +36,32 @@ function zswRoot() {
   return process.env.ZSW_ROOT || path.join(os.homedir(), '.zcode', 'zsw');
 }
 
+/** 引擎侧 zcode CLI 数据根（~/.zcode/cli；homeDir 可注入，测试传 fixture）。 */
+function engineCliRoot(homeDir) {
+  return path.join(homeDir || os.homedir(), '.zcode', 'cli');
+}
+
+/**
+ * 引擎侧缺省路径组装（单一权威源）：zcode 引擎库根 ~/.zcode/cli 及其 db/
+ * artifacts/ log/ exec/ 派生 + GUI 索引库 ~/.zcode/v2/tasks-index.sqlite。
+ * 消费方 = lib/doctor.js / lib/clean-fs.js / lib/clean-exec.js——原先三模块
+ * 各持一份 os.homedir() 组装实现（同一约定三处漂移风险），收敛至此；
+ * clean-identify 只收显式路径入参，不做缺省推导。
+ * @param {string} [homeDir] 注入式测试用 HOME（缺省 os.homedir()）
+ * @returns {{cliRoot, engineDbPath, indexDbPath, artifactsDir, logDir, execDir}}
+ */
+function resolveEnginePaths(homeDir) {
+  const cliRoot = engineCliRoot(homeDir);
+  return {
+    cliRoot,
+    engineDbPath: path.join(cliRoot, 'db', 'db.sqlite'),
+    indexDbPath: path.join(homeDir || os.homedir(), '.zcode', 'v2', 'tasks-index.sqlite'),
+    artifactsDir: path.join(cliRoot, 'artifacts'),
+    logDir: path.join(cliRoot, 'log'),
+    execDir: path.join(cliRoot, 'exec'),
+  };
+}
+
 function outputsDir() { return path.join(zswRoot(), 'outputs'); }
 function recordsPath() { return path.join(zswRoot(), 'records.jsonl'); }
 /** 引擎 stderr 实时落盘目录（观测/取证面）。 */
@@ -129,6 +155,8 @@ module.exports = {
   V2_CONFIG_PATH,
   CLI_CONFIG_PATH,
   zswRoot,
+  engineCliRoot,
+  resolveEnginePaths,
   outputsDir,
   recordsPath,
   logsDir,
