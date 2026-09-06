@@ -603,6 +603,21 @@ test('全流程：删除计数 / 13 表 FK 列级联 / 备份等值 + keep-1 / V
   // 成功样张结构 + 还原指引逐字
   assert.match(outcome.text, /✓ 前置校验：ZCode GUI \/ zcode app-server \/ ZSW_NESTED 进程均未运行；双库独占开锁成功；/);
   assert.match(outcome.text, /磁盘三段校验过/);
+  // 磁盘三段 base 字段（Gate B 缺陷回归：push 缺 base 时渲染 fmtBytes(undefined)='n/a'）。
+  // base 语义 = evalDiskStage 校验基准面：pre-backup=free；pre-delete/pre-vacuum=free−备份实占
+  assert.equal(r.disk.stages.length, 3);
+  assert.equal(r.disk.stages[0].base, r.disk.stages[0].free, 'pre-backup 基准面 = 剩余全额');
+  for (const st of r.disk.stages.slice(1)) {
+    assert.equal(st.base, st.free - st.backupBytes, `${st.stage} 基准面 = 剩余−备份`);
+  }
+  // 渲染行：磁盘三段行含实测数字、无 n/a
+  const diskLine = outcome.text.split('\n').find((l) => l.includes('磁盘三段校验过'));
+  assert.ok(diskLine, '磁盘三段行存在');
+  assert.equal(diskLine.includes('n/a'), false, '磁盘三段行无 n/a');
+  const num = '[\\d.]+(?:B|KB|MB|GB|TB)';
+  assert.match(diskLine, new RegExp(`备份前剩余 ${num} ≥ 库三件套×1\\.1（${num}）`));
+  assert.match(diskLine, new RegExp(`删除前「剩余−备份」${num} ≥ 1GB`));
+  assert.match(diskLine, new RegExp(`VACUUM 前「剩余−备份」${num} ≥ 库三件套×1\\.1（${num}）`));
   assert.match(outcome.text, /SQLITE_TMPDIR 已钉死与库同卷/);
   assert.match(outcome.text, /✓ 污染哨兵：删除集 ∩ targetSessionId 值域 = 0/);
   assert.match(outcome.text, /✓ 索引冲突预检：members \/ automations \/ off_peak 命中 0 条/);

@@ -115,6 +115,7 @@ graph TD
 ## 6 状态表
 
 > 阶段 3/4 已清零（2026-09-06）：双区一致性审查（识别域 3 unreasonable / 执行域 5 unreasonable / 1 doc_error）当轮全修（commit 83394dd）+ 文档同步（5aa2ef5）+ 定向复审 pass（10/10 项、全量 412/412、零回归、3 条 INFO 不构成缺口）。
+> 阶段 5 双绿已达成（2026-09-06）：Gate A = 全量 417/417（含 CLI 编排层回补 5 用例 17f74bb）+ check-sync/check-pack 双绿 + 零绕过；Gate B = 真库副本演练 pass（6.71GB 快照删 5,776 会话回收 3.64GB、A-4 41 项零差异、A-2/A-3 机制前提全过、A-6 13 表双时点对照、A-7 还原演练精确回归、P3 真机拒绝链），A-2/A-3 GUI 视觉核对与 P4 属用户域——手册落盘 verification/session-cleanup-acceptance-manual.md。Gate B cosmetic 发现（磁盘三段行渲染 n/a）当轮修复。
 
 | Unit | 状态 | 轮次 | 证据指针 |
 |------|------|------|----------|

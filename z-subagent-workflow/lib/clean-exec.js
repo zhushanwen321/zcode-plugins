@@ -830,7 +830,7 @@ function runClean(options = {}) {
   const volumePath = path.dirname(paths.engineDbPath);
   const free0 = freeBytesFn(volumePath, 'pre-backup');
   const st1 = evalDiskStage('pre-backup', { free: free0, dbBytesTotal, backupBytes: 0 });
-  diskStages.push({ stage: 'pre-backup', ok: st1.ok, free: free0, needed: st1.needed, backupBytes: 0 });
+  diskStages.push({ stage: 'pre-backup', ok: st1.ok, free: free0, needed: st1.needed, base: st1.base, backupBytes: 0 });
   if (!st1.ok) return refuse(renderDiskRefusal('pre-backup', { free: free0, needed: st1.needed, dbBytesTotal }));
 
   // 7. SQLITE_TMPDIR 同卷钉死（8-15 全程包 try/finally：拒绝/失败/成功路径都还原
@@ -874,7 +874,7 @@ function runDbFlow(ctx) {
   // 9. 磁盘校验② 删除前（基准时点 = 备份完成后实算）
   const free1 = freeBytesFn(volumePath, 'pre-delete');
   const st2 = evalDiskStage('pre-delete', { free: free1, dbBytesTotal, backupBytes: backup.totalBytes });
-  diskStages.push({ stage: 'pre-delete', ok: st2.ok, free: free1, needed: st2.needed, backupBytes: backup.totalBytes });
+  diskStages.push({ stage: 'pre-delete', ok: st2.ok, free: free1, needed: st2.needed, base: st2.base, backupBytes: backup.totalBytes });
   if (!st2.ok) {
     return refuse(renderDiskRefusal('pre-delete', {
       free: free1, needed: st2.needed, dbBytesTotal, backupBytes: backup.totalBytes,
@@ -898,7 +898,7 @@ function runDbFlow(ctx) {
     free2 = freeBytesFn(volumePath, 'pre-vacuum');
     st3 = evalDiskStage('pre-vacuum', { free: free2, dbBytesTotal, backupBytes: backup.totalBytes });
     diskStages.push({
-      stage: 'pre-vacuum', ok: st3.ok, free: free2, needed: st3.needed, backupBytes: backup.totalBytes,
+      stage: 'pre-vacuum', ok: st3.ok, free: free2, needed: st3.needed, base: st3.base, backupBytes: backup.totalBytes,
     });
     // 12. VACUUM（同一连接、无活跃事务；C2 删行不还空间）
     if (st3.ok) vacuum = vacuumEngineDb(db);
