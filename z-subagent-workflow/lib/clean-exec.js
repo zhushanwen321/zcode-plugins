@@ -27,7 +27,7 @@
  *
  * D4 头注纪律：批间 wal_checkpoint(PASSIVE) **不截断** -wal 文件（文件保留峰值
  * 体积直至连接关闭）——勿以 -wal 文件大小判断 checkpoint 失效，以批级行数与
- * pragma wal_integrity_check 为准。删除整体单事务被否（WAL 峰值无界）；
+ * pragma integrity_check 为准。删除整体单事务被否（WAL 峰值无界）；
  * journal_mode 改写与 auto_vacuum 侵入宿主配置均被否（D4 被否谱系）。
  *
  * P3 停机探测（实施期门，2026-09-06 本机实测）：
@@ -35,15 +35,21 @@
  *     `/Applications/ZCode.app/` bundle 路径；两类形态都拦截（宁可误拦，方向安全）。
  *   ② app-server——命令行含 `zcode.cjs` 且含 `app-server`（进程名可被改写，须按
  *     命令行匹配；仅含 zcode.cjs 的 plugin-host 形态不含 app-server，不误拦）。
- *   ③ ZSW_NESTED=1——macOS `ps axeww -o pid=,command=` 对**本用户进程**在命令行
- *     后附加 env，实测 ZSW_NESTED=1 可见。局限（头注声明）：他用户进程 env 不可
- *     见、超长 env 可能截断；漏检由 ①②④ 兜底（写 deviations）。
+ *   ③ 嵌套标记（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1）——检出面 = argv 文本含
+ *     标记字样的形态；真实嵌套形态（argv 干净 + env 注入，config.js isNestedEnv
+ *     双标记口径）的 env 段在 macOS ps 输出中可见性不可靠（2026-09-06 三形态
+ *     复核：shell env 前缀 / env X=x / Node spawn env 注入均不可见，目标进程行
+ *     呈裸名），本项为尽力检出。真实防线 = ①②④（④ 独占开锁拦住持库进程；
+ *     不持库的孤儿嵌套进程无破坏面）。其余局限：他用户进程 env 不可见、
+ *     超长 env 可能截断。
  *   ④ 双库 BEGIN EXCLUSIVE 独占开锁——探测连接立即 ROLLBACK 释放（WAL 库只影响
  *     写锁，无数据变更；-wal/-shm 若因连接产生会在干净关闭时自动清理）。兜底拦
  *     截无进程名的持库 fd / crash 残留句柄（重写进程名的 zcode-cli 形态即此类）。
  *
- * 真实 ~/.zcode 红线：拒绝路径（停机校验/哨兵/磁盘）不产生任何写删；备份/删除/
- * VACUUM 仅在四项校验全过后执行。开发期真实库只读（探针全部 readOnly）。
+ * 真实 ~/.zcode 红线：拒绝路径（停机校验/哨兵/磁盘）不触碰双库数据（库数据零
+ * 改动）；备份自磁盘②段起先行落盘作为安全网，tmpdir 拒绝路径的临时目录由
+ * teardown 清理。备份/删除/VACUUM 仅在四项校验全过后执行。开发期真实库只读
+ * （探针全部 readOnly）。
  *
  * --stale 周期维护档边界（u5，设计 D5）：staleMode=true 时删除集缩到超龄部分
  * （语义权威源 = clean-identify.buildDeleteSet 头注）。--older-than 天数**只**
@@ -142,7 +148,8 @@ function firstTokenBase(command) {
 /**
  * ① ZCode GUI 判定（P3 实测形态，2026-09-06）：命令行含 ZCode.app bundle 路径，
  * 或首 token basename 恰为 `ZCode`（GUI 主进程裸名形态 `ZCode`，无路径无参数）。
- * 误拦方向安全（多拦一个同名进程只是拒绝执行，不产生删除）。
+ * 判定面 = ps 整行（argv + 可变可见性的 env 段），误拦自身/同链进程属预期安全
+ * 行为（宁可误拦；多拦一个同名进程只是拒绝执行，不产生删除）。
  */
 function isGuiCommand(command) {
   if (command.includes(GUI_BUNDLE_MARKER)) return true;
@@ -158,9 +165,14 @@ function isAppServerCommand(command) {
   return command.includes('zcode.cjs') && command.includes('app-server');
 }
 
-/** ③ ZSW_NESTED=1 判定（axeww env 附加面；局限见头注 P3③）。 */
+/**
+ * ③ 嵌套标记判定（axeww argv/env 文本面；检出局限见头注 P3③）：双标记与
+ * config.js isNestedEnv / bin/zsw.js ensureNotNested 同口径——ZSW_NESTED=1
+ * （zsw 自有通道注入）与 XYZ_AGENT_SUBAGENT=1（core 引擎嵌套派发注入并剥离
+ * ZSW_NESTED，嵌套会话内再起的 zsw 进程只能看到后者）。
+ */
 function isNestedCommand(command) {
-  return command.includes('ZSW_NESTED=1');
+  return command.includes('ZSW_NESTED=1') || command.includes('XYZ_AGENT_SUBAGENT=1');
 }
 
 /**
@@ -524,7 +536,7 @@ function renderProcessRefusal(violations) {
     lines.push('  运行中清理会与引擎库写入冲突。👉 退出 ZCode（app-server 进程随之退出）后重跑本命令。');
   }
   if (nested.length) {
-    lines.push(`✗ 前置校验失败：检测到 ZSW_NESTED=1 进程（PID ${nested.map((v) => v.pid).join('、')}）正在运行。`);
+    lines.push(`✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID ${nested.map((v) => v.pid).join('、')}）正在运行。`);
     lines.push('  嵌套环境下清理会被递归触发。👉 回到主会话/非嵌套终端执行本命令。');
   }
   return `${lines.join('\n')}\n`;
@@ -578,9 +590,9 @@ function renderDiskRefusal(stage, { free, needed, dbBytesTotal, backupBytes, mid
 }
 
 /**
- * SQLITE_TMPDIR 同卷失败（D4 临时卷纪律）。文案指向 maintenance 目录（MF-1：
- * 该拒绝发生在备份之前——旧指引「手工把备份目录与库迁至同卷」引用了尚不存在
- * 的对象，误导）。
+ * SQLITE_TMPDIR 同卷失败（D4 临时卷纪律）。文案指向 maintenance 目录（一致性
+ * 审查修复：该拒绝发生在备份之前——旧指引「手工把备份目录与库迁至同卷」引用
+ * 了尚不存在的备份目录对象，误导）。
  */
 function renderTmpdirRefusal(tmp, maintenanceDir) {
   return [
@@ -677,7 +689,7 @@ function renderCleanReport(report) {
   lines.push(`  ${vacuumLine}`);
 
   const idx = report.index;
-  // MF-6：input_history 是引擎库表（计数在上方「✓ 引擎库」行内），不挂 GUI 索引行
+  // input_history 是引擎库表（计数在上方「✓ 引擎库」行内），不挂 GUI 索引行
   lines.push(`✓ GUI 索引：删除 tasks ${fmtCount(idx.tasksDeleted)} 行`
     + '（索引库不做 VACUUM——设计未要求）');
 
@@ -814,8 +826,8 @@ function runClean(options = {}) {
     return finish(renderCleanReport(report), result.totalFailureCount > 0 ? 1 : 0);
   }
 
-  // 引擎库必须存在（禁静默空删——删除连接会凭空建库）。防御性冗余（MF-3，与
-  // 前置拦截同语义 fail-closed）：正常路径识别管线（缺库 DB_OPEN_FAILED 先抛）
+  // 引擎库必须存在（禁静默空删——删除连接会凭空建库）。防御性冗余（一致性
+  // 审查补强：与前置拦截同语义 fail-closed）：正常路径识别管线（缺库 DB_OPEN_FAILED 先抛）
   // 与停机校验④（缺失=失败，禁静默跳过）已先行拦截，不应到达此处；保留只为
   // 守住下方删除连接 new DatabaseSync 对缺文件凭空建空库的空洞形态。
   if (!fs.existsSync(paths.engineDbPath)) {
@@ -834,9 +846,9 @@ function runClean(options = {}) {
   if (!st1.ok) return refuse(renderDiskRefusal('pre-backup', { free: free0, needed: st1.needed, dbBytesTotal }));
 
   // 7. SQLITE_TMPDIR 同卷钉死（8-15 全程包 try/finally：拒绝/失败/成功路径都还原
-  //    env + 清临时目录）。同卷失败拒绝路径同样先 teardown 再 return（MF-1：
-  //    env 未被设置时 teardown 仅删目录，安全）——否则 tmp-<ts> 空目录无人清理，
-  //    反复触发即累积残留。
+  //    env + 清临时目录）。同卷失败拒绝路径同样先 teardown 再 return（一致性
+  //    审查修复：补此 teardown 防 tmp-<ts> 空目录无人清理、反复触发累积残留；
+  //    env 未被设置时 teardown 仅删目录，安全）。
   tmp = setupSqliteTmpdir({
     maintenanceDir: paths.maintenanceDir,
     engineDbPath: paths.engineDbPath,
@@ -924,8 +936,8 @@ function runDbFlow(ctx) {
     }));
   }
 
-  // 13. 索引库联动（tasks + members 同事务）。防御性冗余（MF-3，与④同语义
-  // fail-closed）：正常路径停机校验④已把库缺失判为失败（禁静默跳过——旧
+  // 13. 索引库联动（tasks + members 同事务）。防御性冗余（一致性审查补强：
+  // 与④同语义 fail-closed）：正常路径停机校验④已把库缺失判为失败（禁静默跳过——旧
   // 「跳过并注记」与④自相矛盾，已废）；此处仅为守住索引连接对缺文件凭空建
   // 空库的空洞形态。到此处引擎库删除可能已提交，拒绝文案指向备份安全网。
   if (!fs.existsSync(paths.indexDbPath)) {

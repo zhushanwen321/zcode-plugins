@@ -398,7 +398,7 @@ function collect(options = {}) {
   report.files = collectFiles(artifactsDir, logDir, execDir, now);
 
   // 预估回收（计划偏差 3）：删除集粗口径占比 × 库三件套体积；标注估算性质——
-  // 设计 §3.1 的 3.7-4.2GB 无公式定义，不引入无依据的精确假象，真实以执行后 du 为准
+  // 不引入无依据的精确假象（设计 §3.1 样张已同步为粗估公式形态），真实以执行后 du 为准
   const sessionTotal = engine.available ? engine.sessionTotal : undefined;
   const deleteSetSize = engine.available ? engine.coarseDeleteSetSize : undefined;
   const ratio = sessionTotal ? deleteSetSize / sessionTotal : 0;
@@ -525,7 +525,8 @@ function renderJson(report) {
  *   5. checkRedLight / countInputHistoryHits  按**最终删除集**口径
  *      （红灯与 input_history 报告的都是「将删除的内容」；冲突剔除的会话不删，
  *       计入会误导人工审红灯）
- * 文件面口径（MF-1/A-4 对账面）：filePlan = planFileCleanup（lib/clean-fs，
+ * 文件面口径（阶段 3/4 一致性审查修复：dry-run 文件面与执行 counts 同源，A-4 对账面）：
+ * filePlan = planFileCleanup（lib/clean-fs，
  * 只读 plan，不执行删除）——在删除集最终态确定后以最终删除集与注入根路径调用，
  * 与执行器 clean-exec 的 plan/counts 完全同一清单源，dry-run 渲染行与执行报告
  * 逐项可对账（差异为 0）。全量观测面（体检同源口径）只保留在 doctor collect 的
@@ -628,7 +629,8 @@ function collectDryRun(options = {}) {
 }
 
 /**
- * dry-run 人读渲染（设计 §3.1 第二代码块为权威样张，逐行对齐）。
+ * dry-run 人读渲染（行结构对齐设计 §3.1 第二代码块样张；设计侧解释性括注
+ * （红灯判定式说明）不进 CLI 输出）。
  * 返回 { text, exitCode }：exitCode = 哨兵 ok ? 0 : 1——哨兵失败时输出 §3.1
  * 第三代码块形态的失败文案（中性归因 + 中止指引），且**仍输出删除清单**
  * （失败文案要求「把 dry-run 清单交维护者判定」），但以 ✗ 块收尾并不给

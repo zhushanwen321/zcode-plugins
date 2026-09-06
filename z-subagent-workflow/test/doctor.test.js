@@ -224,7 +224,8 @@ test('五面计数：fixture 上白名单双口径 / 特征类 / subagent_child 
   assert.equal(r.index.tasksTotal, 5);
   assert.equal(r.index.tasksHit, 4, '命中按 task_id ∈ 删除集粗口径（s1..s4；s6 不在删除集）');
   assert.deepEqual(r.index.sisterTables, { taskGroupMembers: 2, automationsWithTarget: 2, offPeakTasks: 1 });
-  // 姊妹表冲突命中（MF-2：体检复用 checkIndexConflicts 对删除集粗口径的只读预检）：
+  // 姊妹表冲突命中（体检复用 checkIndexConflicts 对删除集粗口径的只读预检——
+  // 阶段 3/4 一致性审查修复项）：
   // members g1→s2 命中（g1→s9 集外）；automations a1→s2 命中（a3→s8 集外）；
   // off_peak_tasks.session_id s3 命中（tasks.off_peak_task_id 全 null 无反向命中）
   assert.deepEqual(
@@ -352,7 +353,7 @@ test('缺目录：exec 目录不存在 → 该面 n/a，其余面照常', () => 
   assert.equal(r.engine.sessionTotal, 5);
 });
 
-test('MF-3 同源绑定：SUBAGENT_MAX_AGE_MS 派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS', () => {
+test('同源绑定：SUBAGENT_MAX_AGE_MS 派生自 clean-identify 的 DEFAULT_OLDER_THAN_DAYS（单一权威源）', () => {
   const { SUBAGENT_MAX_AGE_MS } = require('../lib/doctor');
   const { DEFAULT_OLDER_THAN_DAYS } = require('../lib/clean-identify');
   assert.equal(SUBAGENT_MAX_AGE_MS, DEFAULT_OLDER_THAN_DAYS * DAY,

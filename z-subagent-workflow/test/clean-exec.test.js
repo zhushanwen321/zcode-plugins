@@ -422,6 +422,8 @@ test('进程分类（2026-09-06 真机形态固化）：GUI 裸名与 bundle 路
   assert.equal(isAppServerCommand('node /x/zcode.cjs app-server --cwd /tmp/w'), true);
   assert.equal(isAppServerCommand('node .../ZCode Helper /x/glm/zcode.cjs __zcode-plugin-host /x/server.js'), false, '仅含 zcode.cjs 的 plugin-host 形态不误拦');
   assert.equal(isNestedCommand('sleep 20 ZSW_NESTED=1'), true, 'axeww env 附加面');
+  assert.equal(isNestedCommand(' 600 node /x/zcode.cjs XYZ_AGENT_SUBAGENT=1'), true, 'core 引擎派发标记（config.js isNestedEnv 双标记口径）');
+  assert.equal(isNestedCommand('sleep 20 node agent.js'), false, '无标记不误拦');
   // 真机文本全量分类
   const psText = [
     '     1 /sbin/launchd',
@@ -717,7 +719,7 @@ test('分块：450 会话 → 3 批（200/200/50），批间 checkpoint 可观�
 
 // ---------------------------------------------------- 四项停机校验（D2）
 
-test('停机校验①②③：ps 文本注入 GUI/app-server/ZSW_NESTED 形态 → 拒绝 + PID + 恢复指引；库零改动', () => {
+test('停机校验①②③：ps 文本注入 GUI/app-server/双嵌套标记（ZSW_NESTED/XYZ_AGENT_SUBAGENT）形态 → 拒绝 + PID + 恢复指引；库零改动', () => {
   const cases = [
     {
       name: 'GUI',
@@ -726,7 +728,8 @@ test('停机校验①②③：ps 文本注入 GUI/app-server/ZSW_NESTED 形态 �
       head: '✗ 前置校验失败：检测到 ZCode 进程（PID 13791、13807）正在运行。',
     },
     { name: 'app-server', psText: ' 500 node /x/zcode.cjs app-server --cwd /tmp/w\n', pidText: '500', head: '✗ 前置校验失败：检测到 zcode app-server 进程（PID 500）正在运行。' },
-    { name: 'nested', psText: ' 600 sh -c ZSW_NESTED=1 node agent.js\n', pidText: '600', head: '✗ 前置校验失败：检测到 ZSW_NESTED=1 进程（PID 600）正在运行。' },
+    { name: 'nested', psText: ' 600 sh -c ZSW_NESTED=1 node agent.js\n', pidText: '600', head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 600）正在运行。' },
+    { name: 'nested-core', psText: ' 601 node /x/zcode.cjs XYZ_AGENT_SUBAGENT=1\n', pidText: '601', head: '✗ 前置校验失败：检测到嵌套标记进程（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1，PID 601）正在运行。' },
   ];
   for (const c of cases) {
     const fx = buildMainFixture();

@@ -6,7 +6,8 @@
  * 为什么全进程内直测：parseRecordWhiteList 是纯函数（路径入参、无全局态），
  * fixture records.jsonl 用 mkdtemp 临时文件承载；matchFeatureDirectory 是
  * 纯谓词。无需子进程/注入 env——识别正确性（仅 sessionId、嵌套层、坏行
- * 跳过、段/整串语义）全部可用直接断言锁定。u2 分治用例追加于本文件。
+ * 跳过、段/整串语义）全部可用直接断言锁定。u2 分治用例追加于本文件；
+ * 本文件亦承载 u5 --stale 档位用例与 dry-run 组装/渲染用例。
  */
 
 const fs = require('node:fs');
@@ -225,7 +226,8 @@ function buildMainFixture() {
     JSON.stringify({ exec: { sessionId: 'w6' }, targetSessionId: 'w5' }),
   ]);
   // 文件面目录树（dry-run 渲染的量级行）：
-  //   artifacts/w5 与 exec/sess_stale_old 是 MF-1 用例的删除集外项——
+  //   artifacts/w5 与 exec/sess_stale_old 锁定文件面删除集口径（dry-run filePlan
+  //   与执行 counts 同源）的删除集外项——
   //   w5 ∉ 删除集（目录在而会话不删）、sess_stale_old ∉ 集但超龄空壳（入将删清单）
   const artifactsDir = path.join(dir, 'artifacts');
   const logDir = path.join(dir, 'log');
@@ -565,7 +567,7 @@ test('collectDryRun + renderDryRun：样张关键行齐备 + exitCode 0（哨兵
   assert.equal(report.estimate.deleteSetSize, 4);
   assert.deepEqual(report.conflicts.conflictedSessionIds, []);
   assert.deepEqual(report.deleteSet.removedByConflict, []);
-  // 文件面删除集口径（MF-1）：filePlan 与执行 counts 同源同构
+  // 文件面删除集口径：filePlan 与执行 counts 同源同构（阶段 3/4 一致性审查修复——A-4 对账面）
   assert.deepEqual(report.filePlan.artifacts.map((a) => a.name), ['w1', 'w2'], 'w5 ∉ 删除集不入将删清单');
   assert.deepEqual(report.filePlan.execInSet, [],
     '本 fixture 会话 id 非 sess_ 形态：目录名须精确等于会话 id 才入集内通道（真实 id 恒为 sess_*，该通道由 clean-fs/clean-exec 的 sess_ 形态 fixture 覆盖）');

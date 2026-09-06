@@ -124,7 +124,7 @@ zsw 会话残留体检（2026-09-XX，实时查询）
   引擎库引用表    13 表逐表行数（message/todo/session_entry/session_input/session_target/
                   model_usage/turn_usage/tool_usage/session_task_link/workflow_run/
                   workflow_activity/part/input_history——A-6 逐面核对面）
-  引擎库体积      6.7GB（预估库内可回收 3.7-4.2GB——真实会话保留约 40% 数据；文件面另计 ~1.6GB）
+  引擎库体积      6.7GB（预估库内可回收 ~N = 删除集粗口径 N/M × 库体积；粗估，真实以执行后 du 为准；文件面另计 ~1.6GB）
   GUI 索引行      tasks 命中 33 行（全部已归档）；姊妹表冲突：members 0 / automations 0 / off_peak 0
                   （括注表规模供观测——冲突命中在前，样张口径）
   artifacts/      3,050+ 个 subagent 目录（~1.5GB）
@@ -150,11 +150,11 @@ $ zsw doctor clean --dry-run       # 预览，不写任何东西
   档位：--stale 时输出档位行（三类识别统一按 --older-than 过滤；文件面档位不跟随——
     log 保留 14 天 / exec 空壳 7 天各自固定）
     ⚠ 红灯触发时输出占比与特征表外命中数明细（人工审信号，非硬阻断）
-预估回收 ~5.3-5.8GB（log 面随执行日增长；库内空间需 VACUUM 后生效）
+预估回收 ~N（粗估，真实以执行后 du 为准 = 删除集占比 × 库体积；log 面随执行日增长；库内空间需 VACUUM 后生效）
 👉 确认执行：退出 ZCode 后跑 zsw doctor clean
 
 $ zsw doctor clean                 # 执行（自动先做前置校验）
-✓ 前置校验：ZCode GUI / zcode app-server / ZSW_NESTED 进程均未运行；双库独占开锁成功；
+✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功；
   磁盘三段校验过（备份前 ≥ 库×1.1；删除前「剩余−备份」≥ 1GB；VACUUM 前「剩余−备份」≥ 库×1.1）；
   SQLITE_TMPDIR 已钉死与库同卷
 ✓ 污染哨兵：删除集 ∩ targetSessionId 值域 = 0（该哨兵把 R2 审查发现的 targetSessionId
@@ -226,7 +226,7 @@ $ zsw doctor clean
 - **效果**：G1 的「可回滚」成立且破坏边界显式；A-7 验收此路径。
 
 **D4：删除分块提交 + 磁盘三段校验（选定，R3 修订）**
-- **采用**：删除按**分块多事务**执行——删除集按 ≤200 会话/批切分（~6,290 行 ≈ 32 批），每批一个事务，批间 `wal_checkpoint(PASSIVE)`，单批 WAL 峰值有界（~百 MB 级；停机窗口无读者竞争，PASSIVE 每批可完整 checkpoint 并复用 frame 空间；注意 PASSIVE 不截断 `-wal` 文件——文件保留峰值体积直至连接关闭，实现/验收时勿以 `-wal` 文件大小判断 checkpoint 失效，以批后 `pragma wal_integrity_check` / 批级行数为准）；随后 `VACUUM`（C2）。磁盘校验三段（R3 修正——R2 的两段校验漏掉了删除阶段的 WAL 峰值：备份落盘 6.7GB 后余量仅 ~0.7GB，而单事务删 ~83 万行的脏页在提交前全写 `-wal`，GB 级峰值可能中途断粮）：① 备份前「剩余 ≥ 库×1.1」（库 = 双库三件套合计，与备份实占同口径）；② 删除前「剩余 − 备份 ≥ 1GB」（基准时点 = 备份完成后；分块后 WAL 峰值有界，此为兜底）；③ VACUUM 前「剩余 − 备份 ≥ 库×1.1」（基准时点 = 删除完成后、VACUUM 开始前；VACUUM 完成前原库不缩，临时空间约等量）。clean 进程设置 `SQLITE_TMPDIR` 指向与 `~/.zcode` 同卷的临时目录（SQLite 临时文件落盘卷由 SQLITE_TMPDIR/TMPDIR 决定，不必然与库同卷——分卷环境下校验的卷和断粮的卷可能不是同一个）。任一不足即报错并指引先跑 `--fs-only` 清文件面腾空间。
+- **采用**：删除按**分块多事务**执行——删除集按 ≤200 会话/批切分（~6,290 行 ≈ 32 批），每批一个事务，批间 `wal_checkpoint(PASSIVE)`，单批 WAL 峰值有界（~百 MB 级；停机窗口无读者竞争，PASSIVE 每批可完整 checkpoint 并复用 frame 空间；注意 PASSIVE 不截断 `-wal` 文件——文件保留峰值体积直至连接关闭，实现/验收时勿以 `-wal` 文件大小判断 checkpoint 失效，以 `PRAGMA integrity_check`（或 quick_check）与批级行数对账为准）；随后 `VACUUM`（C2）。磁盘校验三段（R3 修正——R2 的两段校验漏掉了删除阶段的 WAL 峰值：备份落盘 6.7GB 后余量仅 ~0.7GB，而单事务删 ~83 万行的脏页在提交前全写 `-wal`，GB 级峰值可能中途断粮）：① 备份前「剩余 ≥ 库×1.1」（库 = 双库三件套合计，与备份实占同口径）；② 删除前「剩余 − 备份 ≥ 1GB」（基准时点 = 备份完成后；分块后 WAL 峰值有界，此为兜底）；③ VACUUM 前「剩余 − 备份 ≥ 库×1.1」（基准时点 = 删除完成后、VACUUM 开始前；VACUUM 完成前原库不缩，临时空间约等量）。clean 进程设置 `SQLITE_TMPDIR` 指向与 `~/.zcode` 同卷的临时目录（SQLite 临时文件落盘卷由 SQLITE_TMPDIR/TMPDIR 决定，不必然与库同卷——分卷环境下校验的卷和断粮的卷可能不是同一个）。任一不足即报错并指引先跑 `--fs-only` 清文件面腾空间。
 - **被否**：单一门槛 ×1.2（R2 已否）与两段校验（R3 否——漏删除阶段 WAL 峰值，第三段算术不闭合）。删除整体单事务——WAL 峰值无界。维护窗口切 `journal_mode=DELETE`——journal_mode 持久化在库文件头，clean 中途崩溃会把宿主库留在 DELETE 模式，改宿主状态且恢复语义变化。`PRAGMA auto_vacuum=INCREMENTAL`——改宿主库全局配置，侵入宿主。
 - **证据**：C2/C3；R3 影响面审峰值算术（备份 1× + 删除 WAL + VACUUM 临时 1×）。
 - **效果**：G1 磁盘回收真实到账，备份/删除/VACUUM 三阶段均不断粮，且临时卷显式钉死与库同卷。
@@ -268,8 +268,8 @@ $ zsw doctor clean
 |---|---|---|---|---|
 | P1 | 全部引用表可按 FK 列级联删除 | `PRAGMA foreign_keys=ON` 后删一个测试 session 行，查 8 张直接 CASCADE 表计数归零、part 经 message 间接归零、session_task_link 双列与 2 个 SET NULL 列行为符合预期 | ✅ C1 已实证（R1 补齐 13 表口径，R2 订正为 FK 列粒度） | 实现为 fail-closed 中止（`PRAGMA foreign_keys` 未生效即中止不改库）；手工逐表 DELETE 序列仅作人工预案，子表先删、session 最后删（顺序：part→message→session_entry→session_input→session_target→todo→tool_usage→turn_usage→model_usage→session_task_link→input_history→session；SET NULL 列所在行置空） |
 | P2 | VACUUM 回收空间 | 删除后 `du` 对比库体积 | ✅ C2 实证 auto_vacuum=0 | 无 VACUUM 则只逻辑删除，报告如实标注「空间未回收」 |
-| P3 | 停机窗口可探测 | 进程探测 + 独占开库 | ⛔ 实施期门（F3 单元内实测） | 探测不可靠 → 降级为要求用户手动确认「已退出 ZCode」再执行 |
-| P4 | 引擎对已删 subagent_child 的容错 | 删除后重启 ZCode 打开含子代理的历史会话 | ⛔ 实施期门（A-2/A-3 验收覆盖） | 不容错 → D1 改全量保留 subagent_child，只清 zsw 白名单 |
+| P3 | 停机窗口可探测 | 进程探测 + 独占开库 | ✅ 已实证（2026-09-06 真机拒绝链 pass：①②④ 本机活体拦截；③ 检出面 = argv 字样形态、env 段可见性不可靠——尽力检出，见 lib/clean-exec.js 头注 P3 节与实现双标记口径） | 探测不可靠 → 降级为要求用户手动确认「已退出 ZCode」再执行 |
+| P4 | 引擎对已删 subagent_child 的容错 | 删除后重启 ZCode 打开含子代理的历史会话 | ⛔ 用户域待执行（验收手册 verification/session-cleanup-acceptance-manual.md §4 已落盘；副本侧机制前提已验证：删除集外近期 child 保留） | 不容错 → D1 改全量保留 subagent_child，只清 zsw 白名单 |
 
 ---
 
@@ -277,7 +277,7 @@ $ zsw doctor clean
 
 | # | 场景 | 步骤 | 通过标准 | 回溯 |
 |---|---|---|---|---|
-| A-1 | 全量清理真实跑 | 退出 ZCode → `zsw doctor` → `clean --dry-run` → `clean` | 报告各面删除计数与 dry-run 一致；VACUUM 后 `du` 实测回收 ≥3.5GB（总回收预估 5.3-5.8GB 的保守下界）；无报错 | G1 |
+| A-1 | 全量清理真实跑 | 退出 ZCode → `zsw doctor` → `clean --dry-run` → `clean` | 报告各面删除计数与 dry-run 一致；VACUUM 后 `du` 实测回收 ≥3.5GB（真库副本演练实测回收 3.64GB；预估口径见 §3.1 粗估公式）；无报错 | G1 |
 | A-2 | **宿主表面不变量** | 清理后重启 ZCode，逐个打开常用 workspace | 侧边栏只剩真实会话；无 `sess_subagent_agent_%` 与白名单会话；真实会话可正常打开恢复；任务分组视图无幽灵条目（task_group_members 无孤儿）；**8 个 targetSessionId 调用方会话全部完好** | G2 |
 | A-3 | 零误伤抽查 | 抽 5 个非 zsw 的真实历史 interactive 会话打开读消息；检查 tasks-index 中 pinned/未读行；若有姊妹表冲突任务则核对其与引用它的 automation/off_peak 完好 | 消息完整可读；pinned/未读状态不变；冲突任务与其调度引用无损 | G2 |
 | A-4 | dry-run 准确性 | 对比 dry-run 报告与实际执行报告 | 各面计数一致（差异为 0；白名单按 C6 构造式、双口径分别计数） | G1 |
@@ -298,9 +298,9 @@ $ zsw doctor clean
 
 **实施路径**：F1 → F2（识别正确性先行，识别错全错）→ F3/F4 → F5 → F6。
 
-**待验证检查点（实施期门）**：① P3 停机探测可靠性（四项目标集各自的进程形态实测——GUI 常驻、被改写进程名的 app-server、ZSW_NESTED 子进程、crash 残留 fd）；② P4 引擎容错；③ log 按龄删除与引擎当日写入句柄的相处（D7 推断，实施期实测）。
+**待验证检查点（实施期门）**：① P3 停机探测可靠性——✅ 已实证（2026-09-06 真机拒绝链，见 §3.5 P3；③ 嵌套标记检出面订正记录在实现头注）；② P4 引擎容错——⛔ 用户域待执行（手册 §4 已落盘）；③ log 按龄删除与写入句柄——✅ 停机窗口语义下引擎无活跃写入句柄，演练通过（真机停机窗口执行时按手册 §1 步骤 6 观察一日）。
 
-**文件改动地图**：新增 `lib/doctor.js`、`lib/clean-identify.js`、`lib/clean-exec.js`、`lib/clean-fs.js`；改 `bin/zsw.js`（子命令注册）；新增 `test/doctor.test.js`；README 维护章节。
+**文件改动地图**：新增 `lib/doctor.js`、`lib/clean-identify.js`、`lib/clean-exec.js`、`lib/clean-fs.js`；改 `bin/zsw.js`（子命令注册）；新增 `test/doctor.test.js`、`test/clean-identify.test.js`、`test/clean-exec.test.js`、`test/clean-fs.test.js`；README 维护章节。
 
 ---
 
@@ -314,3 +314,4 @@ $ zsw doctor clean
 | 2026-09-05 | R3 审查修订 | 主审归零（3 suggestion + 2 INFO）、影响面审 2 must-fix + 2 suggestion，当轮全修：删除阶段 WAL 第三段峰值（D4 改分块多事务 + 批间 checkpoint + 磁盘三段校验 + SQLITE_TMPDIR 同卷）、冲突保留作用域闭合（冲突会话从双库删除集整体剔除）；suggestion/INFO——哨兵归因中性化（嵌套合法重叠）、input_history 全删除集口径 16 行 + project 维度召回措辞、dry-run 增 directory 分布人工审红灯、白名单代价行显式 resume 边界、面②删除集定义式补特征类 |
 | 2026-09-05 | R4 终检收尾 | 双报告归零（主审 0M+3S、影响面审 0M+2S），全部 suggestion/INFO 当轮修完：F2 拆分残留的「input_history 零命中断言」清除并补污染哨兵与 directory 红灯、D1 证据行第六处 13→16 同步、directory 红灯声明口径（仅 interactive 识别类）与机械阈值（临时类 >30% 或特征表外临时目录非空）、分块批数算术订正 32、PASSIVE 不截断 -wal 的验收观测说明、三段校验基准时点显式化、时点数字加活库漂移标记 |
 | 2026-09-06 | 实现一致性同步（dev-flow 阶段 3/4） | 双区一致性审查（识别域/执行域独立分区）：doc_error 1 处当轮修正——执行样张把引擎库表 input_history 误挂「✓ GUI 索引」行（移入「✓ 引擎库」行，与实现渲染一致）；合理演化 9 条同步正文——哨兵对冲突剔除前原始集断言（D1⑤）、体检样张补 13 表行与姊妹表冲突/表规模双口径（§3.1）、dry-run 文件面行改删除集口径与红灯触发行/档位行（§3.1）、红灯临时类判定式与特征表外白名单口径（§3.1）、D5 补 --older-than 仅作用会话识别集/文件面档位不跟随/非法值 fail-fast、P1 降级实现为 fail-closed 中止（§3.5）、失败样例补中流状态注记（§3.1）、D4① 补双库三件套合计口径、D7 补 sess_ 前缀为 exec 两通道共同前置；unreasonable 8 条实现侧当轮全修（核心：A-4 dry-run 文件面与执行 counts 改由 clean-fs plan 同源对账；--older-than 非法值 fail-fast；SQLITE_TMPDIR 拒绝路径临时目录清理；dry-run 单 filePlan 口径消解双轨），报告在 `.review/` 会话记录 |
+| 2026-09-06 | design-code-sync 第 1 轮同步 | 终态全量双区审查 15 findings（6 must-fix/medium + 6 suggestion + 3 info）当轮全修：样张预估回收行改粗估公式（§3.1 两处 + A-1 括注联动）、`wal_integrity_check` 悬空 pragma 订正为 `integrity_check`（D4 + 实现头注）、§3.5 P3 状态改已实证（③ 嵌套标记检出面 = argv 字样形态、env 段可见性不可靠——尽力检出，①②④ 为真实防线）与 P4/§5 检查点改用户域完成态、执行样张前置行双标记化（ZSW_NESTED + XYZ_AGENT_SUBAGENT，与实现 isNestedCommand 口径一致）；impl-plan 偏差 #2 状态、§7 残留风险完成态、变更历史补行、.review 不入库括注；实现侧注释 MF-N 悬空编号内联自描述化（全仓 14 处）与归因订正 |

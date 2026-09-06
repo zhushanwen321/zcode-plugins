@@ -641,11 +641,14 @@ function runHookCommand(rest) {
  * （语义权威源 lib/clean-identify.js buildDeleteSet 头注；文件面档位不跟随——
  * log 保留 14 天 / exec 空壳 7 天保持各自默认）。
  *
- * 非法值 fail-fast（MF-2，2026-09-06 修复循环）：--older-than 只被 doctor clean
+ * 非法值 fail-fast（阶段 3/4 一致性审查修复：--older-than 非法值原静默回落缺省
+ * 7 天，越小的档删除集越大、被动扩大删除面）：--older-than 只被 doctor clean
  * 两路径消费（--dry-run 预览 + 执行），都是删除集语义——删除档位解析失败继续跑
- * 会把用户意图的保守档（如 30 天）静默降级为缺省 7 天，越小的档删除集越大，
+ * 会把用户意图的保守档（如 30 天）静默降级为缺省 7 天，
  * 故 coded 错误拒收（CLI 面输出 stderr 可操作指引 + exit 1），不做容错回落。
- * 裸 `doctor` 体检不消费 --older-than（无删除语义，传了也被忽略，不做校验）。
+ * 解析先于 dry-run/执行/purge 三态分流：非法值对 purge 同样 fail-fast 拒绝
+ * （purge 无删除档位语义，拒绝保守无害）。裸 `doctor` 体检不消费 --older-than
+ * （无删除语义，传了也被忽略，不做校验）。
  */
 function parseOlderThanDays(v) {
   if (v === undefined || v === true) return undefined;
@@ -679,7 +682,8 @@ function runDoctorCommand(rest) {
   const { collect, renderText, renderJson } = require('../lib/doctor');
   if (rest[0] === 'clean') {
     const args = parseArgs(rest.slice(1));
-    // MF-2：删除档位非法值 fail-fast（--dry-run 预览与执行同语义）——exit 1 +
+    // 删除档位非法值 fail-fast（阶段 3/4 一致性审查修复：原静默回落 7 天扩大删
+    // 除集；--dry-run 预览与执行同语义）——exit 1 +
     // stderr 可操作文案，在触碰任何库/文件面之前失败
     let olderThanDays;
     try {
@@ -954,7 +958,7 @@ async function main() {
 module.exports = {
   parseArgs,
   csv,
-  // MF-2：删除档位解析（非法值 coded 错误拒收，不回落缺省）——单测钉住拒绝语义
+  // 删除档位解析（非法值 coded 错误拒收，不回落缺省——阶段 3/4 一致性审查修复）——单测钉住拒绝语义
   parseOlderThanDays,
   // MF-1：W8 创作闭环（D-6）+ workflow 引用契约（D-4/D-E3）实现已收口
   // lib/workflow-actions.js，此处 re-export 维持既有消费面（测试与旧引用）不变
