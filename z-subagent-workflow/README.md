@@ -299,7 +299,7 @@ node bin/zsw.js doctor clean --purge-backup     # 确认无异常后删除最近
 - **running 会话不可插话（busy）**：message 投递到 running 中的会话立即返回 busy 结果（stdout JSON `busy:true` + exit 0，非报错退出；不排队不打断），等待本轮完成（承载 start 的后台任务完成即 task-notification 唤醒）或 `zsw cancel --id <id>` 取消后再投递（2c 起投递即报退役错误，见上）。
 - **工具黑名单是引擎级硬拦截（两来源并集去重），白名单只有 prompt 软约束一层**：黑名单 = CLI `--deny-tools`（逗号分隔裸工具名）∪ agent .md frontmatter `disallowedTools`，并集去重后落引擎 `--disallowed-tools` flag（2c 起两来源等价生效）。frontmatter `tools` 白名单经 prompt 工具约束段生效（软约束——只能约束意图不能拦截行为）；CLI `--allow-tools` 当前不进 prompt 也不进引擎通道（zcode CLI 无 allowlist flag，`--allowed-tools` 拒收），唯一效果是终态 record `toolsNote` 标注（请求未生效提示）——工具软约束一律经 agent .md frontmatter `tools` 字段声明。
 - **subagent 并发池与 workflow 并发治理已分治（回接 2b 后）**：subagent 池默认 3（`ZSW_MAX_CONCURRENT` 可调）仅约束 zsub start 线；workflow 线的 agent() 并发**不受 core 配额池约束**（core 的 maxConcurrent=6 挂在 pi 宿主 SubagentService，zsw workflow 线绕过该池）——为全并发派发（引擎层仍有序调度），大批量 `--items`/`--perspectives` 时注意 token 消耗与机器负载。zsw 侧不再有独立 workflow 槽位池，`--max-concurrent` 已废弃。
-- **并发深度分层当前为预留**：嵌套环境（ZSW_NESTED）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
+- **并发深度分层当前为预留**：嵌套环境（双标记 ZSW_NESTED / XYZ_AGENT_SUBAGENT）被双门禁直接拒绝，实际 depth 恒 0——分层逻辑保留给未来放开受限嵌套服务时使用。
 - **mailbox 引擎侧语义（legacy 通道的如实现记录）**：drain 单次最多 20 条（本插件用单调文件名防挤窗）；会话 mailbox 内若有外部坏 envelope 文件会永久阻塞该会话 drain（引擎无 quarantine，本插件投递已用原子写 + 写前自检规避）。通道在工具面下线后不再有投递方，条目留作历史与 notifier-mailbox.js 的实现依据。
 
 ## 排障

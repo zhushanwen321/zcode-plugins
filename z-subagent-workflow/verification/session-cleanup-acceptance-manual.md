@@ -24,7 +24,7 @@ dry-run 三道安全网审查（任一不过 → 停手，勿执行）：
 1. **完全退出 ZCode**：Cmd+Q（含菜单栏常驻图标退出）。复核无残留进程：
 
 ```bash
-ps axeww -o pid=,command= | grep -E 'ZCode|zcode.cjs.*app-server|ZSW_NESTED=1' | grep -v grep
+ps axeww -o pid=,command= | grep -E 'ZCode|zcode.cjs.*app-server|ZSW_NESTED=1|XYZ_AGENT_SUBAGENT=1' | grep -v grep
 # 期望：无输出。有输出则逐个确认退出（GUI 主进程裸名 ZCode / Helper 含 /Applications/ZCode.app/）
 ```
 

@@ -213,7 +213,7 @@ $ zsw doctor clean
 - **效果**：G2「零误删」成立（sessionId-only 构造式 + targetSessionId 污染哨兵 + 特征表闭集 + automation 冲突保留，四重兜底）；F3 被拦截；C7 盲区消解（47 个滞留会话纳入清理）。
 
 **D2：停机窗口执行，前置校验强制且探测目标集显式化（选定，R1 修订）**
-- **采用**：clean（**含 `--fs-only`**）执行前四项校验必须全过：① ZCode GUI 进程（Electron 主进程，含菜单栏常驻形态）；② 命令行含 `zcode.cjs app-server` 的 node 进程（zsw 引擎进程，进程名可能被改写，须按命令行匹配而非进程名）；③ 环境变量含 `ZSW_NESTED=1` 的子进程（zsw 后台 Bash agent 跑引擎任务的形态）；④ 双库 `BEGIN EXCLUSIVE` 独占开锁（兜底：捕获无进程名的持库 fd / crash 残留句柄）。任一不满足即拒绝并给恢复指引（见 3.1 失败样例）。
+- **采用**：clean（**含 `--fs-only`**）执行前四项校验必须全过：① ZCode GUI 进程（Electron 主进程，含菜单栏常驻形态）；② 命令行含 `zcode.cjs app-server` 的 node 进程（zsw 引擎进程，进程名可能被改写，须按命令行匹配而非进程名）；③ ps 命令行文本含嵌套标记（ZSW_NESTED=1 / XYZ_AGENT_SUBAGENT=1）字样的子进程（检出面与局限见实现头注 P3③）（zsw 后台 Bash agent 跑引擎任务的形态）；④ 双库 `BEGIN EXCLUSIVE` 独占开锁（兜底：捕获无进程名的持库 fd / crash 残留句柄）。任一不满足即拒绝并给恢复指引（见 3.1 失败样例）。
 - **被否**：运行时在线清理——C3/C5，与 GUI 内存态和同步器打架，删了也可能被同步器重建索引。「`--fs-only` 豁免停机校验」——artifacts 删除会破坏运行中会话的转录引用、log 删除破坏写入句柄，文件面不停机一样不安全。
 - **证据**：C5；WAL 锁语义；R1 影响面审指出的漏网形态（ZSW_NESTED 子进程、crash 残留 fd）。
 - **效果**：G1 的「安全」前提成立，探测盲区显式收敛。
@@ -291,7 +291,7 @@ $ zsw doctor clean
 |---|---|---|---|---|
 | F1 | `zsw doctor` 只读体检：五面量级采集 + 识别集计数（白名单双口径）+ 预估回收 | lib/doctor.js（新）、bin/zsw.js 接线 | 无 | A-6 |
 | F2 | 识别器 + dry-run：C6 白名单构造式、特征目录表（闭集常量 + 来源注释）、五类目标分治、污染哨兵（targetSessionId 值域零交集）、directory 分布红灯（口径见 §3.1：仅 interactive 识别类，排除 subagent_child）、索引冲突预检、删除集清单输出 | lib/doctor.js、lib/clean-identify.js（新） | F1 | A-4 |
-| F3 | 执行器：四项停机校验（GUI / app-server 命令行 / ZSW_NESTED 子进程 / 双库独占开锁，`--fs-only` 同样执行）→ 三段磁盘校验 + `SQLITE_TMPDIR` 同卷 → 三件套备份 → 引擎库分块删除（≤200 会话/事务 + 批间 checkpoint）+ 13 表列级联动 + GUI 索引 tasks/members 联动（冲突会话双库整体剔除）→ VACUUM → 报告 | lib/clean-exec.js（新） | F2 | A-1/A-2/A-3 |
+| F3 | 执行器：四项停机校验（GUI / app-server 命令行 / 嵌套标记（双标记）子进程 / 双库独占开锁，`--fs-only` 同样执行）→ 三段磁盘校验 + `SQLITE_TMPDIR` 同卷 → 三件套备份 → 引擎库分块删除（≤200 会话/事务 + 批间 checkpoint）+ 13 表列级联动 + GUI 索引 tasks/members 联动（冲突会话双库整体剔除）→ VACUUM → 报告 | lib/clean-exec.js（新） | F2 | A-1/A-2/A-3 |
 | F4 | 回滚与备份管理：三件套整组还原指引、`--purge-backup` | lib/clean-exec.js | F3 | A-7 |
 | F5 | 文件面清理：artifacts 按 id 匹配 + exec sess_ 前缀限定 + log 按龄整文件删 + `--fs-only` 档 | lib/clean-fs.js（新） | F2 | A-1 |
 | F6 | 周期档位 `--stale --older-than` + README/skill 文档 + 测试 | bin/zsw.js、README.md、test/ | F3/F5 | A-5 |

@@ -616,7 +616,7 @@ const RESTORE_GUIDANCE = [
 function renderPreflightLine(report) {
   const s = report.shutdown;
   if (report.fsOnly) {
-    return '✓ 前置校验：ZCode GUI / zcode app-server / ZSW_NESTED 进程均未运行；双库独占开锁成功\n'
+    return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功\n'
       + '  （--fs-only：库操作已跳过——磁盘三段校验与 SQLITE_TMPDIR 仅全量 clean 需要）';
   }
   const stages = report.disk.stages.map((st) => {
@@ -628,7 +628,7 @@ function renderPreflightLine(report) {
     }
     return `VACUUM 前「剩余−备份」${fmtBytes(st.base)} ≥ 库三件套×1.1（${fmtBytes(st.needed)}）`;
   }).join('；');
-  return '✓ 前置校验：ZCode GUI / zcode app-server / ZSW_NESTED 进程均未运行；双库独占开锁成功；\n'
+  return '✓ 前置校验：ZCode GUI / zcode app-server / 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功；\n'
     + `  磁盘三段校验过（${stages}）；\n`
     + `  SQLITE_TMPDIR 已钉死与库同卷（${report.disk.sqliteTmpdir.dir}）`;
 }

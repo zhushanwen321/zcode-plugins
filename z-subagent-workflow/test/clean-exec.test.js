@@ -603,7 +603,7 @@ test('全流程：删除计数 / 13 表 FK 列级联 / 备份等值 + keep-1 / V
   assert.equal(process.env.SQLITE_TMPDIR, undefined, 'env 用后还原');
 
   // 成功样张结构 + 还原指引逐字
-  assert.match(outcome.text, /✓ 前置校验：ZCode GUI \/ zcode app-server \/ ZSW_NESTED 进程均未运行；双库独占开锁成功；/);
+  assert.match(outcome.text, /✓ 前置校验：ZCode GUI \/ zcode app-server \/ 嵌套标记子进程（ZSW_NESTED、XYZ_AGENT_SUBAGENT）均未运行；双库独占开锁成功；/);
   assert.match(outcome.text, /磁盘三段校验过/);
   // 磁盘三段 base 字段（Gate B 缺陷回归：push 缺 base 时渲染 fmtBytes(undefined)='n/a'）。
   // base 语义 = evalDiskStage 校验基准面：pre-backup=free；pre-delete/pre-vacuum=free−备份实占
