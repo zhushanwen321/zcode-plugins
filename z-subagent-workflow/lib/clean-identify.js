@@ -216,72 +216,94 @@ function openDbReadOnly(dbPath, label) {
  *   olderThanDays:number, staleMode:boolean, generatedAt:string}}
  *   interactiveClassIds = ②③并集（红灯口径的输入面）。
  */
-function buildDeleteSet(options = {}) {
-  const { engineDbPath, indexDbPath, recordsPath } = options;
-  if (typeof engineDbPath !== 'string' || engineDbPath === '') {
-    throw new Error('buildDeleteSet 需要 options.engineDbPath（引擎库绝对路径）。');
-  }
-  if (typeof recordsPath !== 'string' || recordsPath === '') {
-    throw new Error('buildDeleteSet 需要 options.recordsPath（records.jsonl 绝对路径）。');
-  }
+/** 必传字符串 option 校验：缺省/空 → 可操作错误（文案指明缺哪个 option，测试逐字断言）。 */
+function assertRequiredOption(value, message) {
+  if (typeof value === 'string' && value !== '') return;
+  throw new Error(message);
+}
+
+/** 入参归一化单点：olderThanDays（非有限数/负数回落缺省 7 天）/ staleMode
+ *  （严格 === true）/ now（时间基准）与 cutoff 派生。 */
+function normalizeBuildOptions(options) {
   const olderThanDays = typeof options.olderThanDays === 'number'
     && Number.isFinite(options.olderThanDays) && options.olderThanDays >= 0
     ? options.olderThanDays : DEFAULT_OLDER_THAN_DAYS;
   const staleMode = options.staleMode === true;
   const now = typeof options.now === 'number' ? options.now : Date.now();
-  const cutoff = now - olderThanDays * DAY_MS;
-  const whiteList = parseRecordWhiteList(recordsPath);
+  return { olderThanDays, staleMode, now, cutoff: now - olderThanDays * DAY_MS };
+}
 
-  const whitelistClass = [];
-  const featureClass = [];
-  const subagentChildStale = [];
+/** stale 门槛（②③消费，① 不经此门恒按龄）：非 staleMode 存量全清恒过；
+ *  staleMode 要求严格超龄。白名单/特征两类消费同一门槛，抽出保持 D5 语义单点。 */
+function passesStaleGate(staleMode, olderThanCutoff) {
+  return !staleMode || olderThanCutoff;
+}
+
+/** 单行三分类：② 白名单∩库 / ③ 特征目录 / ① 超龄 subagent_child，返回命中类名。 */
+function classifyEngineRow(row, ctx) {
+  const classes = [];
+  // 超龄判定单点：严格早于 cutoff 才算（恰等于不算）；非数值保守不算。
+  // 非 staleMode 时 ②③ 不消费该判定（存量全清），① 恒消费（D1①）。
+  const olderThanCutoff = typeof row.time_created === 'number' && row.time_created < ctx.cutoff;
+  if (ctx.whiteList.has(row.id) && passesStaleGate(ctx.staleMode, olderThanCutoff)) classes.push('whitelist');
+  if (matchFeatureDirectory(row.directory) && passesStaleGate(ctx.staleMode, olderThanCutoff)) classes.push('feature');
+  if (row.task_type === 'subagent_child' && olderThanCutoff) classes.push('subagentChildStale');
+  return classes;
+}
+
+/** 引擎库三类收集（②③①，只读打开即关）：全表拉取逐行三分类入桶。 */
+function collectEngineClasses(engineDbPath, ctx) {
+  const classes = { whitelist: [], feature: [], subagentChildStale: [] };
   const db = openDbReadOnly(engineDbPath, '引擎库');
   try {
     for (const row of db.prepare('SELECT id, directory, task_type, time_created FROM session').all()) {
-      // 超龄判定单点：严格早于 cutoff 才算（恰等于不算）；非数值保守不算。
-      // 非 staleMode 时 ②③ 不消费该判定（存量全清），① 恒消费（D1①）。
-      const olderThanCutoff = typeof row.time_created === 'number' && row.time_created < cutoff;
-      if (whiteList.has(row.id) && (!staleMode || olderThanCutoff)) whitelistClass.push(row.id);
-      if (matchFeatureDirectory(row.directory) && (!staleMode || olderThanCutoff)) featureClass.push(row.id);
-      if (row.task_type === 'subagent_child' && olderThanCutoff) {
-        subagentChildStale.push(row.id);
-      }
+      for (const cls of classifyEngineRow(row, ctx)) classes[cls].push(row.id);
     }
   } finally {
     db.close();
   }
+  return classes;
+}
 
-  const engineSessionIds = new Set([...whitelistClass, ...featureClass, ...subagentChildStale]);
-
-  // ⑤ index 侧命中：tasks.task_id ∈ 引擎删除集。索引库缺文件/打不开 → 空集
-  // （真机可能无此文件；体检 collect 对该面同口径 n/a，不拖垮主流程）
+/** ⑤ index 侧命中：tasks.task_id ∈ 引擎删除集。索引库缺文件/打不开 → 空集
+ *  （真机可能无此文件；体检 collect 对该面同口径 n/a，不拖垮主流程）。 */
+function collectIndexTaskIds(indexDbPath, engineSessionIds) {
   const indexTaskIds = new Set();
-  if (typeof indexDbPath === 'string' && indexDbPath !== '') {
-    let idx = null;
+  if (typeof indexDbPath !== 'string' || indexDbPath === '') return indexTaskIds;
+  try {
+    const DatabaseSync = loadSqliteOperational().DatabaseSync;
+    const handle = new DatabaseSync(indexDbPath, { readOnly: true });
     try {
-      idx = loadSqliteOperational().DatabaseSync;
-      const handle = new idx(indexDbPath, { readOnly: true });
-      try {
-        for (const r of handle.prepare('SELECT task_id FROM tasks').all()) {
-          if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
-        }
-      } finally {
-        handle.close();
+      for (const r of handle.prepare('SELECT task_id FROM tasks').all()) {
+        if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
       }
-    } catch {
-      // 索引面 n/a（缺文件/缺 tasks 表/权限）→ indexTaskIds 空集
+    } finally {
+      handle.close();
     }
+  } catch {
+    // 索引面 n/a（缺文件/缺 tasks 表/权限）→ indexTaskIds 空集
   }
+  return indexTaskIds;
+}
 
+function buildDeleteSet(options = {}) {
+  const { engineDbPath, indexDbPath, recordsPath } = options;
+  assertRequiredOption(engineDbPath, 'buildDeleteSet 需要 options.engineDbPath（引擎库绝对路径）。');
+  assertRequiredOption(recordsPath, 'buildDeleteSet 需要 options.recordsPath（records.jsonl 绝对路径）。');
+  const { olderThanDays, staleMode, now, cutoff } = normalizeBuildOptions(options);
+  const whiteList = parseRecordWhiteList(recordsPath);
+  const classes = collectEngineClasses(engineDbPath, { whiteList, staleMode, cutoff });
+  const engineSessionIds = new Set([...classes.whitelist, ...classes.feature, ...classes.subagentChildStale]);
+  const indexTaskIds = collectIndexTaskIds(indexDbPath, engineSessionIds);
   return {
     engineSessionIds,
     byClass: {
-      whitelist: whitelistClass.sort(),
-      feature: featureClass.sort(),
-      subagentChildStale: subagentChildStale.sort(),
+      whitelist: classes.whitelist.sort(),
+      feature: classes.feature.sort(),
+      subagentChildStale: classes.subagentChildStale.sort(),
     },
     indexTaskIds,
-    interactiveClassIds: new Set([...whitelistClass, ...featureClass]),
+    interactiveClassIds: new Set([...classes.whitelist, ...classes.feature]),
     olderThanDays,
     staleMode,
     generatedAt: new Date(now).toISOString(),
@@ -329,6 +351,87 @@ function checkSentinel(deleteSet, recordsPath) {
  *   conflictedSessionIds:Set<string>>}} 命中条目含来源明细；conflictedSessionIds
  *   = 冲突会话全集（供 excludeConflicts 从双库删除集整体剔除）
  */
+/** 索引库静默打开（readOnly）：node:sqlite 不可用或打不开 → null——空安全网
+ *  降级，可用性报错由引擎库打开路径先行承担，此处不重复报错。 */
+function openIndexDbSilently(indexPath) {
+  let DatabaseSync;
+  try {
+    DatabaseSync = loadSqliteOperational().DatabaseSync;
+  } catch {
+    return null; // node:sqlite 不可用：可用性由引擎库打开路径先行报错，此处保持空安全网
+  }
+  try {
+    return new DatabaseSync(indexPath, { readOnly: true });
+  } catch {
+    return null;
+  }
+}
+
+/** 缺表安全的全行查询：姊妹表查询失败（缺表/权限）→ 空行集，该源记空，不 crash。 */
+function queryIndexRowsSafely(handle, sql) {
+  try {
+    return handle.prepare(sql).all();
+  } catch {
+    return [];
+  }
+}
+
+/** tasks 源数据：index 侧删除集 + tasks 挂载的 off_peak 引用（反向关联源数据）。
+ *  tasks 是删除集映射主表，查询失败不吞（原实现即向上抛，区别于姊妹表）。 */
+function collectTasksSource(handle, engineSessionIds) {
+  const indexTaskIds = new Set();
+  const taskOffPeakRefs = [];
+  for (const r of handle.prepare('SELECT task_id, off_peak_task_id FROM tasks').all()) {
+    if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
+    if (r.off_peak_task_id !== null && r.off_peak_task_id !== undefined) {
+      taskOffPeakRefs.push({ taskId: r.task_id, offPeakTaskId: r.off_peak_task_id });
+    }
+  }
+  return { indexTaskIds, taskOffPeakRefs };
+}
+
+/** 冲突源 members：task_group_members.task_id ∈ index 侧删除集。 */
+function collectMembersConflicts(handle, indexTaskIds, result) {
+  for (const r of queryIndexRowsSafely(handle, 'SELECT group_id, task_id FROM task_group_members')) {
+    if (indexTaskIds.has(r.task_id)) {
+      result.members.push({ sessionId: r.task_id, groupId: r.group_id });
+      result.conflictedSessionIds.add(r.task_id);
+    }
+  }
+}
+
+/** 冲突源 automations：automations.target_task_id ∈ index 侧删除集。 */
+function collectAutomationsConflicts(handle, indexTaskIds, result) {
+  for (const r of queryIndexRowsSafely(handle, 'SELECT automation_id, target_task_id FROM automations')) {
+    if (r.target_task_id !== null && r.target_task_id !== undefined && indexTaskIds.has(r.target_task_id)) {
+      result.automations.push({ sessionId: r.target_task_id, automationId: r.automation_id });
+      result.conflictedSessionIds.add(r.target_task_id);
+    }
+  }
+}
+
+/** 冲突源 off_peak（off_peak_tasks.session_id ∈ engineSessionIds，引擎侧命中）。 */
+function collectOffPeakTableConflicts(handle, engineSessionIds, result) {
+  for (const r of queryIndexRowsSafely(handle, 'SELECT off_peak_task_id, session_id FROM off_peak_tasks')) {
+    if (r.session_id !== null && r.session_id !== undefined && engineSessionIds.has(r.session_id)) {
+      result.offPeak.push({ sessionId: r.session_id, offPeakTaskId: r.off_peak_task_id, via: 'off_peak_tasks.session_id' });
+      result.conflictedSessionIds.add(r.session_id);
+    }
+  }
+}
+
+/** 冲突源 off_peak（tasks.off_peak_task_id 反向关联：删除集 task 挂着 off_peak 引用）。 */
+function collectOffPeakRefsConflicts(taskOffPeakRefs, indexTaskIds, result) {
+  for (const ref of taskOffPeakRefs) {
+    if (indexTaskIds.has(ref.taskId)) {
+      result.offPeak.push({
+        sessionId: ref.taskId, offPeakTaskId: ref.offPeakTaskId, via: 'tasks.off_peak_task_id',
+      });
+      result.conflictedSessionIds.add(ref.taskId);
+    }
+  }
+}
+
 function checkIndexConflicts(engineSessionIds, indexPath) {
   const result = {
     available: false,
@@ -336,61 +439,15 @@ function checkIndexConflicts(engineSessionIds, indexPath) {
     conflictedSessionIds: new Set(),
   };
   if (typeof indexPath !== 'string' || indexPath === '') return result;
-  let db;
+  const handle = openIndexDbSilently(indexPath);
+  if (handle === null) return result;
   try {
-    db = loadSqliteOperational().DatabaseSync;
-  } catch {
-    return result; // node:sqlite 不可用：可用性由引擎库打开路径先行报错，此处保持空安全网
-  }
-  let handle;
-  try {
-    handle = new db(indexPath, { readOnly: true });
-  } catch {
-    return result;
-  }
-  try {
-    // index 侧删除集 + tasks 挂载的 off_peak 引用（反向关联源数据）
-    const indexTaskIds = new Set();
-    const taskOffPeakRefs = [];
-    for (const r of handle.prepare('SELECT task_id, off_peak_task_id FROM tasks').all()) {
-      if (engineSessionIds.has(r.task_id)) indexTaskIds.add(r.task_id);
-      if (r.off_peak_task_id !== null && r.off_peak_task_id !== undefined) {
-        taskOffPeakRefs.push({ taskId: r.task_id, offPeakTaskId: r.off_peak_task_id });
-      }
-    }
-    // 逐源清查（姊妹表在真机为个位数行，全表拉内存过滤；缺表 → 该源空，不 crash）
-    try {
-      for (const r of handle.prepare('SELECT group_id, task_id FROM task_group_members').all()) {
-        if (indexTaskIds.has(r.task_id)) {
-          result.members.push({ sessionId: r.task_id, groupId: r.group_id });
-          result.conflictedSessionIds.add(r.task_id);
-        }
-      }
-    } catch { /* 缺表 → 空 */ }
-    try {
-      for (const r of handle.prepare('SELECT automation_id, target_task_id FROM automations').all()) {
-        if (r.target_task_id !== null && r.target_task_id !== undefined && indexTaskIds.has(r.target_task_id)) {
-          result.automations.push({ sessionId: r.target_task_id, automationId: r.automation_id });
-          result.conflictedSessionIds.add(r.target_task_id);
-        }
-      }
-    } catch { /* 缺表 → 空 */ }
-    try {
-      for (const r of handle.prepare('SELECT off_peak_task_id, session_id FROM off_peak_tasks').all()) {
-        if (r.session_id !== null && r.session_id !== undefined && engineSessionIds.has(r.session_id)) {
-          result.offPeak.push({ sessionId: r.session_id, offPeakTaskId: r.off_peak_task_id, via: 'off_peak_tasks.session_id' });
-          result.conflictedSessionIds.add(r.session_id);
-        }
-      }
-    } catch { /* 缺表 → 空 */ }
-    for (const ref of taskOffPeakRefs) {
-      if (indexTaskIds.has(ref.taskId)) {
-        result.offPeak.push({
-          sessionId: ref.taskId, offPeakTaskId: ref.offPeakTaskId, via: 'tasks.off_peak_task_id',
-        });
-        result.conflictedSessionIds.add(ref.taskId);
-      }
-    }
+    const { indexTaskIds, taskOffPeakRefs } = collectTasksSource(handle, engineSessionIds);
+    // 逐源清查（姊妹表缺表 → 该源空，不 crash）
+    collectMembersConflicts(handle, indexTaskIds, result);
+    collectAutomationsConflicts(handle, indexTaskIds, result);
+    collectOffPeakTableConflicts(handle, engineSessionIds, result);
+    collectOffPeakRefsConflicts(taskOffPeakRefs, indexTaskIds, result);
     result.available = true;
   } finally {
     handle.close();

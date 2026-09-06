@@ -666,107 +666,130 @@ function parseOlderThanDays(v) {
 }
 
 /**
- * doctor 子命令（u1 = 体检骨架；u2 = dry-run；u3 = clean 执行分发。
- * 采集/渲染语义见 lib/doctor.js、lib/clean-exec.js 头注）。
- * 恒本地（不经 assembleManager 引擎组装面——与 workflow/hook 同为纯本地
- * 命令，在 main 组装之前分流）。doctor/clean 依赖 node:sqlite，故函数内
- * lazy require（start 等主链路加载面不扩大）。
- *
- * rest[0] === 'clean'：`--dry-run` 只读预览（哨兵失败 exit 1 阻断）；
- * 非 dry-run = 执行器（停机窗口手动操作）——拒绝路径（停机校验/哨兵/磁盘）
- * 与成功报告都走 stdout 文本（--json 出结构化报告），exitCode 承载语义；
- * `--purge-backup` 删除最近备份目录（不跑停机校验——只触 zsw 自有备份，
- * 不碰任何库）。NODE_SQLITE_UNAVAILABLE 照 doctor 先例给可操作错误。
+ * node:sqlite 不可用的统一出口（体检/预览/执行三处采集入口共用同一失败语义）：
+ * coded 错误给可操作指引（指向 Node 升级）+ exit 1，不 crash 无堆栈转储；
+ * 其他错误原样重抛给 main catch。
  */
-function runDoctorCommand(rest) {
-  const { collect, renderText, renderJson } = require('../lib/doctor');
-  if (rest[0] === 'clean') {
-    const args = parseArgs(rest.slice(1));
-    // 删除档位非法值 fail-fast（阶段 3/4 一致性审查修复：原静默回落 7 天扩大删
-    // 除集；--dry-run 预览与执行同语义）——exit 1 +
-    // stderr 可操作文案，在触碰任何库/文件面之前失败
-    let olderThanDays;
-    try {
-      olderThanDays = parseOlderThanDays(args.olderThan);
-    } catch (e) {
-      if (e && e.code === 'INVALID_OLDER_THAN') {
-        process.stderr.write(`[zsw] ${e.message}\n`);
-        process.exit(1);
-      }
-      throw e;
-    }
-    if (args.dryRun) {
-      const { collectDryRun, renderDryRun } = require('../lib/doctor');
-      let report;
-      try {
-        report = collectDryRun({
-          olderThanDays,
-          staleMode: args.stale === true, // --stale 周期维护档（语义权威源 clean-identify）
-        });
-      } catch (e) {
-        // node:sqlite 不可用：可操作错误（指向 Node 升级）+ exit 1，不 crash 无堆栈
-        if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
-          process.stderr.write(`[zsw] ${e.message}\n`);
-          process.exit(1);
-        }
-        throw e;
-      }
-      // 哨兵失败 = 非零退出语义（dry-run 只读不写，报告本身已醒目阻断）。
-      // 用 process.exitCode 而非 process.exit：--json 报告可超管道缓冲（64KB），
-      // exit 会丢弃未 flush 的异步写块（实测 JSON 截断）；自然退出等 stdout
-      // drain 完毕，exit code 照常生效（doctor 无引擎执行体挂事件循环）
-      process.exitCode = report.sentinel && report.sentinel.ok ? 0 : 1;
-      if (args.json) process.stdout.write(renderJson(report));
-      else process.stdout.write(renderDryRun(report).text);
-      return;
-    }
-    if (args.purgeBackup) {
-      const { purgeLatestBackup } = require('../lib/clean-exec');
-      const r = purgeLatestBackup();
-      process.exitCode = 0;
-      if (args.json) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
-      else if (r.purged) {
-        process.stdout.write(`已删除备份目录：${r.path}\n`
-          + '注意：备份是整库回滚的唯一安全网——确认无异常后再执行本命令。\n');
-      } else {
-        process.stdout.write(`无备份可清理（${r.maintenanceDir} 下无 backup-* 目录）。\n`);
-      }
-      return;
-    }
-    const { runClean } = require('../lib/clean-exec');
-    let outcome;
-    try {
-      outcome = runClean({
-        fsOnly: args.fsOnly === true,
-        staleMode: args.stale === true, // --stale 周期维护档（边界见 clean-exec 头注）
-        olderThanDays,
-      });
-    } catch (e) {
-      if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
-        process.stderr.write(`[zsw] ${e.message}\n`);
-        process.exit(1);
-      }
-      throw e;
-    }
-    process.exitCode = outcome.exitCode;
-    if (args.json) process.stdout.write(`${JSON.stringify(outcome.json, null, 2)}\n`);
-    else process.stdout.write(outcome.text);
-    return;
+function exitOrRethrowSqliteUnavailable(e) {
+  if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
+    process.stderr.write(`[zsw] ${e.message}\n`);
+    process.exit(1);
   }
+  throw e;
+}
+
+/** doctor 体检（缺省形态，u1）：只读采集 + 渲染（--json 出结构化报告）。 */
+function runDoctorInspect(rest) {
+  const { collect, renderText, renderJson } = require('../lib/doctor');
   const args = parseArgs(rest);
   let report;
   try {
     report = collect();
   } catch (e) {
-    // node:sqlite 不可用：可操作错误（指向 Node 升级）+ exit 1，不 crash 无堆栈
-    if (e && e.code === 'NODE_SQLITE_UNAVAILABLE') {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  if (args.json === true) process.stdout.write(renderJson(report));
+  else process.stdout.write(renderText(report));
+}
+
+/** doctor clean --dry-run（u2）：删除集只读预览，哨兵失败 exit 1 阻断。 */
+function runDoctorCleanDryRun(args, olderThanDays) {
+  const { collectDryRun, renderDryRun, renderJson } = require('../lib/doctor');
+  let report;
+  try {
+    report = collectDryRun({
+      olderThanDays,
+      staleMode: args.stale === true, // --stale 周期维护档（语义权威源 clean-identify）
+    });
+  } catch (e) {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  // 哨兵失败 = 非零退出语义（dry-run 只读不写，报告本身已醒目阻断）。
+  // 用 process.exitCode 而非 process.exit：--json 报告可超管道缓冲（64KB），
+  // exit 会丢弃未 flush 的异步写块（实测 JSON 截断）；自然退出等 stdout
+  // drain 完毕，exit code 照常生效（doctor 无引擎执行体挂事件循环）
+  process.exitCode = report.sentinel && report.sentinel.ok ? 0 : 1;
+  if (args.json) process.stdout.write(renderJson(report));
+  else process.stdout.write(renderDryRun(report).text);
+}
+
+/**
+ * doctor clean --purge-backup：删除最近一次备份目录（不跑停机校验——只触
+ * zsw 自有备份，不碰任何库；无备份如实报告）。
+ */
+function runDoctorCleanPurgeBackup(args) {
+  const { purgeLatestBackup } = require('../lib/clean-exec');
+  const r = purgeLatestBackup();
+  process.exitCode = 0;
+  if (args.json) process.stdout.write(`${JSON.stringify(r, null, 2)}\n`);
+  else if (r.purged) {
+    process.stdout.write(`已删除备份目录：${r.path}\n`
+      + '注意：备份是整库回滚的唯一安全网——确认无异常后再执行本命令。\n');
+  } else {
+    process.stdout.write(`无备份可清理（${r.maintenanceDir} 下无 backup-* 目录）。\n`);
+  }
+}
+
+/** doctor clean 执行器（u3，停机窗口手动操作）：exitCode 承载语义，拒绝路径与成功报告走 stdout。 */
+function runDoctorCleanExecute(args, olderThanDays) {
+  const { runClean } = require('../lib/clean-exec');
+  let outcome;
+  try {
+    outcome = runClean({
+      fsOnly: args.fsOnly === true,
+      staleMode: args.stale === true, // --stale 周期维护档（边界见 clean-exec 头注）
+      olderThanDays,
+    });
+  } catch (e) {
+    exitOrRethrowSqliteUnavailable(e);
+  }
+  process.exitCode = outcome.exitCode;
+  if (args.json) process.stdout.write(`${JSON.stringify(outcome.json, null, 2)}\n`);
+  else process.stdout.write(outcome.text);
+}
+
+/**
+ * doctor clean 删除档位解析：非法值 fail-fast——exit 1 + stderr 可操作文案，
+ * 在触碰任何库/文件面之前失败（阶段 3/4 一致性审查修复：原静默回落 7 天扩大
+ * 删除集；--dry-run 预览与执行同语义）。
+ */
+function resolveOlderThanDaysOrFail(raw) {
+  try {
+    return parseOlderThanDays(raw);
+  } catch (e) {
+    if (e && e.code === 'INVALID_OLDER_THAN') {
       process.stderr.write(`[zsw] ${e.message}\n`);
       process.exit(1);
     }
     throw e;
   }
-  if (args.json === true) process.stdout.write(renderJson(report));
-  else process.stdout.write(renderText(report));
+}
+
+/** doctor clean 子命令编排：档位 fail-fast 解析先于 dry-run/执行/purge 三态分流（purge 无删除档位语义，非法值同拒，保守无害）。 */
+function runDoctorClean(rest) {
+  const args = parseArgs(rest);
+  const olderThanDays = resolveOlderThanDaysOrFail(args.olderThan);
+  if (args.dryRun) return runDoctorCleanDryRun(args, olderThanDays);
+  if (args.purgeBackup) return runDoctorCleanPurgeBackup(args);
+  return runDoctorCleanExecute(args, olderThanDays);
+}
+
+/**
+ * doctor 子命令（u1 = 体检骨架；u2 = dry-run；u3 = clean 执行分发。
+ * 采集/渲染语义见 lib/doctor.js、lib/clean-exec.js 头注）。
+ * 恒本地（不经 assembleManager 引擎组装面——与 workflow/hook 同为纯本地
+ * 命令，在 main 组装之前分流）。doctor/clean 依赖 node:sqlite，故各路径
+ * 函数内 lazy require（start 等主链路加载面不扩大）。
+ *
+ * rest[0] === 'clean'：`--dry-run` 只读预览（哨兵失败 exit 1 阻断）；
+ * 非 dry-run = 执行器（停机窗口手动操作）——拒绝路径（停机校验/哨兵/磁盘）
+ * 与成功报告都走 stdout 文本（--json 出结构化报告），exitCode 承载语义；
+ * `--purge-backup` 删除最近备份目录（不跑停机校验）。NODE_SQLITE_UNAVAILABLE
+ * 经统一出口给可操作错误。
+ */
+function runDoctorCommand(rest) {
+  if (rest[0] === 'clean') return runDoctorClean(rest.slice(1));
+  return runDoctorInspect(rest);
 }
 
 // ------------------------------------------- 子命令公共面

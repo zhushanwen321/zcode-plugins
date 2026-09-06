@@ -339,13 +339,10 @@ function collectFiles(artifactsDir, logDir, execDir, now) {
   return report;
 }
 
-/**
- * 五面只读采集，返回结构化报告对象（renderJson 的直接输出面）。
- * @param {object} [options] 全部可注入（测试传 fixture 路径）：
- *   engineDbPath / indexDbPath / recordsPath / artifactsDir / logDir / execDir /
- *   now（时间基准 ms，超龄判定用；缺省 Date.now()）
- */
-function collect(options = {}) {
+/** collect/collectDryRun 共用的路径与时间基准解析（options 全量可注入，缺省值
+ *  按 lib/config.js 约定 + os.homedir() 下 ~/.zcode 约定组装——两个采集入口
+ *  逐字段同构，单一实现保口径不漂移）。 */
+function resolveCollectOptions(options) {
   const now = typeof options.now === 'number' ? options.now : Date.now();
   const engineDbPath = options.engineDbPath
     || path.join(engineCliRoot(), 'db', 'db.sqlite');
@@ -355,18 +352,16 @@ function collect(options = {}) {
   const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
   const logDir = options.logDir || path.join(engineCliRoot(), 'log');
   const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
+  return { now, engineDbPath, indexDbPath, records, artifactsDir, logDir, execDir };
+}
 
-  const { DatabaseSync } = loadSqlite(); // node:sqlite 不可用 → 可操作错误（见 loadSqlite）
-
-  const whiteList = parseRecordWhiteList(records);
-
-  const report = {
-    generatedAt: new Date(now).toISOString(),
-    now,
-    paths: { engineDbPath, indexDbPath, recordsPath: records, artifactsDir, logDir, execDir },
-  };
-
-  // 面①：引擎库（打不开 → available=false，白名单总数仍可得——records 独立于库）
+/**
+ * 面①引擎库采集 + 单面容错（打不开 → available=false，白名单总数仍可得——
+ * records 独立于库）。DatabaseSync 由调用方注入而非此处 loadSqlite：node:sqlite
+ * 不可用的报错时机必须先于 records 解析（collect 入口处 fail-fast，语义不变）。
+ * 返回 { engine, coarseDeleteSet, dbBytesTotal }。
+ */
+function collectEngineFace(DatabaseSync, engineDbPath, whiteList, now) {
   let engine = { available: false, dbPath: engineDbPath };
   let coarseDeleteSet = new Set();
   let dbBytesTotal = 0;
@@ -385,24 +380,17 @@ function collect(options = {}) {
     engine = { available: false, dbPath: engineDbPath, error: String(e && e.message || e) };
     engine.whiteListTotal = whiteList.size;
   }
-  report.engine = engine;
+  return { engine, coarseDeleteSet, dbBytesTotal };
+}
 
-  // 面②：索引库（依赖删除集粗口径；引擎库 n/a 时命中无从谈起 → 直接 n/a 面）
-  if (engine.available) {
-    report.index = collectIndex(indexDbPath, coarseDeleteSet);
-  } else {
-    report.index = { available: false, dbPath: indexDbPath };
-  }
-
-  // 面③④⑤：文件面
-  report.files = collectFiles(artifactsDir, logDir, execDir, now);
-
-  // 预估回收（计划偏差 3）：删除集粗口径占比 × 库三件套体积；标注估算性质——
-  // 不引入无依据的精确假象（设计 §3.1 样张已同步为粗估公式形态），真实以执行后 du 为准
+/** 预估回收（计划偏差 3）：删除集粗口径占比 × 库三件套体积；标注估算性质——
+ *  不引入无依据的精确假象（设计 §3.1 样张已同步为粗估公式形态），真实以执行后
+ *  du 为准。引擎库 n/a 时计数缺省 undefined（渲染 n/a）。 */
+function buildEstimate(engine, dbBytesTotal) {
   const sessionTotal = engine.available ? engine.sessionTotal : undefined;
   const deleteSetSize = engine.available ? engine.coarseDeleteSetSize : undefined;
   const ratio = sessionTotal ? deleteSetSize / sessionTotal : 0;
-  report.estimate = {
+  return {
     deleteSetSize,
     sessionTotal,
     ratio,
@@ -410,7 +398,42 @@ function collect(options = {}) {
     estimatedBytes: Math.round(ratio * dbBytesTotal),
     note: '粗估，真实以执行后 du 为准',
   };
+}
 
+/**
+ * 五面只读采集，返回结构化报告对象（renderJson 的直接输出面）。
+ * @param {object} [options] 全部可注入（测试传 fixture 路径）：
+ *   engineDbPath / indexDbPath / recordsPath / artifactsDir / logDir / execDir /
+ *   now（时间基准 ms，超龄判定用；缺省 Date.now()）
+ */
+function collect(options = {}) {
+  const { now, engineDbPath, indexDbPath, records, artifactsDir, logDir, execDir }
+    = resolveCollectOptions(options);
+
+  const { DatabaseSync } = loadSqlite(); // node:sqlite 不可用 → 可操作错误（见 loadSqlite）
+
+  const whiteList = parseRecordWhiteList(records);
+
+  const report = {
+    generatedAt: new Date(now).toISOString(),
+    now,
+    paths: { engineDbPath, indexDbPath, recordsPath: records, artifactsDir, logDir, execDir },
+  };
+
+  // 面①：引擎库
+  const { engine, coarseDeleteSet, dbBytesTotal }
+    = collectEngineFace(DatabaseSync, engineDbPath, whiteList, now);
+  report.engine = engine;
+
+  // 面②：索引库（依赖删除集粗口径；引擎库 n/a 时命中无从谈起 → 直接 n/a 面）
+  report.index = engine.available
+    ? collectIndex(indexDbPath, coarseDeleteSet)
+    : { available: false, dbPath: indexDbPath };
+
+  // 面③④⑤：文件面
+  report.files = collectFiles(artifactsDir, logDir, execDir, now);
+
+  report.estimate = buildEstimate(engine, dbBytesTotal);
   report.backup = { latest: latestBackupName() };
   return report;
 }
@@ -446,63 +469,89 @@ function localDate(ms) {
 
 /**
  * 人读文本渲染（stdout 通道）。行结构以设计 §3.1 第一个代码块为权威样张；
- * 引用表行数为 A-6 核对面（样张省略），以紧凑行补入。
+ * 引用表行数为 A-6 核对面（样张省略），以紧凑行补入。分段渲染见
+ * renderEngineLines / renderIndexLines / renderFilesLines（行序即样张行序）。
  */
 function renderText(report) {
-  const e = report.engine;
-  const f = report.files;
-  const est = report.estimate;
   const lines = [];
   lines.push(`zsw 会话残留体检（${localDate(report.now)}，实时查询）`);
+  renderEngineLines(report.engine, report.estimate, lines);
+  renderIndexLines(report.index, lines);
+  renderFilesLines(report.files, lines);
+  lines.push(`备份状态          上次清理备份：${report.backup && report.backup.latest || '无'}`);
+  lines.push('👉 预览删除清单：zsw doctor clean --dry-run');
+  return `${lines.join('\n')}\n`;
+}
 
+/** 引擎库段（面①）：会话计数两行 + 引用表行 + 体积/预估回收行。 */
+function renderEngineLines(e, est, lines) {
   lines.push(na(e.available, [
     `  引擎库会话行    白名单∩库 ${fmtCount(e.whiteListInDb)} 个（白名单总数 ${fmtCount(e.whiteListTotal)}）`
     + ` / 特征目录类 ${fmtCount(e.featureDirectoryCount)} 个 /`,
     `                  subagent_child ${fmtCount(e.subagentChild && e.subagentChild.total)} 个`
     + `（其中 >7 天 ${fmtCount(e.subagentChild && e.subagentChild.olderThan7d)}）`,
   ].join('\n')));
+  lines.push(...engineRefTableLines(e.available, e.refTables));
+  lines.push(engineBytesLine(e, est));
+}
 
-  if (e.available) {
-    const rt = e.refTables || {};
-    const half = Math.ceil(REF_TABLES.length / 2);
-    const fmt = (t) => `${t} ${fmtCount(rt[t])}`;
-    lines.push(`  引擎库引用表    ${REF_TABLES.slice(0, half).map(fmt).join(' / ')}`);
-    lines.push(`                  ${REF_TABLES.slice(half).map(fmt).join(' / ')}`);
-  } else {
-    lines.push('  引擎库引用表    n/a');
-  }
+/** 引擎库引用表行（A-6 核对面紧凑行；available=false → n/a 单行）。 */
+function engineRefTableLines(available, refTables) {
+  if (!available) return ['  引擎库引用表    n/a'];
+  const rt = refTables || {};
+  const half = Math.ceil(REF_TABLES.length / 2);
+  const fmt = (t) => `${t} ${fmtCount(rt[t])}`;
+  return [
+    `  引擎库引用表    ${REF_TABLES.slice(0, half).map(fmt).join(' / ')}`,
+    `                  ${REF_TABLES.slice(half).map(fmt).join(' / ')}`,
+  ];
+}
 
-  const estLine = e.available
+/** 引擎库体积行：available 形态带预估回收粗估公式；不可读给失败原因（可操作）。 */
+function engineBytesLine(e, est) {
+  return e.available
     ? `  引擎库体积      ${fmtBytes(e.dbBytes.total)}（预估库内可回收 ~${fmtBytes(est.estimatedBytes)}`
       + ` = 删除集粗口径 ${fmtCount(est.deleteSetSize)}/${fmtCount(est.sessionTotal)} × 库体积；${est.note}）`
     : `  引擎库体积      n/a（库不可读：${e.error || '文件不存在'}）`;
-  lines.push(estLine);
+}
 
-  const idx = report.index;
-  // 姊妹表行 = 冲突命中在前（A-6 核对样张口径），表规模括注保留观测价值
-  const ct = idx.conflictHits;
-  const conflictText = ct && ct.available
-    ? `姊妹表冲突：members ${fmtCount(ct.members)} / automations ${fmtCount(ct.automations)} / off_peak ${fmtCount(ct.offPeak)}`
-    : '姊妹表冲突：n/a';
+/** GUI 索引段（面②）：姊妹表冲突命中在前（A-6 核对样张口径），表规模括注保留观测价值。 */
+function renderIndexLines(idx, lines) {
   lines.push(na(idx.available, `  GUI 索引行      tasks 总数 ${fmtCount(idx.tasksTotal)} / 粗口径命中 ${fmtCount(idx.tasksHit)} 行；`
-    + `${conflictText}（表规模：members ${fmtCount(idx.sisterTables && idx.sisterTables.taskGroupMembers)} /`
+    + `${indexConflictText(idx.conflictHits)}（表规模：members ${fmtCount(idx.sisterTables && idx.sisterTables.taskGroupMembers)} /`
     + ` automations ${fmtCount(idx.sisterTables && idx.sisterTables.automationsWithTarget)}（target 非空）`
     + ` / off_peak ${fmtCount(idx.sisterTables && idx.sisterTables.offPeakTasks)}）`));
+}
 
-  lines.push(na(f.artifacts && f.artifacts.available,
-    `  artifacts/      ${fmtCount(f.artifacts && f.artifacts.dirCount)} 个会话目录（~${fmtBytes(f.artifacts && f.artifacts.bytes)}）`));
+/** 姊妹表冲突摘要：预检可用列三类命中数，否则 n/a。 */
+function indexConflictText(ct) {
+  return ct && ct.available
+    ? `姊妹表冲突：members ${fmtCount(ct.members)} / automations ${fmtCount(ct.automations)} / off_peak ${fmtCount(ct.offPeak)}`
+    : '姊妹表冲突：n/a';
+}
 
-  lines.push(na(f.log && f.log.available,
-    `  log/            超 14 天日志 ${fmtCount(f.log && f.log.olderThan14d)} 个`
-    + `（共 ${fmtCount(f.log && f.log.fileCount)} 个文件 ~${fmtBytes(f.log && f.log.bytes)}；随执行日累积）`));
+/** 文件面段（面③④⑤），逐面一行；目录不存在该面 n/a。 */
+function renderFilesLines(f, lines) {
+  lines.push(artifactsLine(f.artifacts));
+  lines.push(logLine(f.log));
+  lines.push(execLine(f.exec));
+}
 
-  lines.push(na(f.exec && f.exec.available,
-    `  exec/           sess_ 前缀目录 ${fmtCount(f.exec && f.exec.sessPrefixed)} 个`
-    + `（共 ${fmtCount(f.exec && f.exec.dirCount)} 个目录 ~${fmtBytes(f.exec && f.exec.bytes)}）`));
+function artifactsLine(art) {
+  return na(art && art.available,
+    `  artifacts/      ${fmtCount(art && art.dirCount)} 个会话目录（~${fmtBytes(art && art.bytes)}）`);
+}
 
-  lines.push(`备份状态          上次清理备份：${report.backup && report.backup.latest || '无'}`);
-  lines.push('👉 预览删除清单：zsw doctor clean --dry-run');
-  return `${lines.join('\n')}\n`;
+function logLine(log) {
+  return na(log && log.available,
+    `  log/            超 14 天日志 ${fmtCount(log && log.olderThan14d)} 个`
+    + `（共 ${fmtCount(log && log.fileCount)} 个文件 ~${fmtBytes(log && log.bytes)}；随执行日累积）`);
+}
+
+function execLine(exec) {
+  return na(exec && exec.available,
+    `  exec/           sess_ 前缀目录 ${fmtCount(exec && exec.sessPrefixed)} 个`
+    + `（共 ${fmtCount(exec && exec.dirCount)} 个目录 ~${fmtBytes(exec && exec.bytes)}）`);
 }
 
 /** 机器可读渲染（--json；zsw CLI stdout JSON 惯例 + G4 机检通道）。 */
@@ -542,15 +591,8 @@ function renderJson(report) {
  *   clean-identify.buildDeleteSet 头注——本层只透传，不复制语义）
  */
 function collectDryRun(options = {}) {
-  const now = typeof options.now === 'number' ? options.now : Date.now();
-  const engineDbPath = options.engineDbPath
-    || path.join(engineCliRoot(), 'db', 'db.sqlite');
-  const indexDbPath = options.indexDbPath
-    || path.join(os.homedir(), '.zcode', 'v2', 'tasks-index.sqlite');
-  const records = options.recordsPath || recordsPath();
-  const artifactsDir = options.artifactsDir || path.join(engineCliRoot(), 'artifacts');
-  const logDir = options.logDir || path.join(engineCliRoot(), 'log');
-  const execDir = options.execDir || path.join(engineCliRoot(), 'exec');
+  const { now, engineDbPath, indexDbPath, records, artifactsDir, logDir, execDir }
+    = resolveCollectOptions(options);
 
   // 1-3：分治 + 哨兵 + 冲突预检（buildDeleteSet/checkIndexConflicts 各自只读开库）
   const initial = buildDeleteSet({
@@ -630,7 +672,9 @@ function collectDryRun(options = {}) {
 
 /**
  * dry-run 人读渲染（行结构对齐设计 §3.1 第二代码块样张；设计侧解释性括注
- * （红灯判定式说明）不进 CLI 输出）。
+ * （红灯判定式说明）不进 CLI 输出）。分段渲染见 renderStaleModeLine /
+ * renderSentinelLine / renderRedlightLines / renderConflictLine /
+ * renderFilePlanLine / renderSentinelFailureLines（行序即样张行序）。
  * 返回 { text, exitCode }：exitCode = 哨兵 ok ? 0 : 1——哨兵失败时输出 §3.1
  * 第三代码块形态的失败文案（中性归因 + 中止指引），且**仍输出删除清单**
  * （失败文案要求「把 dry-run 清单交维护者判定」），但以 ✗ 块收尾并不给
@@ -641,32 +685,52 @@ function collectDryRun(options = {}) {
  */
 function renderDryRun(report) {
   const ds = report.deleteSet;
-  const wl = ds.byClass.whitelist.length;
-  const ft = ds.byClass.feature.length;
-  const sc = ds.byClass.subagentChildStale.length;
-  const rl = report.redlight;
-  const interactiveN = rl.workspaceN + rl.tmpN;
-  const cf = report.conflicts;
-  const removed = ds.removedByConflict || [];
   const lines = [];
 
   lines.push('将删除（不写库）：');
-  // --stale 周期维护档位行（缺省形态不输出——存量全清样张逐字保持）。文件面
-  // 档位不跟随 --older-than 的边界在此显式化（一个 flag 不暗改两处安全阈值）。
+  renderStaleModeLine(report, lines);
+  lines.push(`  引擎库 session ${fmtCount(ds.byClass.whitelist.length)}（白名单∩库）+ ${fmtCount(ds.byClass.feature.length)}（特征目录类）`
+    + `+ ${fmtCount(ds.byClass.subagentChildStale.length)}（超龄 subagent_child）行；`);
+  lines.push('    按 FK 列级联（8 张 CASCADE 表 + part 经 message 间接级联 + session_task_link.child），');
+  lines.push(`    model_usage/turn_usage 统计行随之级联；input_history 命中 ${fmtCount(report.inputHistoryHits)} 行随删（GUI 手输与 RPC send 均写该表）`);
+
+  const s = renderSentinelLine(report, lines);
+  renderRedlightLines(report.redlight, lines);
+  renderConflictLine(ds, report.conflicts, lines);
+  renderFilePlanLine(report.filePlan || {}, lines);
+
+  lines.push(`预估回收 ~${fmtBytes(report.estimate && report.estimate.estimatedBytes)}`
+    + `（${report.estimate && report.estimate.note} = 删除集占比 × 库体积；log 面随执行日增长；库内空间需 VACUUM 后生效）`);
+
+  if (!s.ok) {
+    renderSentinelFailureLines(s, lines);
+    return { text: `${lines.join('\n')}\n`, exitCode: 1 };
+  }
+  lines.push('👉 确认执行：退出 ZCode 后跑 zsw doctor clean');
+  return { text: `${lines.join('\n')}\n`, exitCode: 0 };
+}
+
+/** --stale 周期维护档位行（缺省形态不输出——存量全清样张逐字保持）。文件面
+ *  档位不跟随 --older-than 的边界在此显式化（一个 flag 不暗改两处安全阈值）。 */
+function renderStaleModeLine(report, lines) {
   if (report.staleMode === true) {
     lines.push(`  档位：--stale 周期维护（--older-than ${fmtCount(report.olderThanDays)} 天）——三类识别统一`
       + '只清 time_created 超龄会话；文件面档位不跟随（log 保留 14 天 / exec 空壳 7 天）');
   }
-  lines.push(`  引擎库 session ${fmtCount(wl)}（白名单∩库）+ ${fmtCount(ft)}（特征目录类）`
-    + `+ ${fmtCount(sc)}（超龄 subagent_child）行；`);
-  lines.push('    按 FK 列级联（8 张 CASCADE 表 + part 经 message 间接级联 + session_task_link.child），');
-  lines.push(`    model_usage/turn_usage 统计行随之级联；input_history 命中 ${fmtCount(report.inputHistoryHits)} 行随删（GUI 手输与 RPC send 均写该表）`);
+}
 
+/** 污染哨兵行；返回哨兵对象（报告缺省时按 ok 形态），供收尾出口判定复用。 */
+function renderSentinelLine(report, lines) {
   const s = report.sentinel || { ok: true, intersection: [] };
   lines.push(s.ok
     ? '  污染哨兵：删除集 ∩ targetSessionId 值域 = 0（非 0 中止——污染或嵌套合法重叠，逐条核查）'
     : `  污染哨兵：删除集 ∩ targetSessionId 值域 = ${s.intersection.length}（${s.intersection.join(' / ')}）`);
+  return s;
+}
 
+/** 删除集 directory 分布（仅 interactive 识别类口径）+ 人工审红灯说明；红灯触发追加 ⚠ 行。 */
+function renderRedlightLines(rl, lines) {
+  const interactiveN = rl.workspaceN + rl.tmpN;
   lines.push(`  删除集 directory 分布（口径：仅 interactive 识别类——白名单∩库 + 特征目录类，共 ${fmtCount(interactiveN)}；`);
   lines.push('    排除 subagent_child——其 directory 全为工作区类且识别键是 task_type，纳入只会稀释红灯）：');
   lines.push(`    workspace 类 ${fmtCount(rl.workspaceN)} / 临时类（特征目录）${fmtCount(rl.tmpN)}`);
@@ -675,7 +739,11 @@ function renderDryRun(report) {
     lines.push(`    ⚠ 红灯触发：临时类占比 ${(rl.ratio * 100).toFixed(1)}% / 特征表外临时目录命中 ${fmtCount(rl.outsideFeatureHits)} 处`
       + ' → 停手核查（逐条核查命中会话的 directory/标题，确认识别无污染后再考虑执行）');
   }
+}
 
+/** GUI 索引 tasks 行：冲突剔除事实优先（已剔除列明细），无冲突给安全网口径。 */
+function renderConflictLine(ds, cf, lines) {
+  const removed = ds.removedByConflict || [];
   const conflictN = (cf.members ? cf.members.length : 0)
     + (cf.automations ? cf.automations.length : 0)
     + (cf.offPeak ? cf.offPeak.length : 0);
@@ -684,31 +752,28 @@ function renderDryRun(report) {
       + `（${removed.map((r) => `${r.id}[${r.source}]`).join('、')}）；下次 clean 重查后自然纳入；冲突机制保留为安全网`
     : (cf.available === false ? '索引库 n/a；' : '当前无姊妹表冲突；') + '冲突机制保留为安全网';
   lines.push(`  GUI 索引 tasks ${fmtCount(ds.indexTaskIds.length)} 行（${conflictDesc}）`);
+}
 
-  // 文件面行 = 删除集口径（filePlan，与执行 counts 同构——A-4「各面计数一致
-  // （差异为 0）」的对账面）：artifacts ∈删除集 N 目录；exec ∈删除集 N +
-  // 超龄空壳 M；log 超龄 K 文件（含字节）
-  const fp = report.filePlan || {};
-  const logBytes = (fp.logFiles || []).reduce((s, x) => s + (x.bytes || 0), 0);
+/** 文件面行 = 删除集口径（filePlan，与执行 counts 同构——A-4「各面计数一致
+ *  （差异为 0）」的对账面）：artifacts ∈删除集 N 目录；exec ∈删除集 N +
+ *  超龄空壳 M；log 超龄 K 文件（含字节） */
+function renderFilePlanLine(fp, lines) {
+  const logFiles = fp.logFiles || [];
+  const logBytes = logFiles.reduce((s, x) => s + (x.bytes || 0), 0);
   lines.push(`  artifacts ∈删除集 ${fmtCount((fp.artifacts || []).length)} 目录`
     + `；exec ∈删除集 ${fmtCount((fp.execInSet || []).length)} + 超龄空壳 ${fmtCount((fp.execStaleEmpty || []).length)} 目录`
-    + `；log 超龄 ${fmtCount((fp.logFiles || []).length)} 文件（~${fmtBytes(logBytes)}）`);
+    + `；log 超龄 ${fmtCount(logFiles.length)} 文件（~${fmtBytes(logBytes)}）`);
+}
 
-  lines.push(`预估回收 ~${fmtBytes(report.estimate && report.estimate.estimatedBytes)}`
-    + `（${report.estimate && report.estimate.note} = 删除集占比 × 库体积；log 面随执行日增长；库内空间需 VACUUM 后生效）`);
-
-  if (!s.ok) {
-    lines.push('');
-    const show = s.intersection.slice(0, 8);
-    const more = s.intersection.length > show.length ? ' …' : '';
-    lines.push(`✗ 污染哨兵失败：删除集 ∩ targetSessionId 值域 = ${s.intersection.length}（${show.join(' / ')}${more}）。`);
-    lines.push('  命中可能是识别器污染（C6-被否：targetSessionId 是 zsw 调用方宿主会话=用户真实会话），');
-    lines.push('  也可能是嵌套调用的合法重叠（zsw 会话充当另一次 zsw 调用的宿主）。👉 中止不改库；');
-    lines.push('  逐条核查命中会话的 directory/标题后，把 dry-run 清单交维护者判定。');
-    return { text: `${lines.join('\n')}\n`, exitCode: 1 };
-  }
-  lines.push('👉 确认执行：退出 ZCode 后跑 zsw doctor clean');
-  return { text: `${lines.join('\n')}\n`, exitCode: 0 };
+/** 哨兵失败 ✗ 块（§3.1 第三代码块形态）：中性归因 + 中止指引（命中最多展示 8 条）。 */
+function renderSentinelFailureLines(s, lines) {
+  lines.push('');
+  const show = s.intersection.slice(0, 8);
+  const more = s.intersection.length > show.length ? ' …' : '';
+  lines.push(`✗ 污染哨兵失败：删除集 ∩ targetSessionId 值域 = ${s.intersection.length}（${show.join(' / ')}${more}）。`);
+  lines.push('  命中可能是识别器污染（C6-被否：targetSessionId 是 zsw 调用方宿主会话=用户真实会话），');
+  lines.push('  也可能是嵌套调用的合法重叠（zsw 会话充当另一次 zsw 调用的宿主）。👉 中止不改库；');
+  lines.push('  逐条核查命中会话的 directory/标题后，把 dry-run 清单交维护者判定。');
 }
 
 module.exports = {
