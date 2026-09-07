@@ -299,11 +299,13 @@ class CoreRunner {
         // 2026-09 vendored 0.5.1+ 生效）：prompt 文本在 task.prompt（旧 task.task
         // 字段已废弃——core buildPrompt 读 task.prompt，传旧字段名会拼出空
         // prompt，触发 runTurn 空投递守卫 + 首轮误分类 conn-closed + 重试同败）。
-        // slug 为 zsw 诊断留痕字段，AgentCallOpts 无此键，core 忽略，传替无害；
-        // thinkingLevel（旧 effort）zsw 从未透传，维持既有行为不新增。
+        // description 复用 AgentCallOpts 既有键承载 zsw slug：pi 路径 dist:20881
+        // 以 task.description 派生 slug，zcode 路径 dist:18411 超时错误文案读
+        // task.description 定位任务——传 slug 裸键 core 不消费（曾致 engine_timeout
+        // 文案恒 slug=unknown）；thinkingLevel（旧 effort）zsw 从未透传，不新增。
         const spec = {
           prompt: taskCtx.prompt,
-          slug: taskCtx.slug,
+          description: taskCtx.slug,
           model: taskCtx.modelRef,
           cwd: taskCtx.cwd,
           // conversation 刻意不透传：zcode engine 对 task.conversation=true 在

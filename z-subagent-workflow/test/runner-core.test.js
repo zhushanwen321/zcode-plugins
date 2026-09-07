@@ -335,6 +335,7 @@ test('task 形状 = core AgentCallOpts 契约：prompt 非空、无旧 task 字�
   assert.ok(seenTask.prompt.length > 0, 'prompt 非空——空值会在 core runTurn 空投递守卫炸穿');
   assert.equal(seenTask.prompt, '任务书正文');
   assert.equal(seenTask.task, undefined, '旧 AgentTaskSpec.task 字段不得回潮（core 0.6.0 不再消费）');
+  assert.equal(seenTask.description, 'runner-core-test', 'description=slug 锚定——丢键则超时文案回退 slug=unknown');
 });
 
 test('probe()：透传 core ProbeReport（ok + engineVersion → protocolVersion）', async () => {

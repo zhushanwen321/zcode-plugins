@@ -332,7 +332,7 @@ node bin/zsw.js doctor clean --purge-backup     # 确认无异常后删除最近
 | workflow 脚本内 `agent({timeoutMs})` | 单次 agent 调用墙钟 | 不设 |
 | agent .md frontmatter `maxTurns` | 按回合换算墙钟（5min/turn、下限 30min；显式 `--timeout-ms` 优先于它） | 未声明不换算 |
 
-`0` / 负值一律视为不限（旧实现「0/负值 = 立即超时」已修正）；未显式限时且确需兜底时用 `XYZ_SUBAGENT_RUN_WATCHDOG_MS`（workflow 轮询层 env，>0 生效）。
+`0` / 负值视为不限仅在 agent .md 未声明 `maxTurns` 时成立——有 `maxTurns` 声明的 agent 上，显式 `--timeout-ms 0`/负值不满足「>0 才采显式值」，回落到 maxTurns 换算 watchdog，非不限（旧实现「0/负值 = 立即超时」已修正）；未显式限时且确需兜底时用 `XYZ_SUBAGENT_RUN_WATCHDOG_MS`（workflow 轮询层 env，>0 生效）。
 
 **保护类（防 hang / 防泄漏 watchdog）——默认见各行，env 语义逐行标注**（多数 `>0` 覆盖默认、`≤0` 关闭并 warn；例外见行内）：
 
