@@ -1,8 +1,6 @@
 {
-  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/refactor-zcode-engine-shared-home/packages/subagent-core@0.5.0",
-  "sourceRev": "fcb5bad2e6efa633a483f0a894f27c226d13f2ed",
-  "sourceDirty": true,
-  "fetchedAt": "2026-09-03T13:44:35.760Z",
+  "source": "npm@0.6.0",
+  "fetchedAt": "2026-09-07T19:54:25.567Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
@@ -51,11 +49,11 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "58f0d54d5e9ee644defd055e730b1ba73663123dc17b6c0ab764fd41c160e744"
+      "sha256": "af15749348400117c40ca739506c257b06acb32a1ac702b2a51c514acb37b2c6"
     },
     {
       "path": "package.json",
-      "sha256": "3900e4ed0c26b77717b6a5d4cd17ef0393cad524cecb2a81f0758b3f2f02cc6e"
+      "sha256": "ff3dcdcf5b5bca0d0489ef0562f4322f1daa097bd64110a72ee43cfaaa5b5504"
     },
     {
       "path": "workflows/_shared/agent-refs.cjs",
@@ -75,7 +73,7 @@
     },
     {
       "path": "workflows/review-fix-loop-utils.cjs",
-      "sha256": "b9177b048e6a68c88101d56e33751487f22d9452ce4fece060b943051533d03e"
+      "sha256": "1046b44a7dfcd313c8b6ee71cb92ea459a6baa80a4847c2eafef443ea434074e"
     },
     {
       "path": "workflows/review-fix-loop.js",

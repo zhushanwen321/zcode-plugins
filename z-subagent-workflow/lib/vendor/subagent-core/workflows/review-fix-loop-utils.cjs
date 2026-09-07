@@ -1,7 +1,7 @@
 // review-fix-loop-utils.cjs — review-fix-loop.js 的可测纯函数模块
 //
 // workflow 编排逻辑的纯函数抽到独立 .cjs，
-// 供 vitest 单测直接 require（extensions/universal/subagent-workflow/src/__tests__/review-fix-loop-utils.test.ts）
+// 供 vitest 单测直接 require（packages/subagent-core/src/__tests__/review-fix-loop-utils.test.ts）
 // 与 worker 运行时共用（review-fix-loop.js 经 workerData.scriptPath 定位本文件）。
 //
 // 本文件不依赖 workflow 全局（$ARGS/agent/parallel/phase/log），所有需要报错的函数
@@ -329,6 +329,64 @@ function findIssueKey(issues, issueId) {
 }
 
 /**
+ * deferred 条目的有效 severity（m9 交叉核对）：自报 severity 可被单边绕过（fix agent
+ * 与审核方同一 LLM，有少干活动机，把 must-fix 标 minor 塞进 deferred 即过旧校验）——
+ * 与追踪表交叉核对：trackedIssues 中能找到的 ID 以其追踪 severity 为准；追踪表无此 ID
+ * 采信自报。仅认真实 severity 等级（critical/major/minor/trivial）；"unknown"（reconcile
+ * 新 ID 默认）等非等级值不覆盖自报，避免误伤合法 minor deferral。
+ */
+function resolveDeferredEffectiveSeverity(d, trackedIssues, idMap) {
+  const sev = typeof d.severity === "string" ? d.severity.toLowerCase() : "";
+  let effectiveSev = sev;
+  if (trackedIssues && typeof d.issue_id === "string" && d.issue_id) {
+    const trackedKey = findIssueKey(trackedIssues, translateId(idMap, d.issue_id, trackedIssues));
+    const trackedSev = trackedKey ? trackedIssues[trackedKey].severity : undefined;
+    const ts = typeof trackedSev === "string" ? trackedSev.toLowerCase() : "";
+    if (ts === "critical" || ts === "major" || ts === "minor" || ts === "trivial") {
+      effectiveSev = ts;
+    }
+  }
+  return effectiveSev;
+}
+
+/** deferred 违规收集（TC3）：有效 severity 非 minor/trivial 即违规；falsy 条目跳过。 */
+function collectDeferredViolations(result, trackedIssues, idMap) {
+  const violations = [];
+  for (const d of result.deferred || []) {
+    if (!d) continue;
+    const effectiveSev = resolveDeferredEffectiveSeverity(d, trackedIssues, idMap);
+    if (effectiveSev && effectiveSev !== "minor" && effectiveSev !== "trivial") {
+      violations.push({ issue_id: d.issue_id || "(unnamed)", severity: effectiveSev });
+    }
+  }
+  return violations;
+}
+
+/** must-fix 申报 ID 归一化：string 直接归一；对象形态取 .id 归一；其余空串。 */
+function normMustFixEntryId(id) {
+  if (typeof id === "string") return normIssueId(id);
+  return id && typeof id.id === "string" ? normIssueId(id.id) : "";
+}
+
+/**
+ * must-fix 漏修违规收集（m3）：ID 归一化比较——大小写 + 尾部括号尾注（如 "(fixed)"）
+ * 漂移不误杀：严格 trim 比较会把 "mf-1"/"MF-1 (fixed)" 判漏修，整轮 fix-failure 误杀。
+ */
+function collectMustFixNotFixedViolations(result, mustFixIds) {
+  const violations = [];
+  const fixedIds = new Set((result.fixes || [])
+    .map((f) => (f && typeof f.issue_id === "string" ? normIssueId(f.issue_id) : ""))
+    .filter(Boolean));
+  for (const id of mustFixIds) {
+    const norm = normMustFixEntryId(id);
+    if (norm && !fixedIds.has(norm)) {
+      violations.push({ issue_id: norm, severity: "must-fix-not-fixed" });
+    }
+  }
+  return violations;
+}
+
+/**
  * ES3 硬校验（5.3-P1 红线）：(1) deferred 只允许 minor/trivial；(2) must-fix 必须全进
  * fixes[]——mustFixIds 中未修复且未显式处理的 ID 判 violation（漏修）。mustFixIds
  * 为 null/undefined 时仅做 (1)（无 aggregator 数据的降级路径，wave 2 限制）。
@@ -341,40 +399,9 @@ function findIssueKey(issues, issueId) {
  * 翻译任一侧都会制造假失配（must-fix-not-fixed 误杀整 run）。
  */
 function validateFixResult(result, mustFixIds, trackedIssues, idMap) {
-  const violations = [];
-  for (const d of result.deferred || []) {
-    if (!d) continue;
-    const sev = typeof d.severity === "string" ? d.severity.toLowerCase() : "";
-    // m9: 自报 severity 可被单边绕过（fix agent 与审核方同一 LLM，有少干活动机，
-    // 把 must-fix 标 minor 塞进 deferred 即过旧校验）——与追踪表交叉核对：
-    // trackedIssues 中能找到的 ID 以其追踪 severity 为准；追踪表无此 ID 采信自报。
-    let effectiveSev = sev;
-    if (trackedIssues && typeof d.issue_id === "string" && d.issue_id) {
-      const trackedKey = findIssueKey(trackedIssues, translateId(idMap, d.issue_id, trackedIssues));
-      const trackedSev = trackedKey ? trackedIssues[trackedKey].severity : undefined;
-      const ts = typeof trackedSev === "string" ? trackedSev.toLowerCase() : "";
-      // 仅认真实 severity 等级（critical/major/minor/trivial）；"unknown"（reconcile 新
-      // ID 默认）等非等级值不覆盖自报，避免误伤合法 minor deferral
-      if (ts === "critical" || ts === "major" || ts === "minor" || ts === "trivial") {
-        effectiveSev = ts;
-      }
-    }
-    if (effectiveSev && effectiveSev !== "minor" && effectiveSev !== "trivial") {
-      violations.push({ issue_id: d.issue_id || "(unnamed)", severity: effectiveSev });
-    }
-  }
+  const violations = collectDeferredViolations(result, trackedIssues, idMap);
   if (Array.isArray(mustFixIds) && mustFixIds.length > 0) {
-    // m3: ID 归一化比较——大小写 + 尾部括号尾注（如 "(fixed)"）漂移不误杀：
-    // 严格 trim 比较会把 "mf-1"/"MF-1 (fixed)" 判漏修，整轮 fix-failure 误杀
-    const fixedIds = new Set((result.fixes || [])
-      .map((f) => (f && typeof f.issue_id === "string" ? normIssueId(f.issue_id) : ""))
-      .filter(Boolean));
-    for (const id of mustFixIds) {
-      const norm = typeof id === "string" ? normIssueId(id) : (id && typeof id.id === "string" ? normIssueId(id.id) : "");
-      if (norm && !fixedIds.has(norm)) {
-        violations.push({ issue_id: norm, severity: "must-fix-not-fixed" });
-      }
-    }
+    violations.push(...collectMustFixNotFixedViolations(result, mustFixIds));
   }
   return violations;
 }
@@ -829,6 +856,88 @@ function translateReconSets(reconSeen, reconEscalate, reconFixed, idMap, issues)
  * 未知 ID（不在 prevIssues 中）按新发现处理；stuckThreshold 复用 stuckThreshold 参数。
  * @returns { issues, stuck, stuckIds, knownRemaining }
  */
+/** 条目克隆：浅拷贝 + history 复制——reconcile 不修改入参条目，转换落在新条目上。 */
+function cloneTrackedIssue(issue) {
+  return { ...issue, history: [...(issue.history || [])] };
+}
+
+/**
+ * 5.1-5 显式升级：reconciliation 声明 escalate → 重新 open（保留历史与 fixAttempts），
+ * 进入修复循环；未升级的 deferred 留 known-remaining，不参与判定。
+ */
+function escalateDeferredIssue(entry, id, escalated, round) {
+  if (!escalated.has(id)) return;
+  entry.status = "open";
+  entry.openStreak = 0;
+  entry.history.push({ round, status: "escalated" });
+}
+
+/**
+ * open/regressed + 声明 fixed（verify-first）→ 清账，命中返回 true（调用方跳过后续
+ * 转换）。与"fix result claiming fixed is NOT evidence"原则不冲突：这里的 fixed 声明
+ * 来自 reviewer 亲自读目标后的申报（evidence 非空由调用方过滤），正是该原则认可的
+ * 证据形态——此前它被收集侧整体丢弃，open 条目无消除通道。
+ */
+function applyReconciledFix(entry, id, fixedDeclared, round) {
+  if (!((entry.status === "open" || entry.status === "regressed") && fixedDeclared.has(id))) return false;
+  entry.status = "fixed";
+  entry.openStreak = 0;
+  entry.history.push({ round, status: "fixed", via: "reconciliation" });
+  return true;
+}
+
+/**
+ * fix-attempted 判定：未再现（未 seen）→ fixed；再现 → regressed（fixAttempts+1）。
+ */
+function applyFixAttemptedOutcome(entry, statusNow, id, seen, round) {
+  if (statusNow !== "fix-attempted") return;
+  if (!seen.has(id)) {
+    entry.status = "fixed";
+    entry.openStreak = 0;
+    entry.history.push({ round, status: "fixed" });
+  } else {
+    entry.status = "regressed";
+    // fixAttempts 语义 = 修复失败次数：初始 0，每次 regressed +1（RC-7「经 2 次修复
+    // 仍未收敛」= 第 2 次 regressed 后触发，修复见 findNeedsRedesign 阈值）。
+    entry.fixAttempts = (entry.fixAttempts || 0) + 1;
+    entry.history.push({ round, status: "regressed" });
+  }
+}
+
+/**
+ * MF-2: fixed 条目再次被报告（seen）→ 回归：转 regressed + fixAttempts+1（已确认修复
+ * 的问题复发同样计修复失败，needs-redesign 可达）；openStreak 由统一 if 累计
+ * （首轮回归 1）。未 seen → 保持 fixed（漏报不误转）。修复前此处无转换——fixed 条目
+ * 复发时 fixAttempts/openStreak 均不增长，与收敛终止组合后默认配置下 R3 即以
+ * converged 提前终止而 must-fix 仍活跃（MF-2）。
+ */
+function applyFixedRegression(entry, statusNow, id, seen, round) {
+  if (!(statusNow === "fixed" && seen.has(id))) return;
+  entry.status = "regressed";
+  entry.fixAttempts = (entry.fixAttempts || 0) + 1;
+  entry.history.push({ round, status: "regressed" });
+}
+
+// open/regressed 且本轮仍在（seen）→ openStreak +1（跨轮字段）；漏报（未 seen）不增长（保守）。
+// status 读 entry 当前值——fix-attempted/fixed 分支本轮转出的 regressed 同样累计（原语义）。
+function accrueOpenStreak(entry, id, seen, stuckThreshold, stuckIds) {
+  if (seen.has(id) && (entry.status === "open" || entry.status === "regressed")) {
+    entry.openStreak = (entry.openStreak || 0) + 1;
+    if (entry.openStreak >= stuckThreshold) stuckIds.push(id);
+  }
+}
+
+// 新 ID（reviewer 声明的新发现）→ open。新 ID 首现 openStreak=1：统一判定语义
+// openStreak >= stuckThreshold（与既有条目分支一致）。边界：stuckThreshold=1 时新 ID
+// 首现即 stuck（语义自洽：阈值为 1 表示「任何未解决条目出现即视为卡住」，属显式配置而非 bug）。
+function registerNewFinding(issues, id, round, stuckThreshold, stuckIds) {
+  issues[id] = {
+    firstSeen: round, severity: "unknown", status: "open", openStreak: 1,
+    history: [{ round, status: "open" }], fixAttempts: 0,
+  };
+  if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
+}
+
 function reconcileIssues(prevIssues, { seenIds, escalateIds, fixedIds, round, stuckThreshold }) {
   const issues = {};
   const seen = new Set(seenIds || []);
@@ -836,67 +945,20 @@ function reconcileIssues(prevIssues, { seenIds, escalateIds, fixedIds, round, st
   const fixedDeclared = new Set(fixedIds || []);
   const stuckIds = [];
   for (const [id, issue] of Object.entries(prevIssues || {})) {
-    issues[id] = { ...issue, history: [...(issue.history || [])] };
+    const entry = cloneTrackedIssue(issue);
+    issues[id] = entry;
     if (issue.status === "deferred") {
-      // 5.1-5 显式升级：reconciliation 声明 escalate → 重新 open（保留历史与 fixAttempts），
-      // 进入修复循环；未升级的 deferred 留 known-remaining，不参与判定。
-      if (escalated.has(id)) {
-        issues[id].status = "open";
-        issues[id].openStreak = 0;
-        issues[id].history.push({ round, status: "escalated" });
-      }
+      escalateDeferredIssue(entry, id, escalated, round);
       continue;
     }
-    // open/regressed + 声明 fixed（verify-first）→ 清账。与"fix result claiming fixed
-    // is NOT evidence"原则不冲突：这里的 fixed 声明来自 reviewer 亲自读目标后的申报
-    // （evidence 非空由调用方过滤），正是该原则认可的证据形态——此前它被收集侧
-    // 整体丢弃，open 条目无消除通道。
-    if ((issues[id].status === "open" || issues[id].status === "regressed") && fixedDeclared.has(id)) {
-      issues[id].status = "fixed";
-      issues[id].openStreak = 0;
-      issues[id].history.push({ round, status: "fixed", via: "reconciliation" });
-      continue;
-    }
-    if (issue.status === "fix-attempted") {
-      if (!seen.has(id)) {
-        issues[id].status = "fixed";
-        issues[id].openStreak = 0;
-        issues[id].history.push({ round, status: "fixed" });
-      } else {
-        issues[id].status = "regressed";
-        // fixAttempts 语义 = 修复失败次数：初始 0，每次 regressed +1（RC-7「经 2 次修复
-        // 仍未收敛」= 第 2 次 regressed 后触发，修复见 findNeedsRedesign 阈值）。
-        issues[id].fixAttempts = (issue.fixAttempts || 0) + 1;
-        issues[id].history.push({ round, status: "regressed" });
-      }
-    }
-    // MF-2: fixed 条目再次被报告（seen）→ 回归：转 regressed + fixAttempts+1（已确认修复
-    // 的问题复发同样计修复失败，needs-redesign 可达）；openStreak 由下方统一 if 累计
-    // （首轮回归 1）。未 seen → 保持 fixed（漏报不误转）。修复前此处无转换——fixed 条目
-    // 复发时 fixAttempts/openStreak 均不增长，与收敛终止组合后默认配置下 R3 即以
-    // converged 提前终止而 must-fix 仍活跃（MF-2）。
-    if (issue.status === "fixed" && seen.has(id)) {
-      issues[id].status = "regressed";
-      issues[id].fixAttempts = (issue.fixAttempts || 0) + 1;
-      issues[id].history.push({ round, status: "regressed" });
-    }
-    // open/regressed 且本轮仍在（seen）→ openStreak +1（跨轮字段）；漏报（未 seen）不增长（保守）
-    if (seen.has(id) && (issues[id].status === "open" || issues[id].status === "regressed")) {
-      issues[id].openStreak = (issues[id].openStreak || 0) + 1;
-      if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
-    }
+    if (applyReconciledFix(entry, id, fixedDeclared, round)) continue;
+    applyFixAttemptedOutcome(entry, issue.status, id, seen, round);
+    applyFixedRegression(entry, issue.status, id, seen, round);
+    accrueOpenStreak(entry, id, seen, stuckThreshold, stuckIds);
   }
-  // 新 ID（reviewer 声明的新发现）→ open
   for (const id of seen) {
     if (issues[id]) continue;
-    issues[id] = {
-      firstSeen: round, severity: "unknown", status: "open", openStreak: 1,
-      history: [{ round, status: "open" }], fixAttempts: 0,
-    };
-    // 新 ID 首现 openStreak=1：统一判定语义 openStreak >= stuckThreshold（与下方既有
-    // 条目分支一致）。边界：stuckThreshold=1 时新 ID 首现即 stuck（语义自洽：阈值为 1
-    // 表示「任何未解决条目出现即视为卡住」，属显式配置而非 bug）。
-    if (issues[id].openStreak >= stuckThreshold) stuckIds.push(id);
+    registerNewFinding(issues, id, round, stuckThreshold, stuckIds);
   }
   const knownRemaining = computeKnownRemaining(issues);
   return { issues, stuck: stuckIds.length > 0, stuckIds, knownRemaining };

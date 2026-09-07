@@ -295,9 +295,17 @@ class CoreRunner {
         }
 
         const deny = mergeDenyTools(taskCtx);
+        // task 形状 = core AgentCallOpts（u-3b D6 合流：旧 AgentTaskSpec 并入，
+        // 2026-09 vendored 0.5.1+ 生效）：prompt 文本在 task.prompt（旧 task.task
+        // 字段已废弃——core buildPrompt 读 task.prompt，传旧字段名会拼出空
+        // prompt，触发 runTurn 空投递守卫 + 首轮误分类 conn-closed + 重试同败）。
+        // description 复用 AgentCallOpts 既有键承载 zsw slug：pi 路径 dist:20881
+        // 以 task.description 派生 slug，zcode 路径 dist:18411 超时错误文案读
+        // task.description 定位任务——传 slug 裸键 core 不消费（曾致 engine_timeout
+        // 文案恒 slug=unknown）；thinkingLevel（旧 effort）zsw 从未透传，不新增。
         const spec = {
-          task: taskCtx.prompt,
-          slug: taskCtx.slug,
+          prompt: taskCtx.prompt,
+          description: taskCtx.slug,
           model: taskCtx.modelRef,
           cwd: taskCtx.cwd,
           // conversation 刻意不透传：zcode engine 对 task.conversation=true 在
