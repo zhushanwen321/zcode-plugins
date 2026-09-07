@@ -114,11 +114,12 @@ node z-subagent-workflow/bin/zsw.js workflow \
 # --model 不传：review/fix 是重量任务，跟随默认主模型（纪律见 zsub-zflow-orchestration skill）
 # --review-prompt 推荐传：core 引擎 turn 计时是两计时器（2026-09 vendored 0.5.1
 # 起：idle 30min 事件刷新主判 + 总上界 60min 固定，env XYZ_ZCODE_TURN_* 可调可关，
-# 旧 300s 固定墙钟已退役——2026-09-02 run1 实证的「报告写完但收尾帧迟到被判死」
-# 误杀面已收窄）。残余风险 = 单 turn 超 60min 总上界仍被杀（engine_run_failed，
-# 整轮 review-failure）；分步纪律（每 2-3 文件收尾一轮 + 报告完成后立即输出
-# 围栏块）对此仍是有效缓解且成本为零，故保留注入。调优面见插件 README
-# 「超时行为与调优」节；禁直改 vendored dist（sha256 自检）
+# 旧 300s 固定墙钟已退役）。残余风险 = 单 turn 超 60min 总上界仍被杀：错误面是
+# engine_timeout（zcode turn 总上界…，turn 超时专报；旧 300s 时代的 engine_run_failed
+# 前缀已退役，排障时勿再 grep 旧 token）→ 整轮 review-failure。分步纪律
+# （每 2-3 文件收尾一轮 + 报告完成后立即输出围栏块）对此仍是有效缓解且成本为零，
+# 故保留注入。调优面见插件 README「超时行为与调优」节；禁直改 vendored dist（sha256
+# 自检）
 ```
 
 ### task 模板 [MANDATORY 结构]
@@ -309,7 +310,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | 脏工作区跑审查 | fix 改动与认知外改动混淆 |
 | 用旧 token（`run_workflow` tool / `zflow(action=...)` MCP 调用 / `zsub` 目录名 / `bin/zsub.js`） | zflow MCP 面 1.0.0 起恒空；2026-08 改名后失效；命名 SSOT 见 z-subagent-workflow/CONTEXT.md |
 | review-fix-loop 传 `--reviewers`（旧自由文本视角名） | CLI 显式报错拒收（fail-fast 不静默）；批次契约值 = agent .md 绝对路径，用 `--batch1`（2026-09-02 实测） |
-| reviewer 单 turn 连续长时间工作（读大 diff 不分步） | 超 core turn 总上界（默认 60min，idle 主判 30min 事件刷新）被杀 engine_run_failed → 整轮 review-failure；经 `--review-prompt` 注入分步执行纪律缓解（旧 300s 固定墙钟误杀面已随 vendored 0.5.1 两计时器收窄） |
+| reviewer 单 turn 连续长时间工作（读大 diff 不分步） | 超 core turn 总上界（默认 60min，idle 主判 30min 事件刷新）被杀：错误面为 `engine_timeout`（turn 超时专报；旧 300s 固定墙钟时代的 `engine_run_failed` 前缀已随 vendored 0.5.1 两计时器退役）→ 整轮 review-failure；经 `--review-prompt` 注入分步执行纪律缓解 |
 | review 前先开 PR | review/fix 期间分支会变，PR 描述反复过期；PR 在 3b 一次性开 |
 | 删/改 agents/ 下的 review agent | 破坏 review 维度完整性 |
 

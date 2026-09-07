@@ -334,17 +334,18 @@ node bin/zsw.js doctor clean --purge-backup     # 确认无异常后删除最近
 
 `0` / 负值一律视为不限（旧实现「0/负值 = 立即超时」已修正）；未显式限时且确需兜底时用 `XYZ_SUBAGENT_RUN_WATCHDOG_MS`（workflow 轮询层 env，>0 生效）。
 
-**保护类（防 hang / 防泄漏 watchdog）——默认在，env 可覆盖或关闭**（`>0` 覆盖默认、`≤0` 关闭并 warn）：
+**保护类（防 hang / 防泄漏 watchdog）——默认见各行，env 语义逐行标注**（多数 `>0` 覆盖默认、`≤0` 关闭并 warn；例外见行内）：
 
 | watchdog | 保护对象 | 默认 | env |
 |---|---|---|---|
 | zcode turn 静默判定 | 事件流刷新的 idle 主判（活跃流零误杀） | 30min 静默 | `XYZ_ZCODE_TURN_IDLE_TIMEOUT_MS` |
 | zcode turn 总上界 | 固定不刷新，兜「有事件无终态」的 chatty-wedge | 60min | `XYZ_ZCODE_TURN_MAX_TIMEOUT_MS` |
-| settled 收尾段 | `agent_end`→`settled` 等待（compact 收尾卡死） | 600s | `XYZ_SUBAGENT_SETTLED_WATCHDOG_MS` |
-| 会话空闲回收 | conversation 首轮后的 idle 会话 | 5min | `XYZ_SUBAGENT_IDLE_TIMEOUT_MS` |
-| spawn watchdog | 引擎子进程 hang（无 maxTurns 时默认不挂） | 关 | `XYZ_SUBAGENT_SPAWN_WATCHDOG_MS` |
+| turn 中段无进展 | prompt→agent_end 无事件推进（与上两计时器同源，v1 无独立 env） | 30min 静默 | 无（仅随 `XYZ_SUBAGENT_SETTLED_WATCHDOG_MS` 的 `≤0` 一并关闭） |
+| settled 收尾段 | `agent_end`→`settled` 等待（compact 收尾卡死） | 600s | `XYZ_SUBAGENT_SETTLED_WATCHDOG_MS`（`≤0` 同时关上中段两段） |
+| 会话空闲回收 | conversation 首轮后的 idle 会话 | 5min | `XYZ_SUBAGENT_IDLE_TIMEOUT_MS`（仅 `>0` 覆盖；`≤0`/非法 = warn + 回落默认 5min，env 面不可关——程序参数 `idleTimeoutMs≤0` 可关但 zsw 无此传参面） |
+| spawn watchdog | 引擎子进程 hang | 关（无 maxTurns 且无 env 时） | `XYZ_SUBAGENT_SPAWN_WATCHDOG_MS`（仅无 maxTurns 时生效；已声明 maxTurns 时按换算值，env 静默忽略） |
 
-0.5.1 起 turn 级超时从旧固定 300s 墙钟（实测误杀 21% 活跃任务）改为上表两计时器——数分钟无终态但事件流活跃的长单轮不再被误杀；确有超长单轮需求时调高或关闭总上界 env。判定命中时错误文案带 kind（`idle` / `ceiling`）与阈值，直接对应本表。
+0.5.1 起 turn 级超时从旧固定 300s 墙钟（实测误杀 21% 活跃任务）改为上表两计时器——数分钟无终态但事件流活跃的长单轮不再被误杀；确有超长单轮需求时调高或关闭总上界 env。判定命中时错误文案带判定与阈值（`engine_timeout: zcode turn 连续静默 …（idle 判定…）` / `engine_timeout: zcode turn 总上界 …`），直接对应本表；旧 300s 时代的 `engine_run_failed` 前缀已随两计时器退役。
 
 ## 验收手册（真机 GUI，安装后逐项执行）
 
