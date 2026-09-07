@@ -320,6 +320,32 @@ node bin/zsw.js doctor clean --purge-backup     # 确认无异常后删除最近
 
 **kill 会不会丢数据**：不会。会话记录落在宿主真实 `~/.zcode/cli/db/db.sqlite`（与 zcode GUI 共写同一 SQLite，WAL 并发安全）多进程可读，被杀引擎名下的会话换个引擎仍可 list / 复用；运行中的任务会以连接中断如实报错（重跑即可），已完成任务的结果不受影响。
 
+### 超时行为与调优（预算默认不限 + 保护性 watchdog）
+
+超时分两类，语义不同（vendored core 0.5.1 起「预算语义对齐」：
+
+**预算类（用户入参面）——默认不限，仅显式正数才生效**：
+
+| 入口 | 形态 | 默认 |
+|---|---|---|
+| `zsw start --timeout-ms <n>` / `zsw workflow --timeout-ms <n>` | 任务 / workflow Run 整体墙钟，到期 abort → `timeout` / `time_limited` 终态 | 不限 |
+| workflow 脚本内 `agent({timeoutMs})` | 单次 agent 调用墙钟 | 不设 |
+| agent .md frontmatter `maxTurns` | 按回合换算墙钟（5min/turn、下限 30min；显式 `--timeout-ms` 优先于它） | 未声明不换算 |
+
+`0` / 负值一律视为不限（旧实现「0/负值 = 立即超时」已修正）；未显式限时且确需兜底时用 `XYZ_SUBAGENT_RUN_WATCHDOG_MS`（workflow 轮询层 env，>0 生效）。
+
+**保护类（防 hang / 防泄漏 watchdog）——默认在，env 可覆盖或关闭**（`>0` 覆盖默认、`≤0` 关闭并 warn）：
+
+| watchdog | 保护对象 | 默认 | env |
+|---|---|---|---|
+| zcode turn 静默判定 | 事件流刷新的 idle 主判（活跃流零误杀） | 30min 静默 | `XYZ_ZCODE_TURN_IDLE_TIMEOUT_MS` |
+| zcode turn 总上界 | 固定不刷新，兜「有事件无终态」的 chatty-wedge | 60min | `XYZ_ZCODE_TURN_MAX_TIMEOUT_MS` |
+| settled 收尾段 | `agent_end`→`settled` 等待（compact 收尾卡死） | 600s | `XYZ_SUBAGENT_SETTLED_WATCHDOG_MS` |
+| 会话空闲回收 | conversation 首轮后的 idle 会话 | 5min | `XYZ_SUBAGENT_IDLE_TIMEOUT_MS` |
+| spawn watchdog | 引擎子进程 hang（无 maxTurns 时默认不挂） | 关 | `XYZ_SUBAGENT_SPAWN_WATCHDOG_MS` |
+
+0.5.1 起 turn 级超时从旧固定 300s 墙钟（实测误杀 21% 活跃任务）改为上表两计时器——数分钟无终态但事件流活跃的长单轮不再被误杀；确有超长单轮需求时调高或关闭总上界 env。判定命中时错误文案带 kind（`idle` / `ceiling`）与阈值，直接对应本表。
+
 ## 验收手册（真机 GUI，安装后逐项执行）
 
 | # | 场景 | 步骤 | 通过标准 |
