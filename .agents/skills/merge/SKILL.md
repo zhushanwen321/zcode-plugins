@@ -66,7 +66,15 @@ cd $WS_ROOT/$WT && node scripts/check-sync.js && node scripts/check-pack.js
 ### 阶段 2: PR CI + 合并
 
 ```bash
-cd $WS_ROOT && gh pr checks <PR号> --repo zhushanwen321/zcode-plugins --watch   # CI 全绿
+# [HISTORICAL] 禁 `gh pr checks --watch`（无限阻塞，runner 排队时挂死会话——PR #4
+# 事故挂 7h+ 跨会话残留；与 pr-cr-fix Gate-3 同源禁令）。有限轮询姿势（60s 间隔、
+# 15 分钟上限，pass 即 break，超时上报用户人工接管）。CI 假失败狀置（runner 排队
+# 超时回收 → steps 为空数组）见 pr-cr-fix Gate-3：gh run rerun 重跑，不盲修：
+cd $WS_ROOT
+for i in $(seq 1 15); do
+  if gh pr checks <PR号> --repo zhushanwen321/zcode-plugins; then break; fi
+  sleep 60
+done
 gh pr merge <PR号> --repo zhushanwen321/zcode-plugins --merge --delete-branch
 ```
 
@@ -182,7 +190,7 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 |------|------|
 | Gate-1 测试 FAIL | 按失败用例修复后从阶段 1 头部重跑 |
 | Gate-1 check-sync 版本漂移 | 禁手改单一文件对齐——三处版本以将要发版的目标为准统一（发版走 release.js；不发版则以 main 版本为准回退漂移文件） |
-| 6a unlink 报「未发布」 | gitee main 的 marketplace.json 不含该插件（从未发版）——询问用户：先补发版再 unlink，或确认维持 dev 形态后手工删 inline 条目再删 worktree |
+| 6a unlink 报「未发布」 | GitHub main 的 marketplace.json 不含该插件（从未发版）——询问用户：先补发版再 unlink，或确认维持 dev 形态后手工删 inline 条目再删 worktree |
 | PR CI FAIL | 看 checks 日志，修复以新 commit push 进 feature 分支，CI 绿后重走阶段 2 |
 | 阶段 3 非 ff | 本地 main 有独有 commit：人工排查后决策（revert 本地或强推），禁自动 reset --hard |
 | 阶段 4 post-merge CI FAIL | 新分支修复走 pr-cr-fix；main 已坏时上报用户决策 |
