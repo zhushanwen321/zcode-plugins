@@ -321,6 +321,22 @@ test('denylist 并集去重：frontmatter disallowedTools + CLI toolDenylist →
   assert.equal(seenTask.conversation, undefined, 'conversation 不透传（engine prepare 期会拒绝）');
 });
 
+test('task 形状 = core AgentCallOpts 契约：prompt 非空、无旧 task 字段（0.6.0 u-3b 收敛回归防护）', async () => {
+  // 回归锚：vendored 0.5.1+ 起 core buildPrompt 读 task.prompt（旧 AgentTaskSpec 的
+  // task.task 字段已废弃）。若 spec 仍传旧字段名，core 拼出空 prompt → runTurn 空投递
+  // 守卫 → 首轮误分类 conn-closed + 重试同败（2026-09-08 真机 smoke 实证；mock 单测
+  // 与符号探针盖不住这类运行时字段契约漂移，本断言是唯一静态防线）
+  let seenTask = null;
+  const runner = new CoreRunner({
+    engines: new Map([['zcode', fakeEngine({ onRun: (t) => { seenTask = t; } })]]),
+  });
+  await runner.start(taskCtx({ prompt: '任务书正文' })).done;
+  assert.equal(typeof seenTask.prompt, 'string', 'prompt 必须为字符串（AgentCallOpts.prompt）');
+  assert.ok(seenTask.prompt.length > 0, 'prompt 非空——空值会在 core runTurn 空投递守卫炸穿');
+  assert.equal(seenTask.prompt, '任务书正文');
+  assert.equal(seenTask.task, undefined, '旧 AgentTaskSpec.task 字段不得回潮（core 0.6.0 不再消费）');
+});
+
 test('probe()：透传 core ProbeReport（ok + engineVersion → protocolVersion）', async () => {
   const runner = new CoreRunner({ engines: new Map([['zcode', fakeEngine()]]) });
   const report = await runner.probe();
