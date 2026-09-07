@@ -35,14 +35,16 @@
   `requireCore()` 直接可用；workflow 资产（`workflows/*.js|.cjs`，零依赖自包含）不受
   形态影响，`workflowAssetPath` 直接可用。**版本口径**：0.2.0（npm 被同号不同物占用）与
   0.3.0（本地基线、永不单独发布——2026-08-30 用户裁决）为历史形态；0.4.0 曾为首个
-  registry 可用版本；**当前 vendored 基线 0.5.1**（2026-09-07 本地构建刷新，变更：
-  zcode turn 两计时器（旧固定 300s 墙钟误杀修复）+ settled 两段重锚 + timeout abort
-  链 + 瞬态重试——详见插件 README「超时行为与调优」节；引擎形态同 0.5.0：zcode 引擎
-  单一 app-server + 共享宿主 HOME）。注意：**core 0.5.1 的 npm dist 已非自包含**
-  （ajv/yaml/proper-lockfile/@xyz-agent/extension-protocol 外部依赖回归，无 dist.bundle），
-  `--npm 0.5.1` 通道对 vendoring 不可用（自包含探针会如实标 false），刷新统一走
-  `--local` + 源仓 `build:bundle`（tsup 档 2，与 `lib/core-ref.js` 刷新指引同口径）；
-  待 core 恢复发布自包含 bundle 后 `--npm <version>` 通道方可回归。
+  registry 可用版本；**当前 vendored 基线 0.6.0**（2026-09-08 `--npm` 通道刷新；
+  0.5.1 阶段变更：zcode turn 两计时器（旧固定 300s 墙钟误杀修复）+ settled 两段
+  重锚 + timeout abort 链，详见插件 README「超时行为与调优」节；0.6.0 阶段：
+  sync-collect v2 契约面（pi 宿主工具面，zsw CLI 形态不消费，可选字段零迁移）
+  + 引擎 dispose 修复；引擎形态同 0.5.0：zcode 引擎单一 app-server + 共享宿主
+  HOME）。**`--npm` 通道自 0.6.0 起恢复可用**（发版流程补跑 `build:bundle`，
+  dist.bundle/ 入 tarball）；0.4.0/0.5.1 两版 tarball 缺 dist.bundle（常规档 dist
+  外留 ajv/yaml/proper-lockfile 依赖，vendoring 不可消费）——若后续版本再度丢失
+  dist.bundle，自包含探针会如实标 false，退回 `--local` + 源仓 `build:bundle`
+  （tsup 档 2，与 `lib/core-ref.js` 刷新指引同口径）。
 
 ### zcode 引擎单一 app-server 形态（core 0.5.0 起，2026-09 用户拍板）
 

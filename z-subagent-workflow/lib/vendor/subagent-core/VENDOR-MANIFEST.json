@@ -1,8 +1,6 @@
 {
-  "source": "local:/Users/zhushanwen/Code/xyz-agent-workspace/main/packages/subagent-core@0.5.1",
-  "sourceRev": "16a4b28139f91b2ce31701c01e01fd130999f41e",
-  "sourceDirty": false,
-  "fetchedAt": "2026-09-07T02:32:18.789Z",
+  "source": "npm@0.6.0",
+  "fetchedAt": "2026-09-07T19:54:25.567Z",
   "capabilities": {
     "agentsAssets": true,
     "selfContainedIndex": true
@@ -51,11 +49,11 @@
     },
     {
       "path": "dist/index.cjs",
-      "sha256": "fb60167ed2568eaee4c677dd39245c75abdf317ccc30e3e137e85582553ad769"
+      "sha256": "af15749348400117c40ca739506c257b06acb32a1ac702b2a51c514acb37b2c6"
     },
     {
       "path": "package.json",
-      "sha256": "70201e5e1e8d964d9f8200c470bb1582c82c8022ec5e02f93c4cb5e0b27636d1"
+      "sha256": "ff3dcdcf5b5bca0d0489ef0562f4322f1daa097bd64110a72ee43cfaaa5b5504"
     },
     {
       "path": "workflows/_shared/agent-refs.cjs",

@@ -16284,8 +16284,202 @@ function bestEffort(err, context, level = "debug") {
   }
 }
 
-// src/execution/lifecycle-manager.ts
+// src/execution/collect-coordinator.ts
+var COLLECT_SCAN_LIMIT = 1e3;
+var CollectCoordinator = class {
+  constructor(deps) {
+    this.deps = deps;
+  }
+  deps;
+  /** 批缓冲（内存）：已终态未 flush 的 sync 成员终态快照，跨 route 累积。
+   *  [U8] 排程合批窗口期内保持可枚举（E9 dispose 转换依赖 pendingMembers 全量）。 */
+  buffer = [];
+  /** [U8] 挂起的合批排程定时器（undefined = 无排程）。 */
+  flushTimer;
+  /** notifyComplete 唯一路由入口。返回去向供测试/诊断断言。 */
+  route(record) {
+    if (record.collectMode !== "sync") {
+      this.deps.notifyAsync(record);
+      return "async";
+    }
+    const snapshotRecord = this.deps.toNotifyRecord(record);
+    if (!snapshotRecord) return "sync-skipped";
+    this.buffer.push(snapshotRecord);
+    return this.armFlushIfClosed() ? "sync-flushed" : "sync-buffered";
+  }
+  /** 诊断/测试：当前缓冲成员数（= 已终态未 flush 的 sync 成员数，含合批窗口内成员）。 */
+  get pendingCount() {
+    return this.buffer.length;
+  }
+  /** 诊断/测试 + E9 dispose 转换数据源：缓冲成员快照（副本，非活引用）。 */
+  pendingMembers() {
+    return [...this.buffer];
+  }
+  /** [U8·E9 交互] 取消挂起的合批排程（缓冲原样保留——dispose 转 async 通路仍读得到
+   *  全部成员）。无排程时 no-op；幂等。 */
+  cancelScheduledFlush() {
+    if (this.flushTimer !== void 0) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = void 0;
+    }
+  }
+  /** 闭合判定 + 合批排程武装：缓冲非空 && 无非终态 sync 成员 → 排程 flush。
+   *  已有排程挂起时幂等（同窗口合批，不重复定时器）。（S6 改名：原名 closeDetected
+   *  读作纯检测，实带副作用——武装排程改状态，名实相符优先。） */
+  armFlushIfClosed() {
+    if (this.buffer.length === 0) return false;
+    if (this.hasRunningSync()) return false;
+    this.scheduleFlush();
+    return true;
+  }
+  /** [U8] 同宏任务去抖合批排程：setTimeout(0)（Node 1ms clamp）——窗口跨度覆盖一个
+   *  完整事件循环轮次（当前 poll 段 I/O 回调 + 微任务链排空），足以收纳 finalize 链
+   *  间隙内的背靠背 route，同时无可观察延迟（毫秒级 < 任意 LLM/投递时标）。 */
+  scheduleFlush() {
+    if (this.flushTimer !== void 0) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = void 0;
+      this.flushIfClosed();
+    }, 0);
+  }
+  /** 合批窗口到期：重验闭合条件后整体移交 flushBatch 并清空。
+   *  窗口内新 sync 成员注册 running（跨轮续累反转）→ 保留缓冲不 flush，等其终态
+   *  route 重新排程（终态必经 notifyComplete，不丢、不悬挂）。
+   *  void 不等待 flush 的 async 屏障序列（manifest → 写账 → 落标）：缓冲已 splice
+   *  先行整体移交，屏障 await 期间窗口内新成员重新入空缓冲开新批，互不干扰。 */
+  flushIfClosed() {
+    if (this.buffer.length === 0) return;
+    if (this.hasRunningSync()) return;
+    const members = this.buffer.splice(0, this.buffer.length);
+    void this.deps.flushBatch(members);
+  }
+  /** 是否存在非终态 sync 成员（collectMode=sync && 无 batchFinalized && 非终态）。
+   *  非终态口径（⛔3 U1 已核实 + U3 resumable 补丁）：status 非 closed 且非 resumable
+   *  ——池排队/在跑成员在 store.register 时即 status="running"，自动计入（闭合等待它）；
+   *  batchFinalized=true 的已离场成员不阻止闭合；running+resumable（SP-5 one-shot
+   *  成功回退态，进程已死结果已定格）视为已完成，不阻止闭合。 */
+  hasRunningSync() {
+    for (const record of this.deps.listRecords(COLLECT_SCAN_LIMIT)) {
+      if (record.collectMode === "sync" && record.batchFinalized !== true && record.resumable !== true && record.status !== "closed") {
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
+// src/execution/config.ts
+var fs3 = __toESM(require("fs"), 1);
+var path3 = __toESM(require("path"), 1);
 var logger4 = getLogger("subagents");
+var DEFAULT_CONFIG = {
+  version: 1,
+  maxConcurrent: 6
+};
+var DEFAULT_MAX_CONCURRENT = 6;
+var DEFAULT_COLLECT_SYNC = {
+  default: "async",
+  perItemChars: 4e3,
+  totalChars: 24e3
+};
+function getGlobalConfigPath(agentDir) {
+  return path3.join(agentDir, "subagents", "config.json");
+}
+function loadGlobalConfig(agentDir) {
+  try {
+    const raw = fs3.readFileSync(getGlobalConfigPath(agentDir), "utf-8");
+    const parsed = JSON.parse(raw);
+    return sanitizeParsedConfig(parsed);
+  } catch {
+    return { ...DEFAULT_CONFIG };
+  }
+}
+function readGlobalConfig(agentDir) {
+  const configPath = getGlobalConfigPath(agentDir);
+  let raw;
+  try {
+    raw = fs3.readFileSync(configPath, "utf-8");
+  } catch (err) {
+    if (errnoCodeOf(err) === "ENOENT") {
+      return { status: "absent", config: { ...DEFAULT_CONFIG } };
+    }
+    return readFailure(configPath, err);
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { status: "ok", config: sanitizeParsedConfig(parsed) };
+  } catch (err) {
+    return readFailure(configPath, err);
+  }
+}
+function readFailure(configPath, err) {
+  const reason = err instanceof Error ? err.message : String(err);
+  logger4.warn(`[subagents] global config read failed (read-failure) at ${configPath}: ${reason}`);
+  return { status: "failed", reason };
+}
+function errnoCodeOf(err) {
+  if (typeof err !== "object" || err === null || !("code" in err)) return void 0;
+  const code = Reflect.get(err, "code");
+  return typeof code === "string" ? code : void 0;
+}
+function sanitizeParsedConfig(parsed) {
+  const defaultEngine = sanitizeDefaultEngine(parsed.defaultEngine);
+  const engineRouting = sanitizeEngineRouting(parsed.engineRouting);
+  const collectSync = sanitizeCollectSync(parsed.collectSync);
+  return {
+    version: parsed.version ?? DEFAULT_CONFIG.version,
+    maxConcurrent: sanitizeMaxConcurrent(parsed.maxConcurrent),
+    ...defaultEngine !== void 0 ? { defaultEngine } : {},
+    ...engineRouting !== void 0 ? { engineRouting } : {},
+    ...collectSync !== void 0 ? { collectSync } : {}
+  };
+}
+function sanitizeMaxConcurrent(value) {
+  return sanitizePositiveInt(value, DEFAULT_MAX_CONCURRENT);
+}
+function sanitizeCollectSync(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const v = value;
+  const fallback = DEFAULT_COLLECT_SYNC;
+  const fmt = (val) => typeof val === "string" ? JSON.stringify(val) : String(val);
+  const bad = [];
+  if (v.default !== void 0 && v.default !== "sync" && v.default !== "async") {
+    bad.push(`default=${fmt(v.default)}`);
+  }
+  if (v.perItemChars !== void 0 && !isPositiveInt(v.perItemChars)) {
+    bad.push(`perItemChars=${fmt(v.perItemChars)}`);
+  }
+  if (v.totalChars !== void 0 && !isPositiveInt(v.totalChars)) {
+    bad.push(`totalChars=${fmt(v.totalChars)}`);
+  }
+  if (bad.length > 0) {
+    logger4.warn(
+      `[subagents] config collectSync invalid field(s) reverted to defaults: ${bad.join(", ")}`
+    );
+  }
+  return {
+    default: v.default === "sync" ? "sync" : v.default === "async" ? "async" : fallback.default,
+    perItemChars: sanitizePositiveInt(v.perItemChars, fallback.perItemChars),
+    totalChars: sanitizePositiveInt(v.totalChars, fallback.totalChars)
+  };
+}
+function sanitizePositiveInt(value, fallback) {
+  return isPositiveInt(value) ? value : fallback;
+}
+function isPositiveInt(value) {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+function sanitizeDefaultEngine(value) {
+  return typeof value === "string" && value.trim() !== "" ? value : void 0;
+}
+function sanitizeEngineRouting(value) {
+  if (typeof value !== "object" || value === null) return void 0;
+  const strict = value.strict;
+  return typeof strict === "boolean" ? { strict } : void 0;
+}
+
+// src/execution/lifecycle-manager.ts
+var logger5 = getLogger("subagents");
 var MS_PER_SECOND = 1e3;
 var SECONDS_PER_MINUTE = 60;
 var IDLE_TIMEOUT_MINUTES = 5;
@@ -16295,7 +16489,7 @@ function getEnvIdleTimeoutMs() {
   if (!raw) return void 0;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    logger4.warn(
+    logger5.warn(
       `[lifecycle-manager] XYZ_SUBAGENT_IDLE_TIMEOUT_MS="${raw}" is invalid (expected a positive millisecond number) \u2014 falling back to DEFAULT_IDLE_TIMEOUT_MS (${DEFAULT_IDLE_TIMEOUT_MS}ms); set a plain ms value (e.g. 1800000) to override`
     );
     return void 0;
@@ -16455,7 +16649,7 @@ function createConcurrencyPool(options) {
 }
 
 // src/execution/cold-resurrect.ts
-var fs3 = __toESM(require("fs"), 1);
+var fs4 = __toESM(require("fs"), 1);
 
 // src/execution/execution-record.ts
 var ACTIVITY_LABEL_MAX = 60;
@@ -16530,6 +16724,7 @@ function createRecord(id, identity) {
     idleTimeoutMs: identity.idleTimeoutMs,
     engine: identity.engine,
     engineFallback: identity.engineFallback,
+    collectMode: identity.collectMode,
     // 状态（实时更新）
     status: "running",
     // turns[] 初始化为 [空 turn]——第一个 turn 从创建即存在，
@@ -16960,7 +17155,7 @@ function resurrectColdRecord(deps, found, id) {
   if (wasClosed) {
     if (record.sessionFile) {
       try {
-        fs3.rmSync(`${record.sessionFile}.finalized`, { force: true });
+        fs4.rmSync(`${record.sessionFile}.finalized`, { force: true });
         writeAliveMarker(record.sessionFile, { pid: process.pid, id, startedAt: Date.now() });
       } catch (_e) {
         void _e;
@@ -16991,41 +17186,41 @@ function coldLookupForAction(deps, id, allowReconnect) {
 }
 
 // src/execution/finalize-record.ts
-var fs7 = __toESM(require("fs"), 1);
-var path4 = __toESM(require("path"), 1);
+var fs8 = __toESM(require("fs"), 1);
+var path5 = __toESM(require("path"), 1);
 
 // src/execution/finalized-marker.ts
-var fs4 = __toESM(require("fs"), 1);
+var fs5 = __toESM(require("fs"), 1);
 function writeFinalized(sessionFile, reason) {
   try {
-    fs4.rmSync(`${sessionFile}.cancelled`, { force: true });
-    fs4.writeFileSync(`${sessionFile}.finalized`, reason ?? "", "utf-8");
+    fs5.rmSync(`${sessionFile}.cancelled`, { force: true });
+    fs5.writeFileSync(`${sessionFile}.finalized`, reason ?? "", "utf-8");
   } catch (_e) {
     void _e;
   }
 }
 function readFinalizedReason(sessionFile) {
   try {
-    return fs4.readFileSync(`${sessionFile}.finalized`, "utf-8").trim();
+    return fs5.readFileSync(`${sessionFile}.finalized`, "utf-8").trim();
   } catch {
     return void 0;
   }
 }
 
 // src/execution/path-encoding.ts
-var path3 = __toESM(require("path"), 1);
+var path4 = __toESM(require("path"), 1);
 function encodeCwd(cwd) {
   return "--" + cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
 }
 function getSubagentSessionDir(agentDir, mainCwd) {
-  return path3.join(agentDir, "subagents", encodeCwd(mainCwd), "sessions");
+  return path4.join(agentDir, "subagents", encodeCwd(mainCwd), "sessions");
 }
 function getSubagentRecordsDir(agentDir, mainCwd) {
-  return path3.join(agentDir, "subagents", encodeCwd(mainCwd), "records");
+  return path4.join(agentDir, "subagents", encodeCwd(mainCwd), "records");
 }
 
 // src/execution/session-reconstructor.ts
-var fs5 = __toESM(require("fs"), 1);
+var fs6 = __toESM(require("fs"), 1);
 var IDENTITY_CUSTOM_TYPE = "subagent-identity";
 var TURN_SUMMARY_MAX2 = 80;
 function deriveEventLog(turns, lastError, startedAt) {
@@ -17079,7 +17274,7 @@ function isIdentityData(data) {
 function readJsonlEntries(sessionFile) {
   let raw;
   try {
-    raw = fs5.readFileSync(sessionFile, "utf-8");
+    raw = fs6.readFileSync(sessionFile, "utf-8");
   } catch {
     return void 0;
   }
@@ -17249,18 +17444,18 @@ var IDENTITY_HEAD_BYTES = 65536;
 function readIdentityHeader(sessionFile) {
   let text;
   try {
-    const fd = fs5.openSync(sessionFile, "r");
+    const fd = fs6.openSync(sessionFile, "r");
     try {
       const buf = Buffer.alloc(IDENTITY_HEAD_BYTES);
       let total = 0;
       while (total < buf.length) {
-        const n = fs5.readSync(fd, buf, total, buf.length - total, total);
+        const n = fs6.readSync(fd, buf, total, buf.length - total, total);
         if (n <= 0) break;
         total += n;
       }
       text = buf.toString("utf-8", 0, total);
     } finally {
-      fs5.closeSync(fd);
+      fs6.closeSync(fd);
     }
   } catch {
     return void 0;
@@ -17270,7 +17465,7 @@ function readIdentityHeader(sessionFile) {
 function readIdentityAnywhere(sessionFile) {
   let text;
   try {
-    text = fs5.readFileSync(sessionFile, "utf-8");
+    text = fs6.readFileSync(sessionFile, "utf-8");
   } catch {
     return void 0;
   }
@@ -17286,20 +17481,20 @@ function readIdentityAnywhere(sessionFile) {
 function readIdentityTail(sessionFile) {
   let text;
   try {
-    const { size } = fs5.statSync(sessionFile);
+    const { size } = fs6.statSync(sessionFile);
     const start = Math.max(0, size - IDENTITY_HEAD_BYTES);
-    const fd = fs5.openSync(sessionFile, "r");
+    const fd = fs6.openSync(sessionFile, "r");
     try {
       const buf = Buffer.alloc(size - start);
       let total = 0;
       while (total < buf.length) {
-        const n = fs5.readSync(fd, buf, total, buf.length - total, start + total);
+        const n = fs6.readSync(fd, buf, total, buf.length - total, start + total);
         if (n <= 0) break;
         total += n;
       }
       text = buf.toString("utf-8", 0, total);
     } finally {
-      fs5.closeSync(fd);
+      fs6.closeSync(fd);
     }
   } catch {
     return void 0;
@@ -17374,11 +17569,11 @@ function parseIdentityFromText(text, sessionFile) {
 }
 
 // src/execution/tombstone-store.ts
-var fs6 = __toESM(require("fs"), 1);
+var fs7 = __toESM(require("fs"), 1);
 function writeCancelledTombstone(sessionFile, meta) {
   try {
     const tombstonePath = `${sessionFile}.cancelled`;
-    fs6.writeFileSync(tombstonePath, `${JSON.stringify(meta)}
+    fs7.writeFileSync(tombstonePath, `${JSON.stringify(meta)}
 `, "utf-8");
   } catch (_e) {
     void _e;
@@ -17387,7 +17582,7 @@ function writeCancelledTombstone(sessionFile, meta) {
 function readCancelledTombstone(sessionFile) {
   let raw;
   try {
-    raw = fs6.readFileSync(`${sessionFile}.cancelled`, "utf-8");
+    raw = fs7.readFileSync(`${sessionFile}.cancelled`, "utf-8");
   } catch {
     return void 0;
   }
@@ -17403,17 +17598,17 @@ function readCancelledTombstone(sessionFile) {
 }
 
 // src/execution/finalize-record.ts
-var logger5 = getLogger("subagents");
+var logger6 = getLogger("subagents");
 function findSessionFileByRecordIdentity(sessionDir, recordId) {
   let names;
   try {
-    names = fs7.readdirSync(sessionDir);
+    names = fs8.readdirSync(sessionDir);
   } catch {
     return void 0;
   }
   for (const name of names) {
     if (!name.endsWith(".jsonl")) continue;
-    const full = path4.join(sessionDir, name);
+    const full = path5.join(sessionDir, name);
     const recon = readIdentityHeader(full) ?? readIdentityTail(full);
     if (recon?.id === recordId) return full;
   }
@@ -17424,7 +17619,7 @@ function resolveMissingSessionFile(deps, record) {
   const resolved = findSessionFileByRecordIdentity(deps.sessionDir, record.id);
   if (resolved) {
     record.sessionFile = resolved;
-    logger5.warn(
+    logger6.warn(
       `[subagent] finalizeRecord: sessionFile was missing, resolved via sessionDir identity lookup: ${resolved}`
     );
   }
@@ -17436,8 +17631,8 @@ async function collectPatchIfWorktree(deps, record) {
       deps.modelService.getAgentDir(),
       record.worktreeHandle.mainCwd
     );
-    fs7.mkdirSync(sessionsDir, { recursive: true });
-    const patchFile = path4.join(sessionsDir, `${record.worktreeHandle.branch}.patch`);
+    fs8.mkdirSync(sessionsDir, { recursive: true });
+    const patchFile = path5.join(sessionsDir, `${record.worktreeHandle.branch}.patch`);
     const patch = await deps.worktreeManager.collectPatch(record.worktreeHandle, patchFile);
     if (patch.written) record.patchFile = patchFile;
   } catch (pe) {
@@ -17496,7 +17691,7 @@ async function writeManifestBestEffort(deps, record) {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger5.error(`[subagent] manifest \u5199\u5165\u5931\u8D25 (record=${record.id}): ${msg}`);
+    logger6.error(`[subagent] manifest \u5199\u5165\u5931\u8D25 (record=${record.id}): ${msg}`);
     deps.pi?.appendEntry?.("subagent:manifest-write-failed", {
       id: record.id,
       error: msg
@@ -17628,7 +17823,7 @@ var ExecutionNestingContext = class {
 };
 
 // src/execution/engine/common/data-dir.ts
-var logger6 = getLogger("subagents");
+var logger7 = getLogger("subagents");
 var XYZ_DATA_DIR_ENV = "XYZ_AGENT_DATA_DIR";
 var warned = false;
 function getEngineDataDir(env = process.env, warn = defaultWarn) {
@@ -17644,14 +17839,14 @@ function getEngineDataDir(env = process.env, warn = defaultWarn) {
   return fallback;
 }
 function defaultWarn(msg) {
-  logger6.warn(msg);
+  logger7.warn(msg);
 }
 
 // src/execution/engine/common/event-journal.ts
 var import_promises = require("fs/promises");
 var import_node_fs2 = require("fs");
 var import_node_path2 = require("path");
-var logger7 = getLogger("subagents");
+var logger8 = getLogger("subagents");
 var FLUSH_THRESHOLD_LINES = 64;
 var FLUSH_THRESHOLD_BYTES = 32 * 1024;
 var defaultFs = {
@@ -17760,7 +17955,7 @@ var JournalWriter = class {
   }
 };
 function defaultWarn2(msg) {
-  logger7.warn(msg);
+  logger8.warn(msg);
 }
 function replayJournal(path21) {
   let raw;
@@ -17876,8 +18071,8 @@ function executeOptionsToEngineTaskSpec(opts) {
 
 // src/execution/engine/engines/pi/pi-engine.ts
 var import_node_child_process2 = require("child_process");
-var fs13 = __toESM(require("fs"), 1);
-var path8 = __toESM(require("path"), 1);
+var fs14 = __toESM(require("fs"), 1);
+var path9 = __toESM(require("path"), 1);
 
 // src/orchestration/models/types.ts
 var VALID_RUN_TRANSITIONS = {
@@ -17911,8 +18106,8 @@ function stringifySchemaCached(schema, mode) {
 }
 
 // src/execution/engine/engines/pi/pi-invocation.ts
-var fs8 = __toESM(require("fs"), 1);
-var path5 = __toESM(require("path"), 1);
+var fs9 = __toESM(require("fs"), 1);
+var path6 = __toESM(require("path"), 1);
 
 // src/execution/relay-env.ts
 var RELAY_ENV_SOCKET = "XYZ_SUBAGENT_RELAY_SOCKET";
@@ -17927,7 +18122,7 @@ function isRelayActive(env) {
 // src/execution/engine/engines/pi/pi-invocation.ts
 var BUN_VIRTUAL_PREFIX = "/$bunfs/root/";
 function isGenericRuntime(execPath) {
-  const execName = path5.basename(execPath).toLowerCase();
+  const execName = path6.basename(execPath).toLowerCase();
   return /^(node|bun)(\.exe)?$/.test(execName);
 }
 var scriptExistsCache;
@@ -17936,7 +18131,7 @@ function currentScriptExists() {
   if (scriptExistsCache === void 0 || scriptExistsCache.script !== currentScript) {
     scriptExistsCache = {
       script: currentScript,
-      exists: currentScript !== void 0 && !currentScript.startsWith(BUN_VIRTUAL_PREFIX) && fs8.existsSync(currentScript)
+      exists: currentScript !== void 0 && !currentScript.startsWith(BUN_VIRTUAL_PREFIX) && fs9.existsSync(currentScript)
     };
   }
   return scriptExistsCache.exists;
@@ -18043,11 +18238,11 @@ async function readPiSessionView(sessionFile) {
 
 // src/execution/engine/engines/pi/session-runner.ts
 var import_node_child_process = require("child_process");
-var fs12 = __toESM(require("fs"), 1);
+var fs13 = __toESM(require("fs"), 1);
 
 // src/execution/session-pending.ts
-var fs9 = __toESM(require("fs"), 1);
-var logger8 = getLogger("subagents");
+var fs10 = __toESM(require("fs"), 1);
+var logger9 = getLogger("subagents");
 var RECENT_UNREGISTER_WINDOW_MS = 6e4;
 var cursors = /* @__PURE__ */ new Map();
 function prunePendingCursor(sessionFile) {
@@ -18085,7 +18280,7 @@ function pendingFileUnreadableMessage(err) {
 }
 function statPendingFileSize(sessionFile) {
   try {
-    return fs9.statSync(sessionFile).size;
+    return fs10.statSync(sessionFile).size;
   } catch (err) {
     cursors.delete(sessionFile);
     return { error: pendingFileUnreadableMessage(err) };
@@ -18094,7 +18289,7 @@ function statPendingFileSize(sessionFile) {
 function readPendingChunk(sessionFile, cursor, size) {
   try {
     if (cursor.offset === 0) {
-      return fs9.readFileSync(sessionFile, "utf-8");
+      return fs10.readFileSync(sessionFile, "utf-8");
     }
     return readPendingChunkFrom(sessionFile, cursor.offset, size - cursor.offset);
   } catch (err) {
@@ -18104,17 +18299,17 @@ function readPendingChunk(sessionFile, cursor, size) {
 }
 function readPendingChunkFrom(sessionFile, offset, len) {
   const buf = Buffer.alloc(len);
-  const fd = fs9.openSync(sessionFile, "r");
+  const fd = fs10.openSync(sessionFile, "r");
   try {
     let total = 0;
     while (total < len) {
-      const n = fs9.readSync(fd, buf, total, len - total, offset + total);
+      const n = fs10.readSync(fd, buf, total, len - total, offset + total);
       if (n <= 0) break;
       total += n;
     }
     return buf.toString("utf-8", 0, total);
   } finally {
-    fs9.closeSync(fd);
+    fs10.closeSync(fd);
   }
 }
 function consumePendingLines(complete, cursor, sessionFile) {
@@ -18139,7 +18334,7 @@ function applyPendingLine(line, cursor, sessionFile) {
       if (Number.isFinite(ts) && ts > cursor.latestUnregisterMs) cursor.latestUnregisterMs = ts;
     }
   } catch {
-    logger8.debug("skipped malformed pending line", { sessionFile });
+    logger9.debug("skipped malformed pending line", { sessionFile });
   }
 }
 function extractPendingEntryId(data) {
@@ -18180,7 +18375,7 @@ function listActivePendingFromSessionFile(sessionFile) {
 }
 
 // src/execution/engine/common/kill-chain.ts
-var logger9 = getLogger("subagents");
+var logger10 = getLogger("subagents");
 var MS_PER_SECOND3 = 1e3;
 var SIGKILL_REAP_TIMEOUT_MS = 1e4;
 var HOST_TIMEOUT_ABORT_REASON = "agent-call-timeout";
@@ -18192,7 +18387,7 @@ async function killChain(child, opts) {
   if (graceful === "settled") return "terminated";
   if (child.exitCode !== null || child.signalCode !== null) return "terminated";
   if (opts.escalationNote !== void 0) {
-    logger9.warn(
+    logger10.warn(
       `[kill-chain] ${opts.escalationNote} still alive ${opts.graceMs / MS_PER_SECOND3}s after SIGTERM, escalating to SIGKILL`
     );
   }
@@ -18204,7 +18399,7 @@ function safeKill(child, signal) {
   try {
     child.kill(signal);
   } catch (err) {
-    logger9.debug(
+    logger10.debug(
       `[kill-chain] ${signal} on exited process: ${toErrorMessage(err)}`
     );
   }
@@ -18326,7 +18521,7 @@ function parseMirrorFlagArgs(flagArgs) {
 
 // src/execution/engine/engines/pi/stdin-writer.ts
 var crypto2 = __toESM(require("crypto"), 1);
-var logger10 = getLogger("subagents");
+var logger11 = getLogger("subagents");
 var epipeConsecutiveFailures = /* @__PURE__ */ new Map();
 var EPIPE_FAILURE_THRESHOLD = 2;
 function recordEpipeFailure(recordId) {
@@ -18348,7 +18543,7 @@ function respond(child, id, out, signal) {
     else if ("confirmed" in out) line = JSON.stringify({ type: "extension_ui_response", id, confirmed: out.confirmed });
     else if ("cancelled" in out) line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
   } catch (err) {
-    logger10.warn(`[subagents] JSON.stringify failed for ui response ${id}, degrading to cancelled`, {
+    logger11.warn(`[subagents] JSON.stringify failed for ui response ${id}, degrading to cancelled`, {
       detail: toErrorMessage(err)
     });
     line = JSON.stringify({ type: "extension_ui_response", id, cancelled: true });
@@ -18381,14 +18576,14 @@ function writeStdinLine(child, line, warnTag) {
   if (!child.stdin || child.stdin.destroyed) return;
   try {
     const ok = child.stdin.write(line + "\n");
-    if (!ok) logger10.warn(`[subagents] stdin backpressure on ${warnTag}`);
+    if (!ok) logger11.warn(`[subagents] stdin backpressure on ${warnTag}`);
   } catch (err) {
     if (err !== null && typeof err === "object" && "code" in err && (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED")) {
       throw new Error(
         `[subagents] EPIPE on stdin write (${warnTag}): pipe broken, child process likely exited. Recovery: treat as dead process and resume via cold path.`
       );
     }
-    logger10.warn(`[subagents] unexpected stdin write error on ${warnTag}`, {
+    logger11.warn(`[subagents] unexpected stdin write error on ${warnTag}`, {
       detail: toErrorMessage(err)
     });
   }
@@ -18697,7 +18892,7 @@ function schemaEnvByteLength(schemaEnv) {
 }
 
 // src/execution/settled-watchdog.ts
-var logger11 = getLogger("subagents");
+var logger12 = getLogger("subagents");
 var MS_PER_SECOND4 = 1e3;
 var SECONDS_PER_MINUTE2 = 60;
 var MID_ROUND_MINUTES = 30;
@@ -18713,13 +18908,13 @@ function resolveSettledWatchdogEnv() {
   if (raw === void 0 || raw.trim() === "") return envCache;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) {
-    logger11.warn(
+    logger12.warn(
       `[settled-watchdog] ${SETTLED_WATCHDOG_ENV}="${raw}" is invalid (expected a millisecond number) \u2014 falling back to default settled phase limit (${SETTLED_WATCHDOG_TIMEOUT_MS}ms); set a plain ms value (e.g. 60000) to override, or 0 to disable both phases`
     );
     return envCache;
   }
   if (parsed <= 0) {
-    logger11.warn(
+    logger12.warn(
       `[settled-watchdog] ${SETTLED_WATCHDOG_ENV}=${parsed} disables BOTH watchdog phases (mid-round no-progress + settled phase limit). Consequence: a wedged chatMode round (no agent_end, or agent_settled never arriving) has NO independent recovery timer \u2014 the process leaks until the host exits (the "three-no-window" shape). Recovery: unset the env or set a positive ms value.`
     );
     envCache.disabled = true;
@@ -18746,7 +18941,7 @@ function armMidRoundNoProgress(recordId, handlers) {
   assertSafeTimerDelay(SETTLED_MID_ROUND_NO_PROGRESS_MS, "settled watchdog (mid-round)");
   const timer = setTimeout(() => {
     armedEntries.delete(recordId);
-    logger11.debug(
+    logger12.debug(
       `[settled-watchdog] mid-round fired for ${recordId} after ${SETTLED_MID_ROUND_NO_PROGRESS_MS}ms without a valid protocol event`
     );
     handlers.onMidTimeout({ phase: "mid-round", waitedMs: SETTLED_MID_ROUND_NO_PROGRESS_MS });
@@ -18766,7 +18961,7 @@ function armSettledWatchdog(recordId, onTimeout) {
   assertSafeTimerDelay(windowMs, "settled watchdog");
   const timer = setTimeout(() => {
     armedEntries.delete(recordId);
-    logger11.debug(
+    logger12.debug(
       `[settled-watchdog] settled phase fired for ${recordId} after ${windowMs}ms without agent_settled`
     );
     onTimeout({ phase: "settled", waitedMs: windowMs });
@@ -18789,7 +18984,7 @@ function refreshMidRoundNoProgress(recordId) {
   const onMidTimeout = entry.onMidTimeout;
   const timer = setTimeout(() => {
     armedEntries.delete(recordId);
-    logger11.debug(
+    logger12.debug(
       `[settled-watchdog] mid-round fired for ${recordId} after ${SETTLED_MID_ROUND_NO_PROGRESS_MS}ms without a valid protocol event`
     );
     onMidTimeout?.({ phase: "mid-round", waitedMs: SETTLED_MID_ROUND_NO_PROGRESS_MS });
@@ -18805,8 +19000,8 @@ function disarmSettledWatchdog(recordId) {
 var MAX_FORK_DEPTH = 10;
 
 // src/execution/engine/engines/pi/spawn-event-adapter.ts
-var fs10 = __toESM(require("fs"), 1);
-var path6 = __toESM(require("path"), 1);
+var fs11 = __toESM(require("fs"), 1);
+var path7 = __toESM(require("path"), 1);
 function isSessionHeader(obj) {
   if (typeof obj !== "object" || obj === null) return false;
   const r = obj;
@@ -18954,28 +19149,28 @@ function deriveSessionFilePath(header, sessionDir) {
 }
 function findSessionFileByHeaderId(sessionDir, sessionId) {
   try {
-    const files = fs10.readdirSync(sessionDir);
+    const files = fs11.readdirSync(sessionDir);
     const match = files.find((f) => f.endsWith(`_${sessionId}.jsonl`));
-    return match ? path6.join(sessionDir, match) : void 0;
+    return match ? path7.join(sessionDir, match) : void 0;
   } catch {
     return void 0;
   }
 }
 
 // src/execution/engine/engines/pi/temp-prompt.ts
-var fs11 = __toESM(require("fs"), 1);
+var fs12 = __toESM(require("fs"), 1);
 var os = __toESM(require("os"), 1);
-var path7 = __toESM(require("path"), 1);
+var path8 = __toESM(require("path"), 1);
 async function writePromptToTempFile(agentName, prompt) {
-  const dir = await fs11.promises.mkdtemp(path7.join(os.tmpdir(), "pi-subagent-"));
+  const dir = await fs12.promises.mkdtemp(path8.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
-  const filePath = path7.join(dir, `prompt-${safeName}.md`);
-  await fs11.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 384 });
+  const filePath = path8.join(dir, `prompt-${safeName}.md`);
+  await fs12.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 384 });
   return { dir, filePath };
 }
 async function cleanupTempPrompt(file) {
   try {
-    await fs11.promises.rm(file.dir, { recursive: true, force: true });
+    await fs12.promises.rm(file.dir, { recursive: true, force: true });
   } catch (err) {
     bestEffort(err, `cleanup temp prompt dir ${file.dir}`);
   }
@@ -19120,7 +19315,7 @@ function createUiChannelRegistry() {
 }
 
 // src/execution/ui-request-observability.ts
-var logger12 = getLogger("subagents");
+var logger13 = getLogger("subagents");
 var GLOBAL_OBSERVABILITY_KEY = /* @__PURE__ */ Symbol.for("pi-subagent-workflow.ui-observability");
 function registerGlobalObservability(obs) {
   globalThis[GLOBAL_OBSERVABILITY_KEY] = obs;
@@ -19130,7 +19325,7 @@ function notifyMissingHandlerGlobal(sessionId) {
   if (obs) {
     obs.notifyMissingHandler(sessionId);
   } else {
-    logger12.warn(
+    logger13.warn(
       `[subagents] uiRequestHandler missing (session=${sessionId}, global observability not registered)`
     );
   }
@@ -19158,12 +19353,12 @@ var UiRequestObservability = class {
       this.warnedMissingHandlerSessions.clear();
     }
     this.warnedMissingHandlerSessions.add(sessionId);
-    logger12.warn(`[subagents] uiRequestHandler missing (session=${sessionId}, mode=${this.sessionMode})`);
+    logger13.warn(`[subagents] uiRequestHandler missing (session=${sessionId}, mode=${this.sessionMode})`);
   }
 };
 
 // src/execution/ui-request-queue.ts
-var logger13 = getLogger("subagents");
+var logger14 = getLogger("subagents");
 function createUiRequestQueue(child, ctx) {
   const abortController = new AbortController();
   const queue = [];
@@ -19175,7 +19370,7 @@ function createUiRequestQueue(child, ctx) {
     const { id, request, signal } = queue.shift();
     handleUiRequest(child, id, request, ctx, signal).catch((err) => {
       const m = toErrorMessage(err);
-      logger13.error(`[subagents] ui request ${id} (${request.method}) failed unexpectedly: ${m}`);
+      logger14.error(`[subagents] ui request ${id} (${request.method}) failed unexpectedly: ${m}`);
     }).finally(() => {
       processing = false;
       processNext();
@@ -19220,7 +19415,7 @@ async function handleUiRequest(child, id, request, ctx, signal) {
     respond(child, id, result, signal);
   } catch (err) {
     if (signal?.aborted) return;
-    logger13.error("[subagents] uiRequestHandler threw", {
+    logger14.error("[subagents] uiRequestHandler threw", {
       detail: toErrorMessage(err)
     });
     respond(child, id, { cancelled: true }, signal);
@@ -19263,7 +19458,7 @@ function extractMethodFields(req) {
 }
 
 // src/execution/engine/engines/pi/session-runner.ts
-var logger14 = getLogger("subagents");
+var logger15 = getLogger("subagents");
 function isSdkEvent(x) {
   if (typeof x !== "object" || x === null) return false;
   if (!("type" in x)) return false;
@@ -19316,7 +19511,7 @@ function getEnvSpawnWatchdogMs() {
   if (!raw) return void 0;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    logger14.warn(
+    logger15.warn(
       `[session-runner] ${SPAWN_WATCHDOG_ENV}="${raw}" is invalid (expected a positive millisecond number) \u2014 spawn watchdog NOT armed, equivalent to disabled; set a plain ms value (e.g. 1800000) to enable`
     );
     return void 0;
@@ -19383,7 +19578,7 @@ function killAllSpawnedChildren(signal = "SIGTERM") {
       child.kill(child.killed ? "SIGKILL" : signal);
       n++;
     } catch (err) {
-      logger14.debug(
+      logger15.debug(
         `[session-runner] killAllSpawnedChildren: kill failed (best-effort continue): ${toErrorMessage(err)}`
       );
     }
@@ -19427,7 +19622,7 @@ function killPidWithEscalation(pid, label) {
   try {
     process.kill(pid, "SIGTERM");
   } catch (err) {
-    logger14.debug(
+    logger15.debug(
       `[session-runner] ${label}: SIGTERM to pid ${pid} failed (best-effort continue): ${toErrorMessage(err)}`
     );
     return;
@@ -19435,7 +19630,7 @@ function killPidWithEscalation(pid, label) {
   assertSafeTimerDelay(SIGKILL_ESCALATION_MS, `descendant SIGKILL escalation (${label})`);
   const escalation = setTimeout(() => {
     if (isProcessAlive(pid)) {
-      logger14.warn(
+      logger15.warn(
         `[session-runner] ${label}: descendant pid ${pid} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND5}s after SIGTERM, escalating to SIGKILL`
       );
       try {
@@ -19458,7 +19653,7 @@ function sweepDescendantsOfSession(rootSessionFile, sessionDir, source) {
     visited.add(sessionFile);
     const list = listActivePendingFromSessionFile(sessionFile);
     if (list.error) {
-      logger14.debug(
+      logger15.debug(
         `[session-runner] descendant sweep (${source}): pending list unreadable for ${sessionFile}: ${list.error}`
       );
       continue;
@@ -19502,7 +19697,7 @@ function sweepDescendantsOfSession(rootSessionFile, sessionDir, source) {
         });
         continue;
       }
-      logger14.warn(
+      logger15.warn(
         `[session-runner] descendant sweep (${source}): killing orphan descendant pid=${marker.pid} session=${item.sessionId} (${item.id})`
       );
       killPidWithEscalation(marker.pid, `descendant sweep (${source})`);
@@ -19565,7 +19760,7 @@ async function buildEnvBlock(cwd, forkDepth, nestingDepth) {
         );
       });
     } catch (err) {
-      logger14.debug(
+      logger15.debug(
         `[session-runner] buildEnvBlock: git branch lookup failed for ${cwd}, fallback to empty: ${toErrorMessage(err)}`
       );
       branch = "";
@@ -19616,7 +19811,7 @@ function writeAliveMarkerBestEffort(sessionFile, pid, id) {
   try {
     writeAliveMarker(sessionFile, { pid, id, startedAt: Date.now() });
   } catch (err) {
-    logger14.debug(
+    logger15.debug(
       `[session-runner] alive marker write failed (best-effort continue): ${toErrorMessage(err)}`
     );
   }
@@ -19652,7 +19847,7 @@ function killRecordChildWithEscalation(recordId, source) {
   const escalation = setTimeout(
     () => {
       if (child.exitCode === null && child.signalCode === null) {
-        logger14.warn(
+        logger15.warn(
           `[session-runner] child ${recordId} still alive ${SIGKILL_ESCALATION_MS / MS_PER_SECOND5}s after SIGTERM, escalating to SIGKILL (source: ${source})`
         );
         child.kill("SIGKILL");
@@ -19672,7 +19867,7 @@ function killRecordChildWithEscalation(recordId, source) {
 function hasLiveActiveDescendant(sessionFile, sessionDir) {
   const list = listActivePendingFromSessionFile(sessionFile);
   if (list.error) {
-    logger14.warn(
+    logger15.warn(
       `[session-runner] keep-alive no-progress re-check failed (treating as no live descendants): ${list.error}`
     );
     return false;
@@ -19692,13 +19887,13 @@ function armKeepAliveNoProgressTimer(state, child, sessionDir) {
   state.keepAliveNoProgressTimer = setTimeout(() => {
     if (hasLiveActiveDescendant(state.record.sessionFile, sessionDir)) {
       touchAliveMarkerForHeartbeat(state.record.sessionFile, child.pid, state.record.id);
-      logger14.debug(
+      logger15.debug(
         `[session-runner] keep-alive no-progress re-check: live descendant(s) present for ${state.record.id}, re-arm (cadence ${KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS / MS_PER_SECOND5 / SECONDS_PER_MINUTE3} min)`
       );
       armKeepAliveNoProgressTimer(state, child, sessionDir);
       return;
     }
-    logger14.warn(
+    logger15.warn(
       `[session-runner] keep-alive no-progress watchdog fired for ${state.record.id}: no child output for ${KEEP_ALIVE_NO_PROGRESS_TIMEOUT_MS / MS_PER_SECOND5 / SECONDS_PER_MINUTE3} min and no live descendant (bare-default keep-alive without maxTurns/env), terminating`
     );
     state.sweepDescendantsOnClose = true;
@@ -19759,7 +19954,7 @@ function createSpawnEventHandlers(state) {
       bestEffort(err, "armIdleTimer (agent_settled chatMode)", "error");
       try {
         armIdleTimer(record.id, armIdleTimerOnTimeout, DEFAULT_IDLE_TIMEOUT_MS);
-        logger14.warn(
+        logger15.warn(
           `[session-runner] idleTimeoutMs invalid for ${record.id}, fell back to DEFAULT_IDLE_TIMEOUT_MS (${DEFAULT_IDLE_TIMEOUT_MS}ms) \u2014 idle GC and round notification gate stay active`
         );
       } catch (fallbackErr) {
@@ -19921,7 +20116,7 @@ async function backfillSessionFileViaGetState(state, child, registerGetStateList
     if (child.pid) {
       writeAliveMarkerBestEffort(r.sessionFile, child.pid, r.sessionId ?? record.id);
     }
-    logger14.warn(
+    logger15.warn(
       `[session-runner] agent_end: sessionFile backfilled via lazy get_state (spawn handshake had failed): ${r.sessionFile}`
     );
   }
@@ -19933,11 +20128,11 @@ function keepAliveOnAgentEnd(state, child, sessionDir, pending) {
   const { record, opts } = state;
   touchAliveMarkerForHeartbeat(record.sessionFile, child.pid, record.id);
   if (pending.error) {
-    logger14.warn(
+    logger15.warn(
       `[session-runner] agent_end: keep alive (sessionFile unreadable, conservative): ${pending.error}`
     );
   } else {
-    logger14.debug(
+    logger15.debug(
       `[session-runner] agent_end: keep alive, ${pending.count} active descendant(s) pending`
     );
   }
@@ -19964,7 +20159,7 @@ function keepAliveOnAgentEnd(state, child, sessionDir, pending) {
 function keepAliveForWakeupGrace(state, child) {
   const { record } = state;
   touchAliveMarkerForHeartbeat(record.sessionFile, child.pid, record.id);
-  logger14.debug(
+  logger15.debug(
     "[session-runner] agent_end: keep alive, recent descendant completion (wake-up in flight)"
   );
   clearTimeout(state.watchdog);
@@ -19989,7 +20184,7 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
       invalidLineSamples.push(truncated);
     }
     if (invalidLineCount <= MAX_INVALID_LINE_SAMPLES) {
-      logger14.debug(
+      logger15.debug(
         `[session-runner] stdout invalid line #${invalidLineCount} dropped (${reason}): ${truncated}`
       );
     }
@@ -20099,7 +20294,7 @@ function attachStdoutPump(child, state, sessionDir, handleSdkEvent) {
         }
       }
       if (invalidLineCount > 0) {
-        logger14.debug(
+        logger15.debug(
           `[session-runner] stdout had ${invalidLineCount} invalid line(s) dropped in total; sample(s): ${invalidLineSamples.join(" | ")}`
         );
       }
@@ -20146,7 +20341,7 @@ function setupFreshChild(state, child, task) {
     try {
       void ctx.onWorktreePid?.(opts.worktree.branch, child.pid);
     } catch (err) {
-      logger14.warn("[worktree] worktree pid registration failed (defensive)", {
+      logger15.warn("[worktree] worktree pid registration failed (defensive)", {
         branch: opts.worktree.branch,
         pid: child.pid,
         err: toErrorMessage(err)
@@ -20158,7 +20353,7 @@ function setupFreshChild(state, child, task) {
   child.stdin.on("error", (err) => {
     removeChildRegistration(record.id, child);
     const count = recordEpipeFailure(record.id);
-    logger14.warn(`[subagents] async stdin error for ${record.id}`, {
+    logger15.warn(`[subagents] async stdin error for ${record.id}`, {
       detail: err.message,
       epipeCount: count,
       threshold: EPIPE_FAILURE_THRESHOLD,
@@ -20172,14 +20367,14 @@ function armChatModeSettledWatchdog(state, child) {
   if (record.chatMode) {
     armMidRoundNoProgress(record.id, {
       onMidTimeout: (fire) => {
-        logger14.warn(
+        logger15.warn(
           `[session-runner] settled watchdog (mid-round) fired for ${record.id}: no valid protocol event for ${fire.waitedMs / MS_PER_SECOND5 / SECONDS_PER_MINUTE3} min, terminating (LC-1 wedge recovery)`
         );
         state.settledWatchdogFired = fire;
         killChildWithEscalation(state, child, "settled watchdog");
       },
       onSettleTimeout: (fire) => {
-        logger14.warn(
+        logger15.warn(
           `[session-runner] settled watchdog (settled phase) fired for ${record.id}: no agent_settled within ${fire.waitedMs / MS_PER_SECOND5}s after agent_end, terminating (LC-1 wedge recovery)`
         );
         state.settledWatchdogFired = fire;
@@ -20210,14 +20405,14 @@ function startGetStateHandshake(child, pump) {
     if (pump.isHandshakePending()) pump.finishHandshake(r);
   }).catch((err) => {
     const m = toErrorMessage(err);
-    logger14.error(`[session-runner] get_state handshake failed: ${m}`);
+    logger15.error(`[session-runner] get_state handshake failed: ${m}`);
     pump.abandonHandshake();
   });
 }
 function backfillSessionFileByLookup(state, sessionDir) {
   const { record } = state;
   const lookupId = state.sessionHeader?.id ?? state.handshakeResult?.sessionId;
-  const needsLookup = record.sessionFile ? !fs12.existsSync(record.sessionFile) : lookupId !== void 0;
+  const needsLookup = record.sessionFile ? !fs13.existsSync(record.sessionFile) : lookupId !== void 0;
   if (lookupId && needsLookup) {
     const actual = findSessionFileByHeaderId(sessionDir, lookupId);
     if (actual && actual !== record.sessionFile) record.sessionFile = actual;
@@ -20229,7 +20424,7 @@ function sweepDescendantsOnChildClose(state, sessionDir) {
     try {
       const sweep = sweepDescendantsOfSession(record.sessionFile, sessionDir, "keep-alive watchdog");
       if (sweep.killed.length > 0 || sweep.skipped.length > 0) {
-        logger14.warn(
+        logger15.warn(
           `[session-runner] descendant sweep (keep-alive watchdog): killed=[${sweep.killed.join(", ")}] skipped=${JSON.stringify(sweep.skipped)}`
         );
       }
@@ -20282,7 +20477,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
   };
   const handleSdkEvent = createSpawnEventHandlers(state);
   const sessionDir = getSubagentSessionDir(ctx.agentDir, ctx.rootCwd);
-  fs12.mkdirSync(sessionDir, { recursive: true });
+  fs13.mkdirSync(sessionDir, { recursive: true });
   const spawnCwd = opts.worktree?.path ?? ctx.cwd;
   const forkSource = opts.forkSource ?? (opts.fork ? ctx.mainSessionFile : void 0);
   const tempPromptFile = await writeAppendSystemPromptFile(record, opts, ctx);
@@ -20329,7 +20524,7 @@ async function runSpawn(record, task, opts, ctx, resume) {
 }
 
 // src/execution/engine/engines/pi/pi-engine.ts
-var logger15 = getLogger("subagents");
+var logger16 = getLogger("subagents");
 var PI_ENGINE_ID2 = "pi";
 var PI_ADAPTER_VERSION = "1.0.0";
 var PI_POOL_KEY = "shared";
@@ -20509,7 +20704,7 @@ var PiEngine = class {
         sendPromptCommand(child, text, { streamingBehavior: interrupt ? "steer" : "followUp" });
         clearEpipeFailure(record.id);
         if (child.exitCode !== null || child.signalCode !== null) {
-          logger15.warn(
+          logger16.warn(
             `[subagents] deliverMessage: child ${record.id} died around stdin write, message may be lost`,
             {
               msgType: interrupt ? "steer" : "followUp",
@@ -20523,7 +20718,7 @@ var PiEngine = class {
         service.reportRecordTransition?.(record);
       } catch (err) {
         if (err instanceof Error && err.message.includes("EPIPE")) {
-          logger15.warn(`[subagents] EPIPE on hot path for ${record.id}, falling back to cold path resume`, {
+          logger16.warn(`[subagents] EPIPE on hot path for ${record.id}, falling back to cold path resume`, {
             detail: err.message
           });
           if (spawnedChildren.get(record.id) === child) {
@@ -20574,7 +20769,7 @@ var PiEngine = class {
         return;
       }
     }
-    logger15.warn(
+    logger16.warn(
       `[subagents] deliverPrompt hot path failed for ${record.id}; idle timer re-armed to keep process recovery bounded`,
       { detail }
     );
@@ -20723,7 +20918,7 @@ async function defaultProbeVersion(invocation) {
       );
     });
   } catch (err) {
-    logger15.debug(
+    logger16.debug(
       `[pi-engine] probe version check failed (best-effort continue): ${toErrorMessage(err)}`
     );
     return void 0;
@@ -20732,12 +20927,12 @@ async function defaultProbeVersion(invocation) {
 function isInvocationResolvable(invocation) {
   if (invocation.command !== "pi") return true;
   const pathEnv = process.env.PATH ?? "";
-  for (const dir of pathEnv.split(path8.delimiter)) {
+  for (const dir of pathEnv.split(path9.delimiter)) {
     if (dir === "") continue;
     try {
-      if (fs13.existsSync(path8.join(dir, "pi"))) return true;
+      if (fs14.existsSync(path9.join(dir, "pi"))) return true;
     } catch (err) {
-      logger15.debug(
+      logger16.debug(
         `[pi-engine] PATH dir probe failed (continue scanning): ${dir}: ${toErrorMessage(err)}`
       );
     }
@@ -20866,14 +21061,14 @@ function safeEngineDefault(engine) {
 }
 
 // src/execution/manifest-store.ts
-var fs14 = __toESM(require("fs"), 1);
+var fs15 = __toESM(require("fs"), 1);
 var fsPromises2 = __toESM(require("fs/promises"), 1);
-var path9 = __toESM(require("path"), 1);
-var logger16 = getLogger("subagents");
+var path10 = __toESM(require("path"), 1);
+var logger17 = getLogger("subagents");
 var MANIFEST_INDENT_SPACES = 2;
 function statStamp(p) {
   try {
-    const s = fs14.statSync(p);
+    const s = fs15.statSync(p);
     return { mtimeMs: s.mtimeMs, size: s.size };
   } catch {
     return null;
@@ -20901,8 +21096,8 @@ var ManifestStore = class {
   cache = /* @__PURE__ */ new Map();
   constructor(dir) {
     this.dir = dir;
-    if (!fs14.existsSync(dir)) {
-      fs14.mkdirSync(dir, { recursive: true });
+    if (!fs15.existsSync(dir)) {
+      fs15.mkdirSync(dir, { recursive: true });
     }
   }
   /**
@@ -20914,7 +21109,7 @@ var ManifestStore = class {
    * 调用方（finalizeRecord）决定降级策略。
    */
   async writeManifest(record) {
-    const filePath = path9.join(this.dir, `${record.id}.json`);
+    const filePath = path10.join(this.dir, `${record.id}.json`);
     const content = JSON.stringify(record, null, MANIFEST_INDENT_SPACES);
     await writeAtomicFile(filePath, content, { ensureDir: false });
   }
@@ -20923,7 +21118,7 @@ var ManifestStore = class {
    * 调用方需处理 null。
    */
   async readManifest(id) {
-    const filePath = path9.join(this.dir, `${id}.json`);
+    const filePath = path10.join(this.dir, `${id}.json`);
     try {
       const content = await fsPromises2.readFile(filePath, "utf-8");
       const parsed = JSON.parse(content);
@@ -20943,7 +21138,7 @@ var ManifestStore = class {
   listAllSync() {
     let files;
     try {
-      files = fs14.readdirSync(this.dir);
+      files = fs15.readdirSync(this.dir);
     } catch {
       return [];
     }
@@ -20954,7 +21149,7 @@ var ManifestStore = class {
     }
     const results = [];
     for (const file of names) {
-      const filePath = path9.join(this.dir, file);
+      const filePath = path10.join(this.dir, file);
       const stamp = statStamp(filePath);
       if (!stamp) {
         this.cache.delete(file);
@@ -20966,7 +21161,7 @@ var ManifestStore = class {
         continue;
       }
       try {
-        const content = fs14.readFileSync(filePath, "utf-8");
+        const content = fs15.readFileSync(filePath, "utf-8");
         const parsed = JSON.parse(content);
         const record = isValidManifest(parsed) ? parsed : null;
         this.cache.set(file, { stamp, record });
@@ -20994,41 +21189,41 @@ var ManifestStore = class {
     let deleted = 0;
     let recovered = 0;
     let failed = 0;
-    const files = fs14.readdirSync(this.dir);
+    const files = fs15.readdirSync(this.dir);
     const tmpFiles = files.filter((f) => f.includes(".json.tmp."));
     for (const tmpFile of tmpFiles) {
-      const tmpPath = path9.join(this.dir, tmpFile);
+      const tmpPath = path10.join(this.dir, tmpFile);
       const manifestId = tmpFile.split(".json.tmp.")[0];
-      const manifestPath = path9.join(this.dir, `${manifestId}.json`);
+      const manifestPath = path10.join(this.dir, `${manifestId}.json`);
       try {
-        if (fs14.existsSync(manifestPath)) {
-          fs14.unlinkSync(tmpPath);
+        if (fs15.existsSync(manifestPath)) {
+          fs15.unlinkSync(tmpPath);
           deleted++;
         } else {
           try {
-            const content = fs14.readFileSync(tmpPath, "utf-8");
+            const content = fs15.readFileSync(tmpPath, "utf-8");
             const parsed = JSON.parse(content);
             if (isValidManifest(parsed)) {
-              fs14.renameSync(tmpPath, manifestPath);
+              fs15.renameSync(tmpPath, manifestPath);
               recovered++;
             } else {
-              fs14.unlinkSync(tmpPath);
+              fs15.unlinkSync(tmpPath);
               deleted++;
             }
           } catch {
-            fs14.unlinkSync(tmpPath);
+            fs15.unlinkSync(tmpPath);
             deleted++;
           }
         }
       } catch (fileErr) {
         failed++;
-        logger16.warn(`[subagents] recoverTmpFiles: failed to recover ${tmpFile}, skipping (leftovers retry on next startup)`, {
+        logger17.warn(`[subagents] recoverTmpFiles: failed to recover ${tmpFile}, skipping (leftovers retry on next startup)`, {
           detail: fileErr instanceof Error ? fileErr.message : String(fileErr)
         });
       }
     }
     if (failed > 0) {
-      logger16.warn(
+      logger17.warn(
         `[subagents] recoverTmpFiles: ${failed} of ${tmpFiles.length} tmp file(s) could not be recovered`
       );
     }
@@ -21101,8 +21296,11 @@ function isResumable(record) {
   return record.status === "running" && !hasLiveProcessHandle(record.id);
 }
 
+// src/execution/notifier.ts
+var import_node_crypto = require("crypto");
+
 // src/execution/notify-ledger.ts
-var logger17 = getLogger("subagents");
+var logger18 = getLogger("subagents");
 var NOTIFY_LEDGER_CUSTOM_TYPE = "subagent-bg-notify-ledger";
 var NOTIFY_ACK_CUSTOM_TYPE = "subagent-bg-notify-ack";
 var NOTIFY_ABANDONED_CUSTOM_TYPE = "subagent-bg-notify-abandoned";
@@ -21328,7 +21526,7 @@ function createNotifyLedger(host, options) {
     host.appendLedgerEntry(NOTIFY_ABANDONED_CUSTOM_TYPE, { v: 1, notifyId: item.notifyId });
     items.delete(item.notifyId);
     abandonedIds.add(item.notifyId);
-    logger17.warn(
+    logger18.warn(
       `Subagent "${itemLabel(item)}" notification abandoned - no receipt after ${NOTIFY_REDELIVERY_MAX_ATTEMPTS} delivery attempts; verify manually via subagents action:"list"`,
       { notifyId: item.notifyId, attempts: item.attempts }
     );
@@ -21379,7 +21577,7 @@ function createNotifyLedger(host, options) {
     api.checkReceipts();
   }
   function emitBucketLog(bucket, total, extra) {
-    logger17.warn(`notify delivery bucket [${bucket}]`, { total, ...extra });
+    logger18.warn(`notify delivery bucket [${bucket}]`, { total, ...extra });
   }
   if (options?.registerSettledListener !== false) {
     host.onAgentSettled(() => {
@@ -21427,6 +21625,70 @@ function getBoundNotifyLedger() {
 
 // src/execution/notifier.ts
 var notifyLogger = getLogger("subagents");
+var BATCH_NOTIFY_ID_PREFIX = "sync-batch:";
+function buildBatchNotifyId(memberIds) {
+  const digest = (0, import_node_crypto.createHash)("sha1").update([...memberIds].sort().join(",")).digest("hex");
+  return `${BATCH_NOTIFY_ID_PREFIX}${digest}`;
+}
+var DEFAULT_BATCH_BUDGET = { perItemChars: 4e3, totalChars: 24e3 };
+var LIST_ONLY_FLOOR = 200;
+function computeBatchBudget(bodyLengths, perItemChars, totalChars) {
+  const n = bodyLengths.length;
+  const sumAfterPerItem = bodyLengths.reduce((sum, len) => sum + Math.min(len, perItemChars), 0);
+  if (n === 0 || sumAfterPerItem <= totalChars) {
+    return { tightened: false, effectivePerItem: perItemChars, listOnly: false };
+  }
+  const tight = Math.floor(totalChars / n);
+  if (tight < LIST_ONLY_FLOOR) {
+    return { tightened: true, effectivePerItem: 0, listOnly: true };
+  }
+  return { tightened: true, effectivePerItem: Math.min(tight, perItemChars), listOnly: false };
+}
+function formatChars(n) {
+  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+var SESSION_READ_DEFAULT_LIMIT = 8e3;
+function buildTruncationPointer(id, kept, total, perItemLimit) {
+  const limitPart = perItemLimit > SESSION_READ_DEFAULT_LIMIT ? `,"limit":${perItemLimit}` : "";
+  return `[truncated ${formatChars(total - kept)} of ${formatChars(total)} chars \u2014 full result: session_read {"action":"result","session":"${id}"${limitPart}}]`;
+}
+function withMaterializedOutcome(record) {
+  return record.status === "closed" ? { ...record, outcome: record.outcome ?? deriveOutcome(record.closedReason, record.error) } : record;
+}
+function buildBatchLlmContent(records, budget = DEFAULT_BATCH_BUDGET) {
+  const mat = records.map(withMaterializedOutcome);
+  let finished = 0;
+  let failed = 0;
+  let cancelled = 0;
+  const bodies = mat.map((record) => {
+    if (record.status === "closed" && record.outcome !== "completed") return null;
+    return record.result ?? "(empty)";
+  });
+  const plan = computeBatchBudget(
+    bodies.map((body) => body?.length ?? 0),
+    budget.perItemChars,
+    budget.totalChars
+  );
+  const items = mat.map((record, i) => {
+    if (record.status === "closed") {
+      const outcome = record.outcome;
+      if (outcome === "completed") finished += 1;
+      else if (outcome === "failed") failed += 1;
+      else if (outcome === "cancelled") cancelled += 1;
+    }
+    const body = bodies[i];
+    if (body === null || body.length <= plan.effectivePerItem) {
+      return buildLlmContent(record);
+    }
+    const kept = body.slice(0, plan.effectivePerItem);
+    const truncated = buildLlmContent({ ...record, result: plan.listOnly ? "" : `${kept}\u2026` });
+    const stripped = plan.listOnly ? truncated.replace(/\n$/, "") : truncated;
+    return `${stripped}
+${buildTruncationPointer(record.id, kept.length, body.length, plan.effectivePerItem)}`;
+  });
+  const header = `Subagent batch completed: ${finished} finished, ${failed} failed, ${cancelled} cancelled.`;
+  return [header, ...items].join("\n\n---\n\n");
+}
 function buildLlmContent(record) {
   const agent = record.agent;
   const id = record.id;
@@ -21544,31 +21806,45 @@ function createNotifier(host) {
     });
   };
   let handle = createHandle();
+  function deliverViaLedgerOrKernel(notifyId, content, details) {
+    const ledger = getBoundNotifyLedger();
+    if (ledger) {
+      if (!ledger.record(notifyId, content, details)) return false;
+      ledger.attemptDeliver();
+      return true;
+    }
+    notifyLogger.warn("notify ledger not bound, falling back to delivery kernel path (at-most-once)", {
+      notifyId
+    });
+    handle.send({
+      payload: {
+        kind: "custom",
+        customType: NOTIFY_CUSTOM_TYPE,
+        content,
+        display: true,
+        details
+      },
+      dedupeKey: notifyId
+    });
+    return true;
+  }
   return {
     notify(record) {
       if (disposed) return;
       const notifyId = record.round != null ? `${record.id}:${record.round}` : record.id;
       const payload = record.status === "closed" ? { ...record, outcome: record.outcome ?? deriveOutcome(record.closedReason, record.error), notifyId } : { ...record, notifyId };
       const content = buildLlmContent(payload);
-      const ledger = getBoundNotifyLedger();
-      if (ledger) {
-        if (!ledger.record(notifyId, content, payload)) return;
-        ledger.attemptDeliver();
-        return;
-      }
-      notifyLogger.warn("notify ledger not bound, falling back to delivery kernel path (at-most-once)", {
-        notifyId
-      });
-      handle.send({
-        payload: {
-          kind: "custom",
-          customType: NOTIFY_CUSTOM_TYPE,
-          content,
-          display: true,
-          details: payload
-        },
-        dedupeKey: notifyId
-      });
+      deliverViaLedgerOrKernel(notifyId, content, payload);
+    },
+    notifyBatch(records, budget) {
+      if (disposed || records.length === 0) return false;
+      const payloads = records.map(
+        (record) => record.status === "closed" ? { ...record, outcome: record.outcome ?? deriveOutcome(record.closedReason, record.error) } : { ...record }
+      );
+      const batchNotifyId = buildBatchNotifyId(payloads.map((p) => p.id));
+      const content = buildBatchLlmContent(payloads, budget);
+      const details = { batch: true, notifyId: batchNotifyId, items: payloads };
+      return deliverViaLedgerOrKernel(batchNotifyId, content, details);
     },
     flushPendingNotifications() {
       const ledger = getBoundNotifyLedger();
@@ -21692,6 +21968,15 @@ function createNotifyHost(deps) {
     emitPendingUnregister(id, reason) {
       emitPendingUnregister(deps.getPi(), id, reason);
     },
+    toNotifyRecord(record) {
+      return toNotifyRecord(record);
+    },
+    notify(record) {
+      notifier.notify(record);
+    },
+    notifyBatch(records, budget) {
+      return notifier.notifyBatch(records, budget);
+    },
     revive() {
       notifier.revive();
     },
@@ -21705,7 +21990,7 @@ function createNotifyHost(deps) {
 }
 
 // src/execution/round-settlement.ts
-var logger18 = getLogger("subagents");
+var logger19 = getLogger("subagents");
 function createRoundSettler(deps) {
   return (record) => {
     record.round = (record.round ?? 0) + 1;
@@ -21714,7 +21999,7 @@ function createRoundSettler(deps) {
     deps.notifyComplete(record);
     const lastTurn = record.turns[record.turns.length - 1];
     if (lastTurn !== void 0 && !lastTurn.closed && lastTurn.text.length > 0) {
-      logger18.warn(
+      logger19.warn(
         `[subagents] round settle with unclosed non-empty turn (record=${record.id}, turnIndex=${record.turns.length - 1}) \u2014 pi turn_end/agent_end ordering may have changed`
       );
     }
@@ -21728,8 +22013,8 @@ function createRoundSettler(deps) {
 }
 
 // src/execution/record-store.ts
-var fs16 = __toESM(require("fs"), 1);
-var path11 = __toESM(require("path"), 1);
+var fs17 = __toESM(require("fs"), 1);
+var path12 = __toESM(require("path"), 1);
 
 // src/execution/record-entry.ts
 var SUBAGENT_RECORD_CUSTOM_TYPE = "subagent-record";
@@ -21764,14 +22049,18 @@ function toSubagentRecordEntry(record) {
     resumable: record.resumable,
     engine: record.engine,
     engineFallback: record.engineFallback,
-    engineHandle: record.engineHandle
+    engineHandle: record.engineHandle,
+    // 同步收集两字段（U1 foundation）：undefined 经 JSON.stringify 自然缺省，
+    // 旧记录/旧 entry 序列化产物字节不变（零迁移）。
+    collectMode: record.collectMode,
+    batchFinalized: record.batchFinalized
   };
 }
 
 // src/execution/sessions-index.ts
-var fs15 = __toESM(require("fs"), 1);
-var path10 = __toESM(require("path"), 1);
-var logger19 = getLogger("subagents");
+var fs16 = __toESM(require("fs"), 1);
+var path11 = __toESM(require("path"), 1);
+var logger20 = getLogger("subagents");
 var INDEX_FILENAME = "sessions-index.json";
 var INDEX_VERSION = 1;
 var INDEX_WRITE_MIN_INTERVAL_MS = 6e4;
@@ -21810,11 +22099,11 @@ function errorCodeOf(err) {
 }
 function readIndexFile(indexPath, encDir) {
   try {
-    return fs15.readFileSync(indexPath, "utf-8");
+    return fs16.readFileSync(indexPath, "utf-8");
   } catch (err) {
     const code = errorCodeOf(err);
     if (code !== "ENOENT") {
-      logger19.debug("[subagents] sessions-index read failed, fallback to empty", {
+      logger20.debug("[subagents] sessions-index read failed, fallback to empty", {
         detail: { dir: encDir, code }
       });
     }
@@ -21825,7 +22114,7 @@ function parseIndexJson(raw, indexPath) {
   try {
     return JSON.parse(raw);
   } catch (err) {
-    logger19.debug("[subagents] sessions-index corrupted JSON, fallback to empty", {
+    logger20.debug("[subagents] sessions-index corrupted JSON, fallback to empty", {
       detail: { path: indexPath, error: err instanceof Error ? err.message : String(err) }
     });
     return null;
@@ -21836,14 +22125,14 @@ function isIndexTopHeader(v) {
 }
 function readTopLevel(parsed, indexPath) {
   if (typeof parsed !== "object" || parsed === null) {
-    logger19.debug("[subagents] sessions-index invalid top-level shape, fallback to empty", {
+    logger20.debug("[subagents] sessions-index invalid top-level shape, fallback to empty", {
       detail: { path: indexPath }
     });
     return null;
   }
   const top = parsed;
   if (!isIndexTopHeader(top)) {
-    logger19.debug("[subagents] sessions-index invalid header fields, fallback to empty", {
+    logger20.debug("[subagents] sessions-index invalid header fields, fallback to empty", {
       detail: { path: indexPath }
     });
     return null;
@@ -21860,7 +22149,7 @@ function collectValidEntries(entriesObj) {
 }
 function loadIndex(encDir) {
   const empty = { entries: /* @__PURE__ */ new Map(), higherVersion: false };
-  const indexPath = path10.join(encDir, INDEX_FILENAME);
+  const indexPath = path11.join(encDir, INDEX_FILENAME);
   const raw = readIndexFile(indexPath, encDir);
   if (raw === null) return empty;
   const parsed = parseIndexJson(raw, indexPath);
@@ -21871,7 +22160,7 @@ function loadIndex(encDir) {
     return { entries: /* @__PURE__ */ new Map(), higherVersion: true };
   }
   if (top.version < INDEX_VERSION) {
-    logger19.debug("[subagents] sessions-index stale version, discarded", {
+    logger20.debug("[subagents] sessions-index stale version, discarded", {
       detail: { path: indexPath, version: top.version, expected: INDEX_VERSION }
     });
     return empty;
@@ -21879,7 +22168,7 @@ function loadIndex(encDir) {
   return { entries: collectValidEntries(top.entries), higherVersion: false };
 }
 async function saveIndex(encDir, data) {
-  const filePath = path10.join(encDir, INDEX_FILENAME);
+  const filePath = path11.join(encDir, INDEX_FILENAME);
   const file = {
     version: INDEX_VERSION,
     pid: process.pid,
@@ -21889,7 +22178,7 @@ async function saveIndex(encDir, data) {
 }
 
 // src/execution/record-store.ts
-var logger20 = getLogger("subagents");
+var logger21 = getLogger("subagents");
 var STATUS_PRIORITY = {
   running: 0,
   closed: 3
@@ -21908,14 +22197,14 @@ var MIN_SEGMENTS_WITH_BOUNDARY = 2;
 function readLastJsonlLine(sessionFile) {
   let fd;
   try {
-    fd = fs16.openSync(sessionFile, "r");
-    const size = fs16.fstatSync(fd).size;
+    fd = fs17.openSync(sessionFile, "r");
+    const size = fs17.fstatSync(fd).size;
     let windowBytes = LAST_LINE_WINDOW_BYTES;
     let windowStart = Math.max(0, size - windowBytes);
     let lines = [];
     while (true) {
       const buf = Buffer.alloc(size - windowStart);
-      fs16.readSync(fd, buf, 0, buf.length, windowStart);
+      fs17.readSync(fd, buf, 0, buf.length, windowStart);
       lines = buf.toString("utf-8").split("\n").filter((l) => l.length > 0);
       if (windowStart === 0 || lines.length >= MIN_SEGMENTS_WITH_BOUNDARY) break;
       windowBytes *= WINDOW_GROWTH_FACTOR;
@@ -21932,7 +22221,7 @@ function readLastJsonlLine(sessionFile) {
   } finally {
     if (fd !== void 0) {
       try {
-        fs16.closeSync(fd);
+        fs17.closeSync(fd);
       } catch (_e) {
         void _e;
       }
@@ -21955,7 +22244,7 @@ function collectLastRecordEntries(content) {
     try {
       entry = asSubagentRecordEntry(JSON.parse(line));
     } catch (err) {
-      logger20.debug("[subagents] entry-only orphan scan: skip unparsable line", {
+      logger21.debug("[subagents] entry-only orphan scan: skip unparsable line", {
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -21963,37 +22252,64 @@ function collectLastRecordEntries(content) {
   }
   return lastById;
 }
+function entryStr(d, k) {
+  return typeof d[k] === "string" ? d[k] : void 0;
+}
+function entryNum(d, k) {
+  return typeof d[k] === "number" ? d[k] : void 0;
+}
+function readEntryTerminalFields(d) {
+  const closedReason = entryStr(d, "closedReason");
+  return {
+    status: d.status === "closed" ? "closed" : "running",
+    closedReason: isValidClosedReason(closedReason) ? closedReason : void 0
+  };
+}
+function readEntryBatchFields(d) {
+  return {
+    collectMode: d.collectMode === "sync" ? "sync" : void 0,
+    batchFinalized: d.batchFinalized === true ? true : void 0,
+    resumable: d.resumable === true ? true : void 0
+  };
+}
+function readEntryEngineFields(d) {
+  return {
+    engine: entryStr(d, "engine"),
+    engineFallback: isEngineFallbackShape(d.engineFallback) ? d.engineFallback : void 0,
+    engineHandle: isEngineHandleShape(d.engineHandle) ? d.engineHandle : void 0
+  };
+}
 function rebuildEntryRecord(id, d) {
-  const str = (k) => typeof d[k] === "string" ? d[k] : void 0;
-  const num = (k) => typeof d[k] === "number" ? d[k] : void 0;
-  const agent = str("agent");
-  const task = str("task");
-  const startedAt = num("startedAt");
+  const agent = entryStr(d, "agent");
+  const task = entryStr(d, "task");
+  const startedAt = entryNum(d, "startedAt");
   if (agent === void 0 || task === void 0 || startedAt === void 0) return null;
   return {
     id,
     agent,
     task,
-    slug: str("slug") ?? "",
-    status: "running",
+    slug: entryStr(d, "slug") ?? "",
+    ...readEntryTerminalFields(d),
     mode: "background",
     startedAt,
-    rootSessionId: str("rootSessionId"),
-    parentRecordId: str("parentRecordId"),
-    depth: num("depth") ?? 0,
-    endedAt: void 0,
-    turns: num("turns") ?? 0,
-    totalTokens: num("totalTokens") ?? 0,
-    model: str("model") ?? "",
-    thinkingLevel: str("thinkingLevel"),
+    rootSessionId: entryStr(d, "rootSessionId"),
+    parentRecordId: entryStr(d, "parentRecordId"),
+    depth: entryNum(d, "depth") ?? 0,
+    endedAt: entryNum(d, "endedAt"),
+    turns: entryNum(d, "turns") ?? 0,
+    totalTokens: entryNum(d, "totalTokens") ?? 0,
+    model: entryStr(d, "model") ?? "",
+    thinkingLevel: entryStr(d, "thinkingLevel"),
     eventLog: [],
     displayItems: [],
-    sessionFile: void 0,
+    result: entryStr(d, "result"),
+    error: entryStr(d, "error"),
+    sessionFile: entryStr(d, "sessionFile"),
+    patchFile: entryStr(d, "patchFile"),
     chatMode: d.chatMode === true,
-    round: num("round"),
-    engine: str("engine"),
-    engineFallback: isEngineFallbackShape(d.engineFallback) ? d.engineFallback : void 0,
-    engineHandle: isEngineHandleShape(d.engineHandle) ? d.engineHandle : void 0
+    round: entryNum(d, "round"),
+    ...readEntryEngineFields(d),
+    ...readEntryBatchFields(d)
   };
 }
 function isEngineFallbackShape(v) {
@@ -22016,7 +22332,7 @@ function isEngineHandleShape(v) {
 }
 function statStamp2(p) {
   try {
-    const s = fs16.statSync(p);
+    const s = fs17.statSync(p);
     return { mtimeMs: s.mtimeMs, size: s.size };
   } catch {
     return null;
@@ -22192,7 +22508,7 @@ var RecordStore = class _RecordStore {
         if (rootSessionFilter !== void 0 && manifest.rootSessionId !== rootSessionFilter) continue;
         const rec = _RecordStore.manifestToSubagent(manifest);
         if (!rec) {
-          logger20.warn("[subagents] skip manifest with invalid status", {
+          logger21.warn("[subagents] skip manifest with invalid status", {
             detail: { id: manifest.id, status: manifest.status }
           });
           this.pi?.appendEntry?.("subagent:manifest-invalid-status", {
@@ -22239,31 +22555,44 @@ var RecordStore = class _RecordStore {
    * - 文件不可读（IO 错误，可能暂时）→ 不判终态，落 resumable entry（防御性路径，
    *   IO 恢复后重开可重判）。
    *
+   * [v2 D3] mainSessionFile = 覆写 merge 数据源（主 session 每 id 末条 entry，与 E1
+   * 的 scanLastRecordEntries 同款通路）：崩溃前的批域标记（collectMode/batchFinalized）
+   * 与轮终 result/model 只活在主文件 entry——重建矩阵（buildRecord）的数据源
+   * （sidecar/子文件 identity）不含它们，覆写前不 merge 就会被抹掉（v2 §2.2 断链 2：
+   * E1 候选集恒空的真根因）。缺省（undefined）时 merge 无源，行为与旧版一致。
+   * 参数为追加式第二参（rootSessionFilter 保持首参）：既有调用面只传过滤参。
+   *
    * 防重：orphanJudged 实例级缓存（resumable 形态无 sidecar 锚，同进程重复调用跳过；
    * 终态形态双重防护 = sidecar + 缓存）。调用方：index.ts session_start 恢复段（一次）。
    */
-  recoverOrphanRecords(rootSessionFilter) {
+  recoverOrphanRecords(rootSessionFilter, mainSessionFile) {
+    const lastById = new Map(this.scanLastRecordEntries(mainSessionFile).map((r) => [r.id, r]));
     for (const rec of this.reconstructAll(rootSessionFilter)) {
       if (rec.status !== "running" || rec.externalInstance !== void 0) continue;
       if (this.orphanJudged.has(rec.id)) continue;
       this.orphanJudged.add(rec.id);
-      this.finalizeOrphanRecord(rec);
+      this.finalizeOrphanRecord(rec, lastById.get(rec.id));
     }
   }
   /**
    * 单孤儿 record 的终态判定与落 entry（residual-fixes §5.2 三判据 + chat 分流）。
    * 防重锚（orphanJudged 标记）已由调用方完成。
+   *
+   * [v2 D3] 覆写前 merge（lastEntry = 主 session 同 id 末条 entry 重建，调用方构建）：
+   * 覆写是状态迁移不是信息重建，迁移不应丢末条既有信息。三个落 entry 分支（chatMode
+   * 分流 / IO 保守 / 终态覆写）统一基于 merge 后的 rec，同款口径。
    */
-  finalizeOrphanRecord(rec) {
-    if (rec.chatMode === true) {
-      this.reportSubagentRecord({ ...rec, resumable: true });
+  finalizeOrphanRecord(rec, lastEntry) {
+    const rec0 = lastEntry === void 0 ? rec : _RecordStore.mergeOrphanLastEntry(rec, lastEntry);
+    if (rec0.chatMode === true) {
+      this.reportSubagentRecord({ ...rec0, resumable: true });
       return;
     }
-    const sessionFile = rec.sessionFile;
+    const sessionFile = rec0.sessionFile;
     if (sessionFile === void 0) return;
     const lastLine = readLastJsonlLine(sessionFile);
     if (!lastLine.ok) {
-      this.reportSubagentRecord({ ...rec, resumable: true });
+      this.reportSubagentRecord({ ...rec0, resumable: true });
       return;
     }
     let parseOk = false;
@@ -22275,12 +22604,29 @@ var RecordStore = class _RecordStore {
     }
     writeFinalized(sessionFile, "gc");
     this.reportSubagentRecord({
-      ...rec,
+      ...rec0,
       status: "closed",
       closedReason: "gc",
       endedAt: Date.now(),
       ...parseOk ? {} : { error: "orphan recovery: subagent session ended abnormally (truncated last line)" }
     });
+  }
+  /** [v2 D3] 孤儿覆写 merge 字段集：末条 entry 的批域标记 + 轮终正文/模型，仅补 rec 侧
+   *  undefined/空值（model 的空值形态是 ""——light 重建无 model_change entry 时起步
+   *  空串），不覆盖已有值。merge 后写 entry 经 reportSubagentRecord →
+   *  toSubagentRecordEntry 序列化，undefined 字段自然缺省（不引入显式 null）。 */
+  static mergeOrphanLastEntry(rec, last) {
+    const pickStr = (cur, src) => cur !== void 0 && cur !== "" ? cur : src;
+    return {
+      ...rec,
+      collectMode: rec.collectMode ?? last.collectMode,
+      batchFinalized: rec.batchFinalized ?? last.batchFinalized,
+      result: pickStr(rec.result, last.result),
+      // 类型收尾：两侧实参恒 string（rec.model 类型非可选；last.model 重建投影自带
+      // `?? ""`），pickStr 签名宽返回 string|undefined —— `?? ""` 运行时不可达，
+      // 仅满足 model 非可选类型，空串回退语义不变（cur 空 → src，src 也空 → ""）。
+      model: pickStr(rec.model, last.model) ?? ""
+    };
   }
   /**
    * [E2E 实测缺口] entry-born 孤儿恢复：register entry 已落主 session、但子 session 文件
@@ -22298,7 +22644,7 @@ var RecordStore = class _RecordStore {
     if (mainSessionFile === void 0) return;
     let content;
     try {
-      content = fs16.readFileSync(mainSessionFile, "utf-8");
+      content = fs17.readFileSync(mainSessionFile, "utf-8");
     } catch {
       return;
     }
@@ -22336,6 +22682,31 @@ var RecordStore = class _RecordStore {
         error: "orphan recovery: no child session file (spawn interrupted or file removed externally)"
       }
     });
+  }
+  /**
+   * [E1/U5] sync 批崩溃恢复扫描：主 session 文件「每 id 末条 subagent-record entry」
+   * （collectLastRecordEntries + rebuildEntryRecord 组合通路，设计 §3.1.3「标记读取
+   * 通路」——batchFinalized 落标 entry 写主 session 文件，本扫描同文件域才可见；禁走
+   * collectRecords light 路径，它只读子文件 identity 头+sidecar，主 session 落标
+   * entry 不可见）。返回每 id 末条重建的完整 record（含 collectMode/batchFinalized /
+   * 终态五字段，损坏 entry 跳过）；调用方（service.recoverSyncCollectBatch 的 E1 过滤、
+   * recoverOrphanRecords 的覆写 merge）自行取舍。主文件不可读（含新 session 未 flush
+   * 的 ENOENT）→ 空数组静默。
+   */
+  scanLastRecordEntries(mainSessionFile) {
+    if (mainSessionFile === void 0) return [];
+    let content;
+    try {
+      content = fs17.readFileSync(mainSessionFile, "utf-8");
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const [id, d] of collectLastRecordEntries(content)) {
+      const rec = rebuildEntryRecord(id, d);
+      if (rec !== null) out.push(rec);
+    }
+    return out;
   }
   /** 订阅变更。返回取消订阅函数。 */
   onChange(listener) {
@@ -22399,12 +22770,12 @@ var RecordStore = class _RecordStore {
   reconstructAll(rootSessionFilter) {
     let dirMtimeMs;
     try {
-      dirMtimeMs = fs16.statSync(this.sessionsDir).mtimeMs;
+      dirMtimeMs = fs17.statSync(this.sessionsDir).mtimeMs;
     } catch {
       return [];
     }
     if (this.dirStamp === null) {
-      const loaded = loadIndex(path11.dirname(this.sessionsDir));
+      const loaded = loadIndex(path12.dirname(this.sessionsDir));
       this.indexEntries = loaded.entries;
       this.indexHigherVersion = loaded.higherVersion;
     }
@@ -22420,7 +22791,7 @@ var RecordStore = class _RecordStore {
     }
     let files;
     try {
-      files = fs16.readdirSync(this.sessionsDir).filter((f) => f.endsWith(".jsonl")).map((f) => path11.join(this.sessionsDir, f));
+      files = fs17.readdirSync(this.sessionsDir).filter((f) => f.endsWith(".jsonl")).map((f) => path12.join(this.sessionsDir, f));
     } catch {
       this.indexEntries = null;
       return [];
@@ -22494,7 +22865,7 @@ var RecordStore = class _RecordStore {
    */
   buildEntryFromIndex(file, stamps, now) {
     if (this.indexEntries === null) return void 0;
-    const hit = this.indexEntries.get(path11.basename(file));
+    const hit = this.indexEntries.get(path12.basename(file));
     if (hit === void 0 || hit.mtimeMs !== stamps.jsonl.mtimeMs || hit.size !== stamps.jsonl.size) {
       return void 0;
     }
@@ -22526,12 +22897,12 @@ var RecordStore = class _RecordStore {
     if (Date.now() - this.lastIndexWriteAt < INDEX_WRITE_MIN_INTERVAL_MS) return;
     const entries = this.projectIndexEntries();
     this.indexDirty = false;
-    const encDir = path11.dirname(this.sessionsDir);
+    const encDir = path12.dirname(this.sessionsDir);
     saveIndex(encDir, { entries }).then(() => {
       this.lastIndexWriteAt = Date.now();
     }).catch((err) => {
       this.indexDirty = true;
-      logger20.warn("[subagents] sessions-index write failed", {
+      logger21.warn("[subagents] sessions-index write failed", {
         detail: { dir: encDir, error: err instanceof Error ? err.message : String(err) }
       });
     });
@@ -22545,7 +22916,7 @@ var RecordStore = class _RecordStore {
   projectIndexEntries() {
     const entries = /* @__PURE__ */ new Map();
     for (const [file, cached] of this.fileCache) {
-      const base = path11.basename(file);
+      const base = path12.basename(file);
       if (cached.negative) {
         entries.set(base, { negative: true, mtimeMs: cached.jsonl.mtimeMs, size: cached.jsonl.size });
       } else {
@@ -22800,15 +23171,65 @@ var RecordStore = class _RecordStore {
       engine: r.engine,
       engineFallback: r.engineFallback,
       // U2：engineHandle 经 entry 持久化（register/archive 双写点均经本投影），无则 undefined 自然省略
-      engineHandle: r.engineHandle
+      engineHandle: r.engineHandle,
+      // [U5 修复 U2 披露的投影缺口] 同步收集两字段随本投影持久化（register entry /
+      // archive entry 双写点）——原缺失时闭合判定 flushBatch 重建、E1 重建扫描等消费方
+      // 读不到原始值。undefined 经 JSON.stringify 自然缺省，旧 entry 零迁移。
+      collectMode: r.collectMode,
+      batchFinalized: r.batchFinalized
     };
   }
 };
 
+// src/execution/sync-rebuild.ts
+function syncRebuildToNotifyMember(rec) {
+  const status = rec.status === "closed" || !rec.chatMode ? "closed" : "running";
+  return {
+    id: rec.id,
+    status,
+    closedReason: rec.closedReason,
+    outcome: status === "closed" ? deriveOutcome(rec.closedReason, rec.error) : void 0,
+    agent: rec.agent,
+    model: rec.model,
+    result: rec.result,
+    error: rec.error,
+    startedAt: rec.startedAt,
+    endedAt: rec.endedAt,
+    patchFile: rec.patchFile
+  };
+}
+function bufferedMemberFallbackRecord(m, rootSessionId) {
+  return {
+    id: m.id,
+    agent: m.agent,
+    task: "",
+    slug: "",
+    status: "closed",
+    closedReason: m.closedReason,
+    mode: "background",
+    startedAt: m.startedAt,
+    rootSessionId,
+    parentRecordId: void 0,
+    depth: 0,
+    endedAt: m.endedAt,
+    turns: 0,
+    totalTokens: 0,
+    model: m.model ?? "",
+    thinkingLevel: void 0,
+    eventLog: [],
+    displayItems: [],
+    result: m.result,
+    error: m.error,
+    sessionFile: void 0,
+    chatMode: false,
+    patchFile: m.patchFile
+  };
+}
+
 // src/execution/engine/common/pool-manager.ts
 var fsSync = __toESM(require("fs"), 1);
 var import_node_path5 = require("path");
-var logger21 = getLogger("subagents");
+var logger22 = getLogger("subagents");
 var POOL_CLEANUP_FAILED_MARKER = ".pool-cleanup-failed";
 var REFS_JSON_FILENAME = "refs.json";
 var REFS_VERSION = 1;
@@ -22824,7 +23245,7 @@ function readPoolRefs(poolDir, fs28) {
   try {
     parsed = JSON.parse(fs28.readFileSync(refsPath));
   } catch (err) {
-    logger21.warn(
+    logger22.warn(
       `[pool-manager] refs.json unparsable for ${poolDir}, starting from empty refs: ${toErrorMessage(err)}`
     );
     return emptyRefs();
@@ -22832,7 +23253,7 @@ function readPoolRefs(poolDir, fs28) {
   if (typeof parsed !== "object" || parsed === null) return emptyRefs();
   const obj = parsed;
   if (obj.v !== REFS_VERSION || typeof obj.refs !== "object" || obj.refs === null) {
-    logger21.warn(`[pool-manager] refs.json unexpected shape for ${poolDir}, starting from empty refs`);
+    logger22.warn(`[pool-manager] refs.json unexpected shape for ${poolDir}, starting from empty refs`);
     return emptyRefs();
   }
   const refs = {};
@@ -22866,7 +23287,7 @@ function releasePoolRef(dataDir, engineId, poolKey, taskId, fs28 = nodeFs) {
   removeJournalFile(dataDir, engineId, poolKey, taskId, fs28);
   const file = readPoolRefs(poolDir, fs28);
   if (file.refs[taskId] === void 0) {
-    logger21.debug(`[pool-manager] release without live ref, skip pool deletion: ${poolDir} (${taskId})`);
+    logger22.debug(`[pool-manager] release without live ref, skip pool deletion: ${poolDir} (${taskId})`);
     return;
   }
   delete file.refs[taskId];
@@ -22959,7 +23380,7 @@ function removeOrphanJournals(poolDir, file, entries, ttlMs, fs28, now) {
         changed = true;
       }
     } catch (err) {
-      logger21.debug(
+      logger22.debug(
         `[pool-manager] ttl cleanup stat failed for ${journalPath}: ${toErrorMessage(err)}`
       );
     }
@@ -22974,7 +23395,7 @@ function unlinkBestEffort(path21, fs28) {
   try {
     fs28.rmSync(path21, { force: true, recursive: true });
   } catch (err) {
-    logger21.debug(`[pool-manager] ttl cleanup failed for ${path21}: ${toErrorMessage(err)}`);
+    logger22.debug(`[pool-manager] ttl cleanup failed for ${path21}: ${toErrorMessage(err)}`);
   }
 }
 function isJournalFile(name) {
@@ -23015,14 +23436,14 @@ function deletePoolNativeState(poolDir, fs28) {
 function markCleanupFailed(poolDir, failures, fs28) {
   const marker = (0, import_node_path5.join)(poolDir, POOL_CLEANUP_FAILED_MARKER);
   const payload = JSON.stringify({ ts: Date.now(), failures });
-  logger21.warn(
+  logger22.warn(
     `[pool-manager] pool cleanup failed for ${poolDir} (${failures.length} item(s)); marker written to ${marker} \u2014 re-run cleanup after fixing the underlying error`
   );
   try {
     fs28.writeFileSync(marker, `${payload}
 `);
   } catch (err) {
-    logger21.warn(
+    logger22.warn(
       `[pool-manager] failed to write cleanup-failed marker ${marker}: ${toErrorMessage(err)}`
     );
   }
@@ -23040,7 +23461,7 @@ var nodeFs = {
 };
 
 // src/execution/idle-gc.ts
-var logger22 = getLogger("subagents");
+var logger23 = getLogger("subagents");
 var GC_INTERVAL_MS = 60 * 60 * 1e3;
 var IDLE_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
 var MS_PER_DAY = 24 * 60 * 60 * 1e3;
@@ -23051,7 +23472,7 @@ function startIdleGc(store) {
       if (isResumable(record) && record.idleSince) {
         const age = now - record.idleSince;
         if (age > IDLE_TTL_MS) {
-          logger22.warn(`[subagents] GC: archiving idle record ${record.id} (idle for ${Math.round(age / MS_PER_DAY)}d)`);
+          logger23.warn(`[subagents] GC: archiving idle record ${record.id} (idle for ${Math.round(age / MS_PER_DAY)}d)`);
           try {
             store.archive(record);
           } catch (err) {
@@ -23134,15 +23555,15 @@ function createBackgroundStream(recordId, sink, mode, env) {
 
 // src/execution/worktree-manager.ts
 var import_node_child_process3 = require("child_process");
-var fs18 = __toESM(require("fs"), 1);
+var fs19 = __toESM(require("fs"), 1);
 var os2 = __toESM(require("os"), 1);
-var path13 = __toESM(require("path"), 1);
+var path14 = __toESM(require("path"), 1);
 
 // src/execution/worktree-registry.ts
-var fs17 = __toESM(require("fs"), 1);
-var path12 = __toESM(require("path"), 1);
+var fs18 = __toESM(require("fs"), 1);
+var path13 = __toESM(require("path"), 1);
 var import_proper_lockfile = __toESM(require_proper_lockfile(), 1);
-var logger23 = getLogger("subagents");
+var logger24 = getLogger("subagents");
 var SPAWN_GRACE_MS = 6e4;
 var JSON_INDENT2 = 2;
 var LOCK_STALE_MS = 3e4;
@@ -23153,7 +23574,7 @@ function isRegistryData(value) {
 var WorktreeRegistry = class {
   filePath;
   constructor(agentDir) {
-    this.filePath = path12.join(agentDir, "subagents", "worktrees.json");
+    this.filePath = path13.join(agentDir, "subagents", "worktrees.json");
   }
   /**
    * 新增条目（create 成功后调，pid=0 占位）。
@@ -23225,7 +23646,7 @@ var WorktreeRegistry = class {
         run();
       });
     } catch (lockErr) {
-      logger23.warn("[worktree] registry lock unavailable, degraded to lock-free RMW", {
+      logger24.warn("[worktree] registry lock unavailable, degraded to lock-free RMW", {
         ...context ?? {},
         err: lockErr instanceof Error ? lockErr.message : String(lockErr)
       });
@@ -23250,8 +23671,8 @@ var WorktreeRegistry = class {
    * 锁参数值由 LOCK_STALE_MS / LOCK_RETRIES 常量承载（防漂移说明见常量注释）。
    */
   async withLock(fn) {
-    const dir = path12.dirname(this.filePath);
-    if (!fs17.existsSync(dir)) fs17.mkdirSync(dir, { recursive: true });
+    const dir = path13.dirname(this.filePath);
+    if (!fs18.existsSync(dir)) fs18.mkdirSync(dir, { recursive: true });
     let compromised;
     const release = await import_proper_lockfile.default.lock(this.filePath, {
       realpath: false,
@@ -23274,7 +23695,7 @@ var WorktreeRegistry = class {
       try {
         await release();
       } catch (unlockErr) {
-        logger23.debug("unlock failed after compromise (ignorable)", {
+        logger24.debug("unlock failed after compromise (ignorable)", {
           detail: { err: unlockErr instanceof Error ? unlockErr.message : String(unlockErr) }
         });
       }
@@ -23286,7 +23707,7 @@ var WorktreeRegistry = class {
    */
   load() {
     try {
-      const raw = fs17.readFileSync(this.filePath, "utf-8");
+      const raw = fs18.readFileSync(this.filePath, "utf-8");
       const parsed = JSON.parse(raw);
       if (isRegistryData(parsed)) {
         return parsed.entries;
@@ -23309,7 +23730,7 @@ var WorktreeRegistry = class {
       writeAtomicFileSync(this.filePath, JSON.stringify({ entries }, null, JSON_INDENT2));
     } catch (err) {
       bestEffort(err, "worktree registry save");
-      logger23.warn(
+      logger24.warn(
         "[worktree] registry save failed; pid may stay 0 and be reaped by orphan reaper",
         { ...context ?? {}, err: err instanceof Error ? err.message : String(err) }
       );
@@ -23318,7 +23739,7 @@ var WorktreeRegistry = class {
 };
 
 // src/execution/worktree-manager.ts
-var logger24 = getLogger("subagents");
+var logger25 = getLogger("subagents");
 var SAFE_ID_RE = /^[\w-]+$/;
 var GIT_TIMEOUT_MS = 3e4;
 var WORKTREE_TMP_ROOT = "pi-subagents";
@@ -23343,13 +23764,13 @@ function isWriteCommand(args) {
 }
 function resolveRepoFromCheckout(checkout) {
   try {
-    const raw = fs18.readFileSync(path13.join(checkout, ".git"), "utf-8").trim();
+    const raw = fs19.readFileSync(path14.join(checkout, ".git"), "utf-8").trim();
     if (!raw.startsWith("gitdir:")) return void 0;
     const gitdir = raw.slice("gitdir:".length).trim();
-    const worktreesDir = path13.dirname(gitdir);
-    if (path13.basename(worktreesDir) !== "worktrees") return void 0;
-    const gitRootDir = path13.dirname(worktreesDir);
-    return path13.dirname(gitRootDir);
+    const worktreesDir = path14.dirname(gitdir);
+    if (path14.basename(worktreesDir) !== "worktrees") return void 0;
+    const gitRootDir = path14.dirname(worktreesDir);
+    return path14.dirname(gitRootDir);
   } catch {
     return void 0;
   }
@@ -23402,10 +23823,10 @@ ${statusText}`
     if (revR.status === "rejected") throw revR.reason;
     const baseCommit = revR.value.trim();
     const branch = `pi-sub-${recordId}`;
-    const worktreePath = path13.join(os2.tmpdir(), "pi-subagents", encodeCwd(mainCwd), branch);
-    if (fs18.existsSync(worktreePath)) {
+    const worktreePath = path14.join(os2.tmpdir(), "pi-subagents", encodeCwd(mainCwd), branch);
+    if (fs19.existsSync(worktreePath)) {
       try {
-        fs18.rmSync(worktreePath, { recursive: true, force: true });
+        fs19.rmSync(worktreePath, { recursive: true, force: true });
       } catch (cleanErr) {
         bestEffort(cleanErr, "pre-create checkout cleanup");
       }
@@ -23421,10 +23842,10 @@ ${statusText}`
       createdAt: Date.now()
     });
     try {
-      const mainNodeModules = path13.join(mainCwd, "node_modules");
-      const worktreeNodeModules = path13.join(worktreePath, "node_modules");
-      if (fs18.existsSync(mainNodeModules) && !fs18.existsSync(worktreeNodeModules)) {
-        fs18.symlinkSync(mainNodeModules, worktreeNodeModules);
+      const mainNodeModules = path14.join(mainCwd, "node_modules");
+      const worktreeNodeModules = path14.join(worktreePath, "node_modules");
+      if (fs19.existsSync(mainNodeModules) && !fs19.existsSync(worktreeNodeModules)) {
+        fs19.symlinkSync(mainNodeModules, worktreeNodeModules);
       }
       return Object.freeze({
         path: worktreePath,
@@ -23512,7 +23933,7 @@ ${statusText}`
       return Object.freeze({ patchFile, failed: false, written: false });
     }
     try {
-      fs18.writeFileSync(patchFile, diff, "utf-8");
+      fs19.writeFileSync(patchFile, diff, "utf-8");
       return Object.freeze({ patchFile, failed: false, written: true });
     } catch {
       return Object.freeze({ patchFile, failed: true, written: false });
@@ -23575,9 +23996,9 @@ ${statusText}`
       const branches = branchesByRepo.get(entry.repo);
       if (branches === void 0) continue;
       const branchGone = !branches.has(entry.branch);
-      const checkoutGone = !fs18.existsSync(entry.checkout);
+      const checkoutGone = !fs19.existsSync(entry.checkout);
       if (branchGone && checkoutGone) {
-        logger24.warn("[worktree] reconcile: registry entry has no physical worktree/branch, removing entry", {
+        logger25.warn("[worktree] reconcile: registry entry has no physical worktree/branch, removing entry", {
           branch: entry.branch,
           repo: entry.repo,
           pid: entry.pid
@@ -23621,14 +24042,14 @@ ${statusText}`
     }
     if (alivePids.length === 1 && list.length === 1) {
       const pt = list[0];
-      logger24.warn("[worktree] reconcile: unregistered physical worktree with one alive pid, re-registering (self-heal)", {
+      logger25.warn("[worktree] reconcile: unregistered physical worktree with one alive pid, re-registering (self-heal)", {
         branch: pt.branch,
         checkout: pt.checkout,
         repo: pt.repo,
         pid: alivePids[0]
       });
       await this.registry.add({
-        repo: pt.repo ?? path13.dirname(pt.checkout),
+        repo: pt.repo ?? path14.dirname(pt.checkout),
         branch: pt.branch,
         checkout: pt.checkout,
         pid: alivePids[0],
@@ -23644,7 +24065,7 @@ ${statusText}`
       if (cycles < RECONCILE_SKIP_ESCALATION_CYCLES) continue;
       escalated++;
       const repoHint = pt.repo ?? "<main-repo>";
-      logger24.warn(
+      logger25.warn(
         `[worktree] reconcile: unregistered physical worktree skipped for ${cycles} consecutive cycles (alive-pid mapping still ambiguous) \u2014 manual cleanup may be needed. Inspect: git -C ${repoHint} worktree list. If no live process owns it: git -C ${repoHint} worktree remove --force ${pt.checkout} && git -C ${repoHint} branch -D ${pt.branch}. Ownerless checkout (repo unknown, delete the directory directly): rm -rf ${pt.checkout}`,
         {
           branch: pt.branch,
@@ -23655,7 +24076,7 @@ ${statusText}`
       );
     }
     if (escalated < list.length) {
-      logger24.warn("[worktree] reconcile: unregistered physical worktrees present but alive-pid mapping ambiguous, skipping this cycle", {
+      logger25.warn("[worktree] reconcile: unregistered physical worktrees present but alive-pid mapping ambiguous, skipping this cycle", {
         enc,
         orphans: list.length - escalated,
         alivePids: alivePids.length
@@ -23668,7 +24089,7 @@ ${statusText}`
     for (const pt of list) {
       const age = Date.now() - pt.mtimeMs;
       if (age <= SPAWN_GRACE_MS) continue;
-      logger24.warn("[worktree] reconcile: unregistered physical worktree with no alive pid, cleaning up", {
+      logger25.warn("[worktree] reconcile: unregistered physical worktree with no alive pid, cleaning up", {
         branch: pt.branch,
         checkout: pt.checkout,
         repo: pt.repo,
@@ -23684,10 +24105,10 @@ ${statusText}`
     * 推导失败（残缺 checkout）repo=undefined，由调用方按无主残留处置。
     */
   async discoverPhysicalWorktrees() {
-    const root = path13.join(os2.tmpdir(), WORKTREE_TMP_ROOT);
+    const root = path14.join(os2.tmpdir(), WORKTREE_TMP_ROOT);
     let encDirs;
     try {
-      encDirs = fs18.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+      encDirs = fs19.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
     } catch {
       return [];
     }
@@ -23695,14 +24116,14 @@ ${statusText}`
     for (const enc of encDirs) {
       let branchDirs;
       try {
-        branchDirs = fs18.readdirSync(path13.join(root, enc), { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith(BRANCH_PREFIX)).map((d) => d.name);
+        branchDirs = fs19.readdirSync(path14.join(root, enc), { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith(BRANCH_PREFIX)).map((d) => d.name);
       } catch {
         continue;
       }
       for (const branch of branchDirs) {
-        const checkout = path13.join(root, enc, branch);
+        const checkout = path14.join(root, enc, branch);
         try {
-          const mtimeMs = fs18.statSync(checkout).mtimeMs;
+          const mtimeMs = fs19.statSync(checkout).mtimeMs;
           result.push({ enc, branch, checkout, repo: resolveRepoFromCheckout(checkout), mtimeMs });
         } catch (err) {
           bestEffort(err, "physical worktree stat (reconcile)");
@@ -23740,17 +24161,17 @@ ${statusText}`
    * 崩溃残留的 .alive（pid 已死）天然过滤掉——这正是「死活判据」的物理面来源。
    */
   collectAlivePids(enc) {
-    const sessionsDir = path13.join(this.agentDir, "subagents", enc, "sessions");
+    const sessionsDir = path14.join(this.agentDir, "subagents", enc, "sessions");
     let files;
     try {
-      files = fs18.readdirSync(sessionsDir);
+      files = fs19.readdirSync(sessionsDir);
     } catch {
       return [];
     }
     const pids = /* @__PURE__ */ new Set();
     for (const file of files) {
       if (!file.endsWith(".alive")) continue;
-      const marker = readAliveMarker(path13.join(sessionsDir, file.slice(0, -".alive".length)));
+      const marker = readAliveMarker(path14.join(sessionsDir, file.slice(0, -".alive".length)));
       if (marker && isProcessAlive(marker.pid)) {
         pids.add(marker.pid);
       }
@@ -23782,8 +24203,8 @@ ${statusText}`
       }
     }
     try {
-      if (fs18.existsSync(pt.checkout)) {
-        fs18.rmSync(pt.checkout, { recursive: true, force: true });
+      if (fs19.existsSync(pt.checkout)) {
+        fs19.rmSync(pt.checkout, { recursive: true, force: true });
       }
     } catch (err) {
       bestEffort(err, "checkout dir rm (reconcile)");
@@ -23796,7 +24217,7 @@ ${statusText}`
     if (entry.pid === 0) {
       const expired = now - entry.createdAt > SPAWN_GRACE_MS;
       if (expired) {
-        logger24.warn(
+        logger25.warn(
           "[worktree] orphan reaper: pid=0 entry exceeded SPAWN_GRACE_MS, treating as orphan",
           { branch: entry.branch, checkout: entry.checkout, createdAt: entry.createdAt, now }
         );
@@ -23872,7 +24293,7 @@ ${statusText}`
 };
 
 // src/execution/subagent-service.ts
-var logger25 = getLogger("subagents");
+var logger26 = getLogger("subagents");
 var disposedUiRequestStub = () => Promise.resolve({ cancelled: true });
 var PRIORITY_BACKGROUND = 1e3;
 var MS_PER_SECOND6 = 1e3;
@@ -23887,6 +24308,7 @@ var ENV_ROOT_SESSION_ID = "PI_SUBAGENT_ROOT_SESSION_ID";
 var ENV_SELF_RECORD_ID = "PI_SUBAGENT_SELF_RECORD_ID";
 var ENV_DEPTH = "PI_SUBAGENT_DEPTH";
 var ENV_ROOT_CWD = "PI_SUBAGENT_ROOT_CWD";
+var SETTLED_RESCAN_LIMIT = 8;
 var SubagentService = class {
   pool;
   store;
@@ -23937,12 +24359,29 @@ var SubagentService = class {
   /** [D4-①] 通知簇 host 面（notifyComplete/notifyClosed/pending 注册注销 + notifier
    *  实例封装，原私有通知簇四方法与模块函数的搬移落点——notify-host.ts）。
    *  deps 惰性求值（pi/session 级状态运行时可变），行为与原 constructor 内
-   *  createNotifier(this.piAdapter()) 逐字节等价。session_start revive，shutdown dispose。 */
+   *  createNotifier(this.piAdapter()) 逐字节等价。session_start revive，shutdown dispose。
+   *  [sync-collect 合并] toNotifyRecord/notify/notifyBatch 随批路由需要由 host 导出
+   *  （collectCoordinator 闭包与 E9/E1 直发路径消费，见 notify-host.ts 接口注释）。 */
   notifyHost = createNotifyHost({
     getPi: () => this.pi,
     listRunning: () => this.store.listRunning(),
     getIsIdle: () => this.isIdleFn
   });
+  /** collectCoordinator（subagent-sync-collect U2）：sync 批缓冲 + 闭合检测 + flush 分流。 */
+  collectCoordinator;
+  /** [E9] dispose 时已转 async 写账的成员 id（revive 后 flushBatch 防御过滤用）。
+   *  背景：dispose 后同进程 revive（/resume /fork /new）时协调器内部缓冲仍持有已转换
+   *  成员快照（协调器无 drain API，U5 领地不含 collect-coordinator.ts）——若后续新
+   *  sync 成员触发闭合，陈旧快照会随批重投（新成员集新 hash，账本跨键不拦）→ 双重
+   *  通知。flushBatch 闭包按本集过滤，陈旧成员零重投。id 唯一 per spawn，无误伤面。 */
+  e9ConvertedIds = /* @__PURE__ */ new Set();
+  /** [v2 D4] E1 等待分支的 settled 有界重扫状态（null = 未注册）。disposed 后保持
+   *  非 null——同 session 内不再重复注册（补发完成/达限后 settled 边沿已无事可做，
+   *  单注册即单重扫）；initSession（revive）置 null 允许新 session 重新注册。
+   *  pi.on 无 off（见 armSettledRescan）：旧 handler 闭包捕获旧 state，未 disposed 时
+   *  遇 settled 边沿仍会执行，扫描 this.mainSessionFile 当前值（handler 不绑定注册时
+   *  的文件域）；dispose 的惰化处置见 dispose()。 */
+  settledRescanState = null;
   /** [MF#4][MF#2] fork 深度按 async 调用链传递（AsyncLocalStorage），替代共享可变计数器。
    *  主 session=0；fork 进入子 session 期间推进为子深度，供嵌套 fork 经 ALS 读到自身深度作为
    *  parentForkDepth。并发 background fork 各自独立调用链，不再互相压低深度值。
@@ -23971,7 +24410,7 @@ var SubagentService = class {
   /** [D4-②] 轮次结算回调（原 buildSessionRunnerContext 内的 onRoundSettled 业务闭包
    *  搬移至 round-settlement.ts；deps 回调闭包惰性求值，session-runner agent_settled 时消费）。 */
   settleRound = createRoundSettler({
-    notifyComplete: (record) => this.notifyHost.notifyComplete(record),
+    notifyComplete: (record) => this.collectCoordinator.route(record),
     reportRecordTransition: (record) => this.store.reportRecordTransition(record),
     closeAfterRoundSettled: (record) => this.closeAfterRoundSettled(record)
   });
@@ -24003,6 +24442,11 @@ var SubagentService = class {
   };
   manifestStore;
   /**
+   * [D6 #7a] records 目录（与 manifestStore 同源同一推导）——屏障失败 warn 带 manifest
+   * 文件路径用（ManifestStore.dir 私有，此处不破封装另存同源值；漂移由构造点同语句保证不发生）。
+   */
+  recordsDir;
+  /**
    * [T1/PS-9] subagent sessionDir（getSubagentSessionDir 推导，与 store 同源同一 rootCwd）。
    * 传给 doFinalizeRecord 的 FinalizeDeps.sessionDir——record.sessionFile 缺失时 finalize
    * 用它做磁盘 identity 反查（marker/alive 清理的依据）。
@@ -24020,8 +24464,42 @@ var SubagentService = class {
     const sessionsDir = getSubagentSessionDir(this.modelService.getAgentDir(), this.rootCwd);
     const recordsDir = getSubagentRecordsDir(this.modelService.getAgentDir(), this.rootCwd);
     this.sessionsDir = sessionsDir;
+    this.recordsDir = recordsDir;
     this.manifestStore = new ManifestStore(recordsDir);
     this.store = new RecordStore(sessionsDir, this.manifestStore, this.pi ?? void 0);
+    this.collectCoordinator = new CollectCoordinator({
+      notifyAsync: (record) => {
+        const notify = this.notifyHost.toNotifyRecord(record);
+        if (notify) this.notifyHost.notify(notify);
+      },
+      toNotifyRecord: (record) => this.notifyHost.toNotifyRecord(record),
+      // 闭合判定数据源：listAllActive（原始 ExecutionRecord 内存态，携带 collectMode/
+      // batchFinalized 原始值）。[U3 修正] 原接 collectRecords——其经 recordToSubagent
+      // 投影丢 collectMode（U2 披露的投影缺口）→ 真链上闭合判定恒立即闭合、跨轮续累
+      // 失效（真链 trace 实证）。非终态 sync 成员必在内存（archive 只删终态；磁盘重建
+      // 残留属孤儿恢复域），内存视图语义完整。
+      listRecords: (limit) => this.store.listAllActive().slice(0, limit),
+      flushBatch: async (members) => {
+        const live = members.filter((m) => !this.e9ConvertedIds.has(m.id));
+        if (live.length === 0) return;
+        const fulls = [];
+        const fullMissed = [];
+        for (const m of live) {
+          const full = this.store.getFullRecord(m.id);
+          if (full) fulls.push(full);
+          else fullMissed.push(m);
+        }
+        await this.writeSyncBatchManifestBarrier(fulls);
+        const accepted = this.notifyHost.notifyBatch(live, this.getCollectSyncBudget());
+        if (!accepted) return;
+        for (const full of fulls) {
+          this.appendBatchFinalizedEntry(full);
+        }
+        for (const m of fullMissed) {
+          this.appendBatchFinalizedEntry(bufferedMemberFallbackRecord(m, this.sessionRootId ?? void 0));
+        }
+      }
+    });
     registerGlobalObservability(this.uiObservability);
   }
   // ── 生命周期（index.ts 调）──────────────────────────────
@@ -24046,6 +24524,7 @@ var SubagentService = class {
     this.sessionRootId = envRoot ?? init.sessionId;
     this.initExecContextBaseline(envRoot, init.sessionId);
     this._disposed = false;
+    this.settledRescanState = null;
     this.store.revive();
     this.notifyHost.revive();
     this.recoverOrphansIfRootProcess();
@@ -24079,7 +24558,7 @@ var SubagentService = class {
       this.execNesting.setBaseline({ recordId: envSelfRecord, depth: nestingDepth });
       this.execNesting.enterWith({ recordId: envSelfRecord, depth: nestingDepth });
       if (process.env.XYZ_AGENT_DEBUG) {
-        logger25.debug(
+        logger26.debug(
           `[subagents] execNesting initialized: recordId=${envSelfRecord} depth=${nestingDepth} rootSessionId=${envRoot ?? sessionId}`
         );
       }
@@ -24103,26 +24582,28 @@ var SubagentService = class {
     if (!isChildProcess) {
       this.recoverOrphanRecords();
     } else if (process.env.XYZ_AGENT_DEBUG) {
-      logger25.debug("[subagents] child process detected (PI_SUBAGENT_SELF_RECORD_ID set), skipping orphan recovery scan");
+      logger26.debug("[subagents] child process detected (PI_SUBAGENT_SELF_RECORD_ID set), skipping orphan recovery scan");
     }
   }
   /** 孤儿终态恢复委托（RecordStore.recoverOrphanRecords 的唯一调用入口，维持 store
    *  private 封装——与 recoverManifestTmpFiles 同模式；[D4] public 面收窄：唯一调用方
    *  是 initSession，转 private）。判定语义见 store 侧注释。
+   *  mainSessionFile 随调用透传（v2 D3 覆写 merge 数据源：主文件末条 entry 的批域
+   *  标记与轮终 result/model；initSession 先赋值后恢复，时序就绪）。
    *  随后跑 entry-born 孤儿恢复（无子文件锚的 register-only record，spawn 窗口期死亡，
    *  E2E 实测缺口）——主 session 文件经 getMainSessionFile 注入（构造期可空）。 */
   recoverOrphanRecords() {
     try {
-      this.store.recoverOrphanRecords(this.sessionRootId ?? void 0);
+      this.store.recoverOrphanRecords(this.sessionRootId ?? void 0, this.mainSessionFile);
     } catch (err) {
-      logger25.warn("[subagents] orphan recovery failed", {
+      logger26.warn("[subagents] orphan recovery failed", {
         reason: toErrorMessage(err)
       });
     }
     try {
       this.store.recoverEntryOnlyOrphans(this.mainSessionFile, this.sessionRootId ?? void 0);
     } catch (err) {
-      logger25.warn("[subagents] entry-only orphan recovery failed", {
+      logger26.warn("[subagents] entry-only orphan recovery failed", {
         reason: toErrorMessage(err)
       });
     }
@@ -24220,14 +24701,232 @@ var SubagentService = class {
    * listener 仍然存活。若 pending-notifications 先于本扩展执行 session_shutdown（后注册
    * 先执行的语义下会如此），listener 已注销，unregister 事件被静默丢弃。这是可接受的
    * 退化——进程退出后两侧状态本就不保证一致，下次 session_start 的 crash recovery 会修正。 */
+  /** [U4 deviation #8 接线] collectSync 预算热读（flush 时读值，与 getCollectSyncDefault
+   *  同款访问链 modelService.getGlobalConfig().collectSync）。节缺失/读失败 → undefined
+   *  → notifyBatch 落 buildBatchLlmContent 设计默认值（4000/24000，E5 不炸启动）。
+   *  sanitizeCollectSync 保证节存在时两字段必有合法正整数。 */
+  getCollectSyncBudget() {
+    const cs = this.collectSyncSection();
+    return cs !== void 0 ? { perItemChars: cs.perItemChars, totalChars: cs.totalChars } : void 0;
+  }
+  /** [E9 专用] batchFinalized 落标 + manifest fire-and-forget 写（设计 §3.1.5 E9）。
+   *  批通知路径（flush/E1）已改走「manifest 屏障 → 写账 → 纯落标」序列（「通知可达
+   *  ⇒ 索引就位」的构造性保证，见 flushBatch 闭包 / runSyncCollectRecoveryScan），
+   *  不再经本 helper；仅 E9 转换的成员保持原形态——其走 async 单条通知（全文注入、
+   *  无指针行消费），manifest 无时序要求，落标后 fire-and-forget 补写（list 后手动
+   *  反查的顺带索引）。
+   *  路径 = getFullRecord 冷路径重建 → appendBatchFinalizedEntry 纯落标 → fire
+   *  manifest。getFullRecord 不可达（子 session 文件缺失/已 GC）→ 跳过该成员
+   *  （详见 flushBatch 闭包注释）。 */
+  markMembersBatchFinalized(memberIds) {
+    for (const id of memberIds) {
+      const full = this.store.getFullRecord(id);
+      if (!full) continue;
+      this.appendBatchFinalizedEntry(full);
+      void this.writeBatchMemberManifest(full).catch((err) => {
+        logger26.debug(
+          `[subagents] batch-finalized manifest write failed (record=${full.id})`,
+          { reason: err instanceof Error ? err.message : String(err) }
+        );
+      });
+    }
+  }
+  /** batchFinalized 落标唯一出口（appendEntry 公共末步，纯落标）：显式覆写
+   *  collectMode/batchFinalized → reportSubagentRecord。覆写动机：recordToSubagent
+   *  投影已含两字段（U5 修复），但 getFullRecord 冷路径含 sidecar/manifest 重建分支
+   *  （非 entry 源），显式赋值防非 entry 源重建时丢标记。
+   *
+   *  [v2 D1 断链 1] 落标即「离开批 = 通知已/即将送达 = 指针行即将被消费」——成功
+   *  成员走 SP-5 改道 doFinalizeRoundToIdle（不写 manifest），批路径不补写则
+   *  records/<sa-id>.json 永不产生、session-reader 反查 0 命中。manifest 写点已从
+   *  本出口的 fire-and-forget 前移至各调用方：批通知路径（flush/E1）在写账前屏障
+   *  await 全部落盘（「通知可达 ⇒ 索引就位」的构造性保证）；E9 保持落标后
+   *  fire-and-forget（async 单条通知无指针行消费，无时序要求）。
+   *  rec 两来源（flush 的 getFullRecord 内存全量 / E1 的 rebuildEntryRecord 重建
+   *  快照）必需字段恒齐备（id/agentName←agent/rootSessionId/createdAt←startedAt），
+   *  task/slug/parentRecordId 等可选 undefined 自然缺省。 */
+  appendBatchFinalizedEntry(rec) {
+    this.store.reportSubagentRecord({ ...rec, collectMode: "sync", batchFinalized: true });
+  }
+  /** 批成员 manifest（sa- id → sessionFile 反查索引）写的唯一投影点（D2 字段投影 +
+   *  status 如实投影：成功成员此刻 record 实态 running+resumable → "running"，后续
+   *  message upgrade 走完整 finalize 时 Step 4 原子覆盖为 "closed"）。
+   *  返回原始 promise 不吞错——失败语义由调用方定：批通知路径经
+   *  writeSyncBatchManifestBarrier 的 allSettled（debug 不阻断写账）；E9 经
+   *  fire-and-forget catch（debug 不阻断落标）。 */
+  writeBatchMemberManifest(rec) {
+    return this.manifestStore.writeManifest({
+      id: rec.id,
+      rootSessionId: rec.rootSessionId ?? "",
+      parentRecordId: rec.parentRecordId,
+      agentName: rec.agent,
+      status: rec.status,
+      createdAt: rec.startedAt,
+      completedAt: rec.endedAt,
+      sessionFile: rec.sessionFile,
+      task: rec.task,
+      slug: rec.slug,
+      model: rec.model
+    });
+  }
+  /** [时序屏障] 批通知路径（flush/E1）专用：成员 manifest 并行写 + await 全部完成
+   *  （allSettled）后才允许写账投递——「通知可达 ⇒ 索引就位」的构造性保证。写失败
+   *  不阻断（best-effort 语义与 doFinalizeRecord Step 4 一致：反查索引缺失只影响指针行
+   *  反查，session-reader 错误文案已指引绝对路径兜底，不构成写账失败）；warn 留痕
+   *  （D6 #7a / SC-1：屏障失败意味着该成员指针行反查索引缺失，debug 级在排障时不可见）。 */
+  async writeSyncBatchManifestBarrier(recs) {
+    const results = await Promise.allSettled(recs.map((rec) => this.writeBatchMemberManifest(rec)));
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (result.status === "rejected") {
+        logger26.warn(
+          `[subagents] batch-finalized manifest write failed (record=${recs[i].id}, manifest=${this.recordsDir}/${recs[i].id}.json)`,
+          { reason: result.reason instanceof Error ? result.reason.message : String(result.reason) }
+        );
+      }
+    }
+  }
+  /** [E9] dispose 时批未闭合：缓冲中已终态未通知成员逐条转 async 语义写账（放弃攒批）
+   *  + 落 batchFinalized 标记（E1 重建扫描据此排除，防双重通知），交由既有 shutdown
+   *  flush / resume 重放兑底；仍在跑的成员走现有退出路径（disposeAllRecords 关闭，
+   *  与 async 一致）。写账用 notifier.notify 现有通路（ledger.record + attemptDeliver）。
+   *  源序：写账先于落标——写账后崩溃 → E1 重建收该成员，但 async notifyId 与批 hash
+   *  跨键不拦的重发属设计披露的 E9 残余窗（at-least-once 良性，PS-17 同族，v1 接受）。 */
+  convertPendingSyncBufferToAsync() {
+    this.collectCoordinator.cancelScheduledFlush();
+    const members = this.collectCoordinator.pendingMembers();
+    if (members.length === 0) return;
+    for (const member of members) {
+      this.e9ConvertedIds.add(member.id);
+      this.notifyHost.notify(member);
+    }
+    this.markMembersBatchFinalized(members.map((m) => m.id));
+    logger26.warn(
+      `[subagents] E9 dispose: converted ${members.length} buffered sync member(s) to async notify`,
+      { ids: members.map((m) => m.id) }
+    );
+  }
+  /**
+   * [E1] sync 批崩溃恢复钩子（设计 §3.1.5 E1，index.ts session_start 恢复编排处调用，
+   * 须晚于 initSession——孤儿终态恢复先行收敛 running 成员，「全员终态」判定才可达）：
+   *
+   *  - 扫描主 session 文件每 id 末条 subagent-record entry（store.scanLastRecordEntries，
+   *    collectLastRecordEntries 同构 + 投影扩展含 collectMode/batchFinalized + 终态五
+   *    字段；禁走 collectRecords light 路径——主 session 落标 entry 对它不可见）；
+   *  - 只收 collectMode=sync 且无 batchFinalized 的成员（排除已通过批 flush 或 E9
+   *    转换离场的，防双重通知），按 rootSessionId 过滤当前根；
+   *  - 全员终态且账本无同成员集批记录 → manifest 屏障（await 落盘，「通知可达 ⇒
+   *    索引就位」构造性保证，与 flushBatch 同款）→ notifyBatch 补发（内容 = 末条
+   *    entry 终态快照；账本 record 同 hash 幂等拒绝 = 已投递/已在账，两种结局都算
+   *    「已处理」）；
+   *  - 仍有 running → 本次不动，注册 settled 有界重扫（D4，见 armSettledRescan）——
+   *    成员延迟终态（主 agent 冷路径 resume → 正常流落 entry）由 settled 边沿驱动
+   *    重扫收敛，不再依赖「下次 session_start」作唯一再驱动（v2 §2.4 断链 4）；
+   *    running 口径与协调器同构
+   *    （resumable 豁免，v2 D3——覆写不可达的防御分支残余不被误判「仍在跑」）；
+   *  - 补发尝试后统一补 batchFinalized 标记（账本拒绝也算已投递；直接用末条重建快照
+   *    落标不经 getFullRecord——子文件缺失/已 GC 时标记仍可落盘，窗口自愈不依赖二次
+   *    重启；补标自身崩溃重入幂等收敛，末条 entry last-writer-wins）。
+   *
+   *  async 化（时序屏障修复）：返回 Promise 但**内部自捕获不外抛**——宿主 index.ts
+   *  session_start 以同步 try/catch 调用（其 catch 兑现不到 promise 内的异常），
+   *  自捕获维持同款 warn 容错语义，浮动调用零适配、不产生 unhandled rejection。
+   *
+   *  [U8 拆批修复] 与协调器合批排程无交集：E1 只在 session_start 编排处运行（此前
+   *  dispose 已取消挂起排程），补发直走 notifier.notifyBatch 不经协调器；异常时序
+   *  相撞由账本 sync-batch:<hash> 幂等拒绝兜底。
+   */
+  async recoverSyncCollectBatch() {
+    try {
+      const { outcome } = await this.runSyncCollectRecoveryScan();
+      if (outcome === "waiting") {
+        this.armSettledRescan();
+      }
+    } catch (err) {
+      logger26.warn("[subagents] sync collect batch recovery failed", {
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  /** [E1/D4] 单次「扫描→判定→可达则补发+落标」，E1 首扫与 settled 重扫共用同一实现
+   *  （防两处复制粘贴分岔）。三态返回：idle（无 sync 候选——已全部落标/E9 转换/异根，
+   *  无事可等）/ waiting（仍有 running 成员，本次不动）/ dispatched（全员终态，已补发
+   *  +统一落标）。async：补发前有 manifest 屏障 await（见函数头 E1 注释）。 */
+  /** 返回 outcome + waitingIds（达限 warn 需滞留成员 id，D6 #7b——仅 waiting 态非空）。 */
+  async runSyncCollectRecoveryScan() {
+    const lastRecords = this.store.scanLastRecordEntries(this.mainSessionFile);
+    if (lastRecords.length === 0) return { outcome: "idle", waitingIds: [] };
+    const rootFilter = this.sessionRootId;
+    const candidates = lastRecords.filter(
+      (r) => r.collectMode === "sync" && r.batchFinalized !== true && (rootFilter === void 0 || r.rootSessionId === rootFilter)
+    );
+    if (candidates.length === 0) return { outcome: "idle", waitingIds: [] };
+    const running = candidates.filter((r) => r.resumable !== true && r.status !== "closed");
+    if (running.length > 0) {
+      logger26.debug(
+        `[subagents] E1 sync batch recovery: ${running.length} member(s) still running, wait for natural completion`,
+        { ids: running.map((r) => r.id) }
+      );
+      return { outcome: "waiting", waitingIds: running.map((r) => r.id) };
+    }
+    await this.writeSyncBatchManifestBarrier(candidates);
+    const members = candidates.map((r) => syncRebuildToNotifyMember(r));
+    const accepted = this.notifyHost.notifyBatch(members, this.getCollectSyncBudget());
+    for (const rec of candidates) {
+      this.appendBatchFinalizedEntry(rec);
+    }
+    logger26.warn(
+      `[subagents] E1 sync batch recovery: re-notified ${members.length} member(s) (ledger accepted=${accepted})`,
+      { ids: members.map((m) => m.id) }
+    );
+    return { outcome: "dispatched", waitingIds: [] };
+  }
+  /** [v2 D4] 注册 agent_settled 有界重扫（幂等：settledRescanState 非 null 不叠加注册
+   *  ——E1 现仅 session_start 单调用点，守卫是防第二入口引入时的注册叠加断言面）。
+   *  每次 settled 边沿重跑同一 E1 扫描（runSyncCollectRecoveryScan）：dispatched
+   *  （补发+落标完成，scan 的 warn 已留痕）或 idle（候选已被其他通路落标）→ disposed；
+   *  累计 SETTLED_RESCAN_LIMIT 次仍在等 → disposed + warn 留痕（D6 #7b / SC-2：达限
+   *  放弃重扫意味着滞留成员的批通知要等下次 session_start 才收敛，含滞留 id 的 warn
+   *  是唯一线索，debug 级排障不可见；后续事件零处理，下次 session_start 再收敛）。
+   *  pi.on 无 off（0.84.4 实装）——disposed 标志包装兑现退订（scheduler extension
+   *  index.ts subscribeSettled 同款先例）。P-settled 定谳（0.84.4 dist 实装证据）：
+   *  pi.on 为 per-extension 列表分发——loader.js `on()` 把 handler push 进
+   *  extension.handlers.get(event) 数组（非覆盖），runner.js `emit()` 对全部
+   *  extension 的全部 handler 逐一 await；故本注册与 ledger host 经
+   *  piAdapter.onAgentSettled 注册的 settled 分发互不干扰，无需降级并入 host 链。 */
+  armSettledRescan() {
+    if (this.settledRescanState !== null) return;
+    const state = { disposed: false, scans: 0 };
+    this.settledRescanState = state;
+    this.pi?.on?.("agent_settled", async () => {
+      if (state.disposed) return;
+      state.scans += 1;
+      const { outcome, waitingIds } = await this.runSyncCollectRecoveryScan();
+      if (outcome === "waiting" && state.scans < SETTLED_RESCAN_LIMIT) return;
+      state.disposed = true;
+      if (outcome === "waiting") {
+        logger26.warn(
+          `[subagents] E1 settled rescan: reached limit (${SETTLED_RESCAN_LIMIT}) with member(s) still running, disposed until next session_start`,
+          { ids: waitingIds }
+        );
+      }
+    });
+  }
+  // [E1 语义对齐 toNotifyRecord] 补发成员映射 syncRebuildToNotifyMember 拆至
+  // sync-rebuild.ts（变化轴：恢复批通知语义）：one-shot 成功成员末条恒
+  // running+resumable（SP-5），直通 status 会让恢复批批头「0 finished」且丢
+  // patchFile 的 git-apply 指针——对齐后补发记录为 closed + outcome 物化 +
+  // patchFile 透传。调用点：runSyncCollectRecoveryScan。
   dispose() {
     if (this._disposed) return;
     this._disposed = true;
     this.stopGcTimer();
+    if (this.settledRescanState !== null) this.settledRescanState.disposed = true;
     this.uiRequestHandler = disposedUiRequestStub;
     this.uiObservability.resetMissingHandlerWarnings();
     this.store.abortRunningControllers();
     killAllSpawnedChildren();
+    this.convertPendingSyncBufferToAsync();
     this.disposeAllRecords("parent-shutdown");
     resetAllEpipeFailures();
     this.resumesInFlight.clear();
@@ -24260,7 +24959,7 @@ var SubagentService = class {
           record: item.record
         });
       }
-      logger25.warn(
+      logger26.warn(
         `[subagents] shutdown flush blocked by busy main agent: ${pending.length} pending notification(s) persisted to ledger for replay on next session_start`,
         { count: pending.length }
       );
@@ -24490,7 +25189,7 @@ var SubagentService = class {
    */
   onHotPathSettledWatchdogTimeout(record, fire) {
     const windowDesc = fire.phase === "mid-round" ? `no valid protocol event for ${fire.waitedMs / MS_PER_SECOND6 / SECONDS_PER_MINUTE4} min after prompt (mid-round no-progress)` : `no agent_settled within ${fire.waitedMs / MS_PER_SECOND6}s after agent_end (settled phase)`;
-    logger25.warn(
+    logger26.warn(
       `[subagents] settled watchdog (${fire.phase}) fired for ${record.id}: ${windowDesc}, terminating (LC-1 wedge recovery)`
     );
     killRecordChildWithEscalation(record.id, "settled watchdog (hot path)");
@@ -24507,7 +25206,7 @@ var SubagentService = class {
       return;
     }
     const finalize = record.chatMode ? this.finalizeRoundToIdle(record, failedResult) : this.finalizeRecord(record, failedResult, "closed", "gc");
-    void finalize.then(() => this.notifyHost.notifyComplete(record)).catch((err) => bestEffort(err, "settled watchdog hot-path finalize", "error"));
+    void finalize.then(() => this.collectCoordinator.route(record)).catch((err) => bestEffort(err, "settled watchdog hot-path finalize", "error"));
   }
   // [T2⑧ / PS-3] 非 EPIPE 热路径写失败后的 idle timer 再武装已随 D2 投递下沉迁移落位：
   // 挂载点在 PiEngine.deliverPrompt 的非 EPIPE catch（engine/engines/pi/pi-engine.ts 的
@@ -24738,6 +25437,21 @@ var SubagentService = class {
   collectRecords(limit, statusFilter = "all") {
     return this.store.collectRecords(limit, statusFilter, this.sessionRootId ?? this.sessionId ?? void 0);
   }
+  /**
+   * collectSync.default 当前生效值（subagent-sync-collect U2，偏差#3 接线：
+   * startHandler 缺省 collect 解析用）。
+   * config 未配/读失败 → DEFAULT_COLLECT_SYNC.default 兜底（E5 不炸启动）。
+   * 新 session 生效语义与 engine 配置一致（globalConfig 由 ModelConfigService
+   * reloadGlobalConfig 刷新）。
+   */
+  /** collectSync 节单读取点（S9，code-simplify）：「读节」一处，「投影成 default 或
+   *  budget」各自 accessor 负责（getCollectSyncDefault / getCollectSyncBudget）。 */
+  collectSyncSection() {
+    return this.modelService.getGlobalConfig().collectSync;
+  }
+  getCollectSyncDefault() {
+    return this.collectSyncSection()?.default ?? DEFAULT_COLLECT_SYNC.default;
+  }
   /** [perf] 单 record 详情懒加载（全量：eventLog/displayItems/result/turns/tokens）。
    *  内存 running record 直接投影；磁盘 record 全量重建（per-file 缓存，stat 戳校验）。
    *  返回 undefined：id 不存在于内存与磁盘。 */
@@ -24830,6 +25544,10 @@ var SubagentService = class {
       // 从 RunContext 回填；缺省 = pi 投影，存量调用方零感知）
       engine: opts.engine,
       engineFallback: opts.engineFallback,
+      // subagent-sync-collect U2（偏差#4 接线）：sync record 落 collectMode——
+      // 协调器路由判据 + startHandler pendingSyncCount 枚举含本条的数据源。
+      // undefined = async（缺省语义，旧记录零迁移）。
+      collectMode: opts.collect === "sync" ? "sync" : void 0,
       controller
     });
     this.store.register(record);
@@ -24917,7 +25635,7 @@ var SubagentService = class {
       try {
         await this.runEngineTask(record, opts, engine, signal);
         if (record.closedReason !== "cancelled") {
-          this.notifyHost.notifyComplete(record);
+          this.collectCoordinator.route(record);
         }
       } finally {
         this.pool.release();
@@ -25194,12 +25912,12 @@ var SubagentService = class {
       { taskId: record.id, poolKey: PI_POOL_KEY, signal, stream }
     ).then(() => {
       if (notifyGateAllowsDelivery(record.closedReason)) {
-        this.notifyHost.notifyComplete(record);
+        this.collectCoordinator.route(record);
       }
     }).catch((err) => {
       this.chatRoundTickets.delete(record.id);
       if (err instanceof Error) {
-        logger25.debug(`[subagent] background finalize error (record=${record.id}): ${err.message}`);
+        logger26.debug(`[subagent] background finalize error (record=${record.id}): ${err.message}`);
       }
     });
   }
@@ -25292,7 +26010,7 @@ var SubagentService = class {
       }
     }
     this.notifyHost.emitPendingUnregister(record.id, "closed");
-    this.notifyHost.notifyComplete(record);
+    this.collectCoordinator.route(record);
     return true;
   }
   /**
@@ -25494,9 +26212,9 @@ var ZCODE_APPSERVER_HARVEST_GRACE_MS = 1e3;
 
 // src/execution/engine/engines/zcode/zcode-engine.ts
 var import_node_child_process5 = require("child_process");
-var fs23 = __toESM(require("fs"), 1);
+var fs24 = __toESM(require("fs"), 1);
 var os4 = __toESM(require("os"), 1);
-var path16 = __toESM(require("path"), 1);
+var path17 = __toESM(require("path"), 1);
 
 // src/execution/engine/common/schema-emulation.ts
 var import_ajv = __toESM(require_ajv(), 1);
@@ -25636,9 +26354,9 @@ function synthesizeCoarseEvents(response, usage) {
 }
 
 // src/execution/engine/engines/zcode/preparer.ts
-var fs19 = __toESM(require("fs"), 1);
+var fs20 = __toESM(require("fs"), 1);
 var os3 = __toESM(require("os"), 1);
-var path14 = __toESM(require("path"), 1);
+var path15 = __toESM(require("path"), 1);
 var ZcodePrepareError = class extends Error {
   code;
   constructor(code, message) {
@@ -25657,7 +26375,7 @@ function readSourceConfig(absPath) {
   const empty = { providers: /* @__PURE__ */ new Map() };
   let raw;
   try {
-    raw = fs19.readFileSync(absPath, "utf8");
+    raw = fs20.readFileSync(absPath, "utf8");
   } catch {
     return empty;
   }
@@ -25691,7 +26409,7 @@ function hasApiKey(entry) {
   return typeof key === "string" && key !== "";
 }
 function defaultV2ConfigPath() {
-  return path14.join(os3.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
+  return path15.join(os3.homedir(), ...ZCODE_V2_CONFIG_PATH_SUFFIX);
 }
 var DEFAULT_PROVIDER_ID = "builtin:bigmodel-coding-plan";
 function defaultProviderForShortName(merged, withKey) {
@@ -25754,8 +26472,8 @@ function listZcodeModels(sources) {
 }
 
 // src/execution/engine/engines/zcode/appserver-launcher.ts
-var fs20 = __toESM(require("fs"), 1);
-var path15 = __toESM(require("path"), 1);
+var fs21 = __toESM(require("fs"), 1);
+var path16 = __toESM(require("path"), 1);
 var ZCODE_APPSERVER_LAUNCHER_NAME = "appserver-launcher.cjs";
 var APPSERVER_LAUNCHER_SOURCE = `'use strict';
 // zcode app-server fs \u62E6\u622A wrapper\uFF08\u7531 subagent-core appserver-launcher \u843D\u76D8\u751F\u6210\uFF09
@@ -25861,15 +26579,15 @@ import(CLI_PATH).catch((err) => {
 });
 `;
 function ensureAppServerLauncher(engineDataDir) {
-  const dir = path15.join(engineDataDir, "engines", "zcode");
-  const file = path15.join(dir, ZCODE_APPSERVER_LAUNCHER_NAME);
-  const existing = fs20.existsSync(file) && fs20.statSync(file).isFile() ? fs20.readFileSync(file, "utf8") : void 0;
+  const dir = path16.join(engineDataDir, "engines", "zcode");
+  const file = path16.join(dir, ZCODE_APPSERVER_LAUNCHER_NAME);
+  const existing = fs21.existsSync(file) && fs21.statSync(file).isFile() ? fs21.readFileSync(file, "utf8") : void 0;
   if (existing === APPSERVER_LAUNCHER_SOURCE) return file;
   try {
-    fs20.mkdirSync(dir, { recursive: true });
+    fs21.mkdirSync(dir, { recursive: true });
     const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
-    fs20.writeFileSync(tmp, APPSERVER_LAUNCHER_SOURCE);
-    fs20.renameSync(tmp, file);
+    fs21.writeFileSync(tmp, APPSERVER_LAUNCHER_SOURCE);
+    fs21.renameSync(tmp, file);
   } catch (err) {
     const reason = toErrorMessage(err);
     throw new Error(
@@ -25880,7 +26598,7 @@ function ensureAppServerLauncher(engineDataDir) {
 }
 
 // src/execution/engine/engines/zcode/reader.ts
-var fs21 = __toESM(require("fs"), 1);
+var fs22 = __toESM(require("fs"), 1);
 var ZcodeReaderError = class extends Error {
   code;
   /** 原始失败细节（缺文件/表漂移/运行时不支持）。 */
@@ -26079,7 +26797,7 @@ function buildView(db, sessionId) {
   };
 }
 async function readZcodeSessionView(dbPath, sessionId) {
-  if (!fs21.existsSync(dbPath)) {
+  if (!fs22.existsSync(dbPath)) {
     throw new ZcodeReaderError(`db \u6587\u4EF6\u4E0D\u5B58\u5728\uFF1A${dbPath}`);
   }
   const sqliteModuleId = "node:sqlite";
@@ -26113,9 +26831,9 @@ async function readZcodeSessionView(dbPath, sessionId) {
 
 // src/execution/engine/engines/zcode/connection.ts
 var import_node_child_process4 = require("child_process");
-var fs22 = __toESM(require("fs"), 1);
+var fs23 = __toESM(require("fs"), 1);
 var import_node_path6 = require("path");
-var logger26 = getLogger("subagents");
+var logger27 = getLogger("subagents");
 var RAW_FRAME_LOG_CHARS = 200;
 var RUNTIME_PREFERENCES = Object.freeze({
   nativeSearchEnhancementsEnabled: true,
@@ -26320,7 +27038,7 @@ var AppServerConnection = class {
       try {
         this.onSpawned(child);
       } catch (err) {
-        logger26.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage(err)}`);
+        logger27.warn(`onSpawned \u56DE\u8C03\u5F02\u5E38\uFF08\u5FFD\u7565\uFF09: ${errMessage(err)}`);
       }
     }
     let finalized = false;
@@ -26339,7 +27057,7 @@ var AppServerConnection = class {
         try {
           fn(reason);
         } catch (err2) {
-          logger26.warn(`close handler \u5F02\u5E38: ${errMessage(err2)}`);
+          logger27.warn(`close handler \u5F02\u5E38: ${errMessage(err2)}`);
         }
       }
     };
@@ -26379,14 +27097,14 @@ var AppServerConnection = class {
     try {
       frame = JSON.parse(text);
     } catch {
-      logger26.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger27.warn(`\u65E0\u6CD5\u89E3\u6790\u7684\u534F\u8BAE\u884C\uFF08\u5FFD\u7565\uFF09: ${text.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     this.handleFrame(frame, text);
   }
   handleFrame(frame, rawText) {
     if (!isRecord2(frame)) {
-      logger26.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+      logger27.warn(`\u975E\u5BF9\u8C61\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
       return;
     }
     if (isRecord2(frame.protocol)) this.capturedProtocolInfo = frame.protocol;
@@ -26401,19 +27119,19 @@ var AppServerConnection = class {
     }
     if (frame.id !== void 0 && frame.id !== null) {
       if (typeof frame.id !== "number") {
-        logger26.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+        logger27.warn(`\u5E94\u7B54 id \u975E\u6570\u5B57\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
         return;
       }
       this.settlePending(frame.id, frame);
       return;
     }
     if (isRecord2(frame.protocol)) return;
-    logger26.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
+    logger27.warn(`\u65E0\u6CD5\u5F52\u7C7B\u7684\u534F\u8BAE\u5E27\uFF08\u5FFD\u7565\uFF09: ${rawText.slice(0, RAW_FRAME_LOG_CHARS)}`);
   }
   settlePending(id, frame) {
     const entry = this.pending.get(id);
     if (!entry) {
-      logger26.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
+      logger27.warn(`\u54CD\u5E94\u65E0\u5339\u914D\u8BF7\u6C42 id=${id}\uFF08\u5FFD\u7565\uFF09`);
       return;
     }
     this.pending.delete(id);
@@ -26439,7 +27157,7 @@ var AppServerConnection = class {
       try {
         fn(params);
       } catch (err) {
-        logger26.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage(err)}`);
+        logger27.warn(`push handler \u5F02\u5E38\uFF08${method}\uFF09: ${errMessage(err)}`);
       }
     }
   }
@@ -26449,12 +27167,12 @@ var AppServerConnection = class {
   answerReverse(id, method, params) {
     const handler = this.reverseHandlers[method];
     if (!handler) {
-      logger26.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
+      logger27.warn(`\u672A\u77E5\u53CD\u5411\u8BF7\u6C42 ${method}\uFF08id=${id}\uFF09\uFF1A\u56DE\u7A7A result\uFF08\u4E0D\u7B54\u4F1A 15s \u8D85\u65F6\u65AD\u8FDE\uFF0C\u65E7\u5B9E\u6D4B -32022\uFF09`);
       this.writeFrame({ id, result: {} });
       return;
     }
     Promise.resolve().then(() => handler(params)).then((result) => this.writeFrame({ id, result: result ?? {} })).catch((err) => {
-      logger26.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage(err)}`);
+      logger27.warn(`\u53CD\u5411\u8BF7\u6C42 ${method} handler \u5F02\u5E38: ${errMessage(err)}`);
       this.writeFrame({ id, error: { code: -32e3, message: errMessage(err) } });
     });
   }
@@ -26470,7 +27188,7 @@ var AppServerConnection = class {
 `);
       return true;
     } catch (err) {
-      logger26.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage(err)}`);
+      logger27.warn(`\u5199\u5165 app-server \u5931\u8D25: ${errMessage(err)}`);
       return false;
     }
   }
@@ -26479,8 +27197,8 @@ var AppServerConnection = class {
     if (this.stderrStreamFailed) return;
     if (this.stderrStream === null) {
       try {
-        fs22.mkdirSync((0, import_node_path6.dirname)(this.stderrLogPath), { recursive: true });
-        this.stderrStream = fs22.createWriteStream(this.stderrLogPath, { flags: "a" });
+        fs23.mkdirSync((0, import_node_path6.dirname)(this.stderrLogPath), { recursive: true });
+        this.stderrStream = fs23.createWriteStream(this.stderrLogPath, { flags: "a" });
         this.stderrStream.on("error", () => {
           this.stderrStreamFailed = true;
         });
@@ -26502,8 +27220,8 @@ var AppServerConnection = class {
 };
 
 // src/execution/engine/engines/zcode/session-channel.ts
-var import_node_crypto = require("crypto");
-var logger27 = getLogger("subagents");
+var import_node_crypto2 = require("crypto");
+var logger28 = getLogger("subagents");
 var SUBSCRIBE_DELIVERY_KIND = "desktop-continuous";
 var WORKSPACE_KEY_HASH_CHARS = 16;
 var CREATE_REPLY_LOG_CHARS = 300;
@@ -26515,7 +27233,7 @@ function errMessage2(err) {
   return toErrorMessage(err);
 }
 function stableWorkspaceKey(workspacePath) {
-  return "ws-" + (0, import_node_crypto.createHash)("sha256").update(workspacePath).digest("hex").slice(0, WORKSPACE_KEY_HASH_CHARS);
+  return "ws-" + (0, import_node_crypto2.createHash)("sha256").update(workspacePath).digest("hex").slice(0, WORKSPACE_KEY_HASH_CHARS);
 }
 function extractCreatedSessionId(created) {
   if (!isRecord3(created)) return void 0;
@@ -26645,7 +27363,7 @@ function resolveTurnTimerMs(parts) {
       source = `env ${parts.envName}=${raw}`;
     } else {
       if (parsed.state === "invalid") {
-        logger27.warn(
+        logger28.warn(
           `[session-channel] ${parts.envName}="${raw}" \u975E\u6CD5\uFF08\u5E94\u4E3A\u6BEB\u79D2\u6570\u5B57\uFF09\u2014\u2014\u56DE\u843D\u9ED8\u8BA4 ${parts.fallbackMs}ms\uFF08${parts.label}\uFF09\u3002\u8BBE\u7F6E\u6B63\u6BEB\u79D2\u503C\u8986\u76D6\uFF0C\u6216 0 \u663E\u5F0F\u5173\u95ED`
         );
       }
@@ -26654,7 +27372,7 @@ function resolveTurnTimerMs(parts) {
     }
   }
   if (value <= 0) {
-    logger27.warn(
+    logger28.warn(
       `[session-channel] zcode turn ${parts.label}\u5DF2\u5173\u95ED\uFF08${source}\uFF09\u2014\u2014${parts.offConsequence}\u3002\u8BBE\u6B63\u6BEB\u79D2\u503C\uFF08env ${parts.envName} \u6216\u663E\u5F0F\u4F20\u53C2\uFF09\u6062\u590D\u56DE\u6536\u5C42`
     );
   }
@@ -26776,7 +27494,7 @@ var SessionChannel = class {
         { timeoutMs: ZCODE_APPSERVER_TURN_CLOSE_TIMEOUT_MS }
       );
     } catch (err) {
-      logger27.warn(
+      logger28.warn(
         `session/close \u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0Cbest-effort \u5FFD\u7565\uFF09: ${errMessage2(
           err
         )}`
@@ -26977,7 +27695,7 @@ var SessionChannel = class {
   applyStreamDelta(turn, payload) {
     if (typeof payload.delta !== "string" || payload.delta === "") return;
     if (turn.settled) {
-      logger27.warn(
+      logger28.warn(
         `\u7EC8\u6001\u540E\u8FDF\u5230\u7684 delta \u4E22\u5F03\uFF08\u4F1A\u8BDD ${turn.sessionId}\uFF0C\u4E0D\u53D8\u91CF 2\uFF1Aresolve \u540E\u4E0D\u518D\u53D1\u4E8B\u4EF6\uFF09: ${payload.delta.slice(
           0,
           DELTA_LOG_CHARS
@@ -27006,7 +27724,7 @@ var SessionChannel = class {
     turn.lastTerminalStatus = status;
     this.recordTerminalError(turn, params);
     if (turn.settled) {
-      logger27.warn(
+      logger28.warn(
         `\u6743\u5A01\u7EC8\u6001\u665A\u4E8E\u843D\u5B9A\u7ED3\u679C\u5230\u8FBE\uFF08\u4F1A\u8BDD ${turn.sessionId}\uFF0C\u5DF2\u843D\u5B9A source=${turn.terminal?.source}\uFF09\uFF1Aturn.terminal status="${status}" \u4EC5\u8BB0\u5F55\u4E0D\u6539\u5199\uFF08P0-1 D5\u2460\uFF09`
       );
       return;
@@ -27052,7 +27770,7 @@ var SessionChannel = class {
         }
       );
     } catch (err) {
-      logger27.warn(
+      logger28.warn(
         `session/read \u515C\u5E95\u5931\u8D25\uFF08\u4F1A\u8BDD ${sessionId}\uFF0C\u964D\u7EA7\u6536\u5C3E\u5E27/delta \u805A\u5408\uFF09: ${errMessage2(
           err
         )}`
@@ -27063,11 +27781,11 @@ var SessionChannel = class {
 };
 
 // src/execution/engine/engines/zcode/zcode-engine.ts
-var logger28 = getLogger("subagents");
+var logger29 = getLogger("subagents");
 var PROBE_VERSION_TIMEOUT_MS2 = 15e3;
 var COMMON_THOUGHT_LEVELS = ["low", "high", "max"];
 function hostZcodeDbPath() {
-  return path16.join(os4.homedir(), ...ZCODE_HOST_DB_SUFFIX);
+  return path17.join(os4.homedir(), ...ZCODE_HOST_DB_SUFFIX);
 }
 var ZcodeEngine = class {
   id = ZCODE_ENGINE_ID;
@@ -27138,7 +27856,7 @@ var ZcodeEngine = class {
   }
   /** check 1：二进制存在性（isFile 才算——同名目录不是可执行入口）。 */
   probeBinaryCheck(cliPath) {
-    const binaryOk = fs23.existsSync(cliPath) && fs23.statSync(cliPath).isFile();
+    const binaryOk = fs24.existsSync(cliPath) && fs24.statSync(cliPath).isFile();
     return {
       name: "binary",
       ok: binaryOk,
@@ -27232,11 +27950,11 @@ var ZcodeEngine = class {
     if (final.kind === "run-failed" && final.transient !== void 0 && ctx.signal?.aborted !== true && !this.disposed) {
       const budget = resolveTransientRetryBudget(explicitTurnBudgetMs(), Date.now() - attemptStartedAt);
       if (budget.state === "depleted") {
-        logger28.warn(
+        logger29.warn(
           `[zcode-engine] \u672B\u6B21 attempt \u77AC\u65F6\u5931\u8D25\uFF08${final.transient}\uFF09\u2014\u2014\u663E\u5F0F\u603B\u4E0A\u754C\u9884\u7B97\u5269\u4F59\u4E0D\u8DB3 ${ZCODE_TURN_RETRY_MIN_BUDGET_MS}ms\uFF0C\u4E0D\u91CD\u8BD5\u76F4\u63A5\u7EC8\u6001\u5316\uFF08\u9884\u7B97\u7EE7\u627F\uFF1A\u91CD\u8BD5\u4E0D\u91CD\u7F6E\u603B\u9884\u7B97\uFF09`
         );
       } else {
-        logger28.warn(
+        logger29.warn(
           `[zcode-engine] \u672B\u6B21 attempt \u77AC\u65F6\u5931\u8D25\uFF08${final.transient}\uFF09\u2014\u2014\u6B62\u635F\u94FE\u5DF2\u7EC8\u5C40\uFF0C\u65B0\u4F1A\u8BDD\u81EA\u52A8\u91CD\u8BD5\u4E00\u6B21` + (budget.state === "inherit" ? `\uFF08\u9884\u7B97\u7EE7\u627F\uFF1A\u91CD\u8BD5\u8F6E\u603B\u4E0A\u754C=\u5269\u4F59 ${budget.remainingMs}ms\uFF0C\u4E0D\u91CD\u7F6E\u603B\u9884\u7B97\uFF09` : "\uFF08\u65E0\u663E\u5F0F\u603B\u4E0A\u754C\u9884\u7B97\uFF0C\u91CD\u8BD5\u8F6E\u8D70 env/\u9ED8\u8BA4\u4E0A\u754C\uFF09")
         );
         const retry = await this.attemptAppServerTurn(task, ctx, modelRef, cwd, basePrompt, {
@@ -27390,7 +28108,7 @@ var ZcodeEngine = class {
         delayResolved(ZCODE_APPSERVER_ABORT_GRACE_MS, false)
       ]);
       if (settled) return "settled-in-grace";
-      logger28.warn(
+      logger29.warn(
         `[zcode-engine] abort grace \u7A97\u53E3\u5185\u672A\u89C1\u7EC8\u6001\u2014\u2014killChain \u6536\u5272\u5171\u4EAB\u8FDB\u7A0B\uFF08\u63A5\u53D7\u8FDE\u5750\uFF0C\u5728\u9014\u4EFB\u52A1\u8D70\u5D29\u6E83\u8DEF\u5F84\uFF09`
       );
       await rt.conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS });
@@ -27415,19 +28133,19 @@ var ZcodeEngine = class {
     } catch (err) {
       if (entry.escalateOn === "stop-outcome") {
         if (isAppServerRpcError(err)) {
-          logger28.debug(
+          logger29.debug(
             `[zcode-engine] session/stop \u62A5\u534F\u8BAE\u6027 error\uFF08${errMessage3(err)}\uFF09\u2014\u2014\u4F1A\u8BDD\u5DF2\u56DE\u6536\uFF0C\u63A7\u5236\u9762\u5B58\u6D3B\uFF0C\u4E0D\u5347\u7EA7\u6740\u94FE`
           );
           return "stop-rejected";
         }
-        logger28.warn(
+        logger29.warn(
           `[zcode-engine] session/stop \u65E0\u5E94\u7B54\uFF08${errMessage3(err)}\uFF09\u2014\u2014\u5347\u7EA7 killChain \u6536\u5272\u5171\u4EAB\u8FDB\u7A0B\uFF08\u8D85\u65F6\u5165\u53E3\uFF0C\u63A5\u53D7\u8FDE\u5750\uFF09`
         );
         await rt.conn.shutdown({ graceMs: ZCODE_KILL_GRACE_MS });
         await this.awaitConnFinalized(rt);
         return "stop-unreachable-killed";
       }
-      logger28.debug(
+      logger29.debug(
         `[zcode-engine] session/stop \u5931\u8D25\uFF08${errMessage3(err)}\uFF09\u2014\u2014grace \u540E\u8D70 killChain \u515C\u5E95`
       );
     }
@@ -27458,7 +28176,7 @@ var ZcodeEngine = class {
       cwd: engineDataDir,
       env,
       launcherScript,
-      stderrLogPath: path16.join(engineDataDir, "logs", "zcode-appserver-stderr.log")
+      stderrLogPath: path17.join(engineDataDir, "logs", "zcode-appserver-stderr.log")
     });
     const rt = {
       conn,
@@ -27623,15 +28341,15 @@ var ZcodeEngine = class {
     const dbPathRaw = handle.data.sessionRef["dbPath"];
     if (typeof sessionId === "string" && typeof dbPathRaw === "string") {
       let dbPath;
-      if (path16.isAbsolute(dbPathRaw)) {
+      if (path17.isAbsolute(dbPathRaw)) {
         if (dbPathRaw === hostZcodeDbPath()) dbPath = dbPathRaw;
         else {
-          logger28.warn("[zcode-engine] record dbPath \u975E\u5BBF\u4E3B db \u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u62D2\u7EDD \u2460\u7EA7\u8BFB\u53D6\u964D journal", {
+          logger29.warn("[zcode-engine] record dbPath \u975E\u5BBF\u4E3B db \u7EDD\u5BF9\u8DEF\u5F84\uFF0C\u62D2\u7EDD \u2460\u7EA7\u8BFB\u53D6\u964D journal", {
             dbPath: dbPathRaw
           });
         }
       } else {
-        dbPath = path16.join(
+        dbPath = path17.join(
           resolvePoolDir(this.deps.engineDataDir(), ZCODE_ENGINE_ID, handle.data.poolKey),
           dbPathRaw
         );
@@ -27640,7 +28358,7 @@ var ZcodeEngine = class {
         try {
           return await readZcodeSessionView(dbPath, sessionId);
         } catch (err) {
-          logger28.warn("[zcode-engine] native session read failed, degrade to journal replay", {
+          logger29.warn("[zcode-engine] native session read failed, degrade to journal replay", {
             dbPath,
             sessionId,
             reason: toErrorMessage(err)
@@ -27666,7 +28384,7 @@ var ZcodeEngine = class {
     const thoughtLevel = task.thinkingLevel?.trim();
     if (thoughtLevel === void 0 || thoughtLevel === "") return;
     if (COMMON_THOUGHT_LEVELS.includes(thoughtLevel)) return;
-    logger28.warn(
+    logger29.warn(
       `[zcode-engine] thinkingLevel=${thoughtLevel} \u5DF2\u900F\u4F20\u4E3A thoughtLevel\uFF08\u975E\u5E38\u89C1\u6863\u4F4D\uFF09\uFF1A\u82E5\u76EE\u6807\u6A21\u578B\u4E0D\u652F\u6301\u8BE5\u6863\u4F4D\u5C06\u88AB\u5FFD\u7565/\u56DE\u843D\u5230\u6A21\u578B\u7F3A\u7701\u63A8\u7406\u6863\u4F4D\uFF08\u5E38\u89C1\u6863\u4F4D\uFF1A${COMMON_THOUGHT_LEVELS.join("/")}\uFF09\uFF1B\u6863\u4F4D\u662F\u5426\u751F\u6548\u4EE5\u6A21\u578B\u5B9E\u9645\u884C\u4E3A\u4E3A\u51C6`,
       { taskId: ctx.taskId }
     );
@@ -27684,7 +28402,7 @@ var ZcodeEngine = class {
     if (ctx.ctxModel === void 0) return;
     const requested = task.model?.trim();
     if (requested !== void 0 && requested !== "") return;
-    logger28.warn(
+    logger29.warn(
       `[zcode-engine] ctx.ctxModel\uFF08${ctx.ctxModel.id}\uFF09\u88AB\u5FFD\u7565\u2014\u2014ctxModel \u662F pi \u94FE\u8DEF\u515C\u5E95\uFF0Czcode \u4E0D\u6D88\u8D39\uFF1Btask.model \u672A\u663E\u5F0F\u6307\u5B9A\uFF0C\u5B9E\u9645\u4F7F\u7528\u5F15\u64CE\u7F3A\u7701\u6A21\u578B ${modelRef}`,
       { taskId: ctx.taskId }
     );
@@ -27897,7 +28615,7 @@ async function defaultProbeVersion2(cliPath) {
       );
     });
   } catch (err) {
-    logger28.debug(
+    logger29.debug(
       `[zcode-engine] probe version check failed (best-effort continue): ${toErrorMessage(err)}`
     );
     return void 0;
@@ -28014,10 +28732,10 @@ function parseEngineHandle(raw) {
 }
 
 // src/execution/engine/common/session-view-service.ts
-var import_node_crypto2 = require("crypto");
+var import_node_crypto3 = require("crypto");
 var import_node_os3 = require("os");
 var import_node_path7 = require("path");
-var logger29 = getLogger("subagents");
+var logger30 = getLogger("subagents");
 var DEFAULT_ENGINE_ID2 = "pi";
 function extractEngineId(record) {
   const engine = record.engine;
@@ -28042,13 +28760,13 @@ async function readZcodeNativeTier(handle, dataDir) {
   const dbPathRaw = handle.sessionRef["dbPath"];
   const sessionId = handle.sessionRef["sessionId"];
   if (typeof dbPathRaw !== "string" || typeof sessionId !== "string") {
-    logger29.debug("[session-view-service] zcode tier1 skipped: handle missing dbPath/sessionId");
+    logger30.debug("[session-view-service] zcode tier1 skipped: handle missing dbPath/sessionId");
     return void 0;
   }
   let dbPath;
   if (dbPathRaw.startsWith("/")) {
     if (dbPathRaw !== (0, import_node_path7.resolve)((0, import_node_os3.homedir)(), ...ZCODE_HOST_DB_SUFFIX)) {
-      logger29.warn(
+      logger30.warn(
         `[session-view-service] zcode absolute dbPath not host db, reject tier1: ${dbPathRaw}`
       );
       return void 0;
@@ -28058,14 +28776,14 @@ async function readZcodeNativeTier(handle, dataDir) {
     const poolDir = resolvePoolDir(dataDir, ZCODE_ENGINE_ID, handle.poolKey);
     dbPath = (0, import_node_path7.resolve)(poolDir, dbPathRaw);
     if (!isStrictlyUnder(poolDir, dbPath)) {
-      logger29.warn(`[session-view-service] zcode dbPath escapes pool dir, reject tier1: ${dbPath}`);
+      logger30.warn(`[session-view-service] zcode dbPath escapes pool dir, reject tier1: ${dbPath}`);
       return void 0;
     }
   }
   try {
     return await readZcodeSessionView(dbPath, sessionId);
   } catch (err) {
-    logger29.debug(
+    logger30.debug(
       `[session-view-service] zcode tier1 read failed, degrade to journal tier: ${toErrorMessage(err)}`
     );
     return void 0;
@@ -28074,18 +28792,18 @@ async function readZcodeNativeTier(handle, dataDir) {
 function readJournalTier(record, handle, dataDir) {
   const journalPath = handle.journalPath;
   if (journalPath === void 0) {
-    logger29.debug("[session-view-service] tier2 skipped: no journalPath in handle");
+    logger30.debug("[session-view-service] tier2 skipped: no journalPath in handle");
     return void 0;
   }
   if (!isStrictlyUnder(resolveEnginesRoot(dataDir), journalPath)) {
-    logger29.warn(
+    logger30.warn(
       `[session-view-service] journalPath escapes engines root, reject tier2: ${journalPath}`
     );
     return void 0;
   }
   const messages = replayEventsToHistory(replayJournal(journalPath), record);
   if (messages === void 0) {
-    logger29.debug(
+    logger30.debug(
       `[session-view-service] tier2 journal replay produced no content, degrade to outcome-only (path=${journalPath})`
     );
   }
@@ -28178,7 +28896,7 @@ function turnsToMessages(turns, record) {
   const messages = [];
   if (record.task.length > 0) {
     messages.push({
-      id: (0, import_node_crypto2.randomUUID)(),
+      id: (0, import_node_crypto3.randomUUID)(),
       role: "user",
       content: record.task,
       status: "complete",
@@ -28187,11 +28905,11 @@ function turnsToMessages(turns, record) {
   }
   for (const [i, turn] of turns.entries()) {
     messages.push({
-      id: (0, import_node_crypto2.randomUUID)(),
+      id: (0, import_node_crypto3.randomUUID)(),
       role: "assistant",
       content: turn.text,
       status: "complete",
-      ...turn.thinking.length > 0 ? { thinking: [{ id: (0, import_node_crypto2.randomUUID)(), content: turn.thinking, collapsed: true }] } : {},
+      ...turn.thinking.length > 0 ? { thinking: [{ id: (0, import_node_crypto3.randomUUID)(), content: turn.thinking, collapsed: true }] } : {},
       ...turn.toolCalls.length > 0 ? { toolCalls: turn.toolCalls.map((tc) => toHistoryToolCall(tc, base + i + 1)) } : {},
       ...turn.usage !== void 0 ? { usage: { inputTokens: turn.usage.input, outputTokens: turn.usage.output } } : {},
       timestamp: base + i + 1
@@ -28203,7 +28921,7 @@ function toHistoryToolCall(tc, ts) {
   const output = extractTextFromContent(tc.result?.content);
   const details = tc.result?.details;
   return {
-    id: (0, import_node_crypto2.randomUUID)(),
+    id: (0, import_node_crypto3.randomUUID)(),
     toolName: tc.toolName,
     input: tc.args ?? {},
     ...output !== void 0 ? { output } : {},
@@ -28231,7 +28949,7 @@ function outcomeOnlyMessages(record) {
   const messages = [];
   if (record.task.length > 0) {
     messages.push({
-      id: (0, import_node_crypto2.randomUUID)(),
+      id: (0, import_node_crypto3.randomUUID)(),
       role: "user",
       content: record.task,
       status: "complete",
@@ -28240,7 +28958,7 @@ function outcomeOnlyMessages(record) {
   }
   const isErrorOutcome = record.result === void 0 && record.error !== void 0;
   messages.push({
-    id: (0, import_node_crypto2.randomUUID)(),
+    id: (0, import_node_crypto3.randomUUID)(),
     role: "assistant",
     // result 优先（正常轮终文本）；error 次之（失败终态）；双缺占位（运行中被杀等）
     content: record.result ?? record.error ?? "(no outcome recorded)",
@@ -28255,14 +28973,14 @@ async function readSubagentHistoryMessages(record, dataDir) {
   if (engineId === DEFAULT_ENGINE_ID2) return [];
   const handle = parseEngineHandle(record.engineHandle);
   if (handle === void 0) {
-    logger29.debug(
+    logger30.debug(
       `[session-view-service] engine '${engineId}' record has no engineHandle, degrade to outcome-only (subagentId=${record.subagentId})`
     );
     return outcomeOnlyMessages(record);
   }
   const reader = lookupNativeSessionReader(engineId);
   if (reader === void 0) {
-    logger29.debug(
+    logger30.debug(
       `[session-view-service] engine '${engineId}' has no native reader tier, degrade to outcome-only (subagentId=${record.subagentId})`
     );
     return outcomeOnlyMessages(record);
@@ -28279,14 +28997,14 @@ function isStrictlyUnder(parent, child) {
 }
 
 // src/execution/agent-registry.ts
-var path17 = __toESM(require("path"), 1);
+var path18 = __toESM(require("path"), 1);
 
 // src/shared/resource-discovery.ts
 var fsSync2 = __toESM(require("fs"), 1);
 var import_promises2 = require("fs/promises");
 var import_node_os4 = require("os");
 var import_node_path8 = require("path");
-var logger30 = getLogger("subagents");
+var logger31 = getLogger("subagents");
 var shadowWarnDedup = /* @__PURE__ */ new Set();
 var MAX_SHADOW_WARN_DEDUP = 1024;
 var MACHINE_SOURCES = /* @__PURE__ */ new Set([
@@ -28609,7 +29327,7 @@ async function discoverResources(config) {
         const msg = `[resource-discovery] duplicate ${config.kind} "${key}" from ${r.source} shadows ${existing.source}`;
         const data = { shadowed: existing.path, kept: r.path };
         if (isMachineSource(existing.source) || isMachineSource(r.source)) {
-          logger30.debug(msg, data);
+          logger31.debug(msg, data);
         } else {
           const dedupKey = `${config.kind}|${key}|${existing.path}|${r.path}`;
           if (!shadowWarnDedup.has(dedupKey)) {
@@ -28617,7 +29335,7 @@ async function discoverResources(config) {
               shadowWarnDedup.clear();
             }
             shadowWarnDedup.add(dedupKey);
-            logger30.warn(msg, data);
+            logger31.warn(msg, data);
           }
         }
       }
@@ -29258,10 +29976,10 @@ function lintScript(source) {
 }
 
 // src/execution/agent-registry.ts
-var logger31 = getLogger("subagents");
+var logger32 = getLogger("subagents");
 var FM_DELIM = "---";
 function parseAgentWithMeta(filePath, content) {
-  const name = path17.basename(filePath, ".md");
+  const name = path18.basename(filePath, ".md");
   const fm = splitAgentFrontmatter(content);
   if (fm.kind === "none") {
     return { config: { name, systemPrompt: content.trim() }, meta: null };
@@ -29291,7 +30009,7 @@ function resolveLegacyRoutingFallbacks(agentMeta, yamlBlock, filePath) {
   const modelFallback = extractYamlField(yamlBlock, "model");
   const toolsFallback = parseCommaListFallback(extractYamlField(yamlBlock, "tools"));
   if (!agentMeta && /^model:|^tools:/m.test(yamlBlock)) {
-    logger31.warn(
+    logger32.warn(
       `[agent-registry] ${filePath}: agent frontmatter \u7F3A name/description\uFF08IF1 \u5FC5\u586B\uFF09\uFF0Cmodel/tools \u7ECF legacy fallback \u751F\u6548\uFF08\u76F4\u63A5\u8DEF\u5F84\u4E0D\u4E22\u914D\u7F6E\uFF09\uFF0C\u4F46\u7ED3\u6784\u5316\u8DEF\u7531\u4E0D\u53EF\u89C1\u2014\u2014\u8BF7\u8865\u5145 description`
     );
   }
@@ -29329,7 +30047,7 @@ function extractYamlField(yaml, key) {
   return value || void 0;
 }
 function parseAgentProfile(text, filePath) {
-  const stem3 = path17.basename(filePath, ".md");
+  const stem3 = path18.basename(filePath, ".md");
   const warnings = [];
   const fm = splitAgentFrontmatter(text);
   if (fm.kind === "none") {
@@ -29467,83 +30185,12 @@ var AgentRegistry = class {
     const { config, meta } = parseAgentWithMeta(filePath, file.content);
     const lintFindings = meta ? lintAgentMeta(meta) : [];
     for (const finding of lintFindings) {
-      logger31.warn(`[agent-registry] ${filePath}: ${finding.message}`);
+      logger32.warn(`[agent-registry] ${filePath}: ${finding.message}`);
     }
     this.fileCache.set(filePath, { mtimeMs: file.mtimeMs, config, meta });
     return config;
   }
 };
-
-// src/execution/config.ts
-var fs24 = __toESM(require("fs"), 1);
-var path18 = __toESM(require("path"), 1);
-var logger32 = getLogger("subagents");
-var DEFAULT_CONFIG = {
-  version: 1,
-  maxConcurrent: 6
-};
-var DEFAULT_MAX_CONCURRENT = 6;
-function getGlobalConfigPath(agentDir) {
-  return path18.join(agentDir, "subagents", "config.json");
-}
-function loadGlobalConfig(agentDir) {
-  try {
-    const raw = fs24.readFileSync(getGlobalConfigPath(agentDir), "utf-8");
-    const parsed = JSON.parse(raw);
-    return sanitizeParsedConfig(parsed);
-  } catch {
-    return { ...DEFAULT_CONFIG };
-  }
-}
-function readGlobalConfig(agentDir) {
-  const configPath = getGlobalConfigPath(agentDir);
-  let raw;
-  try {
-    raw = fs24.readFileSync(configPath, "utf-8");
-  } catch (err) {
-    if (errnoCodeOf(err) === "ENOENT") {
-      return { status: "absent", config: { ...DEFAULT_CONFIG } };
-    }
-    return readFailure(configPath, err);
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return { status: "ok", config: sanitizeParsedConfig(parsed) };
-  } catch (err) {
-    return readFailure(configPath, err);
-  }
-}
-function readFailure(configPath, err) {
-  const reason = err instanceof Error ? err.message : String(err);
-  logger32.warn(`[subagents] global config read failed (read-failure) at ${configPath}: ${reason}`);
-  return { status: "failed", reason };
-}
-function errnoCodeOf(err) {
-  if (typeof err !== "object" || err === null || !("code" in err)) return void 0;
-  const code = Reflect.get(err, "code");
-  return typeof code === "string" ? code : void 0;
-}
-function sanitizeParsedConfig(parsed) {
-  const defaultEngine = sanitizeDefaultEngine(parsed.defaultEngine);
-  const engineRouting = sanitizeEngineRouting(parsed.engineRouting);
-  return {
-    version: parsed.version ?? DEFAULT_CONFIG.version,
-    maxConcurrent: sanitizeMaxConcurrent(parsed.maxConcurrent),
-    ...defaultEngine !== void 0 ? { defaultEngine } : {},
-    ...engineRouting !== void 0 ? { engineRouting } : {}
-  };
-}
-function sanitizeMaxConcurrent(value) {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : DEFAULT_MAX_CONCURRENT;
-}
-function sanitizeDefaultEngine(value) {
-  return typeof value === "string" && value.trim() !== "" ? value : void 0;
-}
-function sanitizeEngineRouting(value) {
-  if (typeof value !== "object" || value === null) return void 0;
-  const strict = value.strict;
-  return typeof strict === "boolean" ? { strict } : void 0;
-}
 
 // src/execution/model-resolver.ts
 var MODEL_LIST_LIMIT2 = 20;
@@ -30494,6 +31141,12 @@ async function startHandler(service, input, signal, ctxModel) {
     `slug is required for action:'start' (top-level field, must not be whitespace-only). Correct: {"action":"start","task":"...","slug":"<kebab-case>"}`
   );
   if (slug.length > SLUG_MAX_LENGTH) throw new Error(`slug must be \u2264${SLUG_MAX_LENGTH} chars (got ${slug.length}). Shorten to a kebab-case label, e.g. "fix-login", "extract-urls".`);
+  const resolvedCollect = input.collect ?? service.getCollectSyncDefault();
+  if (input.conversation === true && resolvedCollect === "sync") {
+    throw new Error(
+      'collect:"sync" only supports one-shot subagents \u2014 it cannot be combined with conversation:true. Remove either conversation or collect (use collect:"async", or omit it, for conversational subagents).'
+    );
+  }
   const handle = await service.execute({
     task,
     slug,
@@ -30511,10 +31164,25 @@ async function startHandler(service, input, signal, ctxModel) {
     conversation: input.conversation,
     idleTimeoutMs: input.idleTimeoutMs,
     engine: input.engine,
+    // B1（code-simplify 审查发现的行为缺口）：config collectSync.default=sync 且调用方
+    // 省略 collect 时，record 本体也要落 sync（设计 §3.1.3「缺省 = config 默认」作用于
+    // record，而非仅回显）——createRecordForMode 只认 opts.collect==="sync"，原样透传
+    // input.collect 会让 record 走 async 逐条通知而响应声称已入批。仅 sync 落值：
+    // async/缺省路径传 undefined 语义（旧 record 零迁移）字节不变。
+    collect: resolvedCollect === "sync" ? "sync" : input.collect,
     ctxModel,
     signal
     // background detached 运行，完成由 notify 驱动新 turn。
   });
+  const response = {
+    status: "running",
+    mode: "background",
+    message: BG_MESSAGE,
+    notifyContract: NOTIFY_CONTRACT
+  };
+  if (resolvedCollect === "sync") {
+    response.collect = { mode: "sync", pendingSyncCount: countPendingSyncRecords(service) };
+  }
   return {
     kind: "bg",
     subagentId: handle.subagentId,
@@ -30522,13 +31190,15 @@ async function startHandler(service, input, signal, ctxModel) {
     slug: handle.details.slug,
     // registry 全等回显：record.model 由 resolved（裁决放行条目）拼接，原样透出。
     model: handle.details.model,
-    response: {
-      status: "running",
-      mode: "background",
-      message: BG_MESSAGE,
-      notifyContract: NOTIFY_CONTRACT
-    }
+    response
   };
+}
+function countPendingSyncRecords(service) {
+  let count = 0;
+  for (const r of service.queries.collectRecords(COLLECT_SCAN_LIMIT, "all")) {
+    if (r.collectMode === "sync" && r.batchFinalized !== true) count += 1;
+  }
+  return count;
 }
 function listHandler(service, input) {
   const includeFinished = input?.includeFinished === true;
@@ -34093,7 +34763,7 @@ function boundedPrettySerialize(value, budget) {
 }
 
 // src/index.ts
-var CORE_PACKAGE_VERSION = "0.5.1";
+var CORE_PACKAGE_VERSION = "0.6.0";
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   AGENT_REF_EXT,
