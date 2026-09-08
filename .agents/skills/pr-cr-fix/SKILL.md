@@ -195,6 +195,8 @@ xyz-agent 2026-08-23 [HISTORICAL] 教训：每次弹窗打断执行、多数是�
 
 - **待发版**（fix→patch / feat→minor / BREAKING→major，多插件逐个记）：PR body 写明
   「待发版插件 + 建议类型」，实际 bump 在合 main 后走 merge skill 阶段 5 / release.js
+  （建议类型只按本分支 diff 判定；merge 阶段 5 消费时若 tag 后多次合并积压，按全量
+  commits 重判 type）
 - **首次发版固定 0.0.1，不询问**：插件从未发布过 npm（无 `<plugin>@<version>` tag）时，
   首次发版版本一律 0.0.1——release.js 只支持 bump 不支持首 tag，首次发版走「三处版本
   统一改 0.0.1（check-sync 验证一致）+ 合 main 后手工 tag `<plugin>@0.0.1` 触发发布」，

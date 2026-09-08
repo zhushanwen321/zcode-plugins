@@ -109,9 +109,24 @@ gh run watch "$RUN_ID" --repo zhushanwen321/zcode-plugins --exit-status   # 必�
 
 FAIL 时：看 run 日志定位 → 修复需新分支重走 pr-cr-fix（main 已含坏提交时先告知用户决策，禁自动 revert main）。
 
-### 阶段 5: 发版决策 [OPTIONAL]
+### 阶段 5: 发版决策
 
-**默认不发版**。仅当用户指令明确要求发布、或本次合并含用户可感知的功能/修复且用户确认时执行：
+**跳过必须显式，禁止静默跳过**。判定输入 = PR body 的 3a.5 发版面分类 + 上个 tag
+之后的积压全量 commits（`git log "<plugin>@<last-tag>"..main --oneline -- <plugin>`；
+注意 `check-release-needed.js` 默认 base=main，合并完成后必报空，不能作为本阶段依据）：
+
+- PR body 记录「待发版 / pending release」、或合并含用户可感知的功能/修复 →
+  **[MANDATORY] 必须向用户摆出该记录并拿到明确决策（发/不发 + type），默认不发版
+  但不得静默跳过**。[HISTORICAL] 2026-09-07 PR #10/#11 连续两次 stage 5 被静默跳过，
+  2.1.0 之后 17 个 commit 积压未发版，PR body 明写「bump at merge stage」却无人消费，
+  用户次日追问才发现——合并指令「直接执行 merge skill 流程」不等于免问发版
+- PR body 记录「不发版」（纯文档/测试/零行为差重构）→ 直接跳过，无需询问
+- 无 3a.5 记录（PR 早于该机制）→ 按 diff 自行分类后按上两条处理
+- **type 复核**：PR body 的建议 type 只覆盖该 PR 自身 diff；tag 后有多次合并积压时
+  按全量 commits 重判（feat→minor / fix→patch / BREAKING→major，AGENTS.md 版本判定
+  准则——PR #10 建议 minor、PR #11 建议 patch，合并积压后终判 minor 即此例）
+
+用户确认发布后执行：
 
 ```bash
 cd $WS_ROOT/main && node scripts/release.js <plugin> <patch|minor|major>
@@ -173,7 +188,7 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 | 3 | PR 合并（2） | `gh pr merge --merge --delete-branch` |
 | 4 | main 同步（3） | `merge --ff-only origin/main` |
 | 5 | post-merge CI（4） | `gh run watch --exit-status` |
-| 6 | 发版决策（5，默认跳过） | `scripts/release.js` + tag |
+| 6 | 发版决策（5——PR body 有待发版记录必须问，禁静默跳） | `scripts/release.js` + tag |
 | 7 | dev-link 恢复 + 清理 worktree（6，终结） | status.sh 检测 → unlink-dev.sh → 删除后直接总结收尾 |
 
 ## 项目特化
