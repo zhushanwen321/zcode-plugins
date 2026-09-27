@@ -51,6 +51,29 @@
         "proxy",
         "progressive-disclosure"
       ]
+    },
+    {
+      "name": "z-reader-reminder",
+      "source": "./z-reader-reminder",
+      "version": "0.1.0",
+      "description": "Periodic readability reminder for zcode: a UserPromptSubmit hook counts user messages per session and injects a reminder every 3rd message, asking the assistant to ground new concepts (terms, mechanism names, IDs) with one-sentence background before use, tag bare IDs with plain labels, and follow the global AGENTS.md wording lexicon.",
+      "description_i18n": {
+        "en": "Periodic readability reminder for zcode: a UserPromptSubmit hook counts user messages per session and injects a reminder every 3rd message, asking the assistant to ground new concepts (terms, mechanism names, IDs) with one-sentence background before use, tag bare IDs with plain labels, and follow the global AGENTS.md wording lexicon.",
+        "zh-CN": "zcode 的周期性易读性提醒：UserPromptSubmit hook 按会话计数用户消息，每第 3 条注入一次提醒——要求对回复中本对话首次出现的概念（领域术语、机制名、编号、缩写）先用一句话铺垫背景再使用，编号带中文类型词不裸用，用语遵守全局 AGENTS.md 用语纪律词表。"
+      },
+      "author": {
+        "name": "zhushanwen",
+        "url": "https://github.com/zhushanwen321"
+      },
+      "category": "communication",
+      "keywords": [
+        "zcode",
+        "hooks",
+        "user-prompt-submit",
+        "readability",
+        "plain-language",
+        "reminder"
+      ]
     }
   ]
 }
