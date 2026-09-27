@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${ZCODE_PLUGIN_ROOT}/bin/zrr.js\" hook user-prompt-submit",
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/bin/zwr.js\" hook user-prompt-submit",
             "timeoutMs": 5000
           }
         ]

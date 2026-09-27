@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * z-reader-reminder CLI。
+ * z-words-reminder CLI。
  * 子命令：hook user-prompt-submit | status | reset
  * hook 子命令由 hooks/hooks.json 调用；status/reset 供人工调试。
  */
@@ -11,7 +11,7 @@ const { DATA_DIR, STATE_DIR, tick, reset } = require('../lib/counter');
 const { REMINDER_TEXT, EMPTY_OUTPUT, renderHookOutput } = require('../lib/reminder');
 
 const USAGE = [
-  '用法：zrr <command>',
+  '用法：zwr <command>',
   '',
   '  hook user-prompt-submit   UserPromptSubmit hook 入口（hooks.json 调用，勿手工使用）',
   '  status                    打印各会话计数',
@@ -19,7 +19,7 @@ const USAGE = [
 ].join('\n');
 
 // 其他插件 spawn 的无头 zcode 子会话没有真实用户输入，不注入也不计数
-const NESTED_ENV_KEYS = ['ZRR_NESTED', 'ZSW_NESTED', 'ZSUB_NESTED', 'TF_NESTED'];
+const NESTED_ENV_KEYS = ['ZWR_NESTED', 'ZSW_NESTED', 'ZSUB_NESTED', 'TF_NESTED'];
 
 function isNested() {
   return NESTED_ENV_KEYS.some((k) => process.env[k]);
@@ -38,7 +38,7 @@ function cmdHook() {
     return 0;
   } catch (err) {
     // 辅助功能降级：hook 永不阻断会话，错误落 stderr 供日志排查
-    process.stderr.write('[zrr] hook failed: ' + (err && err.stack ? err.stack : String(err)) + '\n');
+    process.stderr.write('[zwr] hook failed: ' + (err && err.stack ? err.stack : String(err)) + '\n');
     process.stdout.write(EMPTY_OUTPUT + '\n');
     return 0;
   }

@@ -1,7 +1,7 @@
 /**
  * 计数状态：按会话统计用户消息数，每 N 条命中一次注入轮。
  * 状态文件按会话分片存放在 state/ 下，写入时惰性清理超过保留期的旧文件。
- * ZRR_DATA_DIR 供测试注入隔离目录。
+ * ZWR_DATA_DIR 供测试注入隔离目录。
  */
 'use strict';
 
@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const DATA_DIR = process.env.ZRR_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-reader-reminder');
+const DATA_DIR = process.env.ZWR_DATA_DIR || path.join(os.homedir(), '.zcode', 'z-words-reminder');
 const STATE_DIR = path.join(DATA_DIR, 'state');
 const STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const EVERY = 3;

@@ -42,7 +42,7 @@ zcode-plugin-workspace/          # main 分支聚合形态
 |------|------|------|
 | `zsub` | 无头 subagent 生命周期管理 + 确定性多阶段 workflow，统一走 `zsw` CLI（2.0 起纯本地一次性进程，无常驻 daemon；执行引擎 = core zcode engine 单一 app-server 常驻 + 共享宿主 HOME） | 活跃（吸收了已归档的 dynamic-workflow，见其 README 迁移节） |
 | `z-tool-finder` | MCP 工具渐进式加载：per-server wrapper 中间人接管，工具清单常驻、详情与调用按需三跳代理，不改 server 源码一键还原 | 活跃（首发 0.0.1） |
-| `z-reader-reminder` | 周期性易读性提醒：UserPromptSubmit hook 按会话计数用户消息，每第 3 条注入一次「概念铺垫 + 编号带类型词 + 遵守用语词表」提醒，把沟通合规防线前移到生成前 | 活跃（首发 0.1.0） |
+| `z-words-reminder` | 周期性易读性提醒：UserPromptSubmit hook 按会话计数用户消息，每第 3 条注入一次「概念铺垫 + 编号带类型词 + 遵守用语词表」提醒，把沟通合规防线前移到生成前 | 活跃（首发 0.2.0） |
 
 ## 快速开始（本地开发）
 
