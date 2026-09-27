@@ -1,0 +1,20 @@
+{
+  "name": "@zhushanwen/z-reader-reminder",
+  "version": "0.1.0",
+  "description": "Periodic readability reminder for zcode: UserPromptSubmit hook injects a concept-grounding + lexicon reminder every 3rd user message.",
+  "type": "commonjs",
+  "license": "MIT",
+  "bin": { "zrr": "bin/zrr.js" },
+  "files": [
+    ".zcode-plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+    "hooks/",
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "keywords": ["zcode", "hooks", "user-prompt-submit", "readability", "plain-language", "reminder"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/zhushanwen321/zcode-plugins.git", "directory": "z-reader-reminder" },
+  "author": "zhushanwen (https://github.com/zhushanwen321)"
+}
