@@ -1,4 +1,4 @@
-# z-reader-reminder
+# z-words-reminder
 
 zcode 的周期性易读性提醒插件：`UserPromptSubmit` hook 按会话计数用户消息，每第 3 条注入一次提醒——要求助手对回复中本对话首次出现的概念先铺垫背景再使用、编号带中文类型词、用语遵守全局 AGENTS.md 词表。
 
@@ -9,9 +9,9 @@ zcode 的周期性易读性提醒插件：`UserPromptSubmit` hook 按会话计�
 ## 机制
 
 ```
-用户消息 → UserPromptSubmit hook（node bin/zrr.js hook user-prompt-submit）
-         → 嵌套防护（ZSW/ZSUB/TF/ZRR_NESTED 任一存在则跳过：无头子会话无真实用户输入）
-         → 会话计数 +1（状态文件 ~/.zcode/z-reader-reminder/state/<session-id>.json）
+用户消息 → UserPromptSubmit hook（node bin/zwr.js hook user-prompt-submit）
+         → 嵌套防护（ZSW/ZSUB/TF/ZWR_NESTED 任一存在则跳过：无头子会话无真实用户输入）
+         → 会话计数 +1（状态文件 ~/.zcode/z-words-reminder/state/<session-id>.json）
          → 计数 % 3 == 0 时输出 {"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext": 提醒文案}}
            否则输出 {}（空输出，会话照常）
 ```
@@ -27,7 +27,7 @@ marketplace（zcode-plugin-workspace）方式：
 
 ```
 zcode plugins update-marketplace zcode-plugin-workspace
-zcode plugins install z-reader-reminder@zcode-plugin-workspace
+zcode plugins install z-words-reminder@zcode-plugin-workspace
 ```
 
 安装后**重启 ZCode**（GUI 只在启动时扫描插件配置）。inline 本地开发注册见 `docs/extensions/local-dev-guide.md`。
@@ -35,9 +35,9 @@ zcode plugins install z-reader-reminder@zcode-plugin-workspace
 ## 调试
 
 ```
-ZRR_DATA_DIR=/tmp/zrr-debug node bin/zrr.js status   # 查看计数（指定隔离目录）
-node bin/zrr.js status                               # 查看真实数据目录计数
-node bin/zrr.js reset                                # 清空计数状态
+ZWR_DATA_DIR=/tmp/zwr-debug node bin/zwr.js status   # 查看计数（指定隔离目录）
+node bin/zwr.js status                               # 查看真实数据目录计数
+node bin/zwr.js reset                                # 清空计数状态
 ```
 
 hook 执行记录（触发/超时/失败）在 ZCode 日志中查看。
@@ -48,8 +48,8 @@ hook 执行记录（触发/超时/失败）在 ZCode 日志中查看。
 |------|------|----------|
 | 周期注入 | 新会话连发 3 条消息，第 3 条后观察助手回复 | 回复对新概念有一句话铺垫、编号带中文类型词；前 2 条无变化 |
 | 会话隔离 | 会话 A 发 2 条后切到会话 B 发 1 条 | 会话 B 不触发注入（独立计数） |
-| 计数落盘 | 发 1 条消息后跑 `node bin/zrr.js status` | 出现本会话 id 且 count=1 |
-| 不阻断 | 正常对话 | hook 异常时（可临时改坏 ZRR_DATA_DIR 权限验证）会话照常，仅 ZCode 日志有失败记录 |
+| 计数落盘 | 发 1 条消息后跑 `node bin/zwr.js status` | 出现本会话 id 且 count=1 |
+| 不阻断 | 正常对话 | hook 异常时（可临时改坏 ZWR_DATA_DIR 权限验证）会话照常，仅 ZCode 日志有失败记录 |
 
 ## 已知边界
 

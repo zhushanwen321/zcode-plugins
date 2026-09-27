@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const BIN = path.join(__dirname, '..', 'bin', 'zrr.js');
+const BIN = path.join(__dirname, '..', 'bin', 'zwr.js');
 
 function runHook(env, callback) {
   const child = execFile(
@@ -20,12 +20,12 @@ function runHook(env, callback) {
 }
 
 function tmpDataDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'zrr-hook-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'zwr-hook-'));
 }
 
 test('第 3 条用户消息输出注入 JSON，前两条与第 4 条输出空对象', (t, done) => {
   const dataDir = tmpDataDir();
-  const env = { ZRR_DATA_DIR: dataDir, CLAUDE_SESSION_ID: 'sess-e2e' };
+  const env = { ZWR_DATA_DIR: dataDir, CLAUDE_SESSION_ID: 'sess-e2e' };
   const outputs = [];
   const finish = () => {
     try {
@@ -58,7 +58,7 @@ test('第 3 条用户消息输出注入 JSON，前两条与第 4 条输出空对
 test('嵌套标记环境下不注入也不计数', (t, done) => {
   const dataDir = tmpDataDir();
   const env = {
-    ZRR_DATA_DIR: dataDir,
+    ZWR_DATA_DIR: dataDir,
     CLAUDE_SESSION_ID: 'sess-nested',
     ZSW_NESTED: '1',
   };
@@ -74,7 +74,7 @@ test('嵌套标记环境下不注入也不计数', (t, done) => {
 
 test('CLAUDE_SESSION_ID 缺失时降级为 default 键计数', (t, done) => {
   const dataDir = tmpDataDir();
-  const env = { ZRR_DATA_DIR: dataDir };
+  const env = { ZWR_DATA_DIR: dataDir };
   runHook(env, (err, stdout) => {
     assert.ifError(err);
     assert.strictEqual(stdout, '{}');

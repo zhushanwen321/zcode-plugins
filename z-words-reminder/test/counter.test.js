@@ -9,7 +9,7 @@ const path = require('path');
 const { sanitizeSessionId, tick } = require('../lib/counter');
 
 function tmpStateDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'zrr-counter-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'zwr-counter-'));
 }
 
 test('每第 3 条命中注入轮，其余不命中', () => {

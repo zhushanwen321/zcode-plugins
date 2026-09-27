@@ -1,6 +1,6 @@
 {
-  "name": "z-reader-reminder",
-  "version": "0.1.0",
+  "name": "z-words-reminder",
+  "version": "0.2.0",
   "description": "Periodic readability reminder for zcode: a UserPromptSubmit hook counts user messages per session and injects a reminder every 3rd message, asking the assistant to ground new concepts (terms, mechanism names, IDs) with one-sentence background before use, tag bare IDs with plain labels, and follow the global AGENTS.md wording lexicon.",
   "description_i18n": {
     "en": "Periodic readability reminder for zcode: a UserPromptSubmit hook counts user messages per session and injects a reminder every 3rd message, asking the assistant to ground new concepts (terms, mechanism names, IDs) with one-sentence background before use, tag bare IDs with plain labels, and follow the global AGENTS.md wording lexicon.",
