@@ -60,7 +60,7 @@
 | pi `workflow` / `workflow-script` | zsw `zsw workflow` | 对齐 |
 |-----------------------------------|--------------------|------|
 | run / status / abort | run / abort / status / list | 对上（pi 的 status 列 runs ≈ zsw list） |
-| workflow-script generate / save / delete | 无（agent 直接写四根目录的 .js + `lint` 校验） | 功能等价度较高（AI 写脚本闭环靠 skill 引导），管理面弱 |
+| workflow-script generate / save / delete | 无（agent 直接写四根目录的 .js + `lint` 校验） | 功能等价度较高（AI 写脚本全流程靠 skill 引导），管理面弱 |
 | workflow-script lint / list | lint / scripts | 对上 |
 | run 参数：tokens/time 预算 | 无 | 可对上（timeoutMs 已有；token 预算需 usage 采集） |
 | run 参数：model/thinkingLevel run 级覆盖 | `--model` 有；thinkingLevel 无 | 部分对上 |

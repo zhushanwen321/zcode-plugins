@@ -90,7 +90,7 @@ archive/硬删无协议通道只能直写 sqlite）。**
 
 ### 3.2 创建 session（必带提示词 + skill/文件）
 
-**为什么必须带提示词**【实测】：引擎是懒持久化——`session/create` 只建进程内记录不落库，
+**为什么必须带提示词**【实测】：引擎是懒持久化——`session/create` 只建进程内记录不写入数据库，
 首条 prompt 才触发 `ensureSessionPersisted` INSERT；且 host 有 `hasUserVisibleContent` 门控，
 无用户可见内容的会话不入侧边栏索引。「创建必带提示词」与引擎语义天然吻合。
 
@@ -99,7 +99,7 @@ archive/硬删无协议通道只能直写 sqlite）。**
 2. `{"id":"1","method":"session/create","params":{"sessionId":null,"workspace":{"workspaceKey":<sha256 前12位>,"workspacePath":<绝对路径>},"persistence":"immediate","mode":"build"}}`
    - 注意：create 会阻塞等待**服务端→客户端请求** `session/requestRuntimePreferences`
      （应答 `{"nativeSearchEnhancementsEnabled":false}` 即可；或回错误码 `-32601`，引擎有默认值兜底）
-3. `session/send {sessionId, content:<提示词>, attachments:[...]}` —— 这一步落库（session 行 + user message + parts）
+3. `session/send {sessionId, content:<提示词>, attachments:[...]}` —— 这一步写入数据库（session 行 + user message + parts）
 4. **补写 tasks-index**（否则侧边栏看不到，见 §4 已知风险）：按官方 restore 插件同款 upsert 写入
    task 行（title 取首条输入截 60 字符规则或自定义、provider:"glm"、meta_json 按 host schema hT 字段全集拼）
 
@@ -127,7 +127,7 @@ GUI 是**双写**【实测】：① tasks-index upsert `title + title_overridden
 
 MCP 推荐做法：
 - 最小实现：只直写两库——tasks-index `title+title_overridden=1`；db.sqlite `UPDATE session SET
-  title=?, title_source='custom', time_title_updated=now WHERE id=?`。两侧互斥守卫都会生效
+  title=?, title_source='custom', time_title_updated=now WHERE id=?`。两侧互斥检查都会生效
   （host applyAgentPatch 尊重 title_overridden；引擎自动标题 CAS 尊重 custom），不会被打回。
 - 保真实现：spawn app-server → `session/resume {sessionId}` → `v4/command renameSession` → 再补 tasks-index。
   成本高（resume 会物化整个会话进内存）；除非需要引擎事件流，不建议。
@@ -192,7 +192,7 @@ MCP 推荐做法：
 
 | # | 结论 | 级别 |
 |---|------|------|
-| 1 | 协议层 `session/create` + `session/send` 是死路：create 只建进程内记录，send 被接受但回合不执行、永不落库。**必须走 v4/command createSession 携带 firstInput** | 【实测】 |
+| 1 | 协议层 `session/create` + `session/send` 是死路：create 只建进程内记录，send 被接受但回合不执行、永不写入数据库。**必须走 v4/command createSession 携带 firstInput** | 【实测】 |
 | 2 | v4 `sendText` 发给未持久化会话报 FOREIGN KEY constraint failed——持久化挂在 v4 网关路径上 | 【实测】 |
 | 3 | apiKey 信封 `{source:'inline'}` 注入后认证失败（401）；env 变量回退可靠。curl 双形态验证 key 本身 x-api-key/Bearer 均有效，问题在引擎侧解析 | 【实测】 |
 | 4 | **侧边栏可见性：分组模式下回填索引行即时生效（无需重启）**；项目模式只渲染当前打开项目的任务（GUI 本身范围语义）。调研风险①解除 | 【实测】 |

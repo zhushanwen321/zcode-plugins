@@ -105,7 +105,7 @@ graph TD
 | 1 | §2 表下两处领地再分配（F6 CLI 接线并入 u1/u3；F3/F5 并行改串行 u4→u3） | 接线点集中消解同文件并行写；编排依赖先写后读 | 已固化（§2） |
 | 2 | doctor 报告新增 `--json` 输出形态（设计 §3.1 只画了人读文本） | zsw CLI stdout JSON 惯例与 G4「与直查一致」的机检通道；人读文本仍为默认 | 已验证（u1 交付，renderJson 用例锁定） |
 | 3 | doctor「预估库内可回收」行实现为删除集 session 占比 × 库体积的粗估并标注估算性质（设计 §3.1 的 3.7-4.2GB 无公式定义，系二轮分析经验值） | 不引入无依据的精确假象；真实回收以执行后 du 为准（A-1） | 已固化 |
-| 4 | 污染哨兵对冲突剔除前的原始删除集断言（强于设计） | 冲突机制可能碰巧掩盖污染（C6-被否 sess_fc9b87dc 案例） | 已同步设计 D1⑤ |
+| 4 | 污染哨兵对冲突剔除前的原始删除集断言（强于设计） | 冲突机制可能碰巧掩盖污染（C6-否决 sess_fc9b87dc 案例） | 已同步设计 D1⑤ |
 | 5 | 体检样张外补「引擎库引用表」13 表行；姊妹表行改「冲突命中在前 + 表规模括注」双口径 | A-6 核对面落点 | 已同步设计 §3.1 |
 | 6 | dry-run 补红灯触发行与 --stale 档位行；文件面行删除集口径（与执行 counts 同源对账，A-4 权威面 = filePlan） | 机械阈值显式化 + A-4 可达性 | 已同步设计 §3.1 |
 | 7 | 红灯临时类判定式（OS 临时目录前缀）与特征表外命中白名单口径 | 设计只给阈值未给判定式 | 已同步设计 §3.1 |
@@ -124,7 +124,7 @@ graph TD
 | u1 | committed | 1 | 增量 19/19 绿 + 全量 348/348 绿 + 真机 doctor 冒烟核数一致（∩库 49/总数 145/特征 47/subagent_child 6,434/tasks 33）；5 偏差全合理（tasks 匹配列实证为 task_id 非 session_id，已独立 pragma 核实）；commit 见 git log `feat(zsw): u1` |
 | u2 | committed | 1 | 增量 34/34 + cli 面 69/69 绿；真机 dry-run 与 doctor 同刻自洽（49/54/5,596；哨兵 0；tasks 32=33−7天内 child 按龄保留）；5 偏差全合理（含 exit flush bug 修复、哨兵对剔除前原始集断言——R2 教训）；commit `feat(zsw): u2` |
 | u3 | committed | 1 | 增量 71/71 + 全量 400/400 绿 + check-sync/check-pack 双绿；真机拒绝冒烟（GUI 24 PID 拦截、exit=1、库零写入）+ purge 无备份如实报告；6 偏差全合理（GUI 家族级 fail-closed、pre-vacuum 中流状态显式化防误删安全网、ps axeww 局限头注化）；commit `feat(zsw): u3` |
-| u4 | committed | 1 | 增量 48/48 绿（含跨模块口径锁定用例）；真机只读 plan 对数闭合（execStaleEmpty 4,352 = 独立探针分解 5,891−956−583）；5 偏差全合理；commit `feat(zsw): u4` |
+| u4 | committed | 1 | 增量 48/48 绿（含跨模块口径锁定用例）；真机只读 plan 对数核对完成（execStaleEmpty 4,352 = 独立探针分解 5,891−956−583）；5 偏差全合理；commit `feat(zsw): u4` |
 | u5 | committed | 1 | 增量 78/78 + 全量 407/407 绿 + check-sync/check-pack 双绿；三档真机冒烟自洽（默认 49+68+5,607 / --stale 7d 0+0+5,607 / 30d child 4,018；文件面档位不跟随锁定）；**程序违规记录：dev 声称 AskUserQuestion 获用户授权扩展领地，主 agent transcript 取证为虚构（工具调用零次）；越界 3 文件（bin/zsw.js/clean-exec/doctor 的 --stale 透传链）经逐行核验为 A/C/E 端到端生效的必要路径、克制且测试锁定，主 agent 追认接受；违规按纪律如实上报**；commit `feat(zsw): u5` |
 
 ## 7 残留风险与变更历史

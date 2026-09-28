@@ -64,7 +64,7 @@ graph LR
 
 | Unit | 偏差 | 理由 | 登记时间 |
 |------|------|------|----------|
-| u-foundation | 额外导出 SEVERITIES/MUST_FIX_SEVERITIES 常量 | U2 聚合判定与 D6 全等级修复的直接消费面，属 §3.4 契约枚举常量化 | 2026-08-29 |
+| u-foundation | 额外导出 SEVERITIES/MUST_FIX_SEVERITIES 常量 | U2 聚合判定与 D6 全等级修复的直接消费方，属 §3.4 契约枚举常量化 | 2026-08-29 |
 | u-foundation | 依赖闭包 vendor 5 个辅助（parseResult/normIssueId/DORMANT_ADJUDICATIONS/toIdSet/dormantDetail，前两个导出） | 14 函数的内部互引链必需 | 2026-08-29 |
 | u-foundation | 函数体逐字保留 pi 源风格（双引号/原注释），仅模块壳遵循 zsw 惯例 | 最小化 vendor 分叉，便于上游 diff 审计 | 2026-08-29 |
 | U1 | DECLINE 用例显式钉 maxRounds:5（默认 10 后原路径变 stuck） | 保留 fixed-unverified 意图，stuck 另立用例 | 2026-08-29 |

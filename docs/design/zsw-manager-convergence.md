@@ -11,9 +11,9 @@
 ## 届时要裁决的问题（种子清单，非结论）
 
 1. zsw record 四态模型（含 rounds 计数、notify 句柄语义）与 core running/closed 模型的归一方案。
-2. RecordStore（文件 JSON 台账）与 core FileRunStore（run-snapshot codec）合并或桥接形态。
+2. RecordStore（文件 JSON 记录）与 core FileRunStore（run-snapshot codec）合并或桥接形态。
 3. manager 壳在动作层内核（subagent-actions-core）消费后的剩余职责面与是否退役。
-4. workflow-state 目录（C13 prune 接线后）与 record 台账两套持久化是否收敛为单一状态源。
+4. workflow-state 目录（C13 prune 接线后）与 record 记录两套持久化是否收敛为单一状态源。
 
 ## 触发条件
 

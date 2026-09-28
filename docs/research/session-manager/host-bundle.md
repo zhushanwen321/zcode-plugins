@@ -64,12 +64,12 @@
 
 - **结论**：host `ZCodeTaskService.renameTask(params)`：
   1. `st(y,{title})`——内存 overlay 先行（乐观更新，`setOverlay`【实测】）；
-  2. `Qr(y,{title, updatedAt:Date.now(), titleOverridden:!0})` → `updateIndexedTaskState` → store `updateTaskState({patch})` → `writeRecord` upsert（title_overridden=1 落库）；
+  2. `Qr(y,{title, updatedAt:Date.now(), titleOverridden:!0})` → `updateIndexedTaskState` → store `updateTaskState({patch})` → `writeRecord` upsert（title_overridden=1 写入数据库）；
   3. **同步引擎**：`sendConversationCommandV4({envelope:{type:"renameSession",sessionId:y.taskId,payload:{title:y.title}}})`，失败仅告警（「同步 task rename 到 v4 session store 失败，保留…」），不回滚 sqlite。
   4. 广播 task 列表变更。
 - **自动标题与手动改名互斥**：
   - 引擎侧事件 `session_info_update`（title 由引擎生成）→ host `applyAgentPatch({patch:{title,...}})`；`applyAgentPatch` 内 `r = n.title_overridden !== 1; title: r && t.patch.title ? t.patch.title : o.title`——**title_overridden=1 时丢弃引擎标题**。
-  - `updateTaskState`（GUI 路径）不受此守卫：`title: t.patch.title ?? l.title`（GUI 改名显式带 titleOverridden:true）。
+  - `updateTaskState`（GUI 路径）不受此检查：`title: t.patch.title ?? l.title`（GUI 改名显式带 titleOverridden:true）。
   - 另有 `deriveTitleFromSnapshot`（索引缺失重建时从快照 title/首条用户消息推导标题）。
 - **锚点【实测】**（H）：`async renameTask`（2 处）、`type:"renameSession",sessionId:y.taskId`、`updateIndexedTaskState`、`applyAgentPatch`（3 处）、`titleGenerationEnabled:!1`、`session_info_update`（2 处）、`deriveTitleFromSnapshot`（2 处）、`setOverlay`。
 - **置信**：【实测】

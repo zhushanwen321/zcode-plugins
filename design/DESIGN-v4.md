@@ -177,15 +177,15 @@ $ node <pluginRoot>/bin/zsw.js wait --id sa-a1b2 --id sa-c3d4
 ### 6.1 D1 daemon 形态：保留 .mcp.json 注册，tools/list 恒空
 
 - **采用**：daemon 仍是 `.mcp.json` 注册的 MCP server 进程（引擎在会话启动时 spawn、会话关闭时 kill——生命周期管理白嫖），但 v1.0 起 `tools/list` 恒返回 `[]`，同时启动 unix socket 控制面。
-- **被否①**：完全脱离 MCP 自管 daemon（launchd/惰性 spawn）——要自己处理孤儿收养、崩溃恢复、多会话共享清理，重造引擎已提供的管理，短期成本高且长期是负担。
-- **被否②**：维持现状（MCP tools 暴露）——§3 三个失败模式的根因就是它，不解决。
+- **不采用的方案①**：完全脱离 MCP 自管 daemon（launchd/惰性 spawn）——要自己处理孤儿收养、崩溃恢复、多会话共享清理，重造引擎已提供的管理，短期成本高且长期是负担。
+- **不采用的方案②**：维持现状（MCP tools 暴露）——§3 三个失败模式的根因就是它，不解决。
 - **证据**：F4（零工具 MCP 进程是日常形态，嵌套模式天天在跑）；`bin/zsw.js:6` 头注已预留此方向（"bash 增强通道留位…TaskNotificationNotifier 的天然入口"）。
 - **效果**：G2（上下文）+ 为 D4 提供宿主。
 
 ### 6.2 D2 控制协议：unix socket + NDJSON，一比一映射现有 handler 表
 
 - **采用**：daemon 在 `~/.zcode/zsw/daemon.sock`（路径可用 `ZSW_SOCK` 覆盖，测试用）监听 unix domain socket；帧协议 NDJSON：请求 `{id, tool:"zsub"|"zflow", params:{action,…}}`，响应 `{id, ok:true, result}|{id, ok:false, error:{code,message}}`。**协议面直接复用 `buildToolHandlers()` 的 handler 表**——handler 签名 `(params, ctx)→result`，socket 分发器按 `tool` 查表后以 `{cwd: process.cwd()}` 构造 ctx 调用（ctx.targetSessionId 恒 undefined：socket 面无会话定向语义，见 D6），编排内核零改动。
-- **被否**：HTTP/localhost 端口（端口占用冲突、防火箱弹窗、无鉴权暴露面更大）；文件队列轮询（延迟、清理复杂）。
+- **不采用的方案**：HTTP/localhost 端口（端口占用冲突、防火箱弹窗、无鉴权暴露面更大）；文件队列轮询（延迟、清理复杂）。
 - **证据**：`dist/mcp/server.js:21` 起 handler 注册表形态（M3 接线）——工具注册与业务逻辑本就解耦。
 - **效果**：G3（能力无损的成本最小化）；实现量集中在传输层薄壳。
 - 安全边界：socket 文件权限 0600（仅本用户）；CLI 校验 daemon 归属（sock 同目录写 daemon.pid，connect 后比对）——防同机其他用户场景下的误连（macOS 单用户场景为主，防御从简但留桩）。
@@ -197,29 +197,29 @@ $ node <pluginRoot>/bin/zsw.js wait --id sa-a1b2 --id sa-c3d4
   2. **接管（看门狗事件驱动，零轮询）**：空转实例的看门狗连接对端 close（daemon 进程死亡，unix socket 的内核行为）即触发重新竞选——先 `unlink` 自己锁不住的锁文件与残留 sock（此时持有者已死，安全），再走第 1 步。多空转实例同时被唤醒时由锁文件 `O_EXCL` 再度原子裁决，落选者重挂看门狗。
   3. **退出卫生**：daemon 收 SIGTERM/SIGINT 时先 unlink sock 与 lock 再退出——正常死亡不留残留；异常死亡由看门狗路径清理。引擎 kill MCP server 的粒度（kill pid vs 进程组，是否波及 runner 子进程）列为 V4 同批实测。
   接管时跑 `recover()`：record 重建 + 探活，orphan/dead 标记与重发指引为现有逻辑。
-- **被否①**：纯 bind 竞争（无锁文件）——bind/unlink 双检存在窗口：实例 3 bind 成功但未及 listen 时，实例 2 connect 得 ECONNREFUSED 误判残留而 unlink 其 sock，产生监听无路径的幽灵 daemon，与后续 bind 者并存导致任务静默分裂。锁文件 `O_EXCL` 是单 syscall 原子裁决，无窗口。
-- **被否②**：每会话独立 daemon + socket 按会话寻址——CLI 无法得知「当前会话」对应哪个 sock，且并发限流/任务互见语义割裂。
-- **被否③**：独立 daemon 进程（launchd/惰性 spawn）——脱离引擎生命周期管理，孤儿收养/崩溃恢复自建，重造引擎已提供的能力。
+- **不采用的方案①**：纯 bind 竞争（无锁文件）——bind/unlink 双检存在窗口：实例 3 bind 成功但未及 listen 时，实例 2 connect 得 ECONNREFUSED 误判残留而 unlink 其 sock，产生监听无路径的幽灵 daemon，与后续 bind 者并存导致任务静默分裂。锁文件 `O_EXCL` 是单 syscall 原子裁决，无窗口。
+- **不采用的方案②**：每会话独立 daemon + socket 按会话寻址——CLI 无法得知「当前会话」对应哪个 sock，且并发限流/任务互见语义割裂。
+- **不采用的方案③**：独立 daemon 进程（launchd/惰性 spawn）——脱离引擎生命周期管理，孤儿收养/崩溃恢复自建，重造引擎已提供的能力。
 - **证据**：`lib/manager.js:374` recover 已处理「server 重启丢失句柄」的探活与 orphan/dead 标记；record append-only 落盘使接管可见历史；unix socket 对端进程死亡时内核关闭连接（`ECONNRESET`/close 事件）是 POSIX 保证。
 - **效果**：G4——daemon 死亡后由仍存活的空转实例**事件驱动接管**（不依赖新会话启动）。代价如实声明：**daemon 所在会话关闭 = 其持有执行体的任务死亡**（runner 是 daemon 子进程，record 已落盘，接管实例 recover 后标 orphan/dead 给出重发指引，不静默）；并发定义域变更见 G3。
 
 ### 6.4 D4 wait：daemon 内存挂起，零轮询
 
 - **采用**：新增 `wait` 命令（daemon 侧新 handler）：对给定 id 集合，终态者立即回，运行中者 `await manager.pending.get(id)`（执行体 promise，`bin/zsw.js:320` 已有同款消费先例）——全部终态后回包 `{results:[{id,status,outputFile,…}]}`。支持 `--timeout-ms`（到点回 partial + 各自状态，exit 2）。CLI 侧即阻塞进程——配 `run_in_background` 后整条链路进 F2。
-- **被否①**：wait 实现为 CLI 侧 sleep+status 轮询——把模式 A 的 sleep 从 agent 搬进 CLI 进程，看似眼不见为净，实则每个等待都烧轮询、且有通知延迟（轮询间隔）；daemon 挂起是事件驱动，语义干净。
-- **被否②**：`start` 一律同步等完（不提供异步形态）——丢失「先干别的」的异步价值（G3）。
+- **不采用的方案①**：wait 实现为 CLI 侧 sleep+status 轮询——把模式 A 的 sleep 从 agent 搬进 CLI 进程，看似眼不见为净，实则每个等待都烧轮询、且有通知延迟（轮询间隔）；daemon 挂起是事件驱动，语义干净。
+- **不采用的方案②**：`start` 一律同步等完（不提供异步形态）——丢失「先干别的」的异步价值（G3）。
 - **效果**：G1 的核心机制。`start --wait` 提供 sugar（start+wait 原子，省一次工具调用），`wait` 独立命令服务「异步后再等」和多 id 聚合。
 
 ### 6.5 D5 CLI 双模式：socket 优先，`--local` 显式降级
 
 - **采用**：CLI 默认 thin client（connect daemon）；`--local` flag 显式走现状的本地组装执行（人类调试/无引擎环境）。**daemon 不在场时默认报错并给指引，不静默降级**——静默降级会制造「以为在用 daemon，实际独立执行体」的语义漂移（正是模式 C 的坑）。
-- **被否**：CLI 只保留 thin client——黑盒子进程测试（`test/cli.test.js`，子进程形态、不跑真引擎）与人类调试/无引擎环境需要本地形态，一刀切丢失既有测试基建与 AGENTS.md「CLI 直跑（不经 MCP）」用法。
+- **不采用的方案**：CLI 只保留 thin client——黑盒子进程测试（`test/cli.test.js`，子进程形态、不跑真引擎）与人类调试/无引擎环境需要本地形态，一刀切丢失既有测试基建与 AGENTS.md「CLI 直跑（不经 MCP）」用法。
 - **效果**：G3/G4；迁移期双模式并存，长期 `--local` 保留为调试后门。
 
 ### 6.6 D6 通知策略：原生 notification 为主，mailbox 降级 legacy
 
 - **采用**：完成通知不再依赖 mailbox（daemon 的 notifyCompletion 路径保留但非主路径）；等待一律走 wait+background bash（F2）。MCP tools 摘除后 `_meta` 通道（targetSessionId 提取）随之消失——socket 面任务**天然无 mailbox 定向**（ctx.targetSessionId 恒 undefined，notifyCompletion 按 `notifier-mailbox.js:96` 的 target 缺失分支静默跳过投递），这是预期行为而非缺陷：等待一律走 wait，notification 由 CLI 进程的归属会话天然确定，这正是架构的妙处。
-- **被否**：继续投入 mailbox 档（推动用户配 `ZCODE_MESSAGE_ENABLED`）——F1 证明它最多做到「下次活动注入」，idle 唤醒物理不可达；且依赖用户级 env 配置，脆弱。
+- **不采用的方案**：继续投入 mailbox 档（推动用户配 `ZCODE_MESSAGE_ENABLED`）——F1 证明它最多做到「下次活动注入」，idle 唤醒物理不可达；且依赖用户级 env 配置，脆弱。
 - **效果**：G1 不依赖任何环境开关（对比：mailbox 需 `launchctl setenv` + 重启）；mailbox 代码保留做 legacy 兼容（存量 0.0.1 用户过渡期 MCP 面还在时仍有用）。
 
 ### 6.7 D7 版本与摘除节奏：0.2.0 纯增量，1.0.0 翻默认 + 摘工具
@@ -227,8 +227,8 @@ $ node <pluginRoot>/bin/zsw.js wait --id sa-a1b2 --id sa-c3d4
 - **采用**：两个台阶，CLI 默认行为的翻转只发生在 major。
   - **0.2.0（minor，纯增量）**：daemon socket + 单例竞选 + wait + `start --wait` 落地；CLI **新增** thin client 模式但**默认仍是本地执行**（`--daemon` flag 显式启用 thin client）；MCP tools 保留；skill 指引新增 daemon 用法（注明需 `--daemon`）。
   - **1.0.0（major）**：CLI 默认翻转为 thin client（`--local` 显式回退，见 D5）+ `tools/list` 恒空（D1 终态）+ AGENTS.md 一行指引成为唯一入口。
-- **被否①**：0.2.0 即翻 CLI 默认——存量 CLI 用法/脚本从「能跑」变「daemon 缺席报错」，按项目版本准则（major = CLI 参数不兼容）这是 minor 内不允许的行为变更。
-- **被否②**：一步到位 1.0——沙箱（V1）、GUI 零工具容忍（V2）两个未实测点直接压在 breaking change 上，风险集中。
+- **不采用的方案①**：0.2.0 即翻 CLI 默认——存量 CLI 用法/脚本从「能跑」变「daemon 缺席报错」，按项目版本准则（major = CLI 参数不兼容）这是 minor 内不允许的行为变更。
+- **不采用的方案②**：一步到位 1.0——沙箱（V1）、GUI 零工具容忍（V2）两个未实测点直接压在 breaking change 上，风险集中。
 - **证据**：项目发布规范（AGENTS.md npm 发布节：major 准则含「CLI 参数不兼容」；minor 准则含「新增 CLI 子命令」——0.2.0 的 `wait` 子命令与 `--daemon` flag 均为增量）。
 - **效果**：G1 在 0.2.0 经 `--daemon` 路径可用并可真机验收；G2 在 1.0.0 达成；每个 minor 都可独立回退。
 
@@ -240,7 +240,7 @@ $ node <pluginRoot>/bin/zsw.js wait --id sa-a1b2 --id sa-c3d4
 | B. 维持 MCP tools + 信使脚本（wait-for.js 读盘轮询 + bg bash） | 不动架构但留着三入口割裂；信使轮询本质未除 | 低 | 指引层两套（MCP 描述 + 信使用法），终态作废时模型习惯教两遍 | ❌ |
 | C. 纯 CLI 独立执行体（现状 CLI 扩用） | 无 daemon：异步/续聊/限流全丢（模式 C） | 低 | conversation 死路；无上限并发 | ❌ |
 
-**被否若用 B**：§5.1 的例子变成「agent start（MCP）→ 另起信使脚本 bg → 信使每 5s 读盘 → 完成后 agent 醒来」——能跑，但异步任务仍走 MCP 面（description 2.1KB 还在），等待与信使的用法指引叠加在已有矛盾文案上，且轮询延迟/开销只是被藏进脚本；0.2.0 落地后这套指引整体作废，agent 行为习惯要再教一遍。
+**B 不采用的理由**：§5.1 的例子变成「agent start（MCP）→ 另起信使脚本 bg → 信使每 5s 读盘 → 完成后 agent 醒来」——能跑，但异步任务仍走 MCP 面（description 2.1KB 还在），等待与信使的用法指引叠加在已有矛盾文案上，且轮询延迟/开销只是被藏进脚本；0.2.0 落地后这套指引整体作废，agent 行为习惯要再教一遍。
 
 ## 7. 实现机制
 

@@ -73,7 +73,7 @@
 - **注册 API 8 类**：`registerTool`（含系统提示注入、自定义渲染、可覆盖内置工具）、`registerCommand`（slash 命令 + 补全；同名冲突全保留加数字后缀）、`registerShortcut`、`registerFlag`、`registerProvider`/`unregisterProvider`（动态 provider + OAuth + 自定义流式）、`registerMessageRenderer`/`registerEntryRenderer`（TUI 渲染）。
 - **命令式 API**：`sendMessage`（steer/followUp/nextTurn）、`appendEntry`（持久化且不进 LLM 上下文）、`exec`、`setActiveTools`（动态工具按需加载）、`setModel`、`pi.events`（extension 间事件总线）等。
 - **ctx 能力**：`ctx.ui` 全家（select/confirm/input/editor/notify/setStatus/setWidget/custom 全屏组件）、`ctx.sessionManager`（getEntries/getBranch）、`ctx.compact`、`ctx.getContextUsage` 等。
-- **四种运行模式**：`tui` / `rpc`（stdin/stdout JSONL）/ `json`（事件流 stdout）/ `print`；守卫规则 `ctx.mode === "tui"` 与 `ctx.hasUI`。
+- **四种运行模式**：`tui` / `rpc`（stdin/stdout JSONL）/ `json`（事件流 stdout）/ `print`；检查规则 `ctx.mode === "tui"` 与 `ctx.hasUI`。
 
 ### 2.2 声明式资源与加载（pi 原生）
 

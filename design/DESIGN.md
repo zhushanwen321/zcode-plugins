@@ -23,7 +23,7 @@
 
 **zcode**（目标平台）：Z.AI 的桌面 AI coding 应用（Electron，闭源，v3.8.1）。插件形态 = 本地目录 + `.zcode-plugin/plugin.json` 清单 + `.mcp.json` 声明 MCP server（stdio）。插件能获得的能力面：MCP tools（被动响应）、hooks（7 事件进程回调）、agent/skill/command 的 md 注册。**没有**插件 UI 扩展点、没有 sampling/createMessage（MCP server 无法主动发起 LLM 交互）。
 
-**dynamic-workflow**（前序工作，`feat-zcode-workflow-plugin` worktree，commit c1443d6）：已移植 pi 的 5 个 workflow（chain/parallel/map-reduce/scatter-gather/review-fix-loop），沉淀了三项可复用基建：`driver.js`（无头 zcode 进程驱动 + 隔离 HOME）、`jsonout.js`（三级容错 JSON 提取）、`pool.js`（并发池）。
+**dynamic-workflow**（前序工作，`feat-zcode-workflow-plugin` worktree，commit c1443d6）：已移植 pi 的 5 个 workflow（chain/parallel/map-reduce/scatter-gather/review-fix-loop），记录了三项可复用基建：`driver.js`（无头 zcode 进程驱动 + 隔离 HOME）、`jsonout.js`（三级容错 JSON 提取）、`pool.js`（并发池）。
 
 ### 设计目标
 
@@ -161,7 +161,7 @@ zcode 引擎的 subagent 能力是**宿主进程私有**的（与 pi 的 extensi
 
 - **长期**：中。与 pi「一个包两个 tool」结构对齐；但 dynamic-workflow 定位是编排，混入生命周期管理后职责膨胀；未来想单独复用 subagent 层必须再拆。
 - **短期**：低。共享 lib 零成本，安装零变更。
-- **风险**：已有插件的回归面扩大（0.2.0 已稳定运行）；单 server 进程崩溃影响两 tool。
+- **风险**：已有插件的回归测试扩大（0.2.0 已稳定运行）；单 server 进程崩溃影响两 tool。
 - **若选 B**：§3.1 交互样例不变，仅 tool 名变为 `mcp__dynamic-workflow__subagent`。
 
 #### 方案 C：纯 agent .md 增强，不写 MCP
@@ -177,14 +177,14 @@ zcode 引擎的 subagent 能力是**宿主进程私有**的（与 pi 的 extensi
 ### 3.3 关键决策与权衡
 
 **D1 进程模型：无头单轮进程 + `--resume` 续聊**（对齐 pi 的 spawn 模型）
-- 被否：`app-server` 长连接（help 里的 `zcode app-server` 是 stdio 双向协议，可能支持长驻会话——但完全无文档、协议 schema 未逆向，赌博成分高）。
+- 不采用：`app-server` 长连接（help 里的 `zcode app-server` 是 stdio 双向协议，可能支持长驻会话——但完全无文档、协议 schema 未逆向，赌博成分高）。
 - 证据：B1/B2；pi 侧 session-runner.ts:650 同为 spawn 模型。
 - 探针：✅ 已测（driver.js 生产 + resume e2e）。
 - 代价：conversation 每轮重启进程（~1-2s 模块加载），密集续聊场景累积开销。文档中如实标注，引导主 agent 用「一次性大 task」为主。
 
 **D2 通知：Session Mailbox 文件直投**（G3 主通道）
-- 被否 ①：原生后台 Bash 通知（B8）——依赖主 agent 配合执行 watcher 命令（LLM 行为不可控）+ 通知文本由引擎拼装（可控性弱）。保留为 fallback 文档建议。
-- 被否 ②：MCP 推送（B7 不存在）。
+- 不采用的方案 ①：原生后台 Bash 通知（B8）——依赖主 agent 配合执行 watcher 命令（LLM 行为不可控）+ 通知文本由引擎拼装（可控性弱）。保留为 fallback 文档建议。
+- 不采用的方案 ②：MCP 推送（B7 不存在）。
 - **投递语义（多会话/时序，v2 补）**：不采用单值 last-session 文件——hook 在 tool call 完成后才触发，start 调用中读到的是旧值，且多窗口并发时互相覆盖会错投。改为 hook 维护「**近期活跃会话表**」`~/.zcode/zsub/active-sessions.json`（N≤8 个 `{sessionId, projectDir, lastSeen}`，原子写 tmp+rename，损坏时丢弃重写）；server 在 start(bg) 时刻快照「与当前 cwd 匹配的最近活跃会话」存入 record，完成时投给该会话；无匹配（如会话首个 tool call 即 start）时投给全部活跃会话并标注。错投后果有限：通知仅含结果摘要与 outputs 路径，非敏感数据。
 - **原子写硬规范（v2 补，对抗审查 MUST_FIX-2）**：引擎 drain 遇坏 envelope 会中断且坏文件永久阻塞后续消息（B5）。因此投递必须：①写 `*.tmp` 后 `rename` 原子落位；②envelope 六字段写前自检（全 string + version===1）；③msg 文件名用单调前缀 `<epochMs>-<seq>-<id>.json` 保证字典序=时间序（drain 取前 20 条的顺序语义）；④ server 启动时扫描 unread/ 中己方残留的 `*.tmp` 并清除。
 - **通知文案承诺**（v2 补，吸取 pi [MF#1] 教训）：worktree=true 的完成通知必须含 `patchFile 路径 + git apply 指引`，否则隔离改动会静默丢失（pi 曾踩过此坑）。
@@ -195,7 +195,7 @@ zcode 引擎的 subagent 能力是**宿主进程私有**的（与 pi 的 extensi
 
 **D3 model 路由：per-model 隔离 HOME 池**
 - `~/.zcode/zsub/home-<modelShort>/` 目录池，每个池内 `cli/config.json` 写 `model.main = <providerId>/<model>`（B4）。
-- 被否：单 HOME 每次调用重写 config——并发场景下 A 任务写 GLM-5.3、B 任务写 Flash 会互相踩（竞态）。
+- 不采用：单 HOME 每次调用重写 config——并发场景下 A 任务写 GLM-5.3、B 任务写 Flash 会互相踩（竞态）。
 - **同 model 并发防护（v2 补，对抗审查 S-5）**：per-model 池内 config 写入同样需 tmp+rename 原子写 + 进程内 per-model 互斥锁；进一步降频：仅在池目录首次创建或 apiKey 引用变更（源 v2 config mtime 变化）时重写，其余情况复用——生产先例（driver.js）为每个 workflow 入口写一次，从不并发重写，zsub 的 per-start 写入是新模式，需此防护。
 - 解析顺序对齐 pi：`start.model 参数 > agent.md frontmatter.model > 主模型默认（= v2 config 的 model.main）`。模型清单从 `~/.zcode/v2/config.json` provider 条目读取并校验。
 - 探针：✅ 已测（driver.js 的 resolveModelRef 同款机制生产在用）。

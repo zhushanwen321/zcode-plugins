@@ -16,7 +16,7 @@
 
 ## 1 目标快照（逐字摘录）
 
-> **一句话结论**：把 zsw 的默认执行通道从「每轮 spawn 一个 zcode CLI 进程」翻转为「常驻 app-server（apc 协议）引擎」——与 ZCode GUI 底层同一架构；以「默认翻转 + 显式回退开关 + probe 降级链保留」控制风险，分四阶段交付（前置收口 → 默认翻转 → 能力增量 → 可选 workflow 接入），恢复序与协议漂移检测是两个硬前置。
+> **一句话结论**：把 zsw 的默认执行通道从「每轮 spawn 一个 zcode CLI 进程」翻转为「常驻 app-server（apc 协议）引擎」——与 ZCode GUI 底层同一架构；以「默认翻转 + 显式回退开关 + probe 降级链保留」控制风险，分四阶段交付（前置收敛 → 默认翻转 → 能力增量 → 可选 workflow 接入），恢复序与协议漂移检测是两个硬前置。
 
 设计目标：
 
@@ -30,7 +30,7 @@
 | G6 | 回退与可观测：`ZSW_RUNNER=spawn` 显式回退旧路径；probe 失败自动降级；每个任务如实标注实际通道 | 降级日志 + record.runnerKind 与实际一致 |
 
 **In**：默认翻转与回退开关；恢复序；漂移检测与冒烟；thinking/工具限制/遥测接线；测试与文档翻转；发版判定。
-**Out**：workflow 线接入 runner 端口（独立后续设计）；GUI 层重写 / v4 订阅面逆向；共享主 HOME（三次被否）；`session/setThoughtLevel` RPC 的任何使用。
+**Out**：workflow 线接入 runner 端口（独立后续设计）；GUI 层重写 / v4 订阅面逆向；共享主 HOME（三次不采用）；`session/setThoughtLevel` RPC 的任何使用。
 
 ## 2 单元列表
 
@@ -39,10 +39,10 @@ u-foundation 缺席说明：本项目 plain Node CJS 无跨单元共享类型/�
 | Unit | 职责 | 领地（精确文件路径，均相对 `z-subagent-workflow/`） | 依赖 | 隔离 | 验收条款 |
 |------|------|------|------|------|------|
 | F0 | TP-1 真机探针（场景矩阵 A 驱逐/B 崩溃/C 多会话 + 四条排查候选），产出恢复序分支判定结论 | `test/e2e-tp1-recovery.test.js`（新增，e2e 前缀使 CI 天然排除） | 无 | plain | 脚本真机可重复执行；结论明确回答：驱逐线是否触发 restoreWarning、四条清除候选（send runtimeModel / create runtimeModel / updateRuntimeModelConfig / registry 等待）哪条可用；C 线给出多会话 -32031 连坐观察数据。结论写入脚本头注 + 本计划状态表证据指针，并据此判定 D2 双分支（全自愈 vs 驱逐自愈+崩溃诚实报错） |
-| F1 | 协议漂移分类 protocol-drift + 升级冒烟脚本（probe 扩面）；A2/A4 假设收口 | `lib/runner-appserver.js`、`test/appserver.test.js`、`test/e2e.test.js` | 无 | plain | 单测：fake server 返回 -32601/-32602 时错误分类为 protocol-drift、record 与 stderr 双落点、错误信息含冒烟命令与 `ZSW_RUNNER=spawn` 回退指引；冒烟脚本（create + send 极小任务 + sessionId 路径/turn.terminal/response 非空/toolDenylist 参数面断言——行为面归 A-6，见偏差登记表检查点 2 裁决）本地手动跑通；对应设计 A-7 |
-| F2 | -32004 四步恢复序，**① 固化为 `session/resume {sessionId, runtimeModel}`（F0 实证最优：warning 根本不设置，驱逐/崩溃两类通吃；每次无条件携带——接种效应不可依赖，runtimeModel 构造器复用 F0 归档的 `buildRuntimeModel()`；registry 等待线已证伪删除）**；② 重挂订阅 ③ 重试 send ④ timeoutMs 窗口判据 + stop 清场 + 分支 B 兜底；runner 级恢复互斥（F0 C 线：串行化不解 -32031、防风暴面）；引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`；create 显式化（persistence:immediate）；遥测 env；idle TTL 常量删除 | `lib/runner-appserver.js`、`lib/config.js`、`test/appserver.test.js` | F0（恢复序分支结论） | plain | 单测（fake server 驱动）：-32004→resume{runtimeModel}→重挂 subscribe→重试 send 链路、④ 超时→stop→分支 B、恢复互斥串行化、订阅重挂（缺则终态不达）均覆盖；create 携带 persistence:"immediate"；子进程 env 含 `ZCODE_MODEL_TELEMETRY_ENABLED=false`；stderr 实时写 `~/.zcode/zsw/logs/`；`lib/config.js:78` idleConversationTtlMs 删除且全仓 grep 无引用；对应设计 A-2a/A-2b 的单测面 |
+| F1 | 协议漂移分类 protocol-drift + 升级冒烟脚本（probe 扩面）；A2/A4 假设收敛 | `lib/runner-appserver.js`、`test/appserver.test.js`、`test/e2e.test.js` | 无 | plain | 单测：fake server 返回 -32601/-32602 时错误分类为 protocol-drift、record 与 stderr 双落点、错误信息含冒烟命令与 `ZSW_RUNNER=spawn` 回退指引；冒烟脚本（create + send 极小任务 + sessionId 路径/turn.terminal/response 非空/toolDenylist 参数面断言——行为面归 A-6，见偏差登记表检查点 2 裁决）本地手动跑通；对应设计 A-7 |
+| F2 | -32004 四步恢复序，**① 固化为 `session/resume {sessionId, runtimeModel}`（F0 实证最优：warning 根本不设置，驱逐/崩溃两类通吃；每次无条件携带——接种效应不可依赖，runtimeModel 构造器复用 F0 归档的 `buildRuntimeModel()`；registry 等待线已证伪删除）**；② 重挂订阅 ③ 重试 send ④ timeoutMs 窗口判据 + stop 清场 + 分支 B 兜底；runner 级恢复互斥（F0 C 线：串行化不解 -32031、防风暴面）；引擎 stderr 实时落盘 `~/.zcode/zsw/logs/`；create 显式化（persistence:immediate）；遥测 env；idle TTL 常量删除 | `lib/runner-appserver.js`、`lib/config.js`、`test/appserver.test.js` | F0（恢复序分支结论） | plain | 单测（fake server 驱动）：-32004→resume{runtimeModel}→重挂 subscribe→重试 send 链路、④ 超时→stop→分支 B、恢复互斥串行化、订阅重挂（缺则终态不达）均覆盖；create 携带 persistence:"immediate"；子进程 env 含 `ZCODE_MODEL_TELEMETRY_ENABLED=false`；stderr 实时写 `~/.zcode/zsw/logs/`；`lib/config.js:78` idleConversationTtlMs 删除且全仓 grep 无引用；对应设计 A-2a/A-2b 的单测清单 |
 | F3 | 默认翻转 + 显式回退 + probe 落盘缓存（含命中后首败失效重探）+ 测试/文档翻转；**README:103 idleConversationTtlMs 残留引用删除（F2 移交）** | `lib/assemble.js`、`lib/ports.js`、`test/assemble.test.js`、`test/e2e.test.js`、`README.md`、`CONTEXT.md` | F1、F2 | plain | `assemble.js:64-65`/`ports.js:130` 缺省翻转为 appserver，`ZSW_RUNNER=spawn` 显式回退；probe 结果落盘 `~/.zcode/zsw/probe-cache.json`（键=CLI 路径+mtime；只缓存 ok；命中后首次 create -32603/-32601/-32602 失效重探一次）；assemble.test.js 缺省断言反转 + 回退用例；e2e E1-E6/E8 显式钉 spawn、E7 升主链路；README（:99-103 重写+顺修+idle TTL 残留删除）/CONTEXT.md（补 ZSW_RUNNER）更新；翻转点为独立最小 diff 可回滚 |
-| F4 | 能力增量：`--thinking`（readState 校验源缓存）+ 工具限制双来源（CLI flag + frontmatter disallowedTools → toolDenylist 并集；tools 白名单维持软约束）；record 标注；**record errorKind 透传**（`lib/manager.js` `_completeRun` transition patch 加一行 `errorKind: result && result.errorKind`——F1 blocker 移交，F1 已完成 runner 侧双落点但 record 独立字段需此透传） | `bin/zsw.js`、`lib/manager.js`、`lib/model-router.js`、`lib/runner-appserver.js`、`test/cli.test.js`、`test/manager.test.js`、`test/appserver.test.js` | F3 | plain | `zsw start --thinking low` 映射 create.thoughtLevel（readState.thoughtLevel.available 连接级缓存校验，非法值 warn 跳过不失败）；`--allow-tools/--deny-tools` 逗号分隔 → toolAllowlist/toolDenylist；`taskCtx.disallowedTools`（frontmatter）与 CLI deny 并集去重入 create.toolDenylist；不调用 session/setThoughtLevel；record 标注 thinking 实际档位（spawn 降级轮 thinking:null）；protocol-drift 错误以独立 errorKind 字段落 record；对应设计 A-5/A-6 单测面 |
+| F4 | 能力增量：`--thinking`（readState 校验源缓存）+ 工具限制双来源（CLI flag + frontmatter disallowedTools → toolDenylist 并集；tools 白名单维持软约束）；record 标注；**record errorKind 透传**（`lib/manager.js` `_completeRun` transition patch 加一行 `errorKind: result && result.errorKind`——F1 blocker 移交，F1 已完成 runner 侧双落点但 record 独立字段需此透传） | `bin/zsw.js`、`lib/manager.js`、`lib/model-router.js`、`lib/runner-appserver.js`、`test/cli.test.js`、`test/manager.test.js`、`test/appserver.test.js` | F3 | plain | `zsw start --thinking low` 映射 create.thoughtLevel（readState.thoughtLevel.available 连接级缓存校验，非法值 warn 跳过不失败）；`--allow-tools/--deny-tools` 逗号分隔 → toolAllowlist/toolDenylist；`taskCtx.disallowedTools`（frontmatter）与 CLI deny 并集去重入 create.toolDenylist；不调用 session/setThoughtLevel；record 标注 thinking 实际档位（spawn 降级轮 thinking:null）；protocol-drift 错误以独立 errorKind 字段落 record；对应设计 A-5/A-6 单测清单 |
 | F5 | 发版与收尾：minor release + 发布说明（重启生效）+ skill/command 文档复核；**三个 F4 移交项**：① `lib/ports.js` JSDoc 契约同步（TaskCtx thinking/toolAllowlist/toolDenylist、RunResult thinking/errorKind、prepareRunEnv 第三参 sessionOpts——纯注释）；② `dist/mcp/server.js` zsub tool inputSchema 补 thinking/allow-tools/deny-tools 三参数声明（MCP 面 1.0.0 起离线，socket handler 直通 manager 已生效，仅 schema 声明缺）；③ README「tools 白名单软约束/denylist 硬约束」表述按 D6 来源②接线后事实翻转（两通道均引擎级硬拦截，白名单维持软约束） | 版本三件套（`package.json`、`.zcode-plugin/plugin.json`、根 `marketplace.json`，经 `scripts/release.js`）；`lib/ports.js`（仅 JSDoc）；`dist/mcp/server.js`（仅 inputSchema）；`README.md`（仅该条目）；发布说明随 tag | F1-F4 | plain | `node scripts/release.js z-subagent-workflow minor` 完成三处版本同步 + commit + tag（不 push，push 另行授权）；仓根 `node scripts/check-sync.js`、`node scripts/check-pack.js` 绿；`node scripts/check-release-needed.js` 对本插件清零；发布说明含「重启 ZCode 生效」与升级冒烟指引 |
 
 ## 3 DAG 图
@@ -85,25 +85,25 @@ graph TD
 | 全量（收尾/阶段5） | `node --test test/`（含真实模型 e2e，约 3.5 分钟 + token） | Gate A；收尾场景才跑 |
 | 一致性（仓根） | `node scripts/check-sync.js`、`node scripts/check-pack.js`、`node scripts/check-release-needed.js` | F5 与 pre-commit 版本拦截 |
 
-单测中的协议交互一律 fake server（内存 NDJSON mock），不触真实模型；真机面归 F0 探针与阶段 5 验收。
+单测中的协议交互一律 fake server（内存 NDJSON mock），不触真实模型；真机场景归 F0 探针与阶段 5 验收。
 
 ## 5 合理偏差登记表
 
 | 日期 | 单元 | 偏差 | 裁决理由 | 设计侧动作 |
 |------|------|------|----------|------------|
 | 2026-08-29 | F1 | record 的 errorKind 独立字段透传（manager._completeRun 固定字段集不透传）移交 F4 | F4 领地本含 manager.js 与 record 标注验收；F1 runner 侧双落点已完成 | 计划 F4 单元行已补职责 |
-| 2026-08-29 | F1 | A4 真机实测牵出 extractAssistantText 对真实 read 形态失效的修复 + 新增 extractReadUsage（原被 payload.response 帧兜底掩盖） | 设计头注 A4 预留单点（「→ 只改 extractAssistantText()」）的收口职责；新旧双形态单测钉住；顺带沉淀 settings.thoughtLevel 随 read 应答可见（F4 直接消费） | 无需改设计文档；lib 头注 A2/A4 已由 F1 更新为收口结论 |
+| 2026-08-29 | F1 | A4 真机实测牵出 extractAssistantText 对真实 read 形态失效的修复 + 新增 extractReadUsage（原被 payload.response 帧兜底掩盖） | 设计头注 A4 预留单点（「→ 只改 extractAssistantText()」）的收敛职责；新旧双形态单测钉住；顺带记录 settings.thoughtLevel 随 read 应答可见（F4 直接消费） | 无需改设计文档；lib 头注 A2/A4 已由 F1 更新为收敛结论 |
 | 2026-08-29 | F0 | 排查候选②落地形态修正：create 带 runtimeModel → `session/resume {sessionId, runtimeModel}`（resume params 原生含该字段，create 是新会话面与恢复无关） | 源码 + 真机双证；候选清单意图（恢复时应用模型配置）由 resume 形态承接 | 设计文档 D2/§2.2 事实 2 已按此回填 |
 | 2026-08-29 | F0 | 驱逐加速手段：idleTimeoutMs 无 env/CLI/config 覆盖面（驻留池参数仅 GUI host 进程内注入），改用 high_water_lru 洪泛（16+ immediate 不订阅会话秒级触发真驱逐），保留 10min 真实等待回退（ZSW_TP1_FLOOD_ONLY 门控） | 源码证实无覆盖面；洪泛为真驱逐语义等价物 | 设计文档 §2.2 事实 1 已回填 |
-| 2026-08-29 | F2 | -32010 出口细化：设计只写「不重试」；实现明确「恢复序重试 send 遇 -32010 = 恢复已成功，按 busy 如实上抛、不落分支 B」（落分支 B 会误报会话弃用），独立用例钉住 | 设计 D2 未覆盖此出口语义，实现选择与 busy 诚实语义一致 | 无需改设计（实现层语义，头注已沉淀）；一致性审查复核 |
+| 2026-08-29 | F2 | -32010 出口细化：设计只写「不重试」；实现明确「恢复序重试 send 遇 -32010 = 恢复已成功，按 busy 如实上抛、不落分支 B」（落分支 B 会误报会话弃用），独立用例钉住 | 设计 D2 未覆盖此出口语义，实现选择与 busy 诚实语义一致 | 无需改设计（实现层语义，头注已记录）；一致性审查复核 |
 | 2026-08-29 | F2 | README:103 仍引用 idleConversationTtlMs（F2 领地外），删除移交 F3 文档翻转面 | README 本就是 F3 领地 | F3 单元行已补 |
 | 2026-08-29 | F3 | e2e 钉 spawn 采用文件顶部统一 `process.env.ZSW_RUNNER='spawn'`（一处声明覆盖 E1-E6/E8），未逐场景重复设置 | 等效于 D9「逐场景显式钉 spawn」，一处声明更可维护；E7/E10 显式注入不受 env 影响 | 无需改设计（实现形态等价） |
 | 2026-08-29 | F3 | 缓存命中首败+重探失败的降级落地为「通道级降级」：本任务转 spawn 重跑 + records 改标 + wrapper.capabilities() 翻转，daemon 生命周期内后续任务走 spawn 免重探（重启即恢复探测） | 设计 D1 只写「降级 spawn」，未指明任务级/通道级；通道级避免每任务重复付「撞错→重探→失败」成本，且 daemon 重启自然回探 | 一致性审查复核该语义（后续任务静默 spawn 需 stderr 出声一次） |
-| 2026-08-29 | F4 | thinking 校验源两级：优先 session/read 应答 settings.thoughtLevel 顺带沉淀（F1 实测面），无缓存退 workspace/readState（params 形态无实测记录，按最小空 params 发起，任何失败缓存「不可用」+ 透传档位给引擎 P2 容错兜底） | 设计 D5 只写「readState 校验源」，read 顺带沉淀是 F1 新发现的面（更省一次请求）；真机校准单点收敛在 runner-appserver._resolveThinking | A-5 真机验收时校准；一致性审查复核 |
-| 2026-08-29 | F4 | record.thinking 标注矩阵细化：生效=档位字符串；非法跳过=null；spawn 通道请求了='null (spawn 降级)'（设计字面）；未请求=不落字段；resume 轮不改写首轮标注（thinking 会话级驻留，续聊无 create 面）；「不改写」用条件携带键实现（record-store 内存 fold 的 Object.assign 会用 undefined 覆盖，行为事实沉淀 manager.js 头注） | 设计只给 spawn 降级字面；矩阵与 Object.assign 行为是实现层必要语义 | 无需改设计；一致性审查复核 |
+| 2026-08-29 | F4 | thinking 校验源两级：优先 session/read 应答 settings.thoughtLevel 顺带记录（F1 实测面），无缓存退 workspace/readState（params 形态无实测记录，按最小空 params 发起，任何失败缓存「不可用」+ 透传档位给引擎 P2 容错兜底） | 设计 D5 只写「readState 校验源」，read 顺带记录是 F1 新发现的面（更省一次请求）；真机校准单点收敛在 runner-appserver._resolveThinking | A-5 真机验收时校准；一致性审查复核 |
+| 2026-08-29 | F4 | record.thinking 标注矩阵细化：生效=档位字符串；非法跳过=null；spawn 通道请求了='null (spawn 降级)'（设计字面）；未请求=不落字段；resume 轮不改写首轮标注（thinking 会话级驻留，续聊无 create 面）；「不改写」用条件携带键实现（record-store 内存 fold 的 Object.assign 会用 undefined 覆盖，行为事实记录 manager.js 头注） | 设计只给 spawn 降级字面；矩阵与 Object.assign 行为是实现层必要语义 | 无需改设计；一致性审查复核 |
 | 2026-08-29 | F5 | TaskCtx JSDoc 补字段超出任务点名清单（多补 runEnv 与 disallowedTools）——「以 lib 实际实现为准逐字段核对」的产物（manager.js:233-239 组装、两 runner 均消费，原 JSDoc 缺失） | 领地内（ports.js 仅 JSDoc）；契约完整性 | 无 |
 | 2026-08-29 | F5 | 观察项（未改，不在领地）：model-router.js:235 runnerKind JSDoc 缺省注释仍写 'spawn'（F3 翻转后未同步）；实际调用方恒显式传，无行为影响 | 纯注释漂移，无行为面 | 随下次触及 model-router.js 的单元顺修；一致性审查登记 |
-| 2026-08-29 | 修复批次 | 检查点 2（spec 形态实测）改记归 A-6 真机收口：不为冒烟增加 token 成本（升级后高频操作保持极小），E9 仅保留参数面无漂移断言，行为面验证归一次性验收场景 A-6 | 冒烟 token 成本 vs 一次性验证；设计文档检查点 2 已同步改记 | 设计文档已改记 |
+| 2026-08-29 | 修复批次 | 检查点 2（spec 形态实测）改记归 A-6 真机收敛：不为冒烟增加 token 成本（升级后高频操作保持极小），E9 仅保留参数面无漂移断言，行为面验证归一次性验收场景 A-6 | 冒烟 token 成本 vs 一次性验证；设计文档检查点 2 已同步改记 | 设计文档已改记 |
 | 2026-08-29 | 修复批次 | 区 B 观察项不修裁决：降级重跑 `await runSpawnRound` 秒级窗口内 cancel 丢失（终态仍落盘不悬挂，仅 cancel 语义弱化） | 窗口极窄 + 无悬挂后果，修复属过度工程 | 登记为已知边界；后续若报告实际影响再修 |
 | 2026-08-29 | 定向复审 | 复审 pass（R1-R8 全过、非降级分支零回归、测试 101/101 复跑绿）；2 条 suggestion 随后微修（MCP inputSchema 改 array 类型、cancel 窗口注释如实化，commit aac864f）；2 条 info 不修登记：① relabelRecord 兜底路径（实际不可达）中 runnerKind 残留与标注判定源不一致；② 降级后第二任务 prepareRunEnv 幂等冗余调用一次 | info 级无行为面/不可达路径/幂等无影响 | 已在此登记 |
 | 2026-08-29 | R2 批次 | D2 ④ 窗口在 timeoutMs=null（默认配置）下不存在：`Number.isFinite(timeoutMs)` 才建 timer，null 即无窗口无超时——跟随本仓「无超时安全语义」既有决策（spawn 侧同源），A-2b 真机显式传 timeout 未破坏 G2 | 设计 D2 ④ 只写「窗口=该轮 timeoutMs」，null 默认态是设计未覆盖面，实现选了与本仓惯例一致的一侧 | 设计 D2 无需改（语义自洽退化）；已在此登记 |
@@ -112,7 +112,7 @@ graph TD
 | 2026-08-29 | R2 批次 | isInvalidatingError 除错误码正则外叠加 errorKind==='protocol-drift' 判定 | 错误文案前缀形态若变化，errorKind 字段仍可靠；两判定重叠不冲突 | 无需改设计 |
 | 2026-08-29 | R2 批次 | record.thinking 创建期先落请求值（运行中 status 可观测请求意图），终态由 _completeRun 覆盖为实际生效标注 | 设计只定义终态标注；创建期可观测是增量面，不破坏 G6 如实标注 | 无需改设计 |
 | 2026-08-29 | R2 批次 | CLI 新 flag 缺值（布尔形态）stderr warn + 忽略，不失败 | 与 D5 非法档位容错同语义，不走静默丢弃路径 | 无需改设计 |
-| 2026-08-29 | R2 批次 | 恢复序① 构造 runtimeModel 失败（v2 config 无凭据）→ 直接分支 B，不发必然失败的盲 resume；send accepted:false 三处显式防御 | 设计未列举的前置失败面；按「诚实语义」归分支 B 属合理收紧 | 无需改设计 |
+| 2026-08-29 | R2 批次 | 恢复序① 构造 runtimeModel 失败（v2 config 无凭据）→ 直接分支 B，不发必然失败的盲 resume；send accepted:false 三处显式防御 | 设计未列举的前置失败情形；按「诚实语义」归分支 B 属合理收紧 | 无需改设计 |
 | 2026-08-29 | R2 批次 | workspace/readState 校验层失败（-32601/-32602/-32004）消化为「校验源不可用」缓存 + 透传，不上抛 drift 分类 | 主链路 create/send 的漂移仍被 classifyApcError 分类，无遮蔽面；D5 校验源降级语义优先于 D3 分类是正确排序 | 与 Gate B 回填的 D5 描述一致 |
 | 2026-08-29 | Gate A | e2e-daemon.test.js A5 稳定失败（exec.pid 断言为 spawn 专有，apc exec 为 {kind:'apc',sessionId} 无 pid）→ 场景内钉 `sc.env.ZSW_RUNNER='spawn'` 修复（文件 5/5 全绿，A5 fail→pass）。设计 D9 测试影响面漏项（A5 未随 E4/E6 钉 spawn）同步补记 | 看门狗机制通道无关（探活走 runner.alive 端口）；A5 的 orphan 语义验证依赖 spawn 独立子进程在 daemon 死后存活的特性；apc 下 daemon 死亡 = 引擎随亡 → 任务 lost + 重新 start 指引，不与 orphan 混同验收 | 设计文档 D9 已补记 |
 
@@ -121,7 +121,7 @@ graph TD
 | Unit | 状态(pending/in-progress/committed/blocked) | 轮次 | 证据指针 |
 |------|------|------|------|
 | F0 | committed | 1 | 探针归档 `test/e2e-tp1-recovery.test.js`（头注含全部结论）；真机三线一次全绿（A 22.7s/B 37.6s/C 30.1s）；结论已回填设计文档 §2.2 事实 1/2、D2、§5 检查点 1/3；无门控默认 skip 3 场景（CI 安全）复验 |
-| F1 | committed | 1 | commit（本轮）；单测 36/36、全量非 e2e 358/358 复跑绿；真机 apc-smoke pass（token 1 次调用）；A2/A4 收口，A4 牵出提取链修复（见偏差登记表） |
+| F1 | committed | 1 | commit（本轮）；单测 36/36、全量非 e2e 358/358 复跑绿；真机 apc-smoke pass（token 1 次调用）；A2/A4 收敛，A4 牵出提取链修复（见偏差登记表） |
 | F2 | committed | 1 | commit（本轮）；单测 50/50、全量非 e2e 372/372 复跑绿；恢复序全链/互斥/④窗口/分支 B/persistence/遥测 env/stderr 落盘全覆盖；idle TTL 声明已删（仅剩注释） |
 | F3 | committed | 1 | commit（本轮）；assemble 12/12、全量非 e2e 380/380 复跑绿；真机最小验证：默认通道 runnerKind='appserver' + probe-cache 命中跳探 + ZSW_RUNNER=spawn 回退三连过；真机抓出并修复 resolveCliPath 引用 bug（config.ZCODE_CLI 非 DEFAULTS.ZCODE_CLI） |
 | F4 | committed | 1 | commit（本轮）；增量 106/106、全量非 e2e 395/395 复跑绿；setThoughtLevel 零调用核实；thinking 双级校验源/工具双来源并集/errorKind 透传全覆盖；A-5/A-6 真机归阶段 5 |
@@ -131,7 +131,7 @@ graph TD
 
 残留风险（承接设计 §5 检查点与复审 INFO）：
 1. F0 结论可能判定崩溃分支不可自愈（-32031 无解）→ D2 走分支 B（驱逐自愈 + 崩溃诚实报错），不阻塞翻转（设计已预案）。**已消除：F0 探明 resume{runtimeModel}，双类全自愈。**
-2. 工具限制 spec 形态（`Bash(git *)`）支持性——**改记归后续真机场景收口**（Gate B A-6 已验裸名引擎级拦截，spec 形态未验，非阻塞）。
+2. 工具限制 spec 形态（`Bash(git *)`）支持性——**改记归后续真机场景收敛**（Gate B A-6 已验裸名引擎级拦截，spec 形态未验，非阻塞）。
 3. stdio 背压 + 多会话并发恢复——**Gate B A-8 已验 4 并发无串线**；更多并发/背压为长线观察项。
 4. 复审 INFO×2（实施期留白）：D2 ④ 失败场景的分支 B 文案措辞需适配「事件流不可达」语义（F2 已按此实现）；D1 缓存重探 ok 后的重试动作由 D3 漂移分类兜底（F3 已按此实现）。
 5. F3 观察项（非 F3 引入）：`--local` CLI 进程任务 closed 后偶发收尾慢（5 次真机 1 次，最终 exit 0）——如需根治属独立问题。

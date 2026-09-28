@@ -95,7 +95,7 @@ zsw 宿主（Node）
 ### 2.2 失败模式（真实发生，非假设）
 
 - **run1**：business-logic 会话在 433s 报 `Turn execution failed`（provider 侧 turn
-  失败）；mcp-contract 会话输出流被掐断在 1895 字符（json 围栏未闭合 → D3c 判
+  失败）；mcp-contract 会话输出流被掐断在 1895 字符（json 代码块缺结束标记 → D3c 判
   parseFail → D3 结构化终止）。两者按「失败停机归因总则」归类：**基础设施故障，
   由调用形态诱发**——19-32 轮长会话意味着 19-32 次撞 provider 出错的机会窗口。
 - **run2**：fix 阶段被（已废止的）20 分钟死线 SIGKILL——与材料无关，但同根于
@@ -161,7 +161,7 @@ $ node bin/zsw.js workflow --workflow review-fix-loop \
 | **C 两阶段（摘要定位→深查）** | 低：新增 LLM 阶段 = 新故障点 + 信息瓶颈（摘要丢细节，审查质量取决于摘要质量） | 高 | 摘要遗漏 = 全体 reviewer 集体漏审 | 否决 |
 | **D 现状（自主探索）** | —— pi 同构 —— | 0 | 已实证：不稳定、慢、贵 | 否决（对照组） |
 
-**若用被否方案会怎样**：用 B——§2 的本仓例子中 `review-fix-loop.js` 的一个函数拆分
+**若采用已否决方案会怎样**：用 B——§2 的本仓例子中 `review-fix-loop.js` 的一个函数拆分
 会被映射给 business-logic，而其中 abort 检查点传播问题属 concurrency——映射表二选一
 必漏一个维度；用 C——聚合摘要漏掉某条 wrapUntrusted 包裹细节，5 个 reviewer 集体
 不知情，假 clean 比 runFail 更危险。
@@ -171,13 +171,13 @@ $ node bin/zsw.js workflow --workflow review-fix-loop \
 - **D1 预取时机与 base 锁定**：run 启动时预取一次，用既有 `lockedBase`（base hash
   锁定，v2 已实现）执行 `git diff <hash>...HEAD` + `git status --porcelain` + `git diff`
   （未提交工作区改动并入材料，覆盖 autoCommit=false 的 fix 半成品可见性——保留现
-  指令的语义）。被否：每轮预取（材料跨轮漂移，破坏 D5 稳定性）。R2+ 复检轮不重取
+  指令的语义）。不采用：每轮预取（材料跨轮漂移，破坏 D5 稳定性）。R2+ 复检轮不重取
   ——base 锁定下 diff 主体不变，fix 后的变化经既有 `recheckScope` / `fix-response`
   段注入，职责不混。
 - **D2 尺寸护栏**：阈值 = 材料总字符 > 1.5MB（约 40 万 tokens，为 GLM 上下文留 ≥4
   倍余量）。超阈值 → 按文件字典序分组注入：每个 reviewer prompt 含**全量文件级
   stat 清单**（文件名 ± 行数，明确标注「以下文件 diff 未注入，可 Read 深查」）+
-  分到本 reviewer 的文件组全量 diff（组数 = reviewer 数，轮转分配）。被否：任意
+  分到本 reviewer 的文件组全量 diff（组数 = reviewer 数，轮转分配）。不采用：任意
   字符截断（静默丢材料 = 假审查）；阈值硬编码不可配（v1 不加参数，YAGNI——实测
   需要时再加）。⛔实施期门：阈值合理性用本仓 707KB（不触发）+ 构造 2MB 仓库
   （触发）两个夹逼用例验证。

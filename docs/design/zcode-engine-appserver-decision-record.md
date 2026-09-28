@@ -48,7 +48,7 @@ zsw 1.x 宿主私连的核心教训：app-server 无公开契约，**平台升�
 
 ## 5. 与其他工作的关系
 
-- **与收口设计正交**：`subagent-core-convergence-design.md`（W1-W9）不涉及执行通道形态，app-server 常驻化不改变其拆分与依赖序。
+- **与收敛设计正交**：`subagent-core-convergence-design.md`（W1-W9）不涉及执行通道形态，app-server 常驻化不改变其拆分与依赖序。
 - **与双引擎正交**：pi engine 接入 zsw（zsw 侧待产品决策）与 zcode engine 内部形态演进互不影响。
 - **发版语义**（预定，实施时复核）：常驻化属 engine 行为变更——若 capabilities 声明升级（steer/eventGranularity）构成消费方可见语义变化，按 minor/major 评估（zsw 侧消费 capabilities 的面在实施时盘点）。
 

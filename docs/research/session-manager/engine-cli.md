@@ -15,10 +15,10 @@
 | 2 | 协议有两层 method 面：`session/*`+`workspace/*`+`plugins/*`+`automation/*`+`usage/*`（rr 枚举，30+ 方法）和 `v4/*`（Dc 枚举：conversation 订阅/attachment 上传/command 通道）。**session 管理五件套的落点**：list=`session/list`（支持 `includeArchived`）、create=`session/create`、改名=`v4/command {type:"renameSession", payload:{title}}`、删除=`v4/command {type:"deleteSession"}`、发消息=`session/send` | 【实测】 |
 | 3 | **协议层没有 archive/unarchive 方法**；`v4 deleteSession` 在 app-server 语境只「关闭进程内会话记录」，不删 db 行。引擎侧**没有任何代码写 `time_archived`**（`updateSession` SQL 支持该列但全库 0 个调用点传 `timeArchived`）；也无 `DELETE FROM session` 硬删语句。归档/真删只能由 GUI 侧直接操作 db.sqlite（【推断】） | 【实测】（负结论） |
 | 4 | `session/create` 会触发**服务端→客户端请求** `session/requestRuntimePreferences`，客户端必须应答（或回 `-32601` 错误，引擎有默认值兜底）；`session/read`/`session/messages`/`v4/command` 只对**本进程内激活（create/resume 过）的 session** 有效，否则 `-32004 Session is not active` | 【实测】（探针验证） |
-| 5 | session 行在 create 时**不落库**，首条用户 prompt / 外部活动时由 `ensureSessionPersisted` 懒 INSERT；id=`sess_`+UUIDv4（`crypto.randomUUID()`），slug=slugify(sessionId)，project_id=`proj_`+slugify(工作目录).slice(0,80)，title 初值=首条输入截 60 字符（空则 "Untitled session"），title_source 缺省 `first_input` | 【实测】 |
+| 5 | session 行在 create 时**不写入数据库**，首条用户 prompt / 外部活动时由 `ensureSessionPersisted` 懒 INSERT；id=`sess_`+UUIDv4（`crypto.randomUUID()`），slug=slugify(sessionId)，project_id=`proj_`+slugify(工作目录).slice(0,80)，title 初值=首条输入截 60 字符（空则 "Untitled session"），title_source 缺省 `first_input` | 【实测】 |
 | 6 | part 类型枚举（13 种）：`text/reasoning/file/tool/step-start/step-finish/snapshot/patch/compaction/timeline/subagent/agent/retry`。**没有独立 image 类型**——图片/视频/PDF 统一落 `file` part（mime 区分）；`--attach` 按扩展名推断 `image`/`video`/`file`，二进制内容经 artifactStore 存为 `zcode-artifact://` URI，part.url 指向该 URI。skill 引用没有专属 part：`/skill X task` 展开为纯文本 prompt（指示先调 `Skill` 工具） | 【实测】 |
 | 7 | 隐藏 CLI 面：`agent-server`（app-server 别名）、`hooks`（trust status/review/grant/revoke）、`__internal-search`（find/grep 内嵌搜索）、`__zcode-plugin-host`（插件 server 宿主）均不在 `--help`；另有 `automation/*` 协议方法（cron 任务体系） | 【实测】 |
-| 8 | 双库关系：`~/.zcode/cli/db/db.sqlite` 是引擎权威存储；GUI 通过 app-server 的 `v4/conversation/subscribe` 订阅 `sessions-index/<workspaceId>` 主题（快照+delta：`session.upserted`/`session.removed`）获得实时索引，`~/.zcode/v2/tasks-index.sqlite` 是 GUI 侧自建索引持久化（引擎 bundle 中**无** `tasks-index.sqlite` 字符串，只有 `controller/tasks-index` 主题常量） | 【实测】+【推断】（GUI 落库细节属另一子任务） |
+| 8 | 双库关系：`~/.zcode/cli/db/db.sqlite` 是引擎权威存储；GUI 通过 app-server 的 `v4/conversation/subscribe` 订阅 `sessions-index/<workspaceId>` 主题（快照+delta：`session.upserted`/`session.removed`）获得实时索引，`~/.zcode/v2/tasks-index.sqlite` 是 GUI 侧自建索引持久化（引擎 bundle 中**无** `tasks-index.sqlite` 字符串，只有 `controller/tasks-index` 主题常量） | 【实测】+【推断】（GUI 写入数据库细节属另一子任务） |
 | 9 | 对 session-manager MCP 插件的直接含义：**list（含归档）可直接读 db.sqlite 或调 `session/list`；create+必带 prompt 需起 app-server 进程走 create+send；rename 需走 v4/command（要求 session 在该进程内激活）；archive/delete 引擎协议不支持，插件只能直写 sqlite（有 WAL 并发风险）或接受「仅引擎视角关闭」语义** | 综合结论 |
 
 ---
@@ -137,7 +137,7 @@ v4/command renameSession（缺 issuedAt）→ status:"rejected", reasonCode:"pro
 
 ---
 
-## 3. session 创建链路（id/slug/路径/标题/落库）
+## 3. session 创建链路（id/slug/路径/标题/写入数据库）
 
 全部位于引擎 runtime（line ~2736）与 sqlite store（line ~907-963）：
 
@@ -154,8 +154,8 @@ v4/command renameSession（缺 issuedAt）→ status:"rejected", reasonCode:"pro
 | title_source 缺省 | SQL 绑定 `t.titleSource??"first_input"`；enum 校验回落 first_input | `t.titleSource??"first_input"` |
 | task_type 缺省 | `t.taskType??"interactive"`（fork 场景写 `fork`/`selection_side_chat`，subagent 子会话 `subagent_child`） | `t.taskType??"interactive"` |
 | INSERT 语句 | 25 列，`time_compacting/time_archived` 插 NULL；`on conflict(id) do update`（幂等 upsert）；title 变更时 `time_title_updated` | `insert into session (` + `time_compacting, time_archived` |
-| 落库时机 | **懒持久化**：runtime `M$r`（ensureSessionPersisted）在首条用户 prompt/外部活动时 INSERT；协议 `session/create` 只建进程内记录（`k2t` 建记录不写库）；v4 `createSession` 用 `persistence:"deferred"`。证据：沙箱 create 后 `session/list` 返回 `[]`（探针3） | `slug:qne(this.sessionId),directory:n,path:n`；`persistence:"deferred"` |
-| 首条 prompt 落库 | ① `eCe` 解析附件（见 §4）→ ② `persistUserPrompt`（`V$r`）：INSERT `message` 行 `{id:msg_.., role:"user", time:{created}, agent:"zcode-agent"??config.agentName, model:{当前默认模型}, semantics:{origin:"real_user",kind:"user_prompt",uiVisibility:"visible",...}, system, tools{...}}` → ③ INSERT parts：text part `{type:"text",text,time:{start,end}}` + 每 附件一个 `{type:"file",mime,filename,url,source,metadata}` → ④ 追加 `session.titleUpdated` 事件（first_input 源） | `semantics:{origin:"real_user",kind:"user_prompt"`；`type:"text",text:t,time:{start:i,end:i}}`；`type:"file",mime:d.mime,filename:d.filename,url:d.url` |
+| 写入数据库时机 | **懒持久化**：runtime `M$r`（ensureSessionPersisted）在首条用户 prompt/外部活动时 INSERT；协议 `session/create` 只建进程内记录（`k2t` 建记录不写库）；v4 `createSession` 用 `persistence:"deferred"`。证据：沙箱 create 后 `session/list` 返回 `[]`（探针3） | `slug:qne(this.sessionId),directory:n,path:n`；`persistence:"deferred"` |
+| 首条 prompt 写入数据库 | ① `eCe` 解析附件（见 §4）→ ② `persistUserPrompt`（`V$r`）：INSERT `message` 行 `{id:msg_.., role:"user", time:{created}, agent:"zcode-agent"??config.agentName, model:{当前默认模型}, semantics:{origin:"real_user",kind:"user_prompt",uiVisibility:"visible",...}, system, tools{...}}` → ③ INSERT parts：text part `{type:"text",text,time:{start,end}}` + 每 附件一个 `{type:"file",mime,filename,url,source,metadata}` → ④ 追加 `session.titleUpdated` 事件（first_input 源） | `semantics:{origin:"real_user",kind:"user_prompt"`；`type:"text",text:t,time:{start:i,end:i}}`；`type:"file",mime:d.mime,filename:d.filename,url:d.url` |
 | message/part 表结构 | `message(id, session_id, agent_id?, time_created, time_updated, data, sequence)`；`part(id, message_id, session_id, time_created, time_updated, data, sequence)`；data=part 对象 JSON（`Ua`=JSON.stringify）；sequence=同会话/同消息内 coalesce(max)+1 | `insert into part (id, message_id, session_id, time_created, time_updated, data, sequence)` |
 | fork（parent_id） | `Zzr`：`parentID=父sessionId, taskType="fork", slug=`${slugify(父slug)}-fork-${Date.now().toString(36)}`.slice(0,120), title="Fork of ${父title}"（selection_side_chat → "Selection side chat"）, titleSource:"generated"` | `slug:`${qne(t.slug)}-${n}-${o.toString(36)}`.slice(0,120)` |
 | imported history | 走 `importedHistory` 分支：title `?.trim()\|\|"Imported session"`，titleSource `custom` | `title:t.title?.trim()||"Imported session",titleSource:"custom"` |

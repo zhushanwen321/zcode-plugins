@@ -12,7 +12,7 @@
 
 ### SCQA
 
-- **S**：用户在 pi 平台有成熟的 subagent 编排扩展 `pi-subagent-workflow`（29k 行，进程内 extension API）；zcode 平台已有 `dynamic-workflow` v0.2.0（MCP 插件，5 个确定性 workflow，沉淀 driver/jsonout/pool 三件基建）。
+- **S**：用户在 pi 平台有成熟的 subagent 编排扩展 `pi-subagent-workflow`（29k 行，进程内 extension API）；zcode 平台已有 `dynamic-workflow` v0.2.0（MCP 插件，5 个确定性 workflow，记录 driver/jsonout/pool 三件基建）。
 - **C**：zcode 闭源，插件只能以 MCP server / hooks / md 资源三种外设形态存在，隔着协议与信任边界；pi 依赖的进程内特权 API（`sendMessage`+`triggerTurn`、EventBus、stdin 直写 steering）一样都摸不到。
 - **Q**：外挂形态下，编排能力（委派/并行/生命周期/回流/隔离）能复刻到什么程度？关键决策（执行引擎、回流通道、入口形态）未来变了怎么低成本换？
 - **A**：把「编排内核」做成端口化 lib（与入口无关），MCP 单 tool + skill 做薄入口，回流与执行各做成多实现端口——决策可换、核心不动。
@@ -121,7 +121,7 @@ zcode 的扩展是「宿主的外设」（协议边界外，只能借道文件�
 
 **D1 总架构：端口/适配器内核**。域层（record/resolver/prompt/worktree）不依赖平台细节；平台依赖全部收进端口实现。闭源平台的版本漂移（3.0.0→3.8.1 已实测 help 漂移、hook 契约变更、锚点位移）由「端口实现可替换 + 启动探针 + 能力声明」消化，不需要改内核。
 
-**D2 入口：MCP 粗粒度单 tool + skill 渐进式**。Z1 实测 MCP tool 全量常驻注入——编排原语收敛为一个 `zsub` tool（五 action 枚举参数），description 压到 ~1.5KB（pi 的 5KB 太肥）；完整用法哲学（何时用 zsub vs 原生 background、task 自包含原则、禁止 poll）放 skill `zsub-orchestration`（Z7：一行索引渐进式，正文 100k 上限内按需读）。被否：多细粒度 tool（每 tool 一条常驻定义，token 成本线性涨）；纯 skill 无 MCP（LLM 拼 bash 命令易错，且丢 `_meta` 定向能力——Z3 只在 MCP 通道有）。
+**D2 入口：MCP 粗粒度单 tool + skill 渐进式**。Z1 实测 MCP tool 全量常驻注入——编排原语收敛为一个 `zsub` tool（五 action 枚举参数），description 压到 ~1.5KB（pi 的 5KB 太肥）；完整用法哲学（何时用 zsub vs 原生 background、task 自包含原则、禁止 poll）放 skill `zsub-orchestration`（Z7：一行索引渐进式，正文 100k 上限内按需读）。不采用：多细粒度 tool（每 tool 一条常驻定义，token 成本线性涨）；纯 skill 无 MCP（LLM 拼 bash 命令易错，且丢 `_meta` 定向能力——Z3 只在 MCP 通道有）。
 
 **D3 执行：RunnerPort 双实现**。
 - **SpawnRunner（MVP 主力）**：`zcode --json --cwd --mode yolo --prompt` 单轮 + `--resume` 续聊（Z9，全部已验证）。每轮冷启动 ~1-2s，如实标注；running 不可投递（busy 语义）。
