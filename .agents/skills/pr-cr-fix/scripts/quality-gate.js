@@ -24,12 +24,12 @@
  *   行（含注释/空行）不计入分母——宽松方向：漏杀好过误杀（误杀会卡日常流程）。
  * - 分母范围 = 插件 lib/ + bin/ 的 .js；dist/（构建产物）与 test/（测试自身）不进分母。
  * - 未出现在 V8 产物中的分母文件 = 零覆盖（计入 uncovered，拉低增量覆盖率，不特判）。
- * - 增量覆盖率阈值走 ratchet：默认 40 为引入期起步值（本仓实测基线 41.2%），终态
+ * - 增量覆盖率阈值只升不降：默认 40 为引入期起步值（本仓实测基线 41.2%），终态
  *   目标 80（对齐 Sonar Way「new code ≥80%」/ xyz-agent Gate-1.6 口径）；随补测试
  *   逐步上调 --min-coverage，只升不降
  *
  * exit 语义：0 = pass；1 = fail（测试/覆盖率/复杂度）；2 = 工具错误。
- * 守卫（对齐 xyz-agent coverage-gate [HISTORICAL] 假 pass 教训）：git 异常、JSON 解析失败、
+ * 前置检查（对齐 xyz-agent coverage-gate [HISTORICAL] 假 pass 教训）：git 异常、JSON 解析失败、
  * 测试 exit 0 但 V8 产物缺失、插件无 test/ 目录——一律 exit 2，绝不静默 pass。
  *
  * 用法：node .agents/skills/pr-cr-fix/scripts/quality-gate.js [--base main]
@@ -301,7 +301,7 @@ function usage() {
   return [
     '用法：node quality-gate.js [--base main] [--min-coverage 40] [--max-complexity 15] [--crap-warn 30]',
     '  --base <ref>          diff base（默认 main）',
-    '  --min-coverage <pct>  增量覆盖率阈值（ratchet 起步值 40，终态目标 80，只升不降）',
+    '  --min-coverage <pct>  增量覆盖率阈值（起步值 40，终态目标 80，只升不降）',
     '  --max-complexity <n>  新增函数圈复杂度上限（默认 15，超过 fail；存量函数只进 CRAP 靶子）',
     '  --crap-warn <n>       CRAP 靶子阈值（默认 30，达到即列入 warn 清单）',
     '产物：.review/quality.json（含 uncoveredFiles / filesWithoutCoverage /',
@@ -384,7 +384,7 @@ function main() {
     const covByFile = mergeCoverageDir(covDir);
     fs.rmSync(covDir, { recursive: true, force: true });
     if (testsPassed && covByFile.size === 0) {
-      toolError(`${plugin}: 测试 exit 0 但 V8 覆盖产物为空（NODE_V8_COVERAGE 未生效？）——记账不闭合，拒绝静默 pass`);
+      toolError(`${plugin}: 测试 exit 0 但 V8 覆盖产物为空（NODE_V8_COVERAGE 未生效？）——账面 pass 但证据缺失，拒绝静默 pass`);
     }
     testsPassedByPlugin.set(plugin, testsPassed);
     report.plugins[plugin] = computePluginMetrics(plugin, scopeFiles, covByFile, opt);

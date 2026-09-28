@@ -9,7 +9,7 @@
 - **Q（问题）**：如何在不改 MCP server 源码、尽量零人工配置的前提下，让 zcode 已注册的 MCP 工具变成 skill 式渐进加载？
 - **A（答案）**：插件提供 wrapper 进程替换每个 server 条目的 command（对 zcode 只暴露 get_tool_details / call_tool 两个 meta 工具），SessionStart hook 自动检测并重写配置、把工具清单经 additionalContext 注入对话；底层真实 server 懒启动、调用转发，CLI 一键还原。
 
-> 层声明：本设计的下一层产物是**可实现的接口/数据模型/技术方案**（准则 5/6/7 全适用）。调研依据见对话沉淀的三份材料：市面方案调研（Anthropic TST / KGT24k mcp-tool-search 等）、pi Dynamic Tool Loading（`~/GitApp/pi-ecosystem/pi-mono/packages/coding-agent/docs/extensions.md:2233`）、zcode 能力对标（本仓 `docs/research/zcode-vs-pi-extension-capabilities.md`）。
+> 层声明：本设计的下一层产物是**可实现的接口/数据模型/技术方案**（准则 5/6/7 全适用）。调研依据见对话中整理的三份材料：市面方案调研（Anthropic TST / KGT24k mcp-tool-search 等）、pi Dynamic Tool Loading（`~/GitApp/pi-ecosystem/pi-mono/packages/coding-agent/docs/extensions.md:2233`）、zcode 能力对标（本仓 `docs/research/zcode-vs-pi-extension-capabilities.md`）。
 
 ## 1. 背景：被设计的系统是什么
 
@@ -143,23 +143,23 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 ### 6.1 D1：wrapper 中间人接管（选定） vs registry 聚合迁移 vs 等官方能力
 
 - **采用**：per-server wrapper——每个被接管 server 条目的 command 重写为 `node ~/.zcode/z-tool-finder/launcher/proxy-launcher.js <server-id> -- <原 command> <原 args…>`，原定义同时完整存入 registry.json。插件另有一个自己的主 server（`mcp__plugin_z-tool-finder_z-tool-finder__search_tools` 全局检索 catalog）。
-- **被否 1（registry 聚合迁移）**：把 server 定义复制进 registry、原条目禁用、统一由单进程 tool-finder spawn。劣势：server 命名空间坍缩成单一 `z-tool-finder`，连 per-server 的 PreToolUse matcher（如 `mcp__browser-use__.*`）也失效，per-server 治理一并丢失（方案 A 保留 per-server，per-tool 治理两种方案下都需迁移到插件策略层，见 G4 改述）；且失去 zcode 原生 per-server 连接状态可见性。
-- **被否 2（等 zcode 官方 defer_loading / 环境级劫持如 NODE_OPTIONS preload）**：官方无时间表；环境劫持覆盖不全（仅 node 系 command）、影响面失控，属于三个月后会被骂的短期方案。
-- **证据**：市面调研（对话沉淀）——KGT24k/mcp-tool-search 是 registry 形态的同构先例但无 zcode 的 per-server 治理约束；Anthropic TST 证明「清单常驻+详情按需」配方有效（-85% token、选择准确率反升）。
+- **不采用的方案 1（registry 聚合迁移）**：把 server 定义复制进 registry、原条目禁用、统一由单进程 tool-finder spawn。劣势：server 命名空间坍缩成单一 `z-tool-finder`，连 per-server 的 PreToolUse matcher（如 `mcp__browser-use__.*`）也失效，per-server 治理一并丢失（方案 A 保留 per-server，per-tool 治理两种方案下都需迁移到插件策略层，见 G4 改述）；且失去 zcode 原生 per-server 连接状态可见性。
+- **不采用的方案 2（等 zcode 官方 defer_loading / 环境级劫持如 NODE_OPTIONS preload）**：官方无时间表；环境劫持覆盖不全（仅 node 系 command）、影响面失控，属于三个月后会被骂的短期方案。
+- **证据**：市面调研（对话中整理）——KGT24k/mcp-tool-search 是 registry 形态的同构先例但无 zcode 的 per-server 治理约束；Anthropic TST 证明「清单常驻+详情按需」配方有效（-85% token、选择准确率反升）。
 - **效果**：G1/G2/G4 成立的架构基础。
 
 | 方案 | 长期架构合理性 | 短期实现成本 | 风险 | 裁决 |
 |---|---|---|---|---|
 | A. wrapper 接管 | 高：server 身份/matcher 保留，接管对称可还原 | 中：每 server 常驻一个 wrapper 进程，失去懒启动收益 | 插件 server 需覆盖条目（探针 P2） | ✅ |
-| B. registry 聚合 | 中：单进程+懒启动优雅，但治理坍缩 | 中 | 改动面更大（禁用+迁移+回滚三态） | ❌ |
+| B. registry 聚合 | 中：单进程+懒启动优雅，但治理坍缩 | 中 | 改动范围更大（禁用+迁移+回滚三态） | ❌ |
 | C. 静态裁剪 | 低：不解决「按需」 | 低 | token 收益有限 | ❌ |
 
-**被否若用（B）**：§5.1 中 agent 调用变为 `mcp__z-tool-finder__call_tool(server="document-skills", tool=…)`——多一层寻址尚可接受，但用户现有的 `PreToolUse` matcher（按 `mcp__browser-use__` 匹配审批）全部失效，AGENTS.md 中的工具名也彻底不可追溯。
+**方案 B 不采用的详细理由**：§5.1 中 agent 调用变为 `mcp__z-tool-finder__call_tool(server="document-skills", tool=…)`——多一层寻址尚可接受，但用户现有的 `PreToolUse` matcher（按 `mcp__browser-use__` 匹配审批）全部失效，AGENTS.md 中的工具名也彻底不可追溯。
 
 ### 6.2 D2：注入通道 = SessionStart hook 的 additionalContext
 
 - **采用**：插件自带 `hooks/hooks.json`，SessionStart 事件（matcher 覆盖 `startup|resume|clear|compact` 四来源）执行 `node ${ZCODE_PLUGIN_ROOT}/bin/tf.js hook session-start`，stdout 输出 `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<available-custom-tools>…"}}`。compact 后清单凭 compact 来源重注入。
-- **被否**：插件 AGENTS.md（zcode 插件无此通道）；UserPromptSubmit 每条注入（token 重复）；skill 描述承载（容量有限且不结构化）。
+- **不采用的方案**：插件 AGENTS.md（zcode 插件无此通道）；UserPromptSubmit 每条注入（token 重复）；skill 描述承载（容量有限且不结构化）。
 - **证据**：官方 superpowers 5.1.0 `hooks/session-start` 即此形态的活先例（`~/.zcode/cli/plugins/cache/zcode-plugins-official/superpowers/5.1.0/hooks/session-start:49-51`，嵌套格式对 Claude Code/zcode 兼容）；diagnosing-hooks/SKILL.md:36 确认 additionalContext 注入契约。
 - **效果**：G1 的「清单常驻」半边；G2 的自动化触发点（同一 hook 顺带执行自动接管）。
 - 探针：~~⛔ P0-1~~ **✅ 已通过（M0，2026-08-26，无头真实会话实证）**——嵌套格式生效，无需顶层字段降级。
@@ -167,21 +167,21 @@ agent 使用（真实任务样例：用户要求「把这个 CSV 转成带图表
 ### 6.3 D3：meta 工具面（每 wrapper 2 个 + 全局 1 个）
 
 - **采用**：wrapper 暴露 `get_tool_details(tool)` 与 `call_tool(tool, args)`（名称与 schema 全局统一，靠 server 命名空间区分归属）；主 server 暴露 `search_tools(query, limit?)`（关键词+BM25，读 catalog）。`call_tool` 按底层 inputSchema 校验 args，**并按 registry 的 per-tool allow/deny 策略（`policies` 字段）先于转发校验**——承接 G4 中从引擎迁移过来的 per-tool 治理。
-- **被否**：每 wrapper 再加 list_tools（hook 清单已覆盖，省工具面）；`search_tools` 也下沉到每 wrapper（跨 server 搜索无法实现）。
+- **不采用的方案**：每 wrapper 再加 list_tools（hook 清单已覆盖，省工具面）；`search_tools` 也下沉到每 wrapper（跨 server 搜索无法实现）。
 - **证据**：KGT24k 四工具面（search/get_schema/call/list_servers）的实证裁剪；Anthropic「搜索结果 = 完整可执行信息」原则 → get_tool_details 必须含每参数说明 + 最小示例，使模型一次填对参数。
 - **效果**：G1 按需半边；G5 的校验失败可操作报错。
 
 ### 6.4 D4：stable launcher 隔离版本路径
 
 - **采用**：接管条目的 command 指向 `~/.zcode/z-tool-finder/launcher/proxy-launcher.js`（数据目录下的稳定路径），launcher 内部按以下优先级解析插件本体：inline `plugins.dirs` 中已启用的 `z-tool-finder@inline` 目录 > marketplace cache 中**最高版本**目录（多版本共存时）。hook 每次运行时自检并刷新 launcher 副本；launcher 目录同时放独立 `restore.js`。**插件卸载/本体不存在时**：launcher 退化为直连透传——argv 自带原始定义，原样 spawn，server 恢复原生工具面，config 无需任何改动（cache 中可能残留旧版本，故意不回退执行其 ztf 代码——透传不跑任何本插件逻辑，与僵尸版本无关）。argv 异常（无 `--` 段）才 exit 1 + restore 指引。
-- **被否**：直接物化插件版本绝对路径进接管条目（插件升级即全量失效）；运行时自愈重写（时序不可控）；数据目录放完整 proxy 副本冻结 meta 形态（清单注入已随 hook 消失，无清单的 meta 面只有两跳成本没有收益）。
+- **不采用的方案**：直接物化插件版本绝对路径进接管条目（插件升级即全量失效）；运行时自愈重写（时序不可控）；数据目录放完整 proxy 副本冻结 meta 形态（清单注入已随 hook 消失，无清单的 meta 面只有两跳成本没有收益）。
 - **证据**：marketplace 副本机制（本仓 AGENTS.md 架构边界 2：cache/<marketplace>/<plugin>/<version>/）；卸载流程源码定论见 §6.5.2。
 - **效果**：G3——插件卸载/升级后接管条目仍可运行或可还原（restore.js 不依赖插件存在）。时序约束：透传能力随 launcher 副本刷新生效（须装新版并跑一次 hook 后再卸载才享受）。
 
 ### 6.5 D5：自动接管的边界（user 级与插件 server 自动；workspace 级仅显式）
 
 - **采用**：hook 自动接管两类——① 用户级 `~/.zcode/cli/config.json` 的 server：原位改写 command；② 插件自带 server：**不动 cache 副本**（更新会覆盖、且有完整性标记），改为在用户 config 写同名覆盖条目（user > 插件的覆盖顺序）。workspace 级 server 与一切 SSE/HTTP 类型：不自动接管，仅 `tf takeover <server>` 显式支持。排除清单（registry `excluded`）+ 高频直通白名单（`pinned`，默认空）可配置。
-- **被否**：全自动接管 workspace server——`<repo>/.zcode/config.json` 是版本管理文件，自动改写会污染团队仓库的 PR。
+- **不采用的方案**：全自动接管 workspace server——`<repo>/.zcode/config.json` 是版本管理文件，自动改写会污染团队仓库的 PR。
 - **证据**：zcode-configuration-guide「MCP: merge」的覆盖顺序；marketplace 副本 + seed 完整性标记机制。**探针实证（2026-08-26，`test/probes/PROBE-RESULTS.md`）**：覆盖 key 必须用全命名空间 `plugin:<plugin>:<server>`（裸名无效）；`enabled:false` 禁用原注册有效；`enabled:true` + 替换 command 的接管形态下工具变为 meta 工具且 server 命名空间保持原名（`mcp__plugin_<plugin>_<server>__<tool>`）。
 - **效果**：G2（用户感知的「所有 MCP」即用户级+插件级）且不引入团队协作副作用。
 - 探针：~~⛔ P0-2~~ **✅ 已通过（M0，2026-08-26）**——覆盖机制成立，无需降级路径。
@@ -262,14 +262,14 @@ user config 必有 wrapper 条目，fallback 自动失效，无实际影响）�
 ### 6.6 D6：检索 = 自实现关键词 + BM25
 
 - **采用**：对 catalog 内 `server:tool + when-to-use + description` 建 BM25 索引（内存，规模 <1k 工具毫秒级）。
-- **被否**：embedding 检索（零依赖红线：插件 package.json 禁 dependencies，本仓 check-sync 强制）；引入本地二进制。
+- **不采用的方案**：embedding 检索（零依赖红线：插件 package.json 禁 dependencies，本仓 check-sync 强制）；引入本地二进制。
 - **证据**：仓库规范（AGENTS.md 开发红线）；pi 官方示例同样以 keyword 为起点；Stacklok 数据表明混合检索更优但属后续增强。
 - **效果**：清单外模糊查找兜底，不破红线。
 
 ### 6.7 D7：when-to-use 元数据 + 嵌套防护 + 日志
 
 - **采用**：when-to-use 默认取工具 description 首句，registry 支持 per-server / per-tool 覆写（对齐 skill frontmatter description 的语义）；嵌套标记 `TF_NESTED`（及识别 `ZSW_NESTED`）下 hook 跳过注入与自动接管，wrapper 照常工作；日志按本仓 logging-conventions 落 `~/.zcode/z-tool-finder/logs/`，stdout 严格保留给 JSON-RPC。
-- **被否**：让用户手写全部 when-to-use（G2 零感破坏）；清单注入进嵌套子会话（与 zsub 提示词冲突风险）。
+- **不采用的方案**：让用户手写全部 when-to-use（G2 零感破坏）；清单注入进嵌套子会话（与 zsub 提示词冲突风险）。
 - **效果**：G2 体验完整；符合仓库红线（嵌套防护、日志纪律）。
 
 ## 7. 实现机制（把终态落到代码层）

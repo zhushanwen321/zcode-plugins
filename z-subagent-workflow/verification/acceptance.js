@@ -209,7 +209,7 @@ async function scenarioPmount() {
     assert(!standby.text().includes('record compact'), 'standby 不得出现任何 compact 日志');
     const phase1 = `首竞选 daemon=${daemon.tag} 出 compact 日志（removedRuns=950）；standby=${standby.tag} 零 compact 日志`;
 
-    // 接管路径：重写超阈值台账（daemon 活着不重读，外部覆盖合法）→ kill daemon →
+    // 接管路径：重写超阈值记录（daemon 活着不重读，外部覆盖合法）→ kill daemon →
     // standby 看门狗接管 → onTakeover recover 后 compact（phase=takeover）
     genFixture(1050, false);
     const dpid = daemon.serverPid();

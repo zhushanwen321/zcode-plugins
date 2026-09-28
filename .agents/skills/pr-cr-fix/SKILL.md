@@ -26,8 +26,8 @@ reviewer 契约不兼容（见差异表），**两引擎统一走 zsw CLI**—�
 | 差异点 | xyz-agent 版 | 本项目版 | 原因 |
 |--------|--------------|---------|------|
 | 阶段 2 执行通道 | 路径 1 pi 原生 workflow（batch1 传 agent 路径）/ 路径 2 zflow MCP + `script:pr-review-fix` 移植脚本 / 路径 3 手工兜底 | zsw CLI `workflow --workflow review-fix-loop`（zcode/pi 双引擎统一单通道） | zsw 1.0.0（M1）起 MCP 工具面恒空，CLI 是唯一入口且引擎无关；zsw 已原生内置 review-fix-loop，无需移植脚本；pi 原生版 reviewer 契约不兼容（见下行），禁用 |
-| PR/push 阶段 | 阶段 1 开 PR / 阶段 3 推 PR | 阶段 3（review 闭环后一次性 push + 开 PR） | 远端 2026-08-23 绑定（zhushanwen321/zcode-plugins）后补齐；review 前不开 PR（review 中分支还会变） |
-| 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | quality-gate.js（零依赖：单测执行 + 增量覆盖率 ratchet + 新增函数圈复杂度 fail + CRAP warn 靶子） | 零依赖红线：NODE_V8_COVERAGE 原生产物 + V8 函数区间 decision-point 启发式（口径与取舍见脚本头部声明）；不搬死代码/循环依赖/重复检测（需依赖图分析，单插件仓收益不抵成本） |
+| PR/push 阶段 | 阶段 1 开 PR / 阶段 3 推 PR | 阶段 3（review 完成后一次性 push + 开 PR） | 远端 2026-08-23 绑定（zhushanwen321/zcode-plugins）后补齐；review 前不开 PR（review 中分支还会变） |
+| 度量/覆盖率门禁 | fallow metrics-gate + vitest coverage-gate | quality-gate.js（零依赖：单测执行 + 增量覆盖率只升不降阈值 + 新增函数圈复杂度 fail + CRAP warn 靶子） | 零依赖红线：NODE_V8_COVERAGE 原生产物 + V8 函数区间 decision-point 启发式（口径与取舍见脚本头部声明）；不搬死代码/循环依赖/重复检测（需依赖图分析，单插件仓收益不抵成本） |
 | changeset 门禁 | changeset 检查（extensions 发布流） | check-sync + check-pack + check-release-needed | 本仓发布走 tag 直发（非 changesets）：三件套一致性 + 包内容 + 改动-发版关联检测（UNDECLARED 等价物） |
 | reviewer 输出契约 | YAML frontmatter + structured-output tool | json 围栏块（review-fix-loop 的 extractJsonObject 契约） | 两套 workflow 的解析器不同；本项目 v2 契约不匹配 = parseFail 即 review-failed 结构化终止（响亮失败，不静默漏审）；pi 原生版才是 parseFail 按 clean 处理（禁用原因，见阶段 2 MANDATORY 节） |
 | agent.md 消费方式 | pi workflow batch1 传 agent 路径 | 批次值即 agent .md 路径（reviewer 实体）+ task 内映射表指引 Read 对应 checklist | 两引擎同构：zsw CLI batch1 值 = agent .md 绝对路径，agent.md 是审查契约本体 |
@@ -36,7 +36,7 @@ reviewer 契约不兼容（见差异表），**两引擎统一走 zsw CLI**—�
 ## 前置条件 [MANDATORY]
 
 - 分支相对 main 有 commits（`git log main..HEAD` 非空）
-- 工作区 clean（fix 阶段会写文件，脏工作区混入认知外改动）
+- 工作区 clean（fix 阶段会写文件，脏工作区混入非本次会话产生的改动）
 - node ≥ 20（node --test 需要）
 - zsw CLI 链路可用：zcode CLI 在场（reviewer/fix 阶段 spawn 无头 zcode；路径可用
   `ZSW_ZCODE_CLI` 覆盖）。workflow run 恒本地执行、不依赖 daemon——zcode 会话天然
@@ -59,7 +59,7 @@ quality-gate 判定（exit 0 = pass / 1 = fail / 2 = 工具错误；exit 2 场�
 | 判定 | 语义 | 动作 |
 |------|------|------|
 | 测试失败 | 任一插件单测 FAIL | 按失败用例派 worker 修复后重跑 |
-| 增量覆盖率 < 40%（ratchet 起步值，终态 80） | 新代码没测到 | 按 `.review/quality.json` 的 uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑，上限 3 轮 |
+| 增量覆盖率 < 40%（覆盖率阈值只升不降：起步 40，终态 80） | 新代码没测到 | 按 `.review/quality.json` 的 uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑，上限 3 轮 |
 | 新增函数圈复杂度 > 15 | 结构性超标（fail 只追溯新增函数——新增行占函数 ≥50%；存量函数不追溯原罪，经 CRAP 靶子交 review） | 拆函数后重跑 |
 | CRAP ≥ 30 | warn 靶子，不阻塞 | 进阶段 2 由 test-coverage 审查者消费 |
 
@@ -145,7 +145,7 @@ node z-subagent-workflow/bin/zsw.js workflow \
 **失败停机归因总则 [MANDATORY]**：workflow 以非 clean 终态（尤其 `review-failed` /
 `fix-failed`）退出时，**禁止直接重跑**——先停下做根因三分类，否则同类失败无限重放：
 
-1. **基础设施故障**（provider 错误/流中断/网络）：特征是 runFail 或输出截断（围栏未闭合）。
+1. **基础设施故障**（provider 错误/流中断/网络）：特征是 runFail 或输出截断（代码块缺结束标记）。
    单 phase 级瞬时故障可重跑一次；重复出现说明是调用形态问题（如并发巨上下文会话），
    归入第 3 类。
 2. **参数不适配**：特征是明确的参数错误。校准参数后重跑（注意：超时不在此列——
@@ -171,7 +171,7 @@ subagent 工具，task 结构两引擎等价）手工派 5 个 reviewer（并行
 含：workdir 绝对路径 + agent.md 绝对路径（subagent 须复读原文）+ 审查范围 + 输出格式
 （Findings 表格：优先级 | 文件 | 行号 | 类别 | 描述 | 修复方向——降级路径不经 zsw
 解析器，主 agent 直接读报告，无 json 围栏契约要求）+ `.review/quality.json` 存在时
-要求消费（test-coverage 维度）。聚合去重后派 worker 修 MUST_FIX，修完重审一轮。上限 2 轮。
+要求消费（test-coverage 维度）。聚合去重后派 worker 修必修级（MUST_FIX）问题，修完重审一轮。上限 2 轮。
 
 worker 纪律（与 zsw workflow 内置 fixer 的拒绝理由机制对齐）：
 
@@ -267,7 +267,7 @@ Agent 定义位于本 skill 目录 `agents/review-<维度>.md`（不全局暴露
 | 架构边界 | `agents/review-arch-boundary.md` | 端口/适配器边界（ports.js 契约单向依赖、三决策位可换性、平台漂移限制在端口实现内、manager 与入口薄壳分离、workflow/subagent 双 manager 职责、插件运行时禁引插件根外路径、marketplace 副本自包含） |
 | 并发与资源 | `agents/review-concurrency.md` | AbortSignal 全链传播（spawn 前预检/运行中杀停/编排检查点）、slots 深度分层、reaper 孤儿清理、worktree 泄漏、进程/定时器句柄泄漏、record 终态一致性 |
 | 业务逻辑 | `agents/review-business-logic.md` | 编排正确性（状态机转换、错误路径、部分完成语义、边界条件、文本截断、停滞检测、cleanReviewers 重审语义） |
-| MCP 契约与 IO | `agents/review-mcp-contract.md` | tool schema/description 一致性、必填性与模式语义、json 围栏提取鲁棒性、文件写入原子性、stdout JSON-RPC 通道不被人读输出污染、错误消息可操作性闭环 |
+| MCP 契约与 IO | `agents/review-mcp-contract.md` | tool schema/description 一致性、必填性与模式语义、json 围栏提取鲁棒性、文件写入原子性、stdout JSON-RPC 通道不被人读输出污染、错误消息可操作性核查 |
 | 测试覆盖 | `agents/review-test-coverage.md` | 新增逻辑有测试、node --test 合规、断言强度（修前红修后绿）、abort/超时/并发边界用例、单测与 e2e 边界 |
 
 workspace 级变更（scripts/、.github/、.githooks/、docs/）由 arch-boundary 维度覆盖其
@@ -290,7 +290,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 2. **主 agent 不亲自做维度审查**：review 委托 zsw workflow CLI（或降级路径的引擎原生 subagent）；主 agent 只编排 + gate 校验。
 3. **fix 后必须重跑终验**：review-fix-loop 的 fix 阶段会改文件，Gate-1 读数过期——3a 重跑全部 static gate。
 4. **agent.md 是审查契约**：reviewer 未按 checklist 执行的输出视为无效，重派。
-5. **不提交认知外改动**：fix 阶段改动逐条核对归属后按全局提交策略 commit。
+5. **不提交非本次会话产生的改动**：fix 阶段改动逐条核对归属后按全局提交策略 commit。
 6. **push 必须用户授权**（全局规则）；force-push 场景一律 `--force-with-lease`，裸 `--force` 禁止。
 7. **禁 skip 开关**：`--no-verify` / 跳过用例 / 吞 stderr。检查不通过 = 流程中止，唯一出路是修复。
 
@@ -303,13 +303,13 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | pi 会话改走 pi 原生 review-fix-loop（batch1 喂本仓 agent .md） | reviewer 契约不匹配（YAML/structured-output vs json 围栏）→ parseFail 按 clean 处理 → 静默漏审；统一走 zsw CLI |
 | agent.md 改双契约混写（json 围栏 + YAML 并存） | 两套解析器都可能取错段，parseFail 风险翻倍 |
 | 风格问题标 major/critical | 聚合器误触发 fix 轮次，浪费 |
-| 调低 `--min-coverage` / 调高 `--max-complexity` 绕过 Gate-1 | 与 `--no-verify` 等效：门禁形同虚设；阈值变更只能随 ratchet 上调（coverage）或显式重构标准讨论后改 |
+| 调低 `--min-coverage` / 调高 `--max-complexity` 绕过 Gate-1 | 与 `--no-verify` 等效：门禁形同虚设；阈值变更只能随覆盖率基线上调（只升不降）或经显式重构标准讨论后改 |
 | 手工跑 `node --test` 冒充 Gate-1（不经 quality-gate） | 丢了增量覆盖率/复杂度/CRAP 三个判定与 `.review/quality.json` 产物，test-coverage 审查者失去机器靶子 |
 | quality-gate exit 2 当 pass 处理 | 工具错误静默放行 = 假 pass（xyz coverage-gate [HISTORICAL] 同型事故）；必须排查后重跑 |
 | subagent 封装 zsw workflow CLI 调用 | 多一层无增益中转（subagent 内 bash 一样同步等 CLI 退出） |
 | workflow run 后轮询 status 等结果 | run_in_background 完成即原生通知，轮询白耗 |
 | `gh pr checks --watch` 等 CI（无限阻塞） | runner 排队时挂死（PR #4 事故挂 7h+ 跨会话残留）；用 Gate-3 的有限轮询姿势 |
-| 脏工作区跑审查 | fix 改动与认知外改动混淆 |
+| 脏工作区跑审查 | fix 改动与非本次会话产生的改动混淆 |
 | 用旧 token（`run_workflow` tool / `zflow(action=...)` MCP 调用 / `zsub` 目录名 / `bin/zsub.js`） | zflow MCP 面 1.0.0 起恒空；2026-08 改名后失效；命名 SSOT 见 z-subagent-workflow/CONTEXT.md |
 | review-fix-loop 传 `--reviewers`（旧自由文本视角名） | CLI 显式报错拒收（fail-fast 不静默）；批次契约值 = agent .md 绝对路径，用 `--batch1`（2026-09-02 实测） |
 | reviewer 单 turn 连续长时间工作（读大 diff 不分步） | 超 core turn 总上界（默认 60min，idle 主判 30min 事件刷新）被杀：错误面为 `engine_timeout`（turn 超时专报；旧 300s 固定墙钟时代的 `engine_run_failed` 前缀已随 vendored 0.5.1 两计时器退役）→ 整轮 review-failure；经 `--review-prompt` 注入分步执行纪律缓解 |
@@ -321,7 +321,7 @@ reviewer 只在真 must-fix 时给 critical/major；风格问题一律 minor—�
 | 失败 | 动作 |
 |------|------|
 | Gate-1 quality-gate 测试失败 | 按失败用例（TAP 输出）派 worker 修复后重跑 |
-| Gate-1 增量覆盖率 < ratchet 阈值 | 按 `.review/quality.json` uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑（上限 3 轮，超限上报用户） |
+| Gate-1 增量覆盖率低于只升不降阈值 | 按 `.review/quality.json` uncoveredFiles（missed 降序）派测试 worker 补测试 → 重跑（上限 3 轮，超限上报用户） |
 | Gate-1 新增函数圈复杂度 > 15 | 拆函数（抽取子函数/早返回/查表）后重跑；不能用调高 `--max-complexity` 绕过 |
 | Gate-1 quality-gate exit 2 | 工具错误（V8 产物缺失/git 异常/无 test 目录）：按错误信息排查环境后重跑——不当作 pass 也不当作 fail |
 | Gate-1 check-sync 版本漂移 | 禁手改单文件对齐：将要发版 → 用 `scripts/release.js` 统一 bump 三处；不发版 → 以 main 版本为准回退漂移文件 |

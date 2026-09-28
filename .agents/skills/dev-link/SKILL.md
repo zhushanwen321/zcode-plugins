@@ -30,7 +30,7 @@ description: >-
 | 正式版安装记录 | `~/.zcode/cli/plugins/installed_plugins.json`（id = `<name>@zcode-plugin-workspace`） | 卸载走官方 CLI；安装模拟（CLI 无 install 子命令） |
 | 正式版文件 | `~/.zcode/cli/plugins/cache/zcode-plugin-workspace/<name>/<version>/` | 从 marketplace clone 按插件 package.json `files` 白名单复制（npm 发布面语义） |
 | marketplace 源 | `~/.zcode/cli/plugins/marketplaces/zcode-plugin-workspace/`（gitee main 分支 clone） | unlink 时 git fetch 更新；`marketplace.json` 在列 = 已发布 |
-| zcode CLI | app 内 `zcode.cjs`（自动探测，PATH 优先） | `plugins list`（验证闭环）/ `plugins uninstall --force`（卸载优先通道） |
+| zcode CLI | app 内 `zcode.cjs`（自动探测，PATH 优先） | `plugins list`（验证收尾）/ `plugins uninstall --force`（卸载优先通道） |
 
 unlink 恢复正式版 = 模拟 GUI 安装：更新 clone → marketplace.json 在列判定 → files 白名单复制进 cache → 写 installed 条目 → `plugins list` 验证，**失败自动回滚**并提示 GUI Discover 手动安装兜底。
 

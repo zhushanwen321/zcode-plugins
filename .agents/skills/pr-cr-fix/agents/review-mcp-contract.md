@@ -1,5 +1,5 @@
 ---
-description: "MCP 契约与文件 IO 一致性审查。检查 tool schema 与 description 一致性、参数必填性与模式语义、json 围栏提取鲁棒性、文件写入原子性、错误消息可操作性闭环。"
+description: "MCP 契约与文件 IO 一致性审查。检查 tool schema 与 description 一致性、参数必填性与模式语义、json 围栏提取鲁棒性、文件写入原子性、错误消息可操作性核查。"
 name: review-mcp-contract
 ---
 
@@ -30,7 +30,7 @@ name: review-mcp-contract
    - mailbox 投递原子性（并发/中断后不产生半条消息）
    - outputs 写入与 record 终态化的顺序（先写结果再终态化；反序 = 状态说完成但结果文件缺失）
    - recover 读取路径对损坏文件（半截 json）的容错
-6. **错误消息可操作性**（AGENTS.md 规则 16）：每个新增错误消息是否形成「错误 → 权威源 → 恢复动作」闭环（如 fallow 缺失时给出安装命令、base 不一致时给出重跑指引）；只有「失败」没有下一步 = major
+6. **错误消息可操作性**（AGENTS.md 规则 16）：每个新增错误消息是否形成「错误 → 权威源 → 恢复动作」的完整链路（如 fallow 缺失时给出安装命令、base 不一致时给出重跑指引）；只有「失败」没有下一步 = major
 7. **边界披露**：README/skill 文档声称的限制（polling 降级、并发上限、平台绑定）与实现是否一致——文档过度承诺 = major
 8. **输出审查结果**（按下方 json 围栏契约）。
 

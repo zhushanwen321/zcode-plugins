@@ -1,5 +1,5 @@
 'use strict';
-// U3 A5-A7/P-mount 验收 fixture 生成器：向 $ZSW_ROOT/records.jsonl 写台账。
+// U3 A5-A7/P-mount 验收 fixture 生成器：向 $ZSW_ROOT/records.jsonl 写任务记录。
 // 用法：node gen-fixture.js <终态 run 数> [active|no-active]
 // 终态 run = created + transition(created→cancelled) 两事件；ts 单调递增
 // （组内最后事件 ts 即 run 新旧序）；active = 追加 1 个活跃 run（created 单事件）。

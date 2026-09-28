@@ -247,7 +247,7 @@ dl_uninstall_prod() {
 	else
 		dl_uninstall_prod_manual "$name"
 	fi
-	# 闭环验证：条目必须已消失（CLI 行为异常时手写补删）
+	# 收尾验证：条目必须已消失（CLI 行为异常时手写补删）
 	if [ -n "$(dl_installed_entry_for "$name")" ]; then
 		dl_installed_remove "$name"
 		yellow "  ! CLI 卸载后条目仍在，已手写补删"

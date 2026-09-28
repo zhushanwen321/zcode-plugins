@@ -107,7 +107,7 @@ for input in "$@"; do
 		continue
 	fi
 
-	# ── 6. 验证闭环：plugins list 必须显示正式版，失败自动回滚 ─────────
+	# ── 6. 验证收尾：plugins list 必须显示正式版，失败自动回滚 ─────────
 	if dl_find_zcode_cli; then
 		if dl_zcode plugins list 2>/dev/null | grep -q "^- $name@$MP_ID"; then
 			green "  ✓ plugins list 确认: $name@$MP_ID [$version]"

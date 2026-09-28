@@ -36,8 +36,8 @@
   形态影响，`workflowAssetPath` 直接可用。**版本口径**：0.2.0（npm 被同号不同物占用）与
   0.3.0（本地基线、永不单独发布——2026-08-30 用户裁决）为历史形态；0.4.0 曾为首个
   registry 可用版本；**当前 vendored 基线 0.6.0**（2026-09-08 `--npm` 通道刷新；
-  0.5.1 阶段变更：zcode turn 两计时器（旧固定 300s 墙钟误杀修复）+ settled 两段
-  重锚 + timeout abort 链，详见插件 README「超时行为与调优」节；0.6.0 阶段：
+  0.5.1 阶段变更：zcode turn 两计时器（旧固定 300s 墙钟误杀修复）+ settled
+  watchdog 拆为两段 + timeout abort 链，详见插件 README「超时行为与调优」节；0.6.0 阶段：
   sync-collect v2 契约面（pi 宿主工具面，zsw CLI 形态不消费，可选字段零迁移）
   + 引擎 dispose 修复；引擎形态同 0.5.0：zcode 引擎单一 app-server + 共享宿主
   HOME）。**`--npm` 通道自 0.6.0 起恢复可用**（发版流程补跑 `build:bundle`，
@@ -77,7 +77,7 @@
 
 1. **注释解释为什么**（约束、坑、决策理由），不复述代码在做什么。涉及逆向结论（如引擎行为）
    注明证据来源（文件路径/探针命令）。
-2. **错误信息必须可操作**：指向恢复动作（具体命令/下一步），「错误 → 权威源 → 重试」闭环
+2. **错误信息必须可操作**：指向恢复动作（具体命令/下一步），「错误 → 权威源 → 重试」链路完整
    （zsub 模型路由对不可用 provider 的报错即范例：列出可用清单）。
 3. **外部平台行为断言必须先验证**：声称 zcode CLI/引擎行为前先跑探针或引用书面证据，禁止靠
    推理声称（CLI help 会漂移，0.16.3 `--settings`/`--max-turns` 拒收即案例）。
@@ -113,7 +113,7 @@ stdout 是 JSON-RPC 通道，人读输出一律 stderr + 落盘 `~/.zcode/<plugi
 - 分支命名 `feat-zcode-<插件>-<主题>`；**新分支/worktree 必须用户明确授权**（全局规则）。
 - commit 英文 conventional：`feat(zsub): ...` / `fix(zsub): ...` / `docs: ...`。
 - merge 回 main 用 `--no-ff`；合入时同步 `marketplace.json` 条目与 README 插件表。
-- 完成即提交：改完验证通过后必须 commit，禁留脏工作区；pre-commit 检出问题全部正面修复，
+- 完成即提交：改完验证通过后必须 commit，禁留脏工作区；pre-commit 检出问题全部当场直接修复，
   禁 `--no-verify` / `SKIP_*`。
 - 归档语义：插件废弃时不删目录（历史归档），在 README 标注状态与迁移去向（dynamic-workflow
   → zsub 即先例）。

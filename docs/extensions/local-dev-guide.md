@@ -13,7 +13,7 @@ bash .agents/skills/dev-link/status.sh                # 状态与冲突检查（
 ```
 
 机制与冲突检查矩阵见 `.agents/skills/dev-link/SKILL.md`。以下手工流程是脚本的行为依据
-（脚本 = 自动化的等价操作 + 备份 + 验证闭环），手动改时照此执行：
+（脚本 = 自动化的等价操作 + 备份 + 验证收尾），手动改时照此执行：
 
 编辑 `~/.zcode/cli/config.json`（**改前备份**，如 `cp config.json config.json.bak-<plugin>-$(date +%Y%m%d-%H%M%S)`）：
 

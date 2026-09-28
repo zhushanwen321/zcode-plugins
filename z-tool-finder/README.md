@@ -82,7 +82,7 @@ inline 开发形态：
 | A1 | 安装自动接管（含并发） | inline 注册插件 → 重启 → 会话 1 收到接管提示 → 再重启；另开第二个 zcode 窗口与首窗口同时启动会话（并发触发 hook） | 会话 2 起被接管 server 只剩 2 个 meta 工具；清单注入可见；重复重启无重复接管；并发下 registry 与 config 一致、无孤儿条目；`restore --all` 完整还原 |
 | A2 | token 压缩 | 以 zcode-cua（31 工具）+ browser-use 为对象，对比接管前完整定义与接管后「meta 工具定义 + 清单」合计（char/4 估算） | 常驻开销合计缩减 ≥60% |
 | A3 | 渐进完成真实任务 | 真实会话让 agent 用被接管 server 完成「CSV 转 xlsx」类任务 | agent 按清单 → get_tool_details → call_tool 三跳完成，无需人工提示流程 |
-| A4 | 还原闭环 | `tf restore --all` → 重启；再在 GUI 真实卸载插件后跑 `node ~/.zcode/z-tool-finder/launcher/restore.js --all` → 重启 | 原 `mcp__server__tool` 全部恢复可调；config 无残留 wrapper 条目；卸载后 launcher 给出还原指引而非静默失败 |
+| A4 | 还原验证 | `tf restore --all` → 重启；再在 GUI 真实卸载插件后跑 `node ~/.zcode/z-tool-finder/launcher/restore.js --all` → 重启 | 原 `mcp__server__tool` 全部恢复可调；config 无残留 wrapper 条目；卸载后 launcher 给出还原指引而非静默失败 |
 | A5 | compact 韧性 | 会话中执行 compact | compact 后清单仍在（SessionStart:compact 重注入），agent 仍能按清单取用 |
 | A6 | 故障恢复 | 手动改坏一个底层 server 的原始 command（registry.original 中改错路径）→ agent 调用 | call_tool 报错含 stderr 摘要 + `tf doctor`/`restore` 指引；restore 后恢复 |
 

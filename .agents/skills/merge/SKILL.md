@@ -61,7 +61,7 @@ cd $WS_ROOT/$WT && node scripts/check-sync.js && node scripts/check-pack.js
 #    根 README「现有插件」表已更新——缺失补在 feature 分支内（本阶段 FAIL 重走）
 ```
 
-**Gate-1**：三项全过才继续。任何 FAIL 正面修复（禁 `--no-verify` / 跳过用例），修完从阶段 1 头部重跑。
+**Gate-1**：三项全过才继续。任何 FAIL 当场直接修复（禁 `--no-verify` / 跳过用例），修完从阶段 1 头部重跑。
 
 ### 阶段 2: PR CI + 合并
 
@@ -218,6 +218,6 @@ cd $WS_ROOT && git worktree remove $WT && git branch -d $BR
 
 | 标记 | 含义 | 修改约束 |
 |------|------|----------|
-| `[HISTORICAL]` | 历史事故教训固化的规则（源自 xyz-agent / xyz-pi-extensions / coding-workflow 各项目同源 skill 的事故沉淀） | 不允许删除或削弱，只能补充加强 |
+| `[HISTORICAL]` | 历史事故教训固化的规则（源自 xyz-agent / xyz-pi-extensions / coding-workflow 各项目同源 skill 的事故教训记录） | 不允许删除或削弱，只能补充加强 |
 | `[MANDATORY]` | 流程强制要求，违反会导致流程失败 | 必须严格遵守 |
 | `[OPTIONAL]` | 可按实际情况决定 | 可调整 |

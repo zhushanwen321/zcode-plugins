@@ -115,7 +115,7 @@ node bin/zsw.js workflow --action script-delete --name <名>   → 删 tmp/已�
 
 通用参数：run 的 `--workflow` / `--task` / `--workdir` 必填（绝对路径，agent() 调用在其下工作）；`--model`（模型引用优先取上下文 `<available_provider_models>` 段；快照缺失或疑过期再现查 `node bin/zsw.js models`）/ `--timeout-ms`（整体墙钟预算 RunSpec.budgetTimeMs，不设则无限制）。`--max-concurrent` / `--timeout-per-phase` / `--subtask-count` 已废弃（core 编排无对应面）——传入会 stderr 显式 warning，不静默。运行可达数分钟——run_in_background 包裹时完成通知自动到达。
 
-### 自定义 workflow 脚本（绝对路径引用 + 创作闭环）
+### 自定义 workflow 脚本（绝对路径引用 + 创作链）
 
 内置 5 种之外的编排用 core 契约脚本扩展，run 按 **.js 绝对路径**或 **saved 裸名**引用（`~/` 前缀可展开；`script:<名>` 前缀拒收；saved 裸名与内置同名时内置优先 + 遮蔽 warning——路径引用是最无歧义形态）。发现面按下序遮蔽（同名先到先得，即列表序；序 = vendored core buildScanTargets 实际扫描序 + host 注入序；ref 解析时内置名恒优先于一切发现面）：
 
@@ -148,7 +148,7 @@ const r = await agent({
 return { summary: '结果' };                     // scriptResult（任意可结构化克隆值）
 ```
 
-**创作闭环（推荐路径——不用手写文件再找目录）**：`script-generate`（把源码交给 core 五道闸校验：ESM 拒绝 / meta 必需 / agent() 必需 / 语法 / @pi-meta round-trip，非法报错含行列可自纠正；合法自动落 tmp）→ `lint` 复核（可选）→ `script-save` 固化到 `~/.zsw/workflows/`（save 后 `scripts` 清单可见）→ run 按绝对路径引用 → `script-delete` 清理：
+**创作链（推荐路径——不用手写文件再找目录）**：`script-generate`（把源码交给 core 五道闸校验：ESM 拒绝 / meta 必需 / agent() 必需 / 语法 / @pi-meta round-trip，非法报错含行列可自纠正；合法自动落 tmp）→ `lint` 复核（可选）→ `script-save` 固化到 `~/.zsw/workflows/`（save 后 `scripts` 清单可见）→ run 按绝对路径引用 → `script-delete` 清理：
 
 ```bash
 node bin/zsw.js workflow --action script-generate --name my-wf --script "<完整 JS 源码>"
@@ -162,8 +162,8 @@ node bin/zsw.js workflow --action script-delete --name my-wf
 
 - `agent()` 每次调用 = 一个独立 agent 会话（经 zsw runner 通道 = core zcode engine，同 zsub 线：单一 app-server 常驻引擎复用，共享宿主 HOME——直接消费宿主 `~/.zcode/` 凭据/模型配置/会话 db）；模型解析链 per-call model > run 级 `--model` > 默认。
 - 脚本抛错 / worker 崩溃 = run 落 `done,failed`（core error-recovery 含崩溃重试）；abort 后 pending 的 agent() 调用立即拒绝。
-- 脚本同目录依赖用 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 锚定（worker eval 沙箱内相对路径以 cwd 为基准，不能写相对 require）。
-- 手工放置形态：写好 .js 直接放进发现根（上表目录）→ `scripts` 确认被发现 → run 按路径引用；或走上方创作闭环。
+- 脚本同目录依赖用 `require(path.dirname(workerData.scriptPath) + "/dep.cjs")` 写绝对路径（worker eval 沙箱内相对路径以 cwd 为基准，不能写相对 require）。
+- 手工放置形态：写好 .js 直接放进发现根（上表目录）→ `scripts` 确认被发现 → run 按路径引用；或走上方创作链。
 - 脚本在 worker 线程内执行：不要维护跨 run 的可变全局态；信任前提与「用户主动放进发现根的代码」一致。
 
 ### 何时用 workflow vs subagent（zsub start）
