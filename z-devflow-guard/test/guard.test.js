@@ -83,7 +83,26 @@ test('任务目录不存在或无 status.json = 放行（D0 建档前不误杀�
   }
 });
 
-test('decide：无标记放行 / 豁免放行 / 全终局放行 / 执行中拒绝且消息带恢复动作', () => {
+test('taskDirSignatures：在途目录返回目录名与各 status name，终局目录返回空', () => {
+  const root = tmpDir('zdg-fp-');
+  try {
+    writeStatus(root, 'Active', 'main.status.json', { name: 'main-flow', nodes: { U1: { status: 'in-progress' } }, events: [] });
+    writeStatus(root, 'Active', 'svc.status.json', { name: 'svc-flow', nodes: { U1: { status: 'pending' } }, events: [] });
+    assert.deepStrictEqual(guard.taskDirSignatures(root, 'Active'), ['Active', 'main-flow', 'svc-flow']);
+
+    writeStatus(root, 'Done', 'main.status.json', {
+      name: 'done-flow',
+      nodes: { U1: { status: 'done' } },
+      events: [{ node: '-', event: 'run-terminal' }],
+    });
+    assert.deepStrictEqual(guard.taskDirSignatures(root, 'Done'), []);
+    assert.deepStrictEqual(guard.taskDirSignatures(root, 'No-such-dir'), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('decide：无标记放行 / 无任务目录放行 / 无关派发放行 / 指向在途任务拒绝且消息带恢复动作', () => {
   const root = tmpDir('zdg-fp-');
   const st = tmpDir('zdg-st-');
   try {
@@ -96,17 +115,27 @@ test('decide：无标记放行 / 豁免放行 / 全终局放行 / 执行中拒�
 
     state.addTaskDir(st, 's1', 'Task-a');
     writeStatus(root, 'Task-a', 'main.status.json', {
+      name: 'main-flow',
       nodes: { U1: { status: 'pending' } },
       events: [],
     });
-    const denied = guard.decide(base);
-    assert.strictEqual(denied.allow, false);
-    assert.ok(denied.message.includes('CreateWorkflow'));
-    assert.ok(denied.message.includes('Task-a'));
-    assert.ok(denied.message.includes(state.waivePath(st, 's1')));
+
+    // 派发内容与在途任务无关 → 放行（其他任务正常派发不受影响）
+    const unrelated = guard.decide(Object.assign({ dispatchText: '帮我重构 plugins 仓的日志模块' }, base));
+    assert.deepStrictEqual([unrelated.allow, unrelated.reason], [true, 'unrelated-dispatch']);
+
+    // 派发内容指向在途任务（任务目录名或 status name）→ 拒绝
+    for (const text of ['执行 U4 任务书，产物在 ~/.agents/skill-data/dev-flow/Task-a/ 下', '对照 main-flow 的 exec-plan 审查 diff']) {
+      const denied = guard.decide(Object.assign({ dispatchText: text }, base));
+      assert.strictEqual(denied.allow, false, '应拦截: ' + text);
+      assert.strictEqual(denied.reason, 'dispatch-to-active-task');
+      assert.ok(denied.message.includes('CreateWorkflow'));
+      assert.ok(denied.message.includes('Task-a'));
+      assert.ok(denied.message.includes(state.waivePath(st, 's1')));
+    }
 
     state.waive(st, 's1');
-    const waived = guard.decide(base);
+    const waived = guard.decide(Object.assign({ dispatchText: 'Task-a 任务书' }, base));
     assert.deepStrictEqual([waived.allow, waived.reason], [true, 'waived']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -114,21 +143,26 @@ test('decide：无标记放行 / 豁免放行 / 全终局放行 / 执行中拒�
   }
 });
 
-test('decide：历史已终局目录不拦截，多个目录任一在途即拦', () => {
+test('decide：终局目录特征串失效；目录下出现在途 run 后指向它的派发即拦', () => {
   const root = tmpDir('zdg-fp-');
   const st = tmpDir('zdg-st-');
   try {
     writeStatus(root, 'Old-done', 'main.status.json', {
+      name: 'old-run',
       nodes: { U1: { status: 'done' } },
       events: [{ node: '-', event: 'run-terminal' }],
     });
     state.markStart(st, 's1', 'fingerprint');
     state.addTaskDir(st, 's1', 'Old-done');
-    const base = { stateDir: st, fingerprintRoot: root, sessionId: 's1' };
-    assert.strictEqual(guard.decide(base).allow, true);
+    // 已终局：即便派发内容引用任务名（考古/复盘类）也放行
+    const base = { stateDir: st, fingerprintRoot: root, sessionId: 's1', dispatchText: '考古 old-run 任务的修复史' };
+    assert.deepStrictEqual([guard.decide(base).allow, guard.decide(base).reason], [true, 'all-terminal']);
 
-    writeStatus(root, 'Old-done', 'second.status.json', { nodes: { U9: { status: 'pending' } }, events: [] });
-    assert.strictEqual(guard.decide(base).allow, false);
+    // 同目录出现新的在途 run：指向它的派发被拦
+    writeStatus(root, 'Old-done', 'second.status.json', { name: 'second-run', nodes: { U9: { status: 'pending' } }, events: [] });
+    const denied = guard.decide(base);
+    assert.strictEqual(denied.allow, false);
+    assert.strictEqual(denied.reason, 'dispatch-to-active-task');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(st, { recursive: true, force: true });

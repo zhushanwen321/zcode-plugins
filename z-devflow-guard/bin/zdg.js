@@ -74,13 +74,18 @@ function cmdMark() {
   return 0;
 }
 
-// 拦截判定：exit 2 = 拒绝（stderr 内容回给主 agent）；其余一律放行
+// 拦截判定：exit 2 = 拒绝（stderr 内容回给主 agent）；其余一律放行。
+// 依据是派发的任务内容（prompt + description）是否指向在途 dev-flow 任务，
+// 不看 subagent 类型名。
 function cmdGuard() {
   if (isNested()) return 0;
   const sessionId = process.env.CLAUDE_SESSION_ID || 'default';
   let verdict;
   try {
-    verdict = guard.decide({ stateDir: STATE_DIR, fingerprintRoot: FINGERPRINT_ROOT, sessionId });
+    const input = readStdinJson();
+    const toolInput = input && input.tool_input ? input.tool_input : {};
+    const dispatchText = String(toolInput.prompt || '') + '\n' + String(toolInput.description || '');
+    verdict = guard.decide({ stateDir: STATE_DIR, fingerprintRoot: FINGERPRINT_ROOT, sessionId, dispatchText });
   } catch (err) {
     // 判定异常放行（fail-open）+ stderr 留痕：守卫自身的故障不能拖垮正常派发，日志里可追
     process.stderr.write('[z-devflow-guard] 判定异常已放行，请检查: ' + (err && err.stack ? err.stack : String(err)) + '\n');

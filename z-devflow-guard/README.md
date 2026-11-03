@@ -14,18 +14,20 @@ dev-flow-wf / tech-design-wf 技能的执行契约要求：任务执行期间主
 |------|---------|------|
 | UserPromptSubmit | `[Dd]ev[-_ ]?[Ff]low`（对 prompt 文本做正则） | 命中即为本会话打「已进入 dev-flow 执行态」标记 |
 | PreToolUse | `Read\|Bash\|Edit\|Write\|Glob\|Grep\|ApplyPatch\|Skill` | 工具参数含 `skill-data/dev-flow/` 指纹 → 打标记并记录任务目录；Skill 调用 dev-flow-wf → 打标记 |
-| PreToolUse | `Agent\|Task` | 拦截判定：有标记且关联任务目录存在未终局任务 → exit 2 拒绝，stderr 回给主 agent；否则放行 |
+| PreToolUse | `Agent\|Task` | 拦截判定：派发内容（prompt + description）指向在途 dev-flow 任务时 exit 2 拒绝，stderr 回给主 agent；无关任务的派发一律放行 |
 
 进入执行态的三个来源取 OR：用户输入命中 dev-flow 字样、Skill(dev-flow-wf) 被调用、内容工具触碰 `skill-data/dev-flow/` 产物。中途续跑（用户只说「继续」）靠指纹源命中——恢复上下文必读 status/exec-plan。
 
-## 终局判定（放行条件）
+## 拦截条件与终局判定
 
-关联任务目录下全部 `*.status.json` 满足以下任一条即视为终局（依据 dev-flow-wf `flow/compile.md` §4）：
+对一次 Agent/Task 派发，拦截需同时满足三条：会话有 dev-flow 执行态标记、标记关联的任务目录中存在在途任务、**派发内容（prompt + description）命中该任务的特征串**。特征串 = 任务目录名 + 各 `*.status.json` 的 `name` 字段——任务书必引用产物路径与任务名（对真实事故会话 16 个手工派发验证 16/16 命中），而无关任务的派发内容不含这些串。subagent 类型名（general-purpose / u-dev 等）不参与判定。
+
+在途/终局判定依据 dev-flow-wf `flow/compile.md` §4，单个 `*.status.json` 满足任一条即终局：
 
 1. `events` 数组含 `run-terminal` 汇总事件（引擎终局时写入，实证 32/32 任务均有）；
 2. 防御性补充：全部节点 `status` 已到终值集（`done / blocked / failed / suspended`）。
 
-status.json 解析失败按非终态处理（宁可误拦，有豁免通道救济）。任务目录下尚无 status.json（D0 建档前）放行——这正是「任务开始前的合法 subagent」不被误杀的保证。
+已终局的任务目录不再产生特征串——复盘/考古类派发（引用已完结任务名）放行。status.json 解析失败按非终态处理（宁可误拦，有豁免通道救济）。任务目录下尚无 status.json（D0 建档前）无特征串，放行——「任务开始前的合法 subagent」不被误杀。
 
 ## 状态隔离（按会话）
 
@@ -35,9 +37,9 @@ status.json 解析失败按非终态处理（宁可误拦，有豁免通道救�
 
 ## 误判救济（waive）
 
-守卫只拦 Agent/Task 工具调用，不拦主 agent 直接用 Read/Grep/Bash 等工具干活。已知误判形态与救济：
+守卫只拦「派发内容指向在途任务」的 Agent/Task 调用，不拦主 agent 直接用 Read/Grep/Bash 等工具干活。已知误判形态与救济：
 
-- 复盘/分析类会话读到 dev-flow 产物 → 误打标记 → 后续派 Explore/researcher 被拦；
+- 派发内容只是引用了在途任务的产物路径（如考古在途任务的修复史），实际工作与该任务的执行无关；
 - workflow 发起失败后走合规降级路径。
 
 两种情形写本会话豁免文件后重试原操作（deny 消息里带具体路径）：

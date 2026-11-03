@@ -46,11 +46,11 @@ test('无标记会话 guard 放行（前置 subagent 不误杀）', () => {
   }
 });
 
-test('指纹 mark → guard exit 2 且 stderr 带恢复动作；waive 后放行', () => {
+test('指纹 mark → 指向在途任务的派发被拦（exit 2 带恢复动作）；无关派发与 waive 后放行', () => {
   const dataDir = tmpDir('zdg-h-data-');
   const fpRoot = tmpDir('zdg-h-fp-');
   try {
-    writeStatus(fpRoot, 'Task-a', 'main.status.json', { nodes: { U1: { status: 'in-progress' } }, events: [] });
+    writeStatus(fpRoot, 'Task-a', 'main.status.json', { name: 'main-flow', nodes: { U1: { status: 'in-progress' } }, events: [] });
     const markStdin = JSON.stringify({
       session_id: 'sess-test',
       tool_name: 'Read',
@@ -59,15 +59,29 @@ test('指纹 mark → guard exit 2 且 stderr 带恢复动作；waive 后放行'
     const mark = runHook({ zdgArgs: ['hook', 'mark'], dataDir, fingerprintRoot: fpRoot }, markStdin);
     assert.strictEqual(mark.status, 0);
 
-    const guard1 = runHook({ zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot }, '');
+    // 派发内容指向在途任务（prompt 含任务目录名）→ 拦
+    const guard1 = runHook(
+      { zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot },
+      JSON.stringify({ tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: '执行任务书', prompt: '执行 U4 任务书全文，产物在 ~/.agents/skill-data/dev-flow/Task-a/ 下' } })
+    );
     assert.strictEqual(guard1.status, 2);
     assert.ok(guard1.stderr.includes('CreateWorkflow'));
     assert.ok(guard1.stderr.includes('Task-a'));
     assert.ok(guard1.stderr.includes('.waive'));
 
+    // 同一会话派发无关任务（subagent 类型名任意）→ 放行
+    const guardUnrelated = runHook(
+      { zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot },
+      JSON.stringify({ tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: '重构日志模块', prompt: '把 plugins 仓的日志调用统一成单一入口' } })
+    );
+    assert.strictEqual(guardUnrelated.status, 0);
+
     const waived = runHook({ zdgArgs: ['waive'], dataDir, fingerprintRoot: fpRoot }, '');
     assert.strictEqual(waived.status, 0);
-    const guard2 = runHook({ zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot }, '');
+    const guard2 = runHook(
+      { zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot },
+      JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: '继续 Task-a 任务书' } })
+    );
     assert.strictEqual(guard2.status, 0);
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -127,7 +141,10 @@ test('并行会话隔离：A 会话标记不影响 B 会话派发', () => {
     runHook({ zdgArgs: ['hook', 'mark'], dataDir, fingerprintRoot: fpRoot, sessionId: 'sess-A' }, markStdin);
     const guardB = runHook({ zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot, sessionId: 'sess-B' }, '');
     assert.strictEqual(guardB.status, 0);
-    const guardA = runHook({ zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot, sessionId: 'sess-A' }, '');
+    const guardA = runHook(
+      { zdgArgs: ['hook', 'guard'], dataDir, fingerprintRoot: fpRoot, sessionId: 'sess-A' },
+      JSON.stringify({ tool_name: 'Agent', tool_input: { prompt: '继续 Task-a 的任务书' } })
+    );
     assert.strictEqual(guardA.status, 2);
   } finally {
     fs.rmSync(dataDir, { recursive: true, force: true });
