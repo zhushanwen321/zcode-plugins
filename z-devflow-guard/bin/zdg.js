@@ -25,12 +25,36 @@ function isNested() {
   return NESTED_ENV_KEYS.some((k) => process.env[k]);
 }
 
+// 非 JSON 或超时都按「无输入信息」处理。
+// 必须限时：hook runner 若以 pipe 打开却不写不关 stdin（异常形态），同步读 fd 0 会永久挂起，
+// 把被 hook 的工具调用拖到超时（实测复现过）；正常形态（写入后 end）几十毫秒内拿到。
 function readStdinJson() {
-  try {
-    return JSON.parse(require('fs').readFileSync(0, 'utf8'));
-  } catch {
-    return null; // 无 stdin（手工运行）或非 JSON：按无输入信息处理
-  }
+  if (process.stdin.isTTY) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let buf = '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const tryParse = () => {
+      try {
+        return JSON.parse(buf);
+      } catch {
+        return null;
+      }
+    };
+    const timer = setTimeout(() => finish(null), 250);
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      buf += chunk;
+      if (buf.length > 10 * 1024 * 1024) finish(tryParse());
+    });
+    process.stdin.on('end', () => finish(tryParse()));
+    process.stdin.on('error', () => finish(null));
+  });
 }
 
 function sessionIdFromEnvOrArg(arg) {
@@ -50,11 +74,11 @@ function cmdUserPromptSubmit() {
 }
 
 // 源②③：Skill(dev-flow-wf) 调用 / 内容工具参数含 skill-data/dev-flow/ 指纹
-function cmdMark() {
+async function cmdMark() {
   if (isNested()) return 0;
   try {
     const sessionId = process.env.CLAUDE_SESSION_ID || 'default';
-    const input = readStdinJson();
+    const input = await readStdinJson();
     const toolInput = input && input.tool_input ? input.tool_input : {};
     if (input && input.tool_name === 'Skill') {
       const skillText = String(toolInput.skill || '') + ' ' + String(toolInput.args || '');
@@ -77,12 +101,12 @@ function cmdMark() {
 // 拦截判定：exit 2 = 拒绝（stderr 内容回给主 agent）；其余一律放行。
 // 依据是派发的任务内容（prompt + description）是否指向在途 dev-flow 任务，
 // 不看 subagent 类型名。
-function cmdGuard() {
+async function cmdGuard() {
   if (isNested()) return 0;
   const sessionId = process.env.CLAUDE_SESSION_ID || 'default';
   let verdict;
   try {
-    const input = readStdinJson();
+    const input = await readStdinJson();
     const toolInput = input && input.tool_input ? input.tool_input : {};
     const dispatchText = String(toolInput.prompt || '') + '\n' + String(toolInput.description || '');
     verdict = guard.decide({ stateDir: STATE_DIR, fingerprintRoot: FINGERPRINT_ROOT, sessionId, dispatchText });
@@ -125,7 +149,7 @@ function cmdWaive(arg) {
   return 0;
 }
 
-function main(argv) {
+async function main(argv) {
   const [cmd, sub, arg] = argv;
   if (cmd === 'hook' && sub === 'user-prompt-submit') return cmdUserPromptSubmit();
   if (cmd === 'hook' && sub === 'mark') return cmdMark();
@@ -136,4 +160,4 @@ function main(argv) {
   return 1;
 }
 
-process.exit(main(process.argv.slice(2)));
+main(process.argv.slice(2)).then((code) => process.exit(code));

@@ -173,6 +173,32 @@ test('无头嵌套会话直接放行', () => {
   }
 });
 
+test('stdin 打开却不写不关时 250ms 内自行退出，不挂死工具调用', () => {
+  const dataDir = tmpDir('zdg-h-data-');
+  const fpRoot = tmpDir('zdg-h-fp-');
+  try {
+    for (const args of [['hook', 'mark'], ['hook', 'guard']]) {
+      const t0 = Date.now();
+      const child = spawnSync(process.execPath, [BIN, ...args], {
+        encoding: 'utf8',
+        // stdin 是 pipe：spawnSync 不写 input 也不主动关闭子进程 stdin 读端
+        env: Object.assign({}, process.env, {
+          ZDG_DATA_DIR: dataDir,
+          ZDG_FINGERPRINT_ROOT: fpRoot,
+          CLAUDE_SESSION_ID: 'sess-nostdin',
+        }),
+        timeout: 5000,
+      });
+      const elapsed = Date.now() - t0;
+      assert.strictEqual(child.status, 0, `${args.join(' ')} 应以 0 退出`);
+      assert.ok(elapsed < 2000, `${args.join(' ')} 应限时退出，实际 ${elapsed}ms`);
+    }
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(fpRoot, { recursive: true, force: true });
+  }
+});
+
 test('hooks.json 的 matcher 正则可编译且命中预期样例（无效正则会静默失配）', () => {
   const hooks = JSON.parse(fs.readFileSync(HOOKS_JSON, 'utf8'));
   const promptMatcher = hooks.hooks.UserPromptSubmit[0].matcher;
