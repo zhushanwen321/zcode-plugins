@@ -1,0 +1,20 @@
+{
+  "name": "@zhushanwen/z-devflow-guard",
+  "version": "0.1.0",
+  "description": "Deterministic zcode hook guard: denies direct Agent/Task subagent dispatch in main sessions that entered dev-flow execution state, forcing dispatch through CreateWorkflow.",
+  "type": "commonjs",
+  "license": "MIT",
+  "bin": { "zdg": "bin/zdg.js" },
+  "files": [
+    ".zcode-plugin/plugin.json",
+    ".claude-plugin/plugin.json",
+    "hooks/",
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "keywords": ["zcode", "hooks", "dev-flow", "guard", "workflow", "pretooluse"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/zhushanwen321/zcode-plugins.git", "directory": "z-devflow-guard" },
+  "author": "zhushanwen (https://github.com/zhushanwen321)"
+}
