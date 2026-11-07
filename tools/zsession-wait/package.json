@@ -1,0 +1,14 @@
+{
+  "name": "zsession-wait",
+  "version": "0.1.0",
+  "description": "监控某个 zcode 会话是否完全停止（会话静默 + subagent / workflow / 后台 bash 全部收尾）的外部旁观 CLI",
+  "type": "module",
+  "bin": {
+    "zsession-wait": "bin/zsession-wait.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "private": true,
+  "license": "MIT"
+}
