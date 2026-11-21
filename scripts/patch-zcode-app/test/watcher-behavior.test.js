@@ -15,6 +15,13 @@ const NOW0 = 1_800_000_000_000;
 const MIN = 60 * 1000;
 const wait = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+// 与补丁注入代码同构的键派生（对照实现，用于断言）
+function deriveUuid(expireAt, variant) {
+  let h = Number(expireAt).toString(16);
+  while (h.length < 32) h = '0' + h;
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-4' + h.slice(13, 16) + '-' + variant + h.slice(17, 20) + '-' + h.slice(20, 32);
+}
+
 function makeSandbox() {
   const ticks = [];
   const state = { now: NOW0 };
@@ -64,8 +71,8 @@ test('临期机会（2 分 53 秒，复现截图时点）触发一次 use，键�
   await wait();
   assert.equal(svc.calls.use.length, 1);
   assert.equal(svc.calls.use[0].resetType, 'FIVE_HOUR');
-  assert.equal(svc.calls.use[0].idempotencyKey, `zsw-auto-five_hour-${expireAt}`);
-  assert.ok(svc.calls.use[0].idempotencyKey.length <= 64);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(expireAt, '8'), '键必须由 expireAt 派生且跨重试稳定');
+  assert.match(svc.calls.use[0].idempotencyKey, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/, '键必须是 UI 同款 UUID 形态（服务端 3001 拒绝自定义前缀键）');
 });
 
 test('>5 分钟不触发；时间推进入窗后触发', async () => {
@@ -150,11 +157,11 @@ test('多机会每轮至多触发一次（防同轮连发浪费），下一轮�
   h.ticks[0].fn();
   await wait();
   assert.equal(svc.calls.use.length, 1, '首轮只允许一次 use（v2 语义：防同轮连发）');
-  assert.equal(svc.calls.use[0].idempotencyKey, `zsw-auto-five_hour-${soon}`);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(soon, '8'));
   h.ticks[0].fn();
   await wait();
   assert.equal(svc.calls.use.length, 2, '下一轮接续用下一个入窗机会');
-  assert.equal(svc.calls.use[1].idempotencyKey, `zsw-auto-five_hour-${later}`);
+  assert.equal(svc.calls.use[1].idempotencyKey, deriveUuid(later, '8'));
 });
 
 test('周额度机会永不自动触发（方案 1 裁决）', async () => {

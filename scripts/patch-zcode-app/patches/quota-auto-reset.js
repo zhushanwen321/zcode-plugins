@@ -31,7 +31,7 @@
  * 再注入新版本，apply 幂等且支持原地升级。
  */
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -63,6 +63,15 @@ const WATCHER_CODE = [
   '    var hadCtx = false;',
   '    var badSvcLogged = false;',
   '    function log(m) { try { console.info("[zsw-quota-auto-reset] " + m); } catch (_) {} }',
+  '    // 幂等键 = expireAt 派生的 UUID 形态（8-4-4-4-12 hex，版本位 4）：服务端已证明只接受',
+  '    // UI 同款 crypto.randomUUID() 形态（v3 的 "zsw-auto-..." 键被业务码 3001 拒绝，',
+  '    // 2026-11-21 真机实测）；同一机会重试由 expireAt 决定同键，服务端幂等去重不失效。',
+  '    // 变体位 8 = FIVE_HOUR，c = WEEK，防两类机会撞键。',
+  '    function deriveUuid(expireAt, variant) {',
+  '      var h = Number(expireAt).toString(16);',
+  '      while (h.length < 32) h = "0" + h;',
+  '      return h.slice(0, 8) + "-" + h.slice(8, 12) + "-4" + h.slice(13, 16) + "-" + variant + h.slice(17, 20) + "-" + h.slice(20, 32);',
+  '    }',
   '    log("watcher installed " + VERSION + " (tick " + TICK_MS + "ms, window " + WINDOW_MS + "ms, week=" + WEEK_ENABLED + ")");',
   '    function useExpiring(list, resetType, svc, scope, now) {',
   '      if (!list || !list.length) return false;',
@@ -71,7 +80,7 @@ const WATCHER_CODE = [
   '        if (!op || !op.expireAt) continue;',
   '        var remain = op.expireAt - now;',
   '        if (remain <= 0 || remain > WINDOW_MS) continue;',
-  '        var key = "zsw-auto-" + resetType.toLowerCase() + "-" + op.expireAt;',
+  '        var key = deriveUuid(op.expireAt, resetType === "WEEK" ? "c" : "8");',
   '        if (attempted[key]) continue;',
   '        log("reset opportunity (" + resetType + ") expires in " + Math.round(remain / 1000) + "s, using it; idempotencyKey=" + key);',
   '        svc.useCodingPlanReset(Object.assign({}, scope, { idempotencyKey: key, resetType: resetType }))',
