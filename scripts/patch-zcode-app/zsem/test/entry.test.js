@@ -126,3 +126,38 @@ test('payload 无 model.providerId → undefined(fail-open 形态,不炸)', asyn
   assert.equal(await entry.admit({}), undefined);
   assert.equal(await entry.admit(undefined), undefined);
 });
+
+test('多 provider 混合并发:计数互不串扰', async () => {
+  const { entry } = freshEntry({ 'account:a': { limit: 1 }, 'account:b': { limit: 2 } });
+  const ra = await entry.admit(payload('account:a'));
+  const rb1 = await entry.admit(payload('account:b'));
+  const rb2 = await entry.admit(payload('account:b'));
+  // a 已满(1/1),b 已满(2/2);再各来一个都应排队
+  const ac2 = new AbortController();
+  const waitA = entry.admit(payload('account:a', { signal: ac2.signal }));
+  await new Promise((r) => setTimeout(r, 5));
+  const snap = entry.__forTest.sems.snapshot();
+  assert.equal(snap['account:a'].active, 1);
+  assert.equal(snap['account:b'].active, 2);
+  ac2.abort(new Error('x'));
+  await waitA.then(
+    () => assert.fail('should reject'),
+    (e) => e,
+  );
+  ra.release();
+  rb1.release();
+  rb2.release();
+});
+
+test('log 写失败静默(路径无目录)不影响 admit', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zsem-entry-'));
+  const configPath = path.join(dir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ providers: { p: { limit: 1 } } }), 'utf8');
+  delete require.cache[require.resolve(entryPath)];
+  const entry = require(entryPath);
+  entry.__forTest.overrides.configPath = configPath;
+  entry.__forTest.overrides.logPath = path.join(dir, 'no-such-dir', 'log.jsonl');
+  const r = await entry.admit(payload('p')); // 追加写失败被吞,admit 正常
+  assert.ok(r && typeof r.release === 'function');
+  r.release();
+});

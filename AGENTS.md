@@ -92,6 +92,7 @@ app 内文件**——散落修改无基线、无升级覆盖、不可回滚。
 node scripts/patch-zcode-app/patch-zcode-app.js status    # 基线与各补丁状态（只读）
 node scripts/patch-zcode-app/patch-zcode-app.js apply     # 应用全部补丁（幂等，可重跑）
 node scripts/patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine 基线
+node scripts/patch-zcode-app/patch-zcode-app.js install   # 安装 zsem symlink（幂等）
 ```
 
 - **统一自动升级覆盖**：ZCode 升级整体覆盖 app 文件后，apply 做版本比对，在线
@@ -103,16 +104,22 @@ node scripts/patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine �
 |------|------|------|
 | `yolo` | 新建会话默认权限模式 `build` → `yolo` | app.asar 内 `/out/host/index.js` |
 | `quota-auto-reset` | 5 小时额度重置机会距过期 <5 分钟时自动消耗执行重置 | app.asar 内 `/out/renderer/assets/styles-*.js` |
+| `provider-sem` | LLM 请求准入唯一收口注入 trampoline，转发 zsem 外部模块做 provider 维度并发上限与排队 | asar 外裸文件 `Resources/glm/zcode.cjs` |
 
-- **补丁定义协议**：`{ name, description, target: { pathRegex, contentAnchor },
-  isApplied(content), transform(content, filePath) }`——只做内容变换；锚点必须
-  全归档唯一；变换幂等（`isApplied` 检测 already-applied）；定位/写入失败错误
-  消息必须带恢复动作（重新逆向定位锚点 / restore）。
+- **补丁定义协议**：`{ name, description, target, isApplied(content),
+  transform(content, filePath) }`——只做内容变换;`target` 两类：asar 内文件
+  （`pathRegex` + `contentAnchor`）与 asar 外裸文件（`looseFile`）;锚点必须唯一;
+  变换幂等（`isApplied` 检测 already-applied）;定位/写入失败错误消息必须带恢复
+  动作（重新逆向定位锚点 / restore）。
+- **patch 只做入口原则**（provider-sem 起）：注入行不含策略，分桶/上限/排队/
+  取消/fail-open 全在受控外部模块（`zsem/`，经 `install` symlink 到
+  `~/.zcode/cli/zsem`）;zcode 升级只需重跑 apply，策略零改动。zsem 配置
+  `~/.zcode/cli/zsem-config.json`（providers → limit），观测 `zsem/bin/zsem.js status`。
 - **写入安全**：asar 走「区段搬移式重打包」（未改文件字节原地保留，stage 写完
-  回读校验后原子 rename）；对运行中的 ZCode 执行安全（rename 不动旧 inode），
-  生效需重启。
-- 测试：`node --test 'scripts/patch-zcode-app/test/*.test.js'`（合成 asar 夹具，
-  不触碰真实 app）。
+  回读校验后原子 rename）;loose 文件走 stage 全量写 + 回读比对 + 原子 rename;
+  对运行中的 ZCode 执行安全（rename 不动旧 inode），生效需重启。
+- 测试：`node --test 'scripts/patch-zcode-app/test/*.test.js'`（合成夹具，
+  不触碰真实 app）;实机 e2e 探针在 `test/e2e/`（含一次真实 LLM 调用）。
 
 ## npm 发布规范
 

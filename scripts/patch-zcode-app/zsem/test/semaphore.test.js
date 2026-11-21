@@ -134,3 +134,26 @@ test('setLimit 调高即时放行队列,调低不抢占已持有者', async () =
   r1();
   r2();
 });
+
+test('pump 跳过队首已中止的等待者,授予下一个', async () => {
+  const sems = createProviderSemaphores();
+  sems.setLimit('p', 1);
+  const ac1 = new AbortController();
+  const ac2 = new AbortController();
+  const r1 = await sems.acquire('p');
+  // w1、w2 排队;w1 中止但 listener 触发与 pump 的竞态由 pump 内部双查兜底
+  const w1 = sems.acquire('p', { signal: ac1.signal }).then(
+    () => assert.fail('w1 should reject'),
+    (e) => e,
+  );
+  const got = [];
+  const w2 = sems.acquire('p', { signal: ac2.signal }).then((r) => (got.push('w2'), r));
+  await new Promise((r) => setTimeout(r, 5));
+  ac1.abort(new Error('w1-stop'));
+  await w1;
+  r1(); // 释放 → 名额给 w2(而非已中止的 w1)
+  const r2 = await w2;
+  assert.deepEqual(got, ['w2']);
+  r2();
+  assert.equal(sems.snapshot().p.active, 0);
+});
