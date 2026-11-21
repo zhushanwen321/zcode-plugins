@@ -11,7 +11,7 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 | `marketplace.json` | marketplace 清单，合入 main 时登记插件条目 |
 | `<plugin>/` | 每插件一个顶层目录（`z-` 前缀 kebab-case），含 `.zcode-plugin/plugin.json` + 根 `.mcp.json` + `package.json`（npm 发布清单）+ `skills/` + `bin/` + `lib/` + `dist/` + `test/` |
 | `shared/` | 跨插件共享能力库源码（**构建期 vendor 进各插件 dist**，禁止运行时跨插件根引用，原因见架构边界） |
-| `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口）、`patch-zcode-app/`（ZCode.app 本地补丁统一工具，见「zcode 桌面端 patch 体系」节） |
+| `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口）、`patch-zcode-app/`（ZCode.app 本地补丁统一工具，见「zcode 桌面端 patch 体系」节）、`zcode-auto-allow.mjs`（用户级自动放行 hook，symlink 安装到 `~/.agents/scripts/`，供 `~/.zcode/cli/config.json` hooks 引用；`AskUserQuestion` 在排除清单不走自动放行） |
 | `.githooks/` | git hooks 源（`pre-commit` + `install-hooks.sh`）；`.bare/hooks/post-checkout` 在 worktree add / checkout 时自动安装到 worktree gitdir，切分支即随分支刷新 |
 | `.github/workflows/` | CI（`ci.yml`：单测+一致性+包内容）与 npm 发布（`release-npm.yml`：tag 触发） |
 | `docs/standards.md` | 项目开发规范（技术栈/代码/测试/git） |
