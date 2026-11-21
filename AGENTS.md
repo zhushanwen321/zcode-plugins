@@ -93,10 +93,37 @@ node scripts/patch-zcode-app/patch-zcode-app.js status    # 基线与各补丁�
 node scripts/patch-zcode-app/patch-zcode-app.js apply     # 应用全部补丁（幂等，可重跑）
 node scripts/patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine 基线
 node scripts/patch-zcode-app/patch-zcode-app.js install   # 安装 zsem symlink（幂等）
+node scripts/patch-zcode-app/patch-zcode-app.js autopatch-install   # 装升级自动重打（LaunchAgent + TCC 载体）
 ```
 
-- **统一自动升级覆盖**：ZCode 升级整体覆盖 app 文件后，apply 做版本比对，在线
-  文件无补丁痕迹即自动采纳为新基线并重打全部补丁。升级后只需重跑 apply。
+### autopatch：升级自动重打（三条铁律，新增补丁必须全部满足）
+
+ZCode 自动升级覆盖 app 后，**LaunchAgent `dev.zsw.zcode-autopatch` 自动触发
+`autopatch` 子命令重打全部补丁**，无需人工跑 apply。三条铁律（2026-11-21 用户裁决）：
+
+1. **统一入口**：所有 patch 从 autopatch 一个入口走——新补丁只需加 `patches/`
+   定义（含进 PATCH_ORDER），自动纳入升级重打与 6 小时周期兜底；**禁止为新补丁
+   另起独立的 LaunchAgent/自愈脚本**（历史上 `dev.zsw.zcode-patch-mode-yolo`
+   的 python 字节级直改路径已退役，双路径并发会互踩）。
+2. **patch 逻辑隔离**：单补丁定位/变换失败只影响自己（`buildPlan`/
+   `applyLoosePatches` 逐补丁收集 `failed`，不中断其他补丁）；升级后个别锚点
+   漂移不连坐其余补丁。部分失败 → autopatch 退避重试（10s/60s 三轮）→ 仍失败
+   记日志等人工；系统性冲突（版本不一致且有痕迹、EPERM）不重试直接记日志。
+3. **patch 失败不影响 zcode 启动**：三重保障——写入 stage+原子 rename（失败时
+   在线文件不动，zcode 以原版启动）；autopatch 是 launchd 独立进程，与 zcode
+   启动链零耦合；运行时类补丁（zsem）自身 fail-open。
+
+**鲁棒性机制**：升级器写包中途不盲打（版本+目标文件 size 签名连续两次一致才动
+手）；WatchPaths 覆盖 `app.asar` / `glm/zcode.cjs` / `Info.plist` 三路径 +
+`StartInterval` 6 小时兜底 + `RunAtLoad` 登录自检；日志
+`~/.zcode/cli/patch-autopatch.log`。
+
+**TCC 授权（一次性）**：macOS「应用程序管理」拦截 launchd 上下文写 /Applications
+（EPERM）。载体是 `~/.zcode/cli/zcode-autopatch.app`（极简 bundle，shell 壳探测
+node 后 exec autopatch）——首次安装后必须在 系统设置→隐私与安全性→应用程序管理
+手动添加该 .app 一次（裸 node 二进制加不进列表）。nvm 升级换 node 路径不影响
+（壳内动态探测）；autopatch-install 重跑即刷新一切。
+
 - **当前补丁清单**（新增补丁须同步更新 `PATCH_ORDER`、`patches/` 定义、README
   补丁清单表、`test/patches.test.js`）：
 
@@ -113,11 +140,12 @@ node scripts/patch-zcode-app/patch-zcode-app.js install   # 安装 zsem symlink�
   动作（重新逆向定位锚点 / restore）。
 - **patch 只做入口原则**（provider-sem 起）：注入行不含策略，分桶/上限/排队/
   取消/fail-open 全在受控外部模块（`zsem/`，经 `install` symlink 到
-  `~/.zcode/cli/zsem`）;zcode 升级只需重跑 apply，策略零改动。zsem 配置
+  `~/.zcode/cli/zsem`）;zcode 升级只需重打入口，策略零改动。zsem 配置
   `~/.zcode/cli/zsem-config.json`（providers → limit），观测 `zsem/bin/zsem.js status`。
 - **写入安全**：asar 走「区段搬移式重打包」（未改文件字节原地保留，stage 写完
-  回读校验后原子 rename）;loose 文件走 stage 全量写 + 回读比对 + 原子 rename;
-  对运行中的 ZCode 执行安全（rename 不动旧 inode），生效需重启。
+  回读校验后原子 rename）;loose 文件走 stage 全量写 + fsync + 回读比对 + 原子
+  rename + rename 前 mtime/size 复查（防并发覆盖）;对运行中的 ZCode 执行安全
+  （rename 不动旧 inode），生效需重启。
 - 测试：`node --test 'scripts/patch-zcode-app/test/*.test.js'`（合成夹具，
   不触碰真实 app）;实机 e2e 探针在 `test/e2e/`（含一次真实 LLM 调用）。
 

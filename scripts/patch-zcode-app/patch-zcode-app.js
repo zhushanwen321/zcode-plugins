@@ -252,24 +252,31 @@ async function ensureBase(resourcesDir, appPath, appVersion, patches, log) {
 
 /**
  * 在在线 asar 上构建各补丁写入计划。已应用补丁跳过（幂等），返回
- * { edits: [{patch, entry, newBuffer}], skipped: [{patch, entry}] }。
+ * { edits, skipped, failed }。补丁间隔离：单个补丁定位/变换失败收集进 failed
+ * 不中断其他补丁（autopatch 语义——升级后个别锚点漂移不该连坐其余补丁）；
+ * 全部失败时 edits 为空 → 不写入 → 在线文件原样。
  */
 function buildPlan(livePath, patches) {
   const handle = openAsar(livePath);
   try {
     const edits = [];
     const skipped = [];
+    const failed = [];
     for (const patch of patches) {
-      const { entry, content } = asar.locateTarget(handle.fd, handle.parsed, patch.target.pathRegex, patch.target.contentAnchor);
-      const text = content.toString('utf8');
-      if (patch.isApplied(text)) {
-        skipped.push({ patch, entry });
-        continue;
+      try {
+        const { entry, content } = asar.locateTarget(handle.fd, handle.parsed, patch.target.pathRegex, patch.target.contentAnchor);
+        const text = content.toString('utf8');
+        if (patch.isApplied(text)) {
+          skipped.push({ patch, entry });
+          continue;
+        }
+        const { content: next } = patch.transform(text, entry.path);
+        edits.push({ patch, entry, newBuffer: Buffer.from(next, 'utf8') });
+      } catch (err) {
+        failed.push({ patch, error: err.message });
       }
-      const { content: next } = patch.transform(text, entry.path);
-      edits.push({ patch, entry, newBuffer: Buffer.from(next, 'utf8') });
     }
-    return { edits, skipped };
+    return { edits, skipped, failed };
   } finally {
     closeAsar(handle);
   }
@@ -465,25 +472,37 @@ async function cmdApply(args) {
   const loosePatches = patches.filter(isLoosePatch);
 
   let touched = false;
+  const failed = [];
   if (asarPatches.length > 0) {
     const { basePath } = await ensureBase(resourcesDir, appPath, appVersion, asarPatches, log);
     void basePath; // 基线只服务 restore；apply 的定位与变换全部以在线 asar 为准
-    const { edits, skipped } = buildPlan(livePath, asarPatches);
-    if (edits.length > 0) {
-      repackAsar(livePath, resourcesDir, edits);
+    const plan = buildPlan(livePath, asarPatches);
+    if (plan.edits.length > 0) {
+      repackAsar(livePath, resourcesDir, plan.edits);
       touched = true;
     }
-    for (const e of edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
-    for (const s of skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.entry.path}）`);
+    failed.push(...plan.failed);
+    for (const e of plan.edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
+    for (const s of plan.skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.entry.path}）`);
   }
   if (loosePatches.length > 0) {
     const results = await applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches, log);
     if (results.edits.length > 0) touched = true;
+    failed.push(...results.failed);
     for (const e of results.edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.file}（${e.sizeBefore}B → ${e.sizeAfter}B）`);
     for (const s of results.skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.file}）`);
   }
-  if (!touched) console.log('全部补丁已是目标态，无需写入。');
+  for (const f of failed) console.log(`fail ${f.patch.name}: ${f.error}`);
+  if (!touched && failed.length === 0) console.log('全部补丁已是目标态，无需写入。');
   console.log(`\napp 版本 ${appVersion}；重启 ZCode 后生效。回滚：node ${__filename} restore`);
+  if (failed.length > 0) {
+    const detail = failed.map((f) => `${f.patch.name}: ${f.error}`).join('；');
+    const err = new Error(
+      `${failed.length} 个补丁失败（其余补丁不受影响已处理）——${detail}`,
+    );
+    err.partial = true;
+    throw err;
+  }
 }
 
 async function cmdRestore(args) {
@@ -742,19 +761,24 @@ async function applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches
   await ensureLooseBase(resourcesDir, appVersion, loosePatches, log);
   const edits = [];
   const skipped = [];
+  const failed = [];
   for (const patch of loosePatches) {
-    const file = looseLivePath(resourcesDir, patch);
-    const readStat = fs.statSync(file);
-    const content = fs.readFileSync(file, 'utf8');
-    if (patch.isApplied(content)) {
-      skipped.push({ patch, file });
-      continue;
+    try {
+      const file = looseLivePath(resourcesDir, patch);
+      const readStat = fs.statSync(file);
+      const content = fs.readFileSync(file, 'utf8');
+      if (patch.isApplied(content)) {
+        skipped.push({ patch, file });
+        continue;
+      }
+      const { content: next } = patch.transform(content, file);
+      writeLooseFile(file, next, readStat);
+      edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length });
+    } catch (err) {
+      failed.push({ patch, error: err.message });
     }
-    const { content: next } = patch.transform(content, file);
-    writeLooseFile(file, next, readStat);
-    edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length });
   }
-  return { edits, skipped };
+  return { edits, skipped, failed };
 }
 
 /** 安装 zsem 外部模块 symlink（幂等）：~/.zcode/cli/zsem → 本仓 zsem/ */
@@ -798,10 +822,235 @@ function cmdInstall() {
   console.log('install: entry.js 链路校验通过（admit 可用）');
 }
 
+// ===== autopatch:升级自动重打(LaunchAgent 统一入口) =====
+// 设计约束:①同一入口打全部补丁,单补丁失败不连坐(cmdApply 隔离语义);
+// ②任何失败不影响 zcode 启动(写入 stage+rename 原子,失败时在线文件不动,
+//   本进程与 zcode 启动零耦合);③升级器写文件中不盲打(稳定探测)。
+const AUTOPATCH_LABEL = 'dev.zsw.zcode-autopatch';
+const LEGACY_LABEL = 'dev.zsw.zcode-patch-mode-yolo'; // 旧 yolo 专用自愈,退役防双路径互踩
+
+/** 稳定签名:版本 + 两类补丁目标文件的 size;升级器还在写时签名会变 */
+function appStableSignature(appPath) {
+  try {
+    const parts = [
+      readAppVersion(appPath),
+      fs.statSync(path.join(appPath, 'Contents', 'Resources', 'app.asar')).size,
+      fs.statSync(path.join(appPath, 'Contents', 'Resources', 'glm', 'zcode.cjs')).size,
+    ];
+    return parts.join('|');
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 等待 app 稳定:签名连续两次一致才算稳定(升级器替换包体期间签名抖动)。
+ * @returns {Promise<string|null>} 稳定签名;null = 超时仍不稳定(下次触发再试)
+ */
+async function waitStable(appPath, { tries = 15, intervalMs = 2000 } = {}) {
+  let last = null;
+  let stableCount = 0;
+  for (let i = 0; i < tries; i++) {
+    const sig = appStableSignature(appPath);
+    if (sig !== null && sig === last) {
+      stableCount += 1;
+      if (stableCount >= 1) return sig; // 第二次采样与上次一致
+    } else {
+      stableCount = 0;
+    }
+    last = sig;
+    await sleep(intervalMs);
+  }
+  return null;
+}
+
+/**
+ * autopatch:LaunchAgent 的触发入口。稳定探测 → apply(隔离)→ 部分失败退避重试。
+ * 系统性冲突(如版本不一致且有补丁痕迹拒绝重采纳)不重试——记日志等人工。
+ */
+async function cmdAutopatch(args) {
+  const appPath = path.resolve(args.app || DEFAULT_APP);
+  console.log(`[autopatch] 触发(pid ${process.pid})`);
+  const sig = await waitStable(appPath);
+  if (sig === null) {
+    console.error(`[autopatch] app 文件在 ${15 * 2}s 内未稳定,放弃本次(等待下次触发/周期兜底)。`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`[autopatch] app 稳定(${sig.replace(/\|/g, ' / ')})`);
+  const backoffMs = [0, 10000, 60000];
+  for (let round = 0; round < backoffMs.length; round++) {
+    if (backoffMs[round] > 0) await sleep(backoffMs[round]);
+    try {
+      await cmdApply({ ...args, app: appPath });
+      console.log(`[autopatch] 第 ${round + 1} 轮全部补丁处理完成。`);
+      return;
+    } catch (err) {
+      const partial = err && err.partial === true;
+      console.error(`[autopatch] 第 ${round + 1} 轮失败${partial ? '(部分补丁,已隔离处理其余)' : '(系统性,不重试)'}: ${err.message}`);
+      if (String(err && err.message).includes('EPERM')) {
+        console.error('[autopatch] EPERM = macOS App Management 未授权。恢复动作:重跑 autopatch-install,按其指引把 zcode-autopatch.app 加入 系统设置→隐私与安全性→应用程序管理。');
+      }
+      if (!partial) {
+        process.exitCode = 1;
+        return; // 版本冲突/权限等系统性问题:重试无意义,等人工或下次触发
+      }
+    }
+  }
+  console.error('[autopatch] 三轮退避后仍有失败补丁,放弃本次(StartInterval 周期会再触发;持续失败需人工看锚点)。');
+  process.exitCode = 1;
+}
+
+/** LaunchAgent 安装:统一入口接管升级自动重打,同时退役旧 yolo 专用 plist */
+function cmdAutopatchInstall() {
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const agentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  const logPath = path.join(os.homedir(), '.zcode', 'cli', 'patch-autopatch.log');
+
+  // TCC 载体:极简 .app bundle。macOS「App Management」保护拦截 launchd 上下文对
+  // /Applications 下 app 的写入,且系统设置只能给 .app 授权(裸 node 二进制加不进
+  // 列表)——本 bundle 即 TCC 身份(shell 壳 exec node,子进程按 responsible-process
+  // 归属本 bundle),用户在系统设置一次性授权后 launchd 触发即有写权限。
+  const bundleDir = path.join(os.homedir(), '.zcode', 'cli', 'zcode-autopatch.app');
+  const macosDir = path.join(bundleDir, 'Contents', 'MacOS');
+  fs.mkdirSync(macosDir, { recursive: true });
+  const launcher = `#!/bin/sh
+# ${AUTOPATCH_LABEL} TCC 载体:node 路径探测(nvm 升级换路径时也能找到;彻底找不到时
+# 重跑 autopatch-install 刷新本壳)。PATH 由 launchd 提供的极简环境决定,主要靠 nvm 兜底。
+NODE_BIN=$(command -v node || true)
+[ -x "\$NODE_BIN" ] || NODE_BIN=$(ls -t "\${HOME}"/.nvm/versions/node/*/bin/node 2>/dev/null | head -1)
+exec "\$NODE_BIN" '${__filename}' autopatch
+`;
+  fs.writeFileSync(path.join(macosDir, 'zcode-autopatch'), launcher, { encoding: 'utf8', mode: 0o755 });
+  fs.writeFileSync(
+    path.join(bundleDir, 'Contents', 'Info.plist'),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>${AUTOPATCH_LABEL}</string>
+    <key>CFBundleExecutable</key>
+    <string>zcode-autopatch</string>
+    <key>CFBundleName</key>
+    <string>zcode-autopatch</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+</dict>
+</plist>
+`,
+    'utf8',
+  );
+
+  const plistPath = path.join(agentsDir, `${AUTOPATCH_LABEL}.plist`);
+  const watchPaths = [
+    '/Applications/ZCode.app/Contents/Resources/app.asar',
+    '/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs',
+    '/Applications/ZCode.app/Contents/Info.plist',
+  ];
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${AUTOPATCH_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${path.join(macosDir, 'zcode-autopatch')}</string>
+    </array>
+    <!-- 升级覆盖面任一路径变化即触发重打(app.asar / asar 外 zcode.cjs / 整包替换必变的 Info.plist) -->
+    <key>WatchPaths</key>
+    <array>
+${watchPaths.map((p) => `        <string>${p}</string>`).join('\n')}
+    </array>
+    <!-- 兜底:每 6 小时查一次(幂等) + 登录时自检 -->
+    <key>StartInterval</key>
+    <integer>21600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${logPath}</string>
+    <key>StandardErrorPath</key>
+    <string>${logPath}</string>
+</dict>
+</plist>
+`;
+  // 先退役旧 yolo 专用 LaunchAgent(字节级直改 asar,与本工具的重打包并发会互踩)
+  const legacyPath = path.join(agentsDir, `${LEGACY_LABEL}.plist`);
+  if (fs.existsSync(legacyPath)) {
+    try {
+      execFileSync('launchctl', ['unload', legacyPath], { stdio: 'pipe' });
+    } catch {
+      /* 未加载也算退役 */
+    }
+    const retired = legacyPath.replace(/\.plist$/, `.retired-${Date.now()}.plist`);
+    fs.renameSync(legacyPath, retired);
+    console.log(`autopatch-install: 已退役旧 ${LEGACY_LABEL}(改名 ${path.basename(retired)};其 python 脚本文件保留不再被触发)`);
+  }
+  if (fs.existsSync(plistPath)) {
+    try {
+      execFileSync('launchctl', ['unload', plistPath], { stdio: 'pipe' });
+    } catch {
+      /* 未加载 */
+    }
+  }
+  fs.writeFileSync(plistPath, plist, 'utf8');
+  try {
+    execFileSync('launchctl', ['load', plistPath], { stdio: 'pipe' });
+  } catch (err) {
+    throw new Error(`launchctl load 失败:${err.message}。恢复动作:手工执行 launchctl load ${plistPath} 看报错。`);
+  }
+  console.log(`autopatch-install: ${AUTOPATCH_LABEL} 已安装并加载`);
+  console.log(`  TCC 载体: ${bundleDir}`);
+  console.log(`  日志: ${logPath}`);
+  console.log('  触发:WatchPaths(app.asar/zcode.cjs/Info.plist 变更)+ 每 6 小时 + 登录时');
+  console.log('\n【一次性授权(必做,否则 launchd 触发写入会被 macOS 拦为 EPERM)】');
+  console.log('  系统设置 → 隐私与安全性 → 应用程序管理(App Management)');
+  console.log(`  点「+」添加:${bundleDir}`);
+  console.log('  即将打开该设置面板…');
+  try {
+    execFileSync('open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles'], { stdio: 'pipe' });
+  } catch {
+    /* 面板打不开时用户手动开 */
+  }
+  console.log(`\n  授权后验证:launchctl start ${AUTOPATCH_LABEL} && tail ${logPath}`);
+}
+
+function cmdAutopatchUninstall() {
+  const os = require('node:os');
+  const { execFileSync } = require('node:child_process');
+  const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${AUTOPATCH_LABEL}.plist`);
+  if (!fs.existsSync(plistPath)) {
+    console.log('autopatch-uninstall: 未安装,无需卸载');
+    return;
+  }
+  try {
+    execFileSync('launchctl', ['unload', plistPath], { stdio: 'pipe' });
+  } catch {
+    /* 未加载 */
+  }
+  fs.rmSync(plistPath, { force: true });
+  const bundleDir = path.join(os.homedir(), '.zcode', 'cli', 'zcode-autopatch.app');
+  fs.rmSync(bundleDir, { recursive: true, force: true });
+  console.log(`autopatch-uninstall: ${AUTOPATCH_LABEL} 已卸载(含 TCC 载体;补丁本体不回滚,回滚用 restore)`);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0] || 'status';
-  const runners = { status: cmdStatus, apply: cmdApply, restore: cmdRestore, install: cmdInstall };
+  const runners = {
+    status: cmdStatus,
+    apply: cmdApply,
+    restore: cmdRestore,
+    install: cmdInstall,
+    autopatch: cmdAutopatch,
+    'autopatch-install': cmdAutopatchInstall,
+    'autopatch-uninstall': cmdAutopatchUninstall,
+  };
   const run = runners[cmd];
   if (!run) {
     console.error(`未知命令 ${cmd}。用法见文件头注释或 README.md。`);

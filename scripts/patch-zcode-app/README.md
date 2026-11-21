@@ -9,7 +9,28 @@ node scripts/patch-zcode-app/patch-zcode-app.js apply           # 应用全部�
 node scripts/patch-zcode-app/patch-zcode-app.js apply --patch yolo,quota-auto-reset
 node scripts/patch-zcode-app/patch-zcode-app.js restore         # 回滚为 pristine 基线
 node scripts/patch-zcode-app/patch-zcode-app.js install         # 安装 zsem 外部模块 symlink（幂等）
+node scripts/patch-zcode-app/patch-zcode-app.js autopatch-install   # 升级自动重打（LaunchAgent + TCC 载体）
+node scripts/patch-zcode-app/patch-zcode-app.js autopatch-uninstall # 卸载自动重打
 ```
+
+## autopatch：升级自动重打
+
+ZCode 自动升级覆盖 app 后，LaunchAgent `dev.zsw.zcode-autopatch` 自动触发
+`autopatch` 子命令：稳定探测（版本 + 目标文件 size 签名连续两次一致，升级器
+写包中不盲打）→ `apply` 全量（补丁间隔离）→ 部分失败退避重试（10s/60s 三轮），
+系统性冲突不重试记日志等人工。触发面：WatchPaths（`app.asar` / `glm/zcode.cjs` /
+`Info.plist` 任一变更）+ 每 6 小时兜底 + 登录自检；日志
+`~/.zcode/cli/patch-autopatch.log`。
+
+三条铁律（main/AGENTS.md「zcode 桌面端 patch 体系」节登记，新增补丁必须满足）：
+统一入口（新补丁只加 `patches/` 定义即纳入自动重打，禁止另起独立自愈脚本）；
+patch 逻辑隔离（单补丁失败不连坐）；patch 失败不影响 zcode 启动（原子写入 +
+独立进程 + 运行时补丁 fail-open）。
+
+**TCC 一次性授权**：macOS「应用程序管理」拦截 launchd 上下文写 /Applications
+（EPERM）。首次 `autopatch-install` 后，须在 系统设置→隐私与安全性→应用程序管理
+手动添加 `~/.zcode/cli/zcode-autopatch.app`（极简 bundle 作为 TCC 身份载体；裸
+node 二进制加不进列表）。壳内动态探测 node 路径，nvm 升级不受影响。
 
 `--app <ZCode.app 路径>` 可指定非默认安装位置（默认 `/Applications/ZCode.app`）。
 apply / restore 后**重启 ZCode 生效**；对运行中的 ZCode 执行是安全的（rename 替换
