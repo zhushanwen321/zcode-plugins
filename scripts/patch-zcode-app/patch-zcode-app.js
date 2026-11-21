@@ -36,7 +36,8 @@ const asar = require('./lib/asar');
 const DEFAULT_APP = '/Applications/ZCode.app';
 const BASE_NAME = 'app.asar.bak-zcode-patch-base';
 const SIDECAR_SUFFIX = '.json';
-const PATCH_ORDER = ['yolo', 'quota-auto-reset'];
+const LOOSE_BASE_SUFFIX = '.bak-zcode-patch-base';
+const PATCH_ORDER = ['yolo', 'quota-auto-reset', 'provider-sem'];
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -56,13 +57,18 @@ function loadPatches(requested) {
     .readdirSync(dir)
     .filter((f) => f.endsWith('.js'))
     .map((f) => require(path.join(dir, f)))
-    .sort((a, b) => PATCH_ORDER.indexOf(a.name) - PATCH_ORDER.indexOf(b.name));
+    .sort((a, b) => (PATCH_ORDER.indexOf(a.name) + 1 || 99) - (PATCH_ORDER.indexOf(b.name) + 1 || 99));
   const names = loaded.map((p) => p.name);
   const unknown = (requested || []).filter((n) => !names.includes(n));
   if (unknown.length > 0) {
     throw new Error(`未知补丁名：${unknown.join(', ')}。可用补丁：${names.join(', ')}`);
   }
   return requested && requested.length > 0 ? requested.map((n) => loaded.find((p) => p.name === n)) : loaded;
+}
+
+/** asar 内目标（pathRegex）与 asar 外裸文件目标（looseFile）两类补丁的分派辅助 */
+function isLoosePatch(patch) {
+  return Boolean(patch.target && patch.target.looseFile);
 }
 
 function readAppVersion(appPath) {
@@ -93,7 +99,12 @@ function closeAsar(handle) {
 
 /** 对每个补丁做目标定位 + 现场判定。定位失败不抛（status 需要完整视图）。 */
 function probePatches(file, patches) {
-  const handle = openAsar(file);
+  let handle;
+  try {
+    handle = openAsar(file);
+  } catch (err) {
+    return patches.map((patch) => ({ patch, error: `asar 打开失败：${err.message}` }));
+  }
   try {
     return patches.map((patch) => {
       try {
@@ -448,24 +459,28 @@ async function cmdApply(args) {
   const appVersion = readAppVersion(appPath);
   const patches = loadPatches(args.patch);
   const log = (m) => console.log(`patch: ${m}`);
+  const asarPatches = patches.filter((p) => !isLoosePatch(p));
+  const loosePatches = patches.filter(isLoosePatch);
 
-  const { basePath } = await ensureBase(resourcesDir, appPath, appVersion, patches, log);
-  void basePath; // 基线只服务 restore；apply 的定位与变换全部以在线 asar 为准
-  const { edits, skipped } = buildPlan(livePath, patches);
-  if (edits.length === 0) {
-    console.log('全部补丁已是目标态，无需写入。');
-    for (const s of skipped) console.log(`skip ${s.patch.name}: 已应用（${s.entry.path}）`);
-    return;
+  let touched = false;
+  if (asarPatches.length > 0) {
+    const { basePath } = await ensureBase(resourcesDir, appPath, appVersion, asarPatches, log);
+    void basePath; // 基线只服务 restore；apply 的定位与变换全部以在线 asar 为准
+    const { edits, skipped } = buildPlan(livePath, asarPatches);
+    if (edits.length > 0) {
+      repackAsar(livePath, resourcesDir, edits);
+      touched = true;
+    }
+    for (const e of edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
+    for (const s of skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.entry.path}）`);
   }
-  repackAsar(livePath, resourcesDir, edits);
-
-  console.log('');
-  for (const e of edits) {
-    console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
+  if (loosePatches.length > 0) {
+    const results = await applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches, log);
+    if (results.edits.length > 0) touched = true;
+    for (const e of results.edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.file}（${e.sizeBefore}B → ${e.sizeAfter}B）`);
+    for (const s of results.skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.file}）`);
   }
-  for (const s of skipped) {
-    console.log(`skip ${s.patch.name}: 已应用，跳过（${s.entry.path}）`);
-  }
+  if (!touched) console.log('全部补丁已是目标态，无需写入。');
   console.log(`\napp 版本 ${appVersion}；重启 ZCode 后生效。回滚：node ${__filename} restore`);
 }
 
@@ -475,30 +490,70 @@ async function cmdRestore(args) {
   const livePath = path.join(resourcesDir, 'app.asar');
   const basePath = path.join(resourcesDir, BASE_NAME);
   const sidecarPath = basePath + SIDECAR_SUFFIX;
-  if (!fs.existsSync(basePath)) {
-    throw new Error(`没有基线备份 ${basePath}，无从恢复。恢复动作：先跑一次 apply 建立基线。`);
-  }
-  if (!fs.existsSync(sidecarPath)) {
-    throw new Error(`基线 sidecar 缺失（${sidecarPath}），无法核验基线出身。恢复动作：删除基线文件后重跑 apply 重建。`);
-  }
   const appVersion = readAppVersion(appPath);
-  const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
 
-  const problems = [];
-  if (sidecar.appVersion !== appVersion) {
-    problems.push(`基线版本 ${sidecar.appVersion} ≠ 在线版本 ${appVersion}（可能是 app 升级后混用旧基线，恢复会退回旧版本 asar）`);
+  if (!fs.existsSync(basePath)) {
+    // asar 无基线:仅当 asar 补丁也都未应用(干净)时跳过 asar 回滚;否则无从恢复
+    const asarPatches = loadPatches().filter((p) => !isLoosePatch(p));
+    const dirty = asarPatches.length > 0 && probePatches(livePath, asarPatches).some((p) => p.applied);
+    if (dirty) {
+      throw new Error(`没有基线备份 ${basePath}，无从恢复。恢复动作：先跑一次 apply 建立基线。`);
+    }
+    console.log('restore: asar 基线缺失且 asar 补丁未应用，跳过 asar 回滚');
+  } else if (!fs.existsSync(sidecarPath)) {
+    throw new Error(`基线 sidecar 缺失（${sidecarPath}），无法核验基线出身。恢复动作：删除基线文件后重跑 apply 重建。`);
+  } else {
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+
+    const problems = [];
+    if (sidecar.appVersion !== appVersion) {
+      problems.push(`基线版本 ${sidecar.appVersion} ≠ 在线版本 ${appVersion}（可能是 app 升级后混用旧基线，恢复会退回旧版本 asar）`);
+    }
+    const sha = await sha256File(basePath);
+    if (sidecar.sha256 && sha !== sidecar.sha256) {
+      problems.push(`基线 sha256 与 sidecar 记录不一致（sidecar ${String(sidecar.sha256).slice(0, 12)}… ≠ 实际 ${sha.slice(0, 12)}…），基线文件可能被改动过`);
+    }
+    if (problems.length > 0 && !args.force) {
+      throw new Error(`恢复校验未通过：\n  - ${problems.join('\n  - ')}\n确认要强制恢复时加 --force。`);
+    }
+    const stagePath = path.join(resourcesDir, `.app.asar.restore-stage-${process.pid}`);
+    fs.copyFileSync(basePath, stagePath);
+    fs.renameSync(stagePath, livePath);
+    console.log(`restore: 在线 asar 已恢复为基线（来源 ${sidecar.adoptedFrom}，v${sidecar.appVersion}）。重启 ZCode 后生效。`);
   }
-  const sha = await sha256File(basePath);
-  if (sidecar.sha256 && sha !== sidecar.sha256) {
-    problems.push(`基线 sha256 与 sidecar 记录不一致（sidecar ${String(sidecar.sha256).slice(0, 12)}… ≠ 实际 ${sha.slice(0, 12)}…），基线文件可能被改动过`);
+
+  // loose-file 补丁同样回滚基线
+  const loosePatches = loadPatches().filter(isLoosePatch);
+  for (const patch of loosePatches) {
+    const live = looseLivePath(resourcesDir, patch);
+    const basePathL = live + LOOSE_BASE_SUFFIX;
+    const sidecarPathL = basePathL + SIDECAR_SUFFIX;
+    if (!fs.existsSync(basePathL)) {
+      console.log(`restore: ${patch.name} 无 loose 基线，跳过（${path.basename(live)}）`);
+      continue;
+    }
+    let sidecarL = null;
+    try {
+      sidecarL = JSON.parse(fs.readFileSync(sidecarPathL, 'utf8'));
+    } catch {
+      /* 基线存在即可用，sidecar 损坏只警告 */
+    }
+    if (sidecarL && sidecarL.appVersion !== appVersion && !args.force) {
+      throw new Error(
+        `${patch.name} 基线版本 ${sidecarL.appVersion} ≠ 在线版本 ${appVersion}（升级后混用旧基线会退回旧文件）。` +
+          '确认强制恢复时加 --force。',
+      );
+    }
+    const stageL = path.join(path.dirname(live), `.${path.basename(live)}.restore-stage-${process.pid}`);
+    try {
+      fs.copyFileSync(basePathL, stageL);
+      fs.renameSync(stageL, live);
+    } catch (err) {
+      fs.rmSync(stageL, { force: true });
+      throw err;
+    }
+    console.log(`restore: ${path.basename(live)} 已恢复为 loose 基线。`);
   }
-  if (problems.length > 0 && !args.force) {
-    throw new Error(`恢复校验未通过：\n  - ${problems.join('\n  - ')}\n确认要强制恢复时加 --force。`);
-  }
-  const stagePath = path.join(resourcesDir, `.app.asar.restore-stage-${process.pid}`);
-  fs.copyFileSync(basePath, stagePath);
-  fs.renameSync(stagePath, livePath);
-  console.log(`restore: 在线 asar 已恢复为基线（来源 ${sidecar.adoptedFrom}，v${sidecar.appVersion}）。重启 ZCode 后生效。`);
   console.log('基线保留在原处，之后可随时重新 apply。');
 }
 
@@ -535,7 +590,9 @@ function cmdStatus(args) {
   if (legacy.length > 0) console.log(`旧格式备份（未纳入管理）: ${legacy.join(', ')}`);
 
   console.log('补丁:');
-  for (const probe of probePatches(livePath, patches)) {
+  const asarPatches = patches.filter((p) => !isLoosePatch(p));
+  const loosePatches = patches.filter(isLoosePatch);
+  for (const probe of probePatches(livePath, asarPatches)) {
     if (probe.error) {
       console.log(`  [?] ${probe.patch.name}: 目标定位失败 — ${probe.error}`);
       continue;
@@ -545,15 +602,167 @@ function cmdStatus(args) {
       : '文件与 pristine 哈希一致';
     console.log(`  [${probe.applied ? 'x' : ' '}] ${probe.patch.name} — ${probe.applied ? '已应用' : '未应用'}，${detail}（${probe.entry.path}）`);
   }
+  for (const probe of loosePatches.map((p) => probeLoosePatch(resourcesDir, p))) {
+    if (probe.error) {
+      console.log(`  [?] ${probe.patch.name}: 目标定位失败 — ${probe.error}`);
+      continue;
+    }
+    console.log(`  [${probe.applied ? 'x' : ' '}] ${probe.patch.name} — ${probe.applied ? '已应用' : '未应用'}（${path.relative(appPath, probe.file)}）`);
+  }
   if (!fs.existsSync(basePath)) {
     console.log(`恢复动作：node ${__filename} apply  # 建立基线并应用全部补丁`);
   }
 }
 
+// ===== asar 外裸文件补丁（loose-file）=====
+// 目标是 Resources/ 下的独立文件（当前唯一：glm/zcode.cjs）。机制与 asar 路径
+// 同构：pristine 基线（文件名 + LOOSE_BASE_SUFFIX + sidecar）+ 幂等 apply +
+// 版本比对自动重采纳；写入为 stage 全量写 + 回读逐字节比对 + 原子 rename。
+
+function looseLivePath(resourcesDir, patch) {
+  return path.join(resourcesDir, patch.target.looseFile);
+}
+
+function probeLoosePatch(resourcesDir, patch) {
+  const file = looseLivePath(resourcesDir, patch);
+  if (!fs.existsSync(file)) {
+    return { patch, file, error: `目标文件不存在：${file}` };
+  }
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    return { patch, file, applied: patch.isApplied(content), size: content.length };
+  } catch (err) {
+    return { patch, file, error: err.message };
+  }
+}
+
+/** 在线 loose 目标是否无补丁痕迹（有任一已应用即非 pristine；定位失败上抛） */
+function looseLiveIsPristine(resourcesDir, loosePatches) {
+  const probes = loosePatches.map((p) => probeLoosePatch(resourcesDir, p));
+  const failed = probes.find((p) => p.error);
+  if (failed) throw new Error(`在线文件核验失败（${failed.patch.name}）：${failed.error}`);
+  return probes.every((p) => !p.applied);
+}
+
+async function ensureLooseBase(resourcesDir, appVersion, loosePatches, log) {
+  const bases = [];
+  for (const patch of loosePatches) {
+    const live = looseLivePath(resourcesDir, patch);
+    // 同一 loose 文件可能承载多个补丁：按文件聚合判定（当前一对一，机制上按文件建基线）
+    const basePath = live + LOOSE_BASE_SUFFIX;
+    const sidecarPath = basePath + SIDECAR_SUFFIX;
+    if (fs.existsSync(basePath)) {
+      let sidecar;
+      try {
+        sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+      } catch (err) {
+        throw new Error(
+          `loose 基线 sidecar 损坏（${sidecarPath}）：${err.message}。` +
+            `恢复动作：确认在线文件状态后删除 ${basePath} 与 sidecar，重跑 apply 重建。`,
+        );
+      }
+      if (sidecar.appVersion === appVersion) {
+        bases.push({ patch, basePath });
+        continue;
+      }
+      if (!looseLiveIsPristine(resourcesDir, loosePatches)) {
+        throw new Error(
+          `loose 基线版本（${sidecar.appVersion}）与在线版本（${appVersion}）不一致，且在线文件检出补丁痕迹，拒绝自动重置基线。` +
+            `恢复动作：人工核认在线文件可作基线后，删除 ${basePath} 与 sidecar 再重跑 apply。`,
+        );
+      }
+      log(`ZCode 已升级（${sidecar.appVersion} → ${appVersion}），${path.basename(live)} 无补丁痕迹，采纳为新基线`);
+      await adoptBase(live, basePath, { appVersion, adoptedFrom: `live@${appVersion}` });
+    } else {
+      if (!looseLiveIsPristine(resourcesDir, loosePatches)) {
+        throw new Error(
+          `找不到 ${path.basename(live)} 的基线，且在线文件已含补丁痕迹，无法确定 pristine 起点。` +
+            `恢复动作：重装/更新 ZCode 得到全新文件后重跑 apply。`,
+        );
+      }
+      log(`无基线，采纳在线 ${path.basename(live)} 为基线（v${appVersion}）`);
+      await adoptBase(live, basePath, { appVersion, adoptedFrom: `live@${appVersion}` });
+    }
+    bases.push({ patch, basePath });
+  }
+  return bases;
+}
+
+/** loose 写入：stage 全量写 + 回读逐字节比对 + 原子 rename；失败在线文件不动 */
+function writeLooseFile(livePath, newContent) {
+  const dir = path.dirname(livePath);
+  const stagePath = path.join(dir, `.${path.basename(livePath)}.patch-stage-${process.pid}`);
+  try {
+    fs.writeFileSync(stagePath, newContent, 'utf8');
+    const readBack = fs.readFileSync(stagePath, 'utf8');
+    if (readBack !== newContent) throw new Error('stage 回读与计划内容不一致');
+    fs.renameSync(stagePath, livePath);
+  } catch (err) {
+    fs.rmSync(stagePath, { force: true });
+    throw err;
+  }
+}
+
+async function applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches, log) {
+  await ensureLooseBase(resourcesDir, appVersion, loosePatches, log);
+  const edits = [];
+  const skipped = [];
+  for (const patch of loosePatches) {
+    const file = looseLivePath(resourcesDir, patch);
+    const content = fs.readFileSync(file, 'utf8');
+    if (patch.isApplied(content)) {
+      skipped.push({ patch, file });
+      continue;
+    }
+    const { content: next } = patch.transform(content, file);
+    writeLooseFile(file, next);
+    edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length });
+  }
+  return { edits, skipped };
+}
+
+/** 安装 zsem 外部模块 symlink（幂等）：~/.zcode/cli/zsem → 本仓 zsem/ */
+function cmdInstall() {
+  const fsExtra = require('node:fs');
+  const os = require('node:os');
+  const linkDir = path.join(os.homedir(), '.zcode', 'cli');
+  const link = path.join(linkDir, 'zsem');
+  const target = path.join(__dirname, 'zsem');
+  if (!fsExtra.existsSync(path.join(target, 'entry.js'))) {
+    throw new Error(`zsem 模块不完整（缺 entry.js）：${target}。恢复动作：检查本仓 scripts/patch-zcode-app/zsem/ 目录。`);
+  }
+  fsExtra.mkdirSync(linkDir, { recursive: true });
+  let existing = null;
+  try {
+    existing = fsExtra.readlinkSync(link);
+  } catch {
+    /* 无链接 */
+  }
+  if (existing !== null) {
+    if (path.resolve(path.dirname(link), existing) === target) {
+      console.log(`install: symlink 已存在且指向正确（${link} → ${target}）`);
+    } else {
+      throw new Error(`symlink 已存在但指向别处（${link} → ${existing}）。恢复动作：确认后手工删除该链接再重跑 install。`);
+    }
+  } else {
+    if (fsExtra.existsSync(link)) {
+      throw new Error(`${link} 已存在且不是 symlink。恢复动作：确认该路径用途后手工处理再重跑 install。`);
+    }
+    fsExtra.symlinkSync(target, link, 'dir');
+    console.log(`install: 已创建 ${link} → ${target}`);
+  }
+  // 链路校验：经 symlink 加载 entry.js
+  const entry = require(path.join(link, 'entry.js'));
+  if (typeof entry.admit !== 'function') {
+    throw new Error(`经 symlink 加载 entry.js 成功但 admit 不是函数。恢复动作：检查 zsem/entry.js 导出。`);
+  }
+  console.log('install: entry.js 链路校验通过（admit 可用）');
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0] || 'status';
-  const runners = { status: cmdStatus, apply: cmdApply, restore: cmdRestore };
+  const runners = { status: cmdStatus, apply: cmdApply, restore: cmdRestore, install: cmdInstall };
   const run = runners[cmd];
   if (!run) {
     console.error(`未知命令 ${cmd}。用法见文件头注释或 README.md。`);

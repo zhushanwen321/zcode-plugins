@@ -91,11 +91,21 @@ function fixtureEntries() {
   ];
 }
 
+/** loose 目标合成内容:真实 zcode.cjs 的准入函数形态(admitAttempt),见 patches/provider-sem.js */
+const ZCODE_CJS_SYNTH =
+  '"use strict";' +
+  'async function Kyt(e){if(e.admission===void 0)return nba;let n=e.admission.tryAcquire({model:e.model});if(n===void 0){n=await e.admission.acquire({model:e.model})}return{ticket:n,release(){n.release()}}}' +
+  'var nba;r(Kyt,"admitAttempt");function main(){return 0}void main;';
+
 function buildFakeApp(tmpDir, { version = '9.9.9' } = {}) {
   const resourcesDir = path.join(tmpDir, 'Contents', 'Resources');
   fs.mkdirSync(resourcesDir, { recursive: true });
   fs.writeFileSync(path.join(tmpDir, 'Contents', 'Info.plist'), INFO_PLIST.replace('__VERSION__', version));
-  return { appRoot: tmpDir, resourcesDir, asarPath: path.join(resourcesDir, 'app.asar') };
+  // 真实 app 布局恒含 glm/zcode.cjs(loose 补丁目标)
+  fs.mkdirSync(path.join(resourcesDir, 'glm'), { recursive: true });
+  const zcodeCjsPath = path.join(resourcesDir, 'glm', 'zcode.cjs');
+  fs.writeFileSync(zcodeCjsPath, ZCODE_CJS_SYNTH, 'utf8');
+  return { appRoot: tmpDir, resourcesDir, asarPath: path.join(resourcesDir, 'app.asar'), zcodeCjsPath };
 }
 
-module.exports = { buildAsar, buildFakeApp, fixtureEntries, INFO_PLIST, HOST_INDEX_JS, STYLES_CHUNK_JS };
+module.exports = { buildAsar, buildFakeApp, fixtureEntries, INFO_PLIST, HOST_INDEX_JS, STYLES_CHUNK_JS, ZCODE_CJS_SYNTH };
