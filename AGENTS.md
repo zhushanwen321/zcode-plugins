@@ -11,7 +11,7 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 | `marketplace.json` | marketplace 清单，合入 main 时登记插件条目 |
 | `<plugin>/` | 每插件一个顶层目录（`z-` 前缀 kebab-case），含 `.zcode-plugin/plugin.json` + 根 `.mcp.json` + `package.json`（npm 发布清单）+ `skills/` + `bin/` + `lib/` + `dist/` + `test/` |
 | `shared/` | 跨插件共享能力库源码（**构建期 vendor 进各插件 dist**，禁止运行时跨插件根引用，原因见架构边界） |
-| `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口） |
+| `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口）、`patch-zcode-app/`（ZCode.app 本地补丁统一工具，见「zcode 桌面端 patch 体系」节） |
 | `.githooks/` | git hooks 源（`pre-commit` + `install-hooks.sh`）；`.bare/hooks/post-checkout` 在 worktree add / checkout 时自动安装到 worktree gitdir，切分支即随分支刷新 |
 | `.github/workflows/` | CI（`ci.yml`：单测+一致性+包内容）与 npm 发布（`release-npm.yml`：tag 触发） |
 | `docs/standards.md` | 项目开发规范（技术栈/代码/测试/git） |
@@ -81,6 +81,38 @@ zcode plugins list                               # 应见 <name>@inline [enabled
   `DWF_NESTED=1`），嵌套环境下 MCP server 不注册工具，防递归编排。
 - 同名遮蔽：插件 skills/commands 在发现顺序中优先级最低（用户级/工作区级同名资源会遮蔽插件资源），
   命名带插件前缀降低冲突面。
+
+## zcode 桌面端 patch 体系（patch-zcode-app）
+
+对 ZCode.app（Electron 桌面版）的一切本地补丁，统一收编在
+`scripts/patch-zcode-app/`（`patches/` 目录即补丁清单），**禁止在工具之外手工改
+app 内文件**——散落修改无基线、无升级覆盖、不可回滚。
+
+```bash
+node scripts/patch-zcode-app/patch-zcode-app.js status    # 基线与各补丁状态（只读）
+node scripts/patch-zcode-app/patch-zcode-app.js apply     # 应用全部补丁（幂等，可重跑）
+node scripts/patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine 基线
+```
+
+- **统一自动升级覆盖**：ZCode 升级整体覆盖 app 文件后，apply 做版本比对，在线
+  文件无补丁痕迹即自动采纳为新基线并重打全部补丁。升级后只需重跑 apply。
+- **当前补丁清单**（新增补丁须同步更新 `PATCH_ORDER`、`patches/` 定义、README
+  补丁清单表、`test/patches.test.js`）：
+
+| 补丁 | 行为 | 目标 |
+|------|------|------|
+| `yolo` | 新建会话默认权限模式 `build` → `yolo` | app.asar 内 `/out/host/index.js` |
+| `quota-auto-reset` | 5 小时额度重置机会距过期 <5 分钟时自动消耗执行重置 | app.asar 内 `/out/renderer/assets/styles-*.js` |
+
+- **补丁定义协议**：`{ name, description, target: { pathRegex, contentAnchor },
+  isApplied(content), transform(content, filePath) }`——只做内容变换；锚点必须
+  全归档唯一；变换幂等（`isApplied` 检测 already-applied）；定位/写入失败错误
+  消息必须带恢复动作（重新逆向定位锚点 / restore）。
+- **写入安全**：asar 走「区段搬移式重打包」（未改文件字节原地保留，stage 写完
+  回读校验后原子 rename）；对运行中的 ZCode 执行安全（rename 不动旧 inode），
+  生效需重启。
+- 测试：`node --test 'scripts/patch-zcode-app/test/*.test.js'`（合成 asar 夹具，
+  不触碰真实 app）。
 
 ## npm 发布规范
 
