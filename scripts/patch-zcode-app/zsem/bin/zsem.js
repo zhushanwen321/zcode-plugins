@@ -25,9 +25,15 @@ function parseArgs(argv) {
   return args;
 }
 
-/** 损坏行跳过(与 api.md 存储节声明一致) */
+/** 损坏行跳过(与 api.md 存储节声明一致);FIFO/目录按空日志处理(读它们会挂死/抛错) */
 function readEvents(logPath) {
-  if (!fs.existsSync(logPath)) return [];
+  let stat;
+  try {
+    stat = fs.statSync(logPath);
+  } catch {
+    return [];
+  }
+  if (!stat.isFile()) return [];
   return fs
     .readFileSync(logPath, 'utf8')
     .split('\n')
@@ -41,6 +47,11 @@ function readEvents(logPath) {
       }
     })
     .filter(Boolean);
+}
+
+/** 终端显示转义:providerId 等字段里的控制序列(ESC/\r/\n)不得原样进终端 */
+function safe(s) {
+  return String(s).replace(/[\x00-\x1f\x7f]/g, (c) => (c === '\n' ? '\\n' : c === '\r' ? '\\r' : '?'));
 }
 
 function main() {
@@ -72,7 +83,7 @@ function main() {
   console.log(`providers=${byProvider.size}`);
   for (const [id, s] of byProvider) {
     console.log(
-      `${id}  grants=${s.grants} releases=${s.releases} inFlight=${s.grants - s.releases} queuedEvents=${s.queuedEvents} cancels=${s.cancels} failopens=${s.failopens}`,
+      `${safe(id)}  grants=${s.grants} releases=${s.releases} inFlight=${s.grants - s.releases} queuedEvents=${s.queuedEvents} cancels=${s.cancels} failopens=${s.failopens}`,
     );
   }
   console.log(`totals: grants=${totals.grants} releases=${totals.releases}`);

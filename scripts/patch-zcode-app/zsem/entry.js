@@ -26,6 +26,17 @@ const { logEvent, defaultLogPath } = require('./lib/log');
 
 const sems = createProviderSemaphores();
 
+/** failopen 日志节流:config 缺失/损坏是持续态,逐请求落一条会线性膨胀(修剪 ATK-B5) */
+const FAILOPEN_LOG_INTERVAL_MS = 60000;
+const failopenLastLog = Object.create(null); // why → lastLogAt(ms)
+
+function logFailopenThrottled(why, fields) {
+  const now = Date.now();
+  if (now - (failopenLastLog[why] || 0) < FAILOPEN_LOG_INTERVAL_MS) return;
+  failopenLastLog[why] = now;
+  logEvent('failopen', { ...fields, why }, overrides.logPath);
+}
+
 /** 取消错误:name 与原生对齐(Ebo 判 AbortError),__zsemCancel 供 trampoline 区分误吞 */
 class ZsemCancelled extends Error {
   constructor(reason) {
@@ -50,7 +61,7 @@ async function admit(payload) {
     limits = null;
   }
   if (!limits) {
-    logEvent('failopen', { providerId, why: 'config-unavailable' }, overrides.logPath);
+    logFailopenThrottled('config-unavailable', { providerId });
     return undefined;
   }
   const limit = limits[providerId];
@@ -97,7 +108,7 @@ async function admit(payload) {
       logEvent('cancel', { providerId, modelId }, overrides.logPath);
       throw new ZsemCancelled(signal.reason ?? err);
     }
-    logEvent('failopen', { providerId, modelId, why: 'admit-error' }, overrides.logPath);
+    logFailopenThrottled('admit-error', { providerId, modelId });
     return undefined;
   }
   let released = false; // 调用方是双点调用(重试分支+finally),日志只记真实归还

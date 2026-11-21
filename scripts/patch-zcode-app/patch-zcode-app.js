@@ -188,14 +188,16 @@ async function ensureBase(resourcesDir, appPath, appVersion, patches, log) {
   const sidecarPath = basePath + SIDECAR_SUFFIX;
 
   if (fs.existsSync(basePath)) {
-    let sidecar;
+    let sidecar = null;
     try {
       sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
-    } catch (err) {
-      throw new Error(
-        `基线 sidecar 损坏（${sidecarPath}）：${err.message}。` +
-          `恢复动作：确认在线 asar 状态后删除 ${basePath} 与该 sidecar，重跑 apply 重建基线。`
-      );
+    } catch {
+      // sidecar 缺失/损坏 = adoptBase 两步写中途崩溃的半采纳态：基线文件本身完整
+      // 即可自愈重建（重算哈希、标记 recovered），不再要求人工删除
+      log(`基线 sidecar 缺失/损坏，按基线文件自愈重建（${path.basename(sidecarPath)}）`);
+      const sha = await sha256File(basePath);
+      writeSidecar(sidecarPath, { appVersion, adoptedFrom: 'recovered', adoptedAt: new Date().toISOString(), sha256: sha });
+      sidecar = { appVersion, adoptedFrom: 'recovered', sha256: sha };
     }
     if (sidecar.appVersion === appVersion) return { basePath, sidecar };
     // 版本不一致 = ZCode 已升级覆盖 asar（补丁消失），升级后的 asar 即新 pristine
@@ -522,8 +524,10 @@ async function cmdRestore(args) {
     console.log(`restore: 在线 asar 已恢复为基线（来源 ${sidecar.adoptedFrom}，v${sidecar.appVersion}）。重启 ZCode 后生效。`);
   }
 
-  // loose-file 补丁同样回滚基线
+  // loose-file 补丁同样回滚基线。先对全部 loose 目标做校验（基线在否/版本一致否），
+  // 全过再统一写入——避免「asar 已回滚、loose 因版本不一致中途抛错」的半回滚终态。
   const loosePatches = loadPatches().filter(isLoosePatch);
+  const loosePlan = [];
   for (const patch of loosePatches) {
     const live = looseLivePath(resourcesDir, patch);
     const basePathL = live + LOOSE_BASE_SUFFIX;
@@ -544,9 +548,19 @@ async function cmdRestore(args) {
           '确认强制恢复时加 --force。',
       );
     }
+    loosePlan.push({ patch, live });
+  }
+  for (const { live } of loosePlan) {
+    const basePathL = live + LOOSE_BASE_SUFFIX;
     const stageL = path.join(path.dirname(live), `.${path.basename(live)}.restore-stage-${process.pid}`);
     try {
       fs.copyFileSync(basePathL, stageL);
+      const fdL = fs.openSync(stageL, 'r');
+      try {
+        fs.fsyncSync(fdL);
+      } finally {
+        fs.closeSync(fdL);
+      }
       fs.renameSync(stageL, live);
     } catch (err) {
       fs.rmSync(stageL, { force: true });
@@ -655,11 +669,12 @@ async function ensureLooseBase(resourcesDir, appVersion, loosePatches, log) {
       let sidecar;
       try {
         sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
-      } catch (err) {
-        throw new Error(
-          `loose 基线 sidecar 损坏（${sidecarPath}）：${err.message}。` +
-            `恢复动作：确认在线文件状态后删除 ${basePath} 与 sidecar，重跑 apply 重建。`,
-        );
+      } catch {
+        // sidecar 缺失/损坏 = 半采纳态,按基线文件自愈重建(与 asar 路径同款)
+        log(`loose 基线 sidecar 缺失/损坏，按基线文件自愈重建（${path.basename(sidecarPath)}）`);
+        const sha = await sha256File(basePath);
+        writeSidecar(sidecarPath, { appVersion, adoptedFrom: 'recovered', adoptedAt: new Date().toISOString(), sha256: sha });
+        sidecar = { appVersion, adoptedFrom: 'recovered', sha256: sha };
       }
       if (sidecar.appVersion === appVersion) {
         bases.push({ patch, basePath });
@@ -688,14 +703,34 @@ async function ensureLooseBase(resourcesDir, appVersion, loosePatches, log) {
   return bases;
 }
 
-/** loose 写入：stage 全量写 + 回读逐字节比对 + 原子 rename；失败在线文件不动 */
-function writeLooseFile(livePath, newContent) {
+/**
+ * loose 写入：stage 全量写 + fsync + 回读逐字节比对 + 原子 rename；失败在线文件不动。
+ * 并发防护：rename 前复查 live 的 mtime/size 与读取时快照一致——读取后有并发写者
+ * （zcode 自动更新 / 另一 apply / 手工编辑）即报错退出，防「旧快照覆盖新版本」
+ * 的静默丢失更新。
+ */
+function writeLooseFile(livePath, newContent, readStat) {
   const dir = path.dirname(livePath);
   const stagePath = path.join(dir, `.${path.basename(livePath)}.patch-stage-${process.pid}`);
   try {
     fs.writeFileSync(stagePath, newContent, 'utf8');
+    const fd = fs.openSync(stagePath, 'r');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     const readBack = fs.readFileSync(stagePath, 'utf8');
     if (readBack !== newContent) throw new Error('stage 回读与计划内容不一致');
+    if (readStat) {
+      const now = fs.statSync(livePath);
+      if (now.mtimeMs !== readStat.mtimeMs || now.size !== readStat.size) {
+        throw new Error(
+          `目标文件在读取后被并发修改（${path.basename(livePath)}:${readStat.size}B → ${now.size}B），拒绝覆盖。` +
+            '恢复动作：重跑 apply（以最新文件为准重新定位锚点）。',
+        );
+      }
+    }
     fs.renameSync(stagePath, livePath);
   } catch (err) {
     fs.rmSync(stagePath, { force: true });
@@ -709,13 +744,14 @@ async function applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches
   const skipped = [];
   for (const patch of loosePatches) {
     const file = looseLivePath(resourcesDir, patch);
+    const readStat = fs.statSync(file);
     const content = fs.readFileSync(file, 'utf8');
     if (patch.isApplied(content)) {
       skipped.push({ patch, file });
       continue;
     }
     const { content: next } = patch.transform(content, file);
-    writeLooseFile(file, next);
+    writeLooseFile(file, next, readStat);
     edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length });
   }
   return { edits, skipped };
@@ -725,6 +761,9 @@ async function applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches
 function cmdInstall() {
   const fsExtra = require('node:fs');
   const os = require('node:os');
+  if (!os.homedir()) {
+    throw new Error('HOME 环境为空，无法定位安装目录（会污染当前目录）。恢复动作：设置 HOME 后重跑 install。');
+  }
   const linkDir = path.join(os.homedir(), '.zcode', 'cli');
   const link = path.join(linkDir, 'zsem');
   const target = path.join(__dirname, 'zsem');
@@ -771,7 +810,13 @@ function main() {
   Promise.resolve()
     .then(() => run(args))
     .catch((err) => {
-      console.error(`错误: ${err.message}`);
+      // 回执三段形态兜底:个别底层错误(EACCES/EEXIST 等系统错误)不带恢复动作段,
+      // 统一附加通用指引,保持所有失败回执形态一致
+      const msg = err && err.message ? err.message : String(err);
+      console.error(`错误: ${msg}`);
+      if (!msg.includes('恢复动作')) {
+        console.error('恢复动作：修复上述问题后重跑；紧急止血可 node ' + __filename + ' restore 回滚为基线。');
+      }
       if (process.env.PATCH_DEBUG) console.error(err.stack);
       process.exit(1);
     });

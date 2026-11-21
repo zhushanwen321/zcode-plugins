@@ -105,3 +105,63 @@ test('install 幂等 + 链路校验(HOME 隔离)', () => {
   assert.match(out2, /已存在且指向正确/);
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+test('apply 并发防护:读取后目标被替换 → 拒绝覆盖(变异验证)', () => {
+  const app = buildApp('1.0.0');
+  const zc = path.join(app, 'Contents', 'Resources', 'glm', 'zcode.cjs');
+  // 用 --require 钩子在 apply 首次写 stage 时替换 live(确定性时点注入)
+  const hook = path.join(app, 'hook.js');
+  fs.writeFileSync(hook, `
+const fs=require('node:fs');
+const origOpen=fs.openSync.bind(fs);
+fs.openSync=(f,...a)=>{
+  if(String(f).includes('patch-stage')){ // stage 已写入、fsync open 时:替换 live 模拟并发写者
+    const live=String(f).replace(/\\.patch-stage-\\d+$/, '').replace(/\\/\\.([^/]+)$/, '/$1');
+    fs.writeFileSync(live, 'CONCURRENT-NEW-VERSION', 'utf8');
+    fs.rmSync(__filename,{force:true});
+  }
+  return origOpen(f,...a);
+};`, 'utf8');
+  let threw = null;
+  try {
+    execFileSync('node', ['--require', hook, CLI, 'apply', '--app', app, '--patch', 'provider-sem'], { encoding: 'utf8' });
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, '应报错');
+  assert.match(String(threw.stderr), /并发修改|拒绝覆盖/);
+  assert.equal(fs.readFileSync(zc, 'utf8'), 'CONCURRENT-NEW-VERSION', '并发新版本未被旧快照覆盖');
+  fs.rmSync(app, { recursive: true, force: true });
+});
+
+test('restore 先全校验:loose 版本不一致时 asar 不被回滚(变异验证,合成双目标)', () => {
+  const app = buildApp('1.0.0');
+  // asar 侧放一个合法基线(空流程:直接手工构造基线文件)
+  const res = path.join(app, 'Contents', 'Resources');
+  const basePath = path.join(res, 'app.asar.bak-zcode-patch-base');
+  fs.writeFileSync(basePath, 'asar-baseline', 'utf8');
+  fs.writeFileSync(basePath + '.json', JSON.stringify({ appVersion: '1.0.0', sha256: null }), 'utf8');
+  // loose 侧:apply 建基线后,模拟升级使 loose 基线版本过期
+  run(['apply', '--app', app, '--patch', 'provider-sem']);
+  fs.writeFileSync(path.join(app, 'Contents', 'Info.plist'), '<plist><dict><key>CFBundleShortVersionString</key><string>2.0.0</string></dict></plist>', 'utf8');
+  let threw = null;
+  try {
+    run(['restore', '--app', app]);
+  } catch (err) {
+    threw = err;
+  }
+  assert.ok(threw, 'loose 版本不一致应整体拒绝');
+  assert.equal(fs.readFileSync(path.join(res, 'app.asar'), 'utf8'), '', 'asar 未被回滚(先校验后写入)');
+  fs.rmSync(app, { recursive: true, force: true });
+});
+
+test('sidecar 缺失自愈:删 sidecar 后 apply 不再要求人工清理(变异验证)', () => {
+  const app = buildApp('1.0.0');
+  const zc = path.join(app, 'Contents', 'Resources', 'glm', 'zcode.cjs');
+  run(['apply', '--app', app, '--patch', 'provider-sem']);
+  fs.rmSync(zc + '.bak-zcode-patch-base.json');
+  const out = run(['apply', '--app', app, '--patch', 'provider-sem']);
+  assert.match(out, /skip provider-sem: 已应用|自愈重建/);
+  assert.ok(fs.existsSync(zc + '.bak-zcode-patch-base.json'), 'sidecar 已重建');
+  fs.rmSync(app, { recursive: true, force: true });
+});

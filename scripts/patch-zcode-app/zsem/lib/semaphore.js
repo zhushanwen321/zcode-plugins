@@ -90,6 +90,9 @@ function createProviderSemaphores() {
       };
       pool.queue.push(waiter);
       if (signal) signal.addEventListener('abort', waiter.onAbort, { once: true });
+      // 入队+注册 listener 之后补查一次:onQueued 回调可能在同步段内已触发 abort
+      // (事件早于 listener 注册),此时按取消路径立即摘除,不留占位等待者
+      if (signal && signal.aborted) waiter.onAbort();
     });
   }
 

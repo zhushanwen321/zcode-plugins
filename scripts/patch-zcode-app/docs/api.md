@@ -36,8 +36,11 @@ zsem CLI:
 ## 存储
 
 - `~/.zcode/cli/zsem-log.jsonl`:观测日志,追加写(appendFileSync,单行 JSON);
-  事件类型 `acquire/grant/queue/release/cancel/failopen/reject`;
-  损坏行跳过(status 只解析合法行);删除文件无副作用(重新追加)。
+  事件类型 `acquire/grant/queue/release/cancel/failopen`(failopen 按 why 节流,
+  60 秒窗口内同因只记一条);损坏行跳过(status 只解析合法行);删除文件无副作用
+  (重新追加)。文件被替换为 FIFO/目录等非常规形态时写侧静默跳过(同步 open 对
+  它们会永久阻塞,不设防会冻结 zcode 事件循环)。截断覆盖式保存的撕裂读会落
+  failopen 一次(亚毫秒窗口,属 fail-open 声明的正常形态)。
 - patch 基线:`<Resources>/glm/zcode.cjs.bak-zcode-patch-base` + 同名 `.json`
   sidecar(版本/sha256),与 asar 基线同款机制。
 
@@ -50,8 +53,10 @@ zsem CLI:
   排队、取消、日志全在 zsem/entry.js。降级行为 = fail-open(见配置节)。
 - entry.js 导出 `admit(payload)`:payload 即 Kyt 形参对象(含
   `model:{providerId,modelId}`、`signal`)。返回 `{ticket: undefined, release}`
-  (release 自带幂等守卫——调用方对同一 ticket 会 release 两次)或 `undefined`
-  (不接管走原生)。排队时先 `await payload.onQueued?.()`,放行前
-  `await payload.onAdmitted?.(排队毫秒)`(workflow actor 状态机依赖);排队中
-  `signal` abort 时 reject `payload.signal.reason`(与原生取消语义对齐,见
-  fact-check.md A13/A15)。
+  (release 自带幂等守卫——调用方对同一 ticket 会多次 release)或 `undefined`
+  (不接管走原生)。排队时调用 `payload.onQueued?.()`、排队后授予时调用
+  `payload.onAdmitted?.(排队毫秒)`——**fire-and-forget**(异常吞掉,不 await:
+  回调是状态机事件发布,快且无返回值依赖;与原生 await 串行的偏差是微任务级
+  事件可见序,workflow 相位机按事件到达推进,不受影响);排队中 `signal` abort
+  时 reject `payload.signal.reason`(与原生取消语义对齐,见 fact-check.md
+  A13/A15)。

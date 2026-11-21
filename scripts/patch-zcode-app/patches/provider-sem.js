@@ -35,7 +35,10 @@ function definitionRegex(fnName) {
 }
 
 function isApplied(content) {
-  return content.includes('globalThis.__ZSEM__');
+  // 强标记:注入模板的完整特征前缀(惰性单例装配语句),裸串 `globalThis.__ZSEM__`
+  // 在文件他处自然出现(注释/字符串字面量)不得误判为已应用——误判会导致静默
+  // 跳过注入且升级后拒绝重采纳基线(修剪 ATK-B2)
+  return content.includes('var __z=globalThis.__ZSEM__??(globalThis.__ZSEM__=require(');
 }
 
 function transform(content, filePath) {

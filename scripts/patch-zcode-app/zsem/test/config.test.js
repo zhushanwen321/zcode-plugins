@@ -37,14 +37,15 @@ test('合法配置 → providerId 到 limit 映射;非法条目忽略', () => {
       },
     }),
   );
-  assert.deepEqual(readLimits(file), { 'account:glm': 10 });
+    // readLimits 返回 null 原型对象(防原型链键),比较时转普通对象
+  assert.deepEqual({ ...readLimits(file) }, { 'account:glm': 10 });
 });
 
 test('mtime 缓存:文件变化后重读生效', () => {
   resetCache();
   const file = tmpConfig(JSON.stringify({ providers: { p: { limit: 1 } } }));
-  assert.deepEqual(readLimits(file), { p: 1 });
+  assert.deepEqual({ ...readLimits(file) }, { p: 1 });
   // 同 mtime 内缓存(写回同内容 + utimes 保 mtime 不变不可靠,直接改内容验证重读)
   fs.writeFileSync(file, JSON.stringify({ providers: { p: { limit: 7 } } }), 'utf8');
-  assert.deepEqual(readLimits(file), { p: 7 });
+  assert.deepEqual({ ...readLimits(file) }, { p: 7 });
 });

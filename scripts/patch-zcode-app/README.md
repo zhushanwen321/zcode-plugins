@@ -58,6 +58,9 @@ zsem 故障语义 = fail-open：模块缺失/配置损坏/内部异常时注入�
   文件字节原地保留、stage 回读校验后原子 rename）；loose 走 stage 全量写 +
   回读逐字节比对 + 原子 rename。任一步失败在线文件不动。
 - **幂等**：补丁变换自带 already-applied 检测（marker），重复 apply 自动跳过。
+- **崩溃残留**：apply/restore 中途被强杀可能残留 `.zcode.cjs.patch-stage-<pid>`
+  等隐藏 stage 文件——不影响后续 apply/status/restore（不读不删），属已知取舍；
+  确认无 apply 在跑时可手工删除。
 - **ZCode 升级**：升级整体覆盖 app 文件（补丁消失、基线版本过期）。apply 时
   版本比对，发现升级且在线文件无补丁痕迹 → 自动采纳为新基线再打补丁（asar 与
   loose 两类同款）。

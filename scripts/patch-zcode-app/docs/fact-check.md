@@ -22,7 +22,7 @@ zcode.cjs 字节偏移;grep -ob 与 node 字符偏移在 4.3M 前一致,其后�
 | A10 | Kyt 返回 `{ticket:n, release(){…幂等守卫}}`;原生无 admission 时返回空 ticket 兜底 `nba={release(){}}` | 事实 | .run/probes/verifier-slices.txt:34(Kyt 函数体) | 原生自己的 ticket=undefined 先例 |
 | A12 | Kyt 调用方对 ticket 零深度消费:唯一去向 = ticket 存在则透传 admissionTicket 并调 `ticket.publish(event)`(缺失仅一条 warn,Promise.allSettled 不影响主流程)。外部最小返回 = `{ticket: undefined, release}`(调用方豁免路径,零耦合零噪音) | 事实 | .run/probes/verifier-slices.txt:10(Ice 豁免三元式),:16(Wwo 调用与 catch) | ticket 形状定案 |
 | A13 | 取消判定:`signal.aborted===true` 或错误 `name==="AbortError"` 或 `code==="ABORT_ERR"` → cancelled 语义(retryable:false 不重试);其他错误落普通失败分支(可能进重试预算)。entry.js 取消等待时 reject `signal.reason`(abort 时恒有值)即与原生中止对齐 | 事实 | .run/probes/verifier-slices.txt:13(Ebo 三条件) | 取消语义定案 |
-| A14 | 调用方对 release 是「重试分支显式调 + finally 兜底调」双点模式,同一 ticket 会被 release 2 次 → 外部 release 必须自身幂等(once 守卫) | 事实 | .run/probes/verifier-slices.txt:22(Wwo 双点1),:25(Wwo 双点2),:28(Qwo 双点1),:31(Qwo 双点2) | 硬要求 |
+| A14 | 调用方对 release 是多点模式(每侧三个调用点:重试分支显式调 + finally 兜底调 + 空完成重试函数 evt 内的 admission.release,后者 Wwo/Qwo 两侧各一),同一 ticket 会被 release 2 次以上 → 外部 release 必须自身幂等(once 守卫) | 事实 | .run/probes/verifier-slices.txt:22(Wwo 双点1),:25(Wwo 双点2),:28(Qwo 双点1),:31(Qwo 双点2);evt 第三点=基线 zcode.cjs 偏移 4246777(e.admission?.release()),Wwo/Qwo 分别以 admission 传入(偏移 4261533/4276726) | 硬要求;修剪阶段补登第三点 |
 | A15 | trampoline 完全接管后,原生 `onQueued`/`onAdmitted` 事件不会自发产生;workflow actor 状态机(YAi)依赖这两个事件推进 queued→executing 相位 → entry.js 排队时须自行 `await e.onQueued?.()` 与 `await e.onAdmitted?.(排队毫秒)`,立即准入不调(与原生 tryAcquire 命中路径一致) | 事实 | .run/probes/verifier-slices.txt:19(kyt 装配回调) | entry.js 义务 |
 
 ## 外部接口核实表

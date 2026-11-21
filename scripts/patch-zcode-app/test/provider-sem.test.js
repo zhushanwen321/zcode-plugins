@@ -54,3 +54,10 @@ test('结构校验:函数名命中但函数体首句形态变化 → 可操作�
   const broken = synth().replace('if(e.admission===void 0)return nba;', 'let q=1;');
   assert.throws(() => patch.transform(broken, 'zcode.cjs'), /未能按结构定位/);
 });
+
+test('isApplied 强标记:裸串出现不误判,完整注入前缀才识别(变异验证)', () => {
+  const decoy = synth().replace('var nba,', 'var decoy="globalThis.__ZSEM__";var nba,');
+  assert.equal(patch.isApplied(decoy), false, '注释/字符串里的裸串不得判已应用');
+  const once = patch.transform(synth(), 'zcode.cjs').content;
+  assert.equal(patch.isApplied(once), true);
+});
