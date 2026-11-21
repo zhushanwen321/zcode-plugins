@@ -41,7 +41,7 @@ acceptance.md 的实机 case 全绿。
 |---|---|---|---|---|---|
 | zsem-observe | 观测面:JSONL 事件日志 + status CLI | 主干 | 中 | scripts/patch-zcode-app/zsem/lib/log.js, scripts/patch-zcode-app/zsem/bin/zsem.js | T4 |
 | upgrade-sim | 升级-重打闭环:restore→apply 幂等重打 + 基线重采纳 | 主干 | 高 | scripts/patch-zcode-app/patch-zcode-app.js, scripts/patch-zcode-app/test/ | T6, T8 |
-| abort-cancel | 排队中 abort 信号取消 + 名额不泄漏 | 主干 | 高 | scripts/patch-zcode-app/zsem/lib/semaphore.js, scripts/patch-zcode-app/zsem/entry.js | T2c |
+| abort-cancel | 排队中 abort 信号取消 + 名额不泄漏 | 主干 | 高 | scripts/patch-zcode-app/zsem/, scripts/patch-zcode-app/test/ | T2c |
 
 ## 非功能设计
 
