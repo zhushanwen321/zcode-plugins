@@ -7,19 +7,31 @@
  * 机制（逆向自 ZCode 3.19.1 渲染层 styles bundle，2026-11-21）：
  *   - 状态接口 RPC：usage-stats.getCodingPlanResetStatus(scope)
  *     → { availableFiveHourResets: [{expireAt}], availableWeekResets, ... }
+ *     （camelCase 形态为宿主 RPC 规整后的契约，store 内部同样消费 d.expireAt）
  *   - 执行重置 RPC：usage-stats.useCodingPlanReset({...scope, idempotencyKey, resetType})
  *   - 渲染层每 5 分钟轮询一次 status（coordinator，窗口可见时才轮询），机会过期即作废。
  *     本补丁不依赖面板可见性：独立 setInterval 自查（后台渲染进程定时器被节流到
  *     约 1 分钟粒度，仍远快于 5 分钟窗口）。
+ *
+ * 触发语义（v2 修订，2026-11-21 离线沙箱实测后收紧）：
+ *   - 每轮 tick 至多发起一次 use：同轮连发多个只会浪费机会（重置效果彼此覆盖）；
+ *     其余机会等下一轮（30s 后）按最新状态再判定。
+ *   - attempted 只在 use 成功后落键；失败不落键，下一轮用同一幂等键重试
+ *     （服务端按幂等键去重，重试不会双扣）。过期机会的自然死亡是重试的终止条件。
  *
  * 注入方式两段：
  *   1. 捕获钩子——在渲染层调用 getCodingPlanResetStatus 的唯一站点外套一层
  *      逗号表达式，把 {service, scope, authSessionSeq} 存到 globalThis；
  *      service 是渲染层 usage-stats RPC 代理，重用即免持凭据（令牌只在宿主内存）。
  *   2. 观察器——文件尾追加自包含 IIFE：每 30s 查一次状态，命中最快过期 <5min
- *      的机会就调 useCodingPlanReset。幂等键由 expireAt 推导（同机会重试同键，
- *      服务端幂等去重防重复消耗）。
+ *      的机会就调 useCodingPlanReset。带全链路日志（安装 / ctx 捕获 / 入窗 / 触发），
+ *      console 前缀 [zsw-quota-auto-reset]，断链时可直接从 DevTools 定位。
+ *
+ * 版本升级：marker 带 v2；transform 先剥离旧版本注入（观察器块 + 捕获钩子包裹）
+ * 再注入新版本，apply 幂等且支持原地升级。
  */
+
+const VERSION = 'v2';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -27,12 +39,14 @@ const TARGET = {
   contentAnchor: '[coding-plan-reset] coordinator created',
 };
 
-const MARKER_OPEN = '/* zcode-patch:quota-auto-reset v1 */';
+const MARKER_OPEN = `/* zcode-patch:quota-auto-reset ${VERSION} */`;
 const MARKER_CLOSE = '/* zcode-patch:quota-auto-reset end */';
-
+// 任意版本的观察器块（升级时整块剥离）
+const ANY_MARKER_BLOCK_RE = /\/\* zcode-patch:quota-auto-reset v\d+ \*\/[\s\S]*?\/\* zcode-patch:quota-auto-reset end \*\//;
 // 渲染层查询状态的唯一站点：`<V>.service.getCodingPlanResetStatus(<S>.scope)`
-// 3.19.1 实测（V===S==='e'，即 vin 函数参数）恰好 1 处
 const CAPTURE_RE = /([A-Za-z_$][\w$]*)\.service\.getCodingPlanResetStatus\(([A-Za-z_$][\w$]*)\.scope\)/;
+// 旧注入的捕获钩子包裹形态（升级时还原为裸调用）
+const CAPTURE_WRAPPED_RE = /\(globalThis\.__zswQuotaCtx=\{service:([A-Za-z_$][\w$]*),scope:([A-Za-z_$][\w$]*)\.scope,authSessionSeq:\1\.authSessionSeq\},\1\.service\.getCodingPlanResetStatus\(\2\.scope\)\)/;
 
 function isApplied(content) {
   return content.includes(MARKER_OPEN);
@@ -41,13 +55,16 @@ function isApplied(content) {
 const WATCHER_CODE = [
   'if (typeof globalThis.__zswQuotaAutoReset === "undefined") {',
   '  globalThis.__zswQuotaAutoReset = (function () {',
-  '    var attempted = Object.create(null);',
+  '    var VERSION = "' + VERSION + '";',
+  '    var attempted = Object.create(null); // key -> 成功时间；失败不落键，下轮同键重试',
   '    var TICK_MS = 30 * 1000;',
   '    var WINDOW_MS = 5 * 60 * 1000;',
   '    var WEEK_ENABLED = false; // 周额度机会默认不自动用（方案 1 裁决：只自动用 5 小时机会）',
+  '    var hadCtx = false;',
   '    function log(m) { try { console.info("[zsw-quota-auto-reset] " + m); } catch (_) {} }',
+  '    log("watcher installed v" + VERSION + " (tick " + TICK_MS + "ms, window " + WINDOW_MS + "ms, week=" + WEEK_ENABLED + ")");',
   '    function useExpiring(list, resetType, svc, scope, now) {',
-  '      if (!list || !list.length) return;',
+  '      if (!list || !list.length) return false;',
   '      for (var i = 0; i < list.length; i++) {',
   '        var op = list[i];',
   '        if (!op || !op.expireAt) continue;',
@@ -55,43 +72,63 @@ const WATCHER_CODE = [
   '        if (remain <= 0 || remain > WINDOW_MS) continue;',
   '        var key = "zsw-auto-" + resetType.toLowerCase() + "-" + op.expireAt;',
   '        if (attempted[key]) continue;',
-  '        attempted[key] = now;',
   '        log("reset opportunity (" + resetType + ") expires in " + Math.round(remain / 1000) + "s, using it; idempotencyKey=" + key);',
   '        svc.useCodingPlanReset(Object.assign({}, scope, { idempotencyKey: key, resetType: resetType }))',
-  '          .then(function () { log("reset used ok (" + resetType + ")"); })',
-  '          .catch(function (err) { log("reset use FAILED (" + resetType + "): " + (err && err.message ? err.message : String(err))); });',
+  '          .then(function () { attempted[key] = Date.now(); log("reset used ok (" + resetType + ")"); })',
+  '          .catch(function (err) { log("reset use FAILED (" + resetType + ", will retry same key): " + (err && err.message ? err.message : String(err))); });',
+  '        return true; // 每轮至多发起一次 use；其余机会下一轮按最新状态判定',
   '      }',
+  '      return false;',
   '    }',
   '    setInterval(function () {',
   '      try {',
   '        var ctx = globalThis.__zswQuotaCtx;',
-  '        if (!ctx || !ctx.service || typeof ctx.service.useCodingPlanReset !== "function" || !ctx.scope) return;',
+  '        if (!ctx || !ctx.service || typeof ctx.service.useCodingPlanReset !== "function" || !ctx.scope) {',
+  '          if (hadCtx) { hadCtx = false; log("ctx lost (page reloaded?)"); }',
+  '          return; // 额度面板尚未挂载（捕获钩子未运行），静默等待',
+  '        }',
+  '        if (!hadCtx) { hadCtx = true; log("ctx captured (quota panel mounted), watching"); }',
   '        ctx.service.getCodingPlanResetStatus(ctx.scope).then(function (st) {',
   '          if (!st) return;',
   '          var now = Date.now();',
-  '          useExpiring(st.availableFiveHourResets, "FIVE_HOUR", ctx.service, ctx.scope, now);',
+  '          var five = st.availableFiveHourResets;',
+  '          var soonest = Infinity;',
+  '          for (var i = 0; five && i < five.length; i++) {',
+  '            if (five[i] && five[i].expireAt && five[i].expireAt > now && five[i].expireAt - now < soonest) soonest = five[i].expireAt - now;',
+  '          }',
+  '          if (soonest !== Infinity && soonest <= WINDOW_MS) {',
+  '            log("status: " + (five ? five.length : 0) + " five-hour opportunities, soonest expires in " + Math.round(soonest / 1000) + "s");',
+  '          }',
+  '          if (useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, now)) return;',
   '          if (WEEK_ENABLED) useExpiring(st.availableWeekResets, "WEEK", ctx.service, ctx.scope, now);',
   '        }).catch(function () { /* 状态接口暂时不可用：下一轮重试 */ });',
   '      } catch (_) { /* 任何异常不外溢：下一轮重试 */ }',
   '    }, TICK_MS);',
-  '    return { attempted: attempted, startedAt: Date.now() };',
+  '    return { attempted: attempted, startedAt: Date.now(), version: VERSION };',
   '  })();',
   '}',
 ].join('\n');
 
 function transform(content, filePath) {
+  // 当前版本在场 → 原样返回（buildPlan 已先按 isApplied 跳过，这里是防御性兜底）
   if (isApplied(content)) return { content, note: 'already-applied' };
 
-  const captureMatches = content.match(new RegExp(CAPTURE_RE.source, 'g'));
+  // 升级路径：剥离任意旧版本观察器块 + 还原捕获钩子包裹
+  let work = content.replace(ANY_MARKER_BLOCK_RE, '\n');
+  work = work.replace(CAPTURE_WRAPPED_RE, (m, serviceHolder, scopeHolder) => {
+    return `${serviceHolder}.service.getCodingPlanResetStatus(${scopeHolder}.scope)`;
+  });
+
+  const captureMatches = work.match(new RegExp(CAPTURE_RE.source, 'g'));
   if (!captureMatches || captureMatches.length !== 1) {
     throw new Error(
       `quota-auto-reset 捕获锚点在 ${filePath} 命中 ${captureMatches ? captureMatches.length : 0} 处（要求恰好 1 处）。` +
-        '常见原因：ZCode 升级后渲染层 bundle 结构变化。恢复动作：重新逆向定位 getCodingPlanResetStatus 调用站点并更新 CAPTURE_RE。'
+        '常见原因：ZCode 升级后渲染层 bundle 结构变化，或剥离旧注入失败留下重复调用站点。恢复动作：重新逆向定位 getCodingPlanResetStatus 调用站点并更新 CAPTURE_RE。'
     );
   }
 
-  // 捕获钩子：逗号表达式包裹原调用，语义不变（先存 ctx 再取状态）
-  const next = content.replace(CAPTURE_RE, (m, serviceHolder, scopeHolder) => {
+  // 2) 捕获钩子：逗号表达式包裹原调用，语义不变（先存 ctx 再取状态）
+  const next = work.replace(CAPTURE_RE, (m, serviceHolder, scopeHolder) => {
     return (
       `(globalThis.__zswQuotaCtx={service:${serviceHolder},scope:${scopeHolder}.scope,` +
       `authSessionSeq:${serviceHolder}.authSessionSeq},${m})`
@@ -107,4 +144,7 @@ module.exports = {
   target: TARGET,
   isApplied,
   transform,
+  // 供仓库测试在 vm 沙箱里对注入产物原文做触发语义回归（不碰真实 API）
+  watcherCode: WATCHER_CODE,
+  version: VERSION,
 };

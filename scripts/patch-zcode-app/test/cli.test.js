@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const asar = require('../lib/asar');
+const quota = require('../patches/quota-auto-reset');
 const { buildAsar, buildFakeApp, fixtureEntries } = require('./helpers');
 
 const CLI = path.join(__dirname, '..', 'patch-zcode-app.js');
@@ -59,7 +60,7 @@ test('apply 全流程：建基线 → 双补丁写入 → 未改文件完整性 
   const hostText = readEntryText(app.asarPath, (f) => f.path === '/out/host/index.js');
   assert.ok(hostText.includes('mode:l.mode ??"yolo"'), 'yolo 补丁未生效');
   const stylesText = readEntryText(app.asarPath, (f) => /styles-/.test(f.path));
-  assert.ok(stylesText.includes('zcode-patch:quota-auto-reset v1'), 'quota 补丁未生效');
+  assert.ok(stylesText.includes(`zcode-patch:quota-auto-reset ${quota.version}`), 'quota 补丁未生效');
   assert.ok(stylesText.includes('globalThis.__zswQuotaCtx={service:e,scope:e.scope'), '捕获钩子未注入');
 
   // 2. 重打包正确性：未触碰的文件字节原样、integrity 与新 header 一致
@@ -122,7 +123,7 @@ test('旧格式备份采纳：legacy 备份被纳入统一基线管理', (t) => 
   assert.equal(sidecar.adoptedFrom, 'app.asar.bak-zsw-yolo-20261121');
 
   const stylesText = readEntryText(app.asarPath, (f) => /styles-/.test(f.path));
-  assert.ok(stylesText.includes('zcode-patch:quota-auto-reset v1'), 'quota 补丁未生效');
+  assert.ok(stylesText.includes(`zcode-patch:quota-auto-reset ${quota.version}`), 'quota 补丁未生效');
   const hostText = readEntryText(app.asarPath, (f) => f.path === '/out/host/index.js');
   assert.ok(hostText.includes('mode:l.mode ??"yolo"'));
 });

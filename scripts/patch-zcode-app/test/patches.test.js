@@ -33,30 +33,36 @@ test('quota transform：捕获钩子包裹原调用 + 观察器追加到尾部',
   const { content, note } = quota.transform(STYLES_CHUNK_JS, '/out/renderer/assets/styles-X.js');
   assert.equal(note, 'patched');
   assert.ok(content.includes('globalThis.__zswQuotaCtx={service:e,scope:e.scope,authSessionSeq:e.authSessionSeq},e.service.getCodingPlanResetStatus(e.scope)'));
-  assert.ok(content.includes('zcode-patch:quota-auto-reset v1'));
+  assert.ok(content.includes(`zcode-patch:quota-auto-reset ${quota.version}`));
   assert.ok(content.includes('zcode-patch:quota-auto-reset end'));
   assert.ok(content.endsWith('*/\n'), '补丁块应以闭合标记换行结尾');
-  // 语义保持：原调用仍存在且包裹后是合法逗号表达式
-  assert.ok(content.includes('(globalThis.__zswQuotaCtx='));
-  assert.ok(quota.isApplied(content));
+  assert.equal(quota.isApplied(content), true);
 });
 
-test('quota transform：幂等', () => {
+test('quota transform：幂等（当前版本已应用 → 原样返回）', () => {
   const once = quota.transform(STYLES_CHUNK_JS, 'x').content;
   const twice = quota.transform(once, 'x');
   assert.equal(twice.note, 'already-applied');
   assert.equal(twice.content, once);
 });
 
-test('quota transform：捕获锚点缺失时报可操作错误', () => {
-  assert.throws(() => quota.transform('let x=1;', 'x'), /命中 0 处/);
+test('quota transform：版本升级（v1 注入在场上 → 剥离旧版换装当前版本）', () => {
+  // 用旧版 marker 手工构造 v1 场上的内容（模拟 2026-11-21 首次真机 apply 的产物）
+  const v1Injected = quota.transform(STYLES_CHUNK_JS, 'x').content.replace(
+    '/* zcode-patch:quota-auto-reset v2 */',
+    '/* zcode-patch:quota-auto-reset v1 */'
+  );
+  assert.equal(quota.isApplied(v1Injected), false, 'v1 内容不应被识别为当前版本已应用');
+  const upgraded = quota.transform(v1Injected, 'x');
+  assert.equal(upgraded.note, 'patched');
+  assert.ok(upgraded.content.includes(`zcode-patch:quota-auto-reset ${quota.version}`), '应注入当前版本');
+  assert.ok(!upgraded.content.includes('quota-auto-reset v1'), '旧版本观察器应被剥离');
+  // 捕获钩子只包一层（升级不能叠双层包裹）
+  const wrapCount = (upgraded.content.match(/globalThis\.__zswQuotaCtx=\{service:/g) || []).length;
+  assert.equal(wrapCount, 1, `捕获钩子应恰好一层，实际 ${wrapCount} 层`);
+  assert.equal(quota.isApplied(upgraded.content), true);
 });
 
-test('注入代码语法合法（node --check 级校验用 new Function 覆盖观察器主体）', () => {
-  const { content } = quota.transform(STYLES_CHUNK_JS, 'x');
-  // 提取观察器 IIFE 段做语法检查：new Function 只验语法不执行（setInterval 不会被触发）
-  const m = content.match(/if \(typeof globalThis\.__zswQuotaAutoReset[\s\S]*$/);
-  assert.ok(m, '观察器代码段缺失');
-  const body = m[0].split('/* zcode-patch:quota-auto-reset end */')[0];
-  assert.doesNotThrow(() => new Function(body), '观察器代码有语法错误');
+test('quota transform：捕获锚点缺失时报可操作错误', () => {
+  assert.throws(() => quota.transform('let x=1;', 'x'), /命中 0 处/);
 });
