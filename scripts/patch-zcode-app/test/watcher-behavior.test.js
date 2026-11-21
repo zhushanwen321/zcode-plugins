@@ -168,16 +168,27 @@ test('周额度机会永不自动触发（方案 1 裁决）', async () => {
   assert.equal(svc.calls.use.length, 0);
 });
 
-test('捕获钩子表达式语义：ctx 落位且原调用返回 promise', async () => {
+test('捕获钩子（transform 产物原文）：存的是 RPC 代理字段 e.service，不是参数包装对象', async () => {
+  // 回归锚：v3 之前模板生成 service:e（包装对象），导致观察器守卫静默失败——本用例
+  // 直接执行 transform 产物里提取的钩子表达式，杜绝「测试手写、模板走样」的偏差。
+  const { STYLES_CHUNK_JS } = require('./helpers');
+  const { content } = quota.transform(STYLES_CHUNK_JS, 'x');
+  const hookExpr = content.match(/\(globalThis\.__zswQuotaCtx=\{[^}]+\},\w+\.service\.getCodingPlanResetStatus\(\w+\.scope\)\)/);
+  assert.ok(hookExpr, 'transform 产物里找不到钩子表达式');
+
   const h = makeSandbox();
   const svc = freshService();
+  svc.getCodingPlanResetStatus = async () => ({ availableFiveHourResets: [], availableWeekResets: [] });
   h.sandbox.__svc = svc;
   h.run(`
     var e = { service: __svc, scope: { a: 1 }, authSessionSeq: 7 };
-    var o = (globalThis.__zswQuotaCtx = { service: e.service, scope: e.scope, authSessionSeq: e.authSessionSeq }, e.service.getCodingPlanResetStatus(e.scope));
+    var o = ${hookExpr[0]};
     __out = o && typeof o.then === 'function';
+    __same = globalThis.__zswQuotaCtx.service === __svc;
   `);
   await wait(10);
-  assert.equal(h.run('__out'), true);
+  assert.equal(h.run('__out'), true, '钩子应返回 promise');
+  assert.equal(h.run('__same'), true, 'ctx.service 必须与 RPC 代理引用相等（存字段而非包装对象）');
   assert.equal(h.sandbox.__zswQuotaCtx.authSessionSeq, 7);
+  assert.equal(typeof h.sandbox.__zswQuotaCtx.service.useCodingPlanReset, 'function', 'ctx.service 上必须能取到 RPC 方法');
 });

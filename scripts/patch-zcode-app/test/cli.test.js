@@ -61,7 +61,7 @@ test('apply 全流程：建基线 → 双补丁写入 → 未改文件完整性 
   assert.ok(hostText.includes('mode:l.mode ??"yolo"'), 'yolo 补丁未生效');
   const stylesText = readEntryText(app.asarPath, (f) => /styles-/.test(f.path));
   assert.ok(stylesText.includes(`zcode-patch:quota-auto-reset ${quota.version}`), 'quota 补丁未生效');
-  assert.ok(stylesText.includes('globalThis.__zswQuotaCtx={service:e,scope:e.scope'), '捕获钩子未注入');
+  assert.ok(stylesText.includes('globalThis.__zswQuotaCtx={service:e.service,scope:e.scope'), '捕获钩子未注入');
 
   // 2. 重打包正确性：未触碰的文件字节原样、integrity 与新 header 一致
   const keepText = readEntryText(app.asarPath, (f) => f.path === '/out/renderer/assets/other-KEEP.js');

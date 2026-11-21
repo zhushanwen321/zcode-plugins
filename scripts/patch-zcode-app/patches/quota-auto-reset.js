@@ -31,7 +31,7 @@
  * 再注入新版本，apply 幂等且支持原地升级。
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -46,7 +46,7 @@ const ANY_MARKER_BLOCK_RE = /\/\* zcode-patch:quota-auto-reset v\d+ \*\/[\s\S]*?
 // 渲染层查询状态的唯一站点：`<V>.service.getCodingPlanResetStatus(<S>.scope)`
 const CAPTURE_RE = /([A-Za-z_$][\w$]*)\.service\.getCodingPlanResetStatus\(([A-Za-z_$][\w$]*)\.scope\)/;
 // 旧注入的捕获钩子包裹形态（升级时还原为裸调用）
-const CAPTURE_WRAPPED_RE = /\(globalThis\.__zswQuotaCtx=\{service:([A-Za-z_$][\w$]*),scope:([A-Za-z_$][\w$]*)\.scope,authSessionSeq:\1\.authSessionSeq\},\1\.service\.getCodingPlanResetStatus\(\2\.scope\)\)/;
+const CAPTURE_WRAPPED_RE = /\(globalThis\.__zswQuotaCtx=\{service:([A-Za-z_$][\w$]*)(?:\.service)?,scope:([A-Za-z_$][\w$]*)\.scope,authSessionSeq:\1\.authSessionSeq\},\1\.service\.getCodingPlanResetStatus\(\2\.scope\)\)/;
 
 function isApplied(content) {
   return content.includes(MARKER_OPEN);
@@ -61,8 +61,9 @@ const WATCHER_CODE = [
   '    var WINDOW_MS = 5 * 60 * 1000;',
   '    var WEEK_ENABLED = false; // 周额度机会默认不自动用（方案 1 裁决：只自动用 5 小时机会）',
   '    var hadCtx = false;',
+  '    var badSvcLogged = false;',
   '    function log(m) { try { console.info("[zsw-quota-auto-reset] " + m); } catch (_) {} }',
-  '    log("watcher installed v" + VERSION + " (tick " + TICK_MS + "ms, window " + WINDOW_MS + "ms, week=" + WEEK_ENABLED + ")");',
+  '    log("watcher installed " + VERSION + " (tick " + TICK_MS + "ms, window " + WINDOW_MS + "ms, week=" + WEEK_ENABLED + ")");',
   '    function useExpiring(list, resetType, svc, scope, now) {',
   '      if (!list || !list.length) return false;',
   '      for (var i = 0; i < list.length; i++) {',
@@ -83,9 +84,13 @@ const WATCHER_CODE = [
   '    setInterval(function () {',
   '      try {',
   '        var ctx = globalThis.__zswQuotaCtx;',
-  '        if (!ctx || !ctx.service || typeof ctx.service.useCodingPlanReset !== "function" || !ctx.scope) {',
+  '        if (!ctx || !ctx.service || !ctx.scope) {',
   '          if (hadCtx) { hadCtx = false; log("ctx lost (page reloaded?)"); }',
   '          return; // 额度面板尚未挂载（捕获钩子未运行），静默等待',
+  '        }',
+  '        if (typeof ctx.service.useCodingPlanReset !== "function" || typeof ctx.service.getCodingPlanResetStatus !== "function") {',
+  '          if (!badSvcLogged) { badSvcLogged = true; log("ctx.service missing RPC methods (hasUse=" + typeof ctx.service.useCodingPlanReset + ", hasStatus=" + typeof ctx.service.getCodingPlanResetStatus + ") - capture hook stored wrong object"); }',
+  '          return;',
   '        }',
   '        if (!hadCtx) { hadCtx = true; log("ctx captured (quota panel mounted), watching"); }',
   '        ctx.service.getCodingPlanResetStatus(ctx.scope).then(function (st) {',
@@ -130,7 +135,8 @@ function transform(content, filePath) {
   // 2) 捕获钩子：逗号表达式包裹原调用，语义不变（先存 ctx 再取状态）
   const next = work.replace(CAPTURE_RE, (m, serviceHolder, scopeHolder) => {
     return (
-      `(globalThis.__zswQuotaCtx={service:${serviceHolder},scope:${scopeHolder}.scope,` +
+      // service 必须取字段 V.service（RPC 代理本体）；V 是 vin 的参数包装对象，其上没有 RPC 方法
+      `(globalThis.__zswQuotaCtx={service:${serviceHolder}.service,scope:${scopeHolder}.scope,` +
       `authSessionSeq:${serviceHolder}.authSessionSeq},${m})`
     );
   });

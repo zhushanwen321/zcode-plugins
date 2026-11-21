@@ -32,7 +32,7 @@ test('yolo transform：锚点缺失/多命中时报可操作错误', () => {
 test('quota transform：捕获钩子包裹原调用 + 观察器追加到尾部', () => {
   const { content, note } = quota.transform(STYLES_CHUNK_JS, '/out/renderer/assets/styles-X.js');
   assert.equal(note, 'patched');
-  assert.ok(content.includes('globalThis.__zswQuotaCtx={service:e,scope:e.scope,authSessionSeq:e.authSessionSeq},e.service.getCodingPlanResetStatus(e.scope)'));
+  assert.ok(content.includes('globalThis.__zswQuotaCtx={service:e.service,scope:e.scope,authSessionSeq:e.authSessionSeq},e.service.getCodingPlanResetStatus(e.scope)'), '钩子必须存 e.service（RPC 代理字段），不能存参数包装对象');
   assert.ok(content.includes(`zcode-patch:quota-auto-reset ${quota.version}`));
   assert.ok(content.includes('zcode-patch:quota-auto-reset end'));
   assert.ok(content.endsWith('*/\n'), '补丁块应以闭合标记换行结尾');
@@ -49,7 +49,7 @@ test('quota transform：幂等（当前版本已应用 → 原样返回）', () 
 test('quota transform：版本升级（v1 注入在场上 → 剥离旧版换装当前版本）', () => {
   // 用旧版 marker 手工构造 v1 场上的内容（模拟 2026-11-21 首次真机 apply 的产物）
   const v1Injected = quota.transform(STYLES_CHUNK_JS, 'x').content.replace(
-    '/* zcode-patch:quota-auto-reset v2 */',
+    `/* zcode-patch:quota-auto-reset ${quota.version} */`,
     '/* zcode-patch:quota-auto-reset v1 */'
   );
   assert.equal(quota.isApplied(v1Injected), false, 'v1 内容不应被识别为当前版本已应用');
