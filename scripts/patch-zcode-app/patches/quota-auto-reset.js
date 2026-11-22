@@ -31,7 +31,7 @@
  * 再注入新版本，apply 幂等且支持原地升级。
  */
 
-const VERSION = 'v5';
+const VERSION = 'v6';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -104,7 +104,7 @@ const WATCHER_CODE = [
   '        if (!usageUnavailableLogged) { usageUnavailableLogged = true; log("usage snapshot RPC unavailable, rule(remaining<5% & <1h) disabled"); }',
   '        return;',
   '      }',
-  '      ctx.service.getCodingPlanUsageSnapshot(ctx.scope).then(function (snap) {',
+  '      ctx.service.getCodingPlanUsageSnapshot(Object.assign({}, ctx.scope, { range: "7d", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })).then(function (snap) {',
   '        var ratio = remainingRatio(pickFiveHourLimit(snap));',
   '        if (ratio === null) return;',
   '        if (ratio < LOW_RATIO) {',

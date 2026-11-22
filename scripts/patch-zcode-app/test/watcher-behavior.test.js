@@ -47,8 +47,9 @@ function freshService(list = [], { usageSnapshot, hasUsageRpc = true } = {}) {
     },
   };
   if (hasUsageRpc) {
-    svc.getCodingPlanUsageSnapshot = async () => {
+    svc.getCodingPlanUsageSnapshot = async (args) => {
       calls.usage += 1;
+      calls.usageArgs = args;
       if (usageSnapshot === undefined) throw new Error('no usage fixture');
       return usageSnapshot;
     };
@@ -287,4 +288,20 @@ test('规则 2 剩余比例算法与 UI 同款：优先 remaining/number，perce
   h.ticks[0].fn();
   await wait();
   assert.equal(svc.calls.use.length, 1, 'percentage 0.02 < 5% 应触发');
+});
+
+
+test('v6：usage 调用必须带 range + timeZone（宿主 Jre 强依赖，缺参在宿主内部抛错）', async () => {
+  const h = makeSandbox();
+  const expireAt = NOW0 + 30 * MIN;
+  const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: { preferredProviderId: 'account:bigmodel-individual-coding-plan' } };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1);
+  assert.equal(svc.calls.usage, 1);
+  assert.equal(svc.calls.usageArgs.range, '7d');
+  assert.equal(typeof svc.calls.usageArgs.timeZone, 'string');
+  assert.equal(svc.calls.usageArgs.preferredProviderId, 'account:bigmodel-individual-coding-plan');
 });
