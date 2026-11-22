@@ -1,8 +1,10 @@
 'use strict';
 
 /**
- * quota-auto-reset 补丁（方案 1 裁决）：5 小时额度重置机会距过期不足 5 分钟时
- * 自动消耗该机会执行重置，不设当前窗口用量阈值；周额度机会默认不动手。
+ * quota-auto-reset 补丁（触发规则，2026-11-22 用户裁决）：
+ *   规则 2：5 小时窗口剩余额度 <5% → 触发重置（不限卡到期时间）
+ *   规则 3：重置卡距过期 <5 分钟 → 触发重置
+ * 周额度机会默认不动手（WEEK_ENABLED=false）。
  *
  * 机制（逆向自 ZCode 3.19.1 渲染层 styles bundle，2026-11-21）：
  *   - 状态接口 RPC：usage-stats.getCodingPlanResetStatus(scope)
@@ -31,7 +33,7 @@
  * 再注入新版本，apply 幂等且支持原地升级。
  */
 
-const VERSION = 'v6';
+const VERSION = 'v7';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -60,10 +62,11 @@ const WATCHER_CODE = [
   '    var TICK_MS = 30 * 1000;',
   '    var WINDOW_MS = 5 * 60 * 1000;',
   '    var WEEK_ENABLED = false; // 周额度机会默认不自动用（方案 1 裁决：只自动用 5 小时机会）',
-  '    var LONG_WINDOW_MS = 60 * 60 * 1000; // 规则 2 的到期窗：距过期 <1 小时',
+  '    var USAGE_CHECK_BACKOFF_MS = 5 * 60 * 1000; // 规则 2 的用量复查间隔（剩余充足时不频拉）',
   '    var LOW_RATIO = 0.05; // 规则 2 的用量阈值：5 小时窗口剩余 <5%',
   '    var usageUnavailableLogged = false;',
   '    var lastUsageLogAt = 0;',
+  '    var nextUsageCheckAt = 0;',
   '    var hadCtx = false;',
   '    var badSvcLogged = false;',
   '    function log(m) { try { console.info("[zsw-quota-auto-reset] " + m); } catch (_) {} }',
@@ -108,11 +111,14 @@ const WATCHER_CODE = [
   '        var ratio = remainingRatio(pickFiveHourLimit(snap));',
   '        if (ratio === null) return;',
   '        if (ratio < LOW_RATIO) {',
-  '          log("low remaining " + (ratio * 100).toFixed(1) + "% and opportunity expires in " + Math.round(soonest / 1000) + "s, using it");',
-  '          useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, Date.now(), LONG_WINDOW_MS);',
-  '        } else if (Date.now() - lastUsageLogAt > 10 * 60 * 1000) {',
-  '          lastUsageLogAt = Date.now();',
-  '          log("in 1h window, remaining " + (ratio * 100).toFixed(1) + "% (>=5%), not using");',
+  '          log("low remaining " + (ratio * 100).toFixed(1) + "% (<5%), using reset card");',
+  '          useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, Date.now(), Infinity); // 不推复查节流：use 失败时下一轮（30s）同键重试',
+  '        } else {',
+  '          nextUsageCheckAt = Date.now() + USAGE_CHECK_BACKOFF_MS;',
+  '          if (Date.now() - lastUsageLogAt > 10 * 60 * 1000) {',
+  '            lastUsageLogAt = Date.now();',
+  '            log("remaining " + (ratio * 100).toFixed(1) + "% (>=5%), not using; recheck in 5m");',
+  '          }',
   '        }',
   '      }).catch(function () { /* 用量接口暂时不可用：下一轮重试 */ });',
   '    }',
@@ -159,7 +165,7 @@ const WATCHER_CODE = [
   '          }',
   '          if (useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, now)) return;',
   '          if (WEEK_ENABLED) useExpiring(st.availableWeekResets, "WEEK", ctx.service, ctx.scope, now);',
-  '          if (soonest !== Infinity && soonest <= LONG_WINDOW_MS) {',
+  '          if (five && five.length > 0 && Date.now() >= nextUsageCheckAt) {',
   '            checkLowRemaining(ctx, soonest, five);',
   '          }',
   '        }).catch(function () { /* 状态接口暂时不可用：下一轮重试 */ });',

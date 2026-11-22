@@ -217,9 +217,9 @@ const FIVE_H_LIMIT = (ratio) => ({
   quota: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, remaining: ratio * 5, percentage: ratio * 100 }] },
 });
 
-test('规则 2：剩 30 分钟 + 剩余 3% → 触发', async () => {
+test('规则 2：额度 3% → 触发，不限卡到期时间（4 小时后过期的卡也用）', async () => {
   const h = makeSandbox();
-  const expireAt = NOW0 + 30 * MIN;
+  const expireAt = NOW0 + 4 * 60 * MIN;
   const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) }); // 剩余 3%
   h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
   boot(h);
@@ -229,7 +229,7 @@ test('规则 2：剩 30 分钟 + 剩余 3% → 触发', async () => {
   assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(expireAt, '8'));
 });
 
-test('规则 2：剩 30 分钟 + 剩余 40% → 不触发', async () => {
+test('规则 2：剩余 40% → 不触发，且 5 分钟内不重复拉 usage（节流）', async () => {
   const h = makeSandbox();
   const svc = freshService([{ expireAt: NOW0 + 30 * MIN }], { usageSnapshot: FIVE_H_LIMIT(0.4) }); // 剩余 40%
   h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
@@ -237,16 +237,20 @@ test('规则 2：剩 30 分钟 + 剩余 40% → 不触发', async () => {
   h.ticks[0].fn();
   await wait();
   assert.equal(svc.calls.use.length, 0, '剩余充足不应触发');
+  assert.equal(svc.calls.usage, 1);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.usage, 1, '节流期内不得重复拉 usage');
 });
 
-test('规则 2：>1h 窗不拉 usage；规则 3 触发时也不拉 usage', async () => {
+test('规则 2：无可用机会不拉 usage；规则 3 触发时也不拉 usage', async () => {
   const h = makeSandbox();
-  const svc = freshService([{ expireAt: NOW0 + 90 * MIN }], { usageSnapshot: FIVE_H_LIMIT(0.002) });
+  const svc = freshService([], { usageSnapshot: FIVE_H_LIMIT(0.002) });
   h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
   boot(h);
   h.ticks[0].fn();
   await wait();
-  assert.equal(svc.calls.usage, 0, '剩 90 分钟不应拉 usage');
+  assert.equal(svc.calls.usage, 0, '无机会（列表空）不应拉 usage');
   // 规则 3 直接触发的场景不应消耗 usage 拉取
   const h2 = makeSandbox();
   const svc2 = freshService([{ expireAt: NOW0 + 173 * 1000 }], { usageSnapshot: FIVE_H_LIMIT(0.002) });
@@ -304,4 +308,27 @@ test('v6：usage 调用必须带 range + timeZone（宿主 Jre 强依赖，缺�
   assert.equal(svc.calls.usageArgs.range, '7d');
   assert.equal(typeof svc.calls.usageArgs.timeZone, 'string');
   assert.equal(svc.calls.usageArgs.preferredProviderId, 'account:bigmodel-individual-coding-plan');
+});
+
+
+test('规则 2：use 失败后下一轮（30s 节奏）同键重试，不被 5 分钟复查节流拖慢', async () => {
+  const h = makeSandbox();
+  const expireAt = NOW0 + 4 * 60 * MIN;
+  let failing = true;
+  const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) });
+  svc.useCodingPlanReset = async (args) => {
+    svc.calls.use.push(args);
+    if (failing) throw new Error('transient');
+    return { used: true };
+  };
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '首轮失败 1 次');
+  failing = false;
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 2, '下一轮应同键重试');
+  assert.equal(svc.calls.use[1].idempotencyKey, deriveUuid(expireAt, '8'));
 });
