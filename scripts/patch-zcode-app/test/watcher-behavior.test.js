@@ -61,7 +61,7 @@ function boot(h) {
   h.run(quota.watcherCode);
   assert.ok(h.sandbox.__zswQuotaAutoReset !== undefined, '观察器未安装');
   assert.equal(h.ticks.length, 1, 'setInterval 应恰好注册一次');
-  assert.equal(h.ticks[0].ms, 30 * 1000, '轮询间隔应为 30s');
+  assert.equal(h.ticks[0].ms, 60 * 1000, '轮询间隔应为 60s（v8：降频缓解服务端限流风险）');
 }
 
 test('观察器安装：注册 30s tick，带版本号', () => {
@@ -125,7 +125,7 @@ test('状态接口失败不崩溃，恢复后下一轮触发', async () => {
   assert.equal(svc.calls.use.length, 1);
 });
 
-test('use 失败后同键重试（幂等键不换，服务端去重防双扣）', async () => {
+test('use 失败后进入 60s 冷却，冷却后同键重试（幂等键不换，服务端去重防双扣）', async () => {
   const h = makeSandbox();
   const expireAt = NOW0 + 2 * MIN;
   let failing = true;
@@ -143,7 +143,11 @@ test('use 失败后同键重试（幂等键不换，服务端去重防双扣）'
   failing = false;
   h.ticks[0].fn();
   await wait();
-  assert.equal(svc.calls.use.length, 2, '下一轮应同键重试');
+  assert.equal(svc.calls.use.length, 1, '冷却期内（60s）不得重试');
+  h.setNow(NOW0 + 61 * 1000); // 冷却到期（机会剩 59s，仍在 5min 窗内）
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 2, '冷却后应同键重试');
   assert.equal(svc.calls.use[0].idempotencyKey, svc.calls.use[1].idempotencyKey, '重试必须复用同一幂等键');
 });
 
@@ -311,7 +315,7 @@ test('v6：usage 调用必须带 range + timeZone（宿主 Jre 强依赖，缺�
 });
 
 
-test('规则 2：use 失败后下一轮（30s 节奏）同键重试，不被 5 分钟复查节流拖慢', async () => {
+test('规则 2：use 失败冷却后同键重试（60s 冷却防队头饿死，牺牲旧 30s 立即重试）', async () => {
   const h = makeSandbox();
   const expireAt = NOW0 + 4 * 60 * MIN;
   let failing = true;
@@ -326,9 +330,88 @@ test('规则 2：use 失败后下一轮（30s 节奏）同键重试，不被 5 �
   h.ticks[0].fn();
   await wait();
   assert.equal(svc.calls.use.length, 1, '首轮失败 1 次');
-  failing = false;
   h.ticks[0].fn();
   await wait();
-  assert.equal(svc.calls.use.length, 2, '下一轮应同键重试');
+  assert.equal(svc.calls.use.length, 1, '冷却期内（60s）不得重试');
+  failing = false;
+  h.setNow(NOW0 + 61 * 1000); // 冷却到期
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 2, '冷却后应同键重试');
   assert.equal(svc.calls.use[1].idempotencyKey, deriveUuid(expireAt, '8'));
+});
+
+
+// ===== v8 对抗式审查加固场景 =====
+
+test('v8 防连环扣卡：use 成功后推复查节流，快照滞后 + 第二张卡不再连烧', async () => {
+  const h = makeSandbox();
+  const a = NOW0 + 30 * MIN, b = NOW0 + 45 * MIN;
+  const svc = freshService([a, b].map((t) => ({ expireAt: t })), { usageSnapshot: FIVE_H_LIMIT(0.03) }); // 快照恒 3%
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '首轮低量触发一次');
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '成功后已推节流：快照滞后也不得连烧第二张');
+  assert.equal(svc.calls.usage, 1, '节流期内不得重复拉 usage');
+});
+
+test('v8 防队头饿死：队头卡持续失败，60s 冷却让路后续卡', async () => {
+  const h = makeSandbox();
+  const head = NOW0 + 2 * MIN, tail = NOW0 + 4 * MIN;
+  let headFails = true;
+  const svc = freshService([{ expireAt: head }, { expireAt: tail }]);
+  svc.useCodingPlanReset = async (args) => {
+    svc.calls.use.push(args);
+    if (args.idempotencyKey === deriveUuid(head, '8') && headFails) throw new Error('head always fails');
+    return { used: true };
+  };
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(head, '8'), '首轮打队头');
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use[svc.calls.use.length - 1].idempotencyKey, deriveUuid(tail, '8'), '冷却期内队头让位，后续卡得以触发');
+});
+
+test('v8 防键-卡错位（最快过期优先）：乱序列表低量触发时烧最快过期卡', async () => {
+  const h = makeSandbox();
+  const slow = NOW0 + 4 * 60 * MIN, fast = NOW0 + 30 * MIN;
+  const svc = freshService([{ expireAt: slow }, { expireAt: fast }], { usageSnapshot: FIVE_H_LIMIT(0.03) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(fast, '8'), '规则 2 必须优先烧最快过期卡（与服务端消耗假设对齐）');
+});
+
+test('v8 形态防御：expireAt 非有限数字的项被跳过，不产生垃圾键', async () => {
+  const h = makeSandbox();
+  const good = NOW0 + 2 * MIN;
+  const svc = freshService([{ expireAt: '2026-11-22T00:00:00Z' }, { expireAt: good }]); // 队头 ISO 字符串（漂移形态）
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '正常卡应触发');
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(good, '8'), '必须只发正常卡');
+  assert.ok(!/[g-wG-W]/.test(svc.calls.use[0].idempotencyKey), '键必须是纯 hex UUID');
+});
+
+test('v8 诊断：usage 无 5h 卡（筛选不命中）时静默降级不崩溃', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 30 * MIN }], { usageSnapshot: { quota: { limits: [{ type: 'OTHER', unit: 9, number: 9, remaining: 1 }] } } });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, '读不到 5h 卡时规则 2 空闲');
+  assert.equal(svc.calls.usage, 1);
 });

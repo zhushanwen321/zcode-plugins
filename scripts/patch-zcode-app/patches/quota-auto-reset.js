@@ -15,11 +15,15 @@
  *     本补丁不依赖面板可见性：独立 setInterval 自查（后台渲染进程定时器被节流到
  *     约 1 分钟粒度，仍远快于 5 分钟窗口）。
  *
- * 触发语义（v2 修订，2026-11-21 离线沙箱实测后收紧）：
+ * 触发语义（v8 修订，2026-11-22 对抗式审查后加固）：
  *   - 每轮 tick 至多发起一次 use：同轮连发多个只会浪费机会（重置效果彼此覆盖）；
- *     其余机会等下一轮（30s 后）按最新状态再判定。
- *   - attempted 只在 use 成功后落键；失败不落键，下一轮用同一幂等键重试
- *     （服务端按幂等键去重，重试不会双扣）。过期机会的自然死亡是重试的终止条件。
+ *     其余机会等下一轮按最新状态再判定。
+ *   - attempted 只在 use 成功后落键，且成功即推进 usage 复查节流（防快照滞后时
+ *     30 秒一张连环扣卡）；失败不落键但进入 60 秒冷却（防一张持续失败的卡独占
+ *     每轮 use 预算、饿死后续卡与规则 2），冷却后同键重试（服务端幂等去重防双扣）。
+ *   - 发起前按 expireAt 升序排序选「最快过期卡」：与服务端消耗策略假设对齐，
+ *     缓解幂等键与实际消耗卡的错位。
+ *   - 形态防御：expireAt 非有限数字的项跳过；诊断日志全链路限频（10 分钟）。
  *
  * 注入方式两段：
  *   1. 捕获钩子——在渲染层调用 getCodingPlanResetStatus 的唯一站点外套一层
@@ -33,7 +37,7 @@
  * 再注入新版本，apply 幂等且支持原地升级。
  */
 
-const VERSION = 'v7';
+const VERSION = 'v8';
 
 const TARGET = {
   pathRegex: /^\/out\/renderer\/assets\/styles-[^/]+\.js$/,
@@ -58,18 +62,22 @@ const WATCHER_CODE = [
   'if (typeof globalThis.__zswQuotaAutoReset === "undefined") {',
   '  globalThis.__zswQuotaAutoReset = (function () {',
   '    var VERSION = "' + VERSION + '";',
-  '    var attempted = Object.create(null); // key -> 成功时间；失败不落键，下轮同键重试',
-  '    var TICK_MS = 30 * 1000;',
+  '    var attempted = Object.create(null); // key -> 成功时间；失败不落键',
+  '    var failedUntil = Object.create(null); // key -> 失败冷却截止（防一张持续失败的卡饿死后续）',
+  '    var TICK_MS = 60 * 1000;',
   '    var WINDOW_MS = 5 * 60 * 1000;',
-  '    var WEEK_ENABLED = false; // 周额度机会默认不自动用（方案 1 裁决：只自动用 5 小时机会）',
-  '    var USAGE_CHECK_BACKOFF_MS = 5 * 60 * 1000; // 规则 2 的用量复查间隔（剩余充足时不频拉）',
+  '    var WEEK_ENABLED = false; // 周额度机会不自动用（用户裁决：只自动用 5 小时卡）',
+  '    var USAGE_CHECK_BACKOFF_MS = 5 * 60 * 1000; // use 成功后的用量复查节流（防快照滞后连环扣卡）',
+  '    var FAIL_COOLDOWN_MS = 60 * 1000; // use 失败冷却（冷却后同键重试）',
   '    var LOW_RATIO = 0.05; // 规则 2 的用量阈值：5 小时窗口剩余 <5%',
   '    var usageUnavailableLogged = false;',
   '    var lastUsageLogAt = 0;',
   '    var nextUsageCheckAt = 0;',
   '    var hadCtx = false;',
   '    var badSvcLogged = false;',
+  '    var logAt = Object.create(null);',
   '    function log(m) { try { console.info("[zsw-quota-auto-reset] " + m); } catch (_) {} }',
+  '    function logOnce(tag, m) { try { var n = Date.now(); if (logAt[tag] && n - logAt[tag] < 10 * 60 * 1000) return; logAt[tag] = n; log(m); } catch (_) {} }',
   '    // 幂等键 = expireAt 派生的 UUID 形态（8-4-4-4-12 hex，版本位 4）：服务端已证明只接受',
   '    // UI 同款 crypto.randomUUID() 形态（v3 的 "zsw-auto-..." 键被业务码 3001 拒绝，',
   '    // 2026-11-21 真机实测）；同一机会重试由 expireAt 决定同键，服务端幂等去重不失效。',
@@ -102,17 +110,17 @@ const WATCHER_CODE = [
   '      if (typeof limit.percentage === "number" && isFinite(limit.percentage)) return Math.max(0, Math.min(100, limit.percentage)) / 100;',
   '      return null;',
   '    }',
-  '    function checkLowRemaining(ctx, soonest, five) {',
+  '    function checkLowRemaining(ctx, five) {',
   '      if (typeof ctx.service.getCodingPlanUsageSnapshot !== "function") {',
-  '        if (!usageUnavailableLogged) { usageUnavailableLogged = true; log("usage snapshot RPC unavailable, rule(remaining<5% & <1h) disabled"); }',
+  '        if (!usageUnavailableLogged) { usageUnavailableLogged = true; log("usage snapshot RPC unavailable, rule(remaining<5%) disabled"); }',
   '        return;',
   '      }',
   '      ctx.service.getCodingPlanUsageSnapshot(Object.assign({}, ctx.scope, { range: "7d", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })).then(function (snap) {',
   '        var ratio = remainingRatio(pickFiveHourLimit(snap));',
-  '        if (ratio === null) return;',
+  '        if (ratio === null) { logOnce("ratioNull", "5h limit not found/unreadable in usage snapshot — rule 2 idle (data shape drift?)"); return; }',
   '        if (ratio < LOW_RATIO) {',
   '          log("low remaining " + (ratio * 100).toFixed(1) + "% (<5%), using reset card");',
-  '          useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, Date.now(), Infinity); // 不推复查节流：use 失败时下一轮（30s）同键重试',
+  '          useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, Date.now(), Infinity);',
   '        } else {',
   '          nextUsageCheckAt = Date.now() + USAGE_CHECK_BACKOFF_MS;',
   '          if (Date.now() - lastUsageLogAt > 10 * 60 * 1000) {',
@@ -120,31 +128,37 @@ const WATCHER_CODE = [
   '            log("remaining " + (ratio * 100).toFixed(1) + "% (>=5%), not using; recheck in 5m");',
   '          }',
   '        }',
-  '      }).catch(function () { /* 用量接口暂时不可用：下一轮重试 */ });',
+  '      }).catch(function () { logOnce("usageFail", "usage snapshot RPC failed (rule 2 deferred to next tick)"); });',
   '    }',
   '    function useExpiring(list, resetType, svc, scope, now, maxRemainMs) {',
   '      if (!list || !list.length) return false;',
+  '      var cap = maxRemainMs || WINDOW_MS;',
+  '      var cands = [];',
   '      for (var i = 0; i < list.length; i++) {',
   '        var op = list[i];',
-  '        if (!op || !op.expireAt) continue;',
+  '        if (!op || typeof op.expireAt !== "number" || !isFinite(op.expireAt)) continue; // 形态漂移防御：垃圾 expireAt 不入候选',
   '        var remain = op.expireAt - now;',
-  '        var cap = maxRemainMs || WINDOW_MS;',
   '        if (remain <= 0 || remain > cap) continue;',
   '        var key = deriveUuid(op.expireAt, resetType === "WEEK" ? "c" : "8");',
   '        if (attempted[key]) continue;',
-  '        log("reset opportunity (" + resetType + ") expires in " + Math.round(remain / 1000) + "s, using it; idempotencyKey=" + key);',
-  '        svc.useCodingPlanReset(Object.assign({}, scope, { idempotencyKey: key, resetType: resetType }))',
-  '          .then(function () { attempted[key] = Date.now(); log("reset used ok (" + resetType + ")"); })',
-  '          .catch(function (err) { log("reset use FAILED (" + resetType + ", will retry same key): " + (err && err.message ? err.message : String(err))); });',
-  '        return true; // 每轮至多发起一次 use；其余机会下一轮按最新状态判定',
+  '        if (failedUntil[key] && now < failedUntil[key]) continue; // 失败冷却中，让位后续卡',
+  '        cands.push({ op: op, key: key, remain: remain });',
   '      }',
-  '      return false;',
+  '      if (cands.length === 0) return false;',
+  '      cands.sort(function (a, b) { return a.op.expireAt - b.op.expireAt; }); // 最快过期优先：与服务端消耗策略假设对齐',
+  '      var c = cands[0];',
+  '      log("reset opportunity (" + resetType + ") expires in " + Math.round(c.remain / 1000) + "s, using it; idempotencyKey=" + c.key);',
+  '      svc.useCodingPlanReset(Object.assign({}, scope, { idempotencyKey: c.key, resetType: resetType }))',
+  '        .then(function () { attempted[c.key] = Date.now(); nextUsageCheckAt = Date.now() + USAGE_CHECK_BACKOFF_MS; log("reset used ok (" + resetType + ")"); })',
+  '        .catch(function (err) { failedUntil[c.key] = Date.now() + FAIL_COOLDOWN_MS; log("reset use FAILED (" + resetType + ", cooldown " + FAIL_COOLDOWN_MS / 1000 + "s then retry same key): " + (err && err.message ? err.message : String(err))); });',
+  '      return true; // 每轮至多发起一次 use；其余机会下一轮按最新状态判定',
   '    }',
   '    setInterval(function () {',
   '      try {',
   '        var ctx = globalThis.__zswQuotaCtx;',
   '        if (!ctx || !ctx.service || !ctx.scope) {',
-  '          if (hadCtx) { hadCtx = false; log("ctx lost (page reloaded?)"); }',
+  '          hadCtx = false;',
+  '          logOnce("noCtx", "waiting for quota panel ctx (open the reset panel once to arm rule checks)");',
   '          return; // 额度面板尚未挂载（捕获钩子未运行），静默等待',
   '        }',
   '        if (typeof ctx.service.useCodingPlanReset !== "function" || typeof ctx.service.getCodingPlanResetStatus !== "function") {',
@@ -153,22 +167,23 @@ const WATCHER_CODE = [
   '        }',
   '        if (!hadCtx) { hadCtx = true; log("ctx captured (quota panel mounted), watching"); }',
   '        ctx.service.getCodingPlanResetStatus(ctx.scope).then(function (st) {',
-  '          if (!st) return;',
+  '          if (!st) { logOnce("badStatus", "status response empty (shape drift?)"); return; }',
   '          var now = Date.now();',
   '          var five = st.availableFiveHourResets;',
+  '          if (!five || !five.length) { logOnce("noFive", "no available five-hour opportunities in status"); return; }',
   '          var soonest = Infinity;',
-  '          for (var i = 0; five && i < five.length; i++) {',
-  '            if (five[i] && five[i].expireAt && five[i].expireAt > now && five[i].expireAt - now < soonest) soonest = five[i].expireAt - now;',
+  '          for (var i = 0; i < five.length; i++) {',
+  '            if (five[i] && typeof five[i].expireAt === "number" && isFinite(five[i].expireAt) && five[i].expireAt > now && five[i].expireAt - now < soonest) soonest = five[i].expireAt - now;',
   '          }',
   '          if (soonest !== Infinity && soonest <= WINDOW_MS) {',
-  '            log("status: " + (five ? five.length : 0) + " five-hour opportunities, soonest expires in " + Math.round(soonest / 1000) + "s");',
+  '            log("status: " + five.length + " five-hour opportunities, soonest expires in " + Math.round(soonest / 1000) + "s");',
   '          }',
   '          if (useExpiring(five, "FIVE_HOUR", ctx.service, ctx.scope, now)) return;',
   '          if (WEEK_ENABLED) useExpiring(st.availableWeekResets, "WEEK", ctx.service, ctx.scope, now);',
-  '          if (five && five.length > 0 && Date.now() >= nextUsageCheckAt) {',
-  '            checkLowRemaining(ctx, soonest, five);',
+  '          if (Date.now() >= nextUsageCheckAt) {',
+  '            checkLowRemaining(ctx, five);',
   '          }',
-  '        }).catch(function () { /* 状态接口暂时不可用：下一轮重试 */ });',
+  '        }).catch(function () { logOnce("statusFail", "status RPC failed (rules deferred to next tick)"); });',
   '      } catch (_) { /* 任何异常不外溢：下一轮重试 */ }',
   '    }, TICK_MS);',
   '    return { attempted: attempted, startedAt: Date.now(), version: VERSION };',
@@ -208,7 +223,7 @@ function transform(content, filePath) {
 
 module.exports = {
   name: 'quota-auto-reset',
-  description: '5 小时重置机会距过期 <5 分钟时自动执行重置（方案 1，无用量阈值；周额度不自动用）',
+  description: '5 小时窗口剩余 <5% 或重置卡距过期 <5 分钟时自动重置（周额度不自动用）',
   target: TARGET,
   isApplied,
   transform,
