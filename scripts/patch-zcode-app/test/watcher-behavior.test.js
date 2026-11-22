@@ -36,9 +36,9 @@ function makeSandbox() {
   return { sandbox, ticks, setNow: (t) => { state.now = t; }, run: (code) => vm.runInContext(code, sandbox) };
 }
 
-function freshService(list = []) {
-  const calls = { status: 0, use: [] };
-  return {
+function freshService(list = [], { usageSnapshot, hasUsageRpc = true } = {}) {
+  const calls = { status: 0, use: [], usage: 0 };
+  const svc = {
     calls,
     useCodingPlanReset: async (args) => { calls.use.push(args); return { used: true }; },
     getCodingPlanResetStatus: async () => {
@@ -46,6 +46,14 @@ function freshService(list = []) {
       return { availableFiveHourResets: list, availableWeekResets: [] };
     },
   };
+  if (hasUsageRpc) {
+    svc.getCodingPlanUsageSnapshot = async () => {
+      calls.usage += 1;
+      if (usageSnapshot === undefined) throw new Error('no usage fixture');
+      return usageSnapshot;
+    };
+  }
+  return svc;
 }
 
 function boot(h) {
@@ -198,4 +206,85 @@ test('捕获钩子（transform 产物原文）：存的是 RPC 代理字段 e.se
   assert.equal(h.run('__same'), true, 'ctx.service 必须与 RPC 代理引用相等（存字段而非包装对象）');
   assert.equal(h.sandbox.__zswQuotaCtx.authSessionSeq, 7);
   assert.equal(typeof h.sandbox.__zswQuotaCtx.service.useCodingPlanReset, 'function', 'ctx.service 上必须能取到 RPC 方法');
+});
+
+
+// ===== 规则 2：剩余 <5% 且到期 <1 小时 =====
+
+// 真实契约形态（UI 筛选条件 unit===3 && number===5；remaining 与 number 同单位，比例 = remaining/number）
+const FIVE_H_LIMIT = (ratio) => ({
+  quota: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, remaining: ratio * 5, percentage: ratio * 100 }] },
+});
+
+test('规则 2：剩 30 分钟 + 剩余 3% → 触发', async () => {
+  const h = makeSandbox();
+  const expireAt = NOW0 + 30 * MIN;
+  const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) }); // 剩余 3%
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '低用量 + 1h 窗应触发');
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(expireAt, '8'));
+});
+
+test('规则 2：剩 30 分钟 + 剩余 40% → 不触发', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 30 * MIN }], { usageSnapshot: FIVE_H_LIMIT(0.4) }); // 剩余 40%
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, '剩余充足不应触发');
+});
+
+test('规则 2：>1h 窗不拉 usage；规则 3 触发时也不拉 usage', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 90 * MIN }], { usageSnapshot: FIVE_H_LIMIT(0.002) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.usage, 0, '剩 90 分钟不应拉 usage');
+  // 规则 3 直接触发的场景不应消耗 usage 拉取
+  const h2 = makeSandbox();
+  const svc2 = freshService([{ expireAt: NOW0 + 173 * 1000 }], { usageSnapshot: FIVE_H_LIMIT(0.002) });
+  h2.sandbox.__zswQuotaCtx = { service: svc2, scope: {} };
+  boot(h2);
+  h2.ticks[0].fn();
+  await wait();
+  assert.equal(svc2.calls.use.length, 1);
+  assert.equal(svc2.calls.usage, 0, '规则 3 命中不应拉 usage');
+});
+
+test('规则 2 降级：usage RPC 缺失时不触发不崩溃，规则 3 照常', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 30 * MIN }], { hasUsageRpc: false });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, 'usage 不可用时规则 2 静默跳过');
+  // 规则 3 照常
+  h.sandbox.__zswQuotaCtx.service = Object.assign({}, svc, {
+    calls: svc.calls,
+    useCodingPlanReset: svc.useCodingPlanReset,
+    getCodingPlanResetStatus: svc.getCodingPlanResetStatus,
+  });
+  h.setNow(NOW0 + 27 * MIN); // 机会剩 3 分钟
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '规则 3 不受 usage 降级影响');
+});
+
+test('规则 2 剩余比例算法与 UI 同款：优先 remaining/number，percentage 兜底', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 30 * MIN }], {
+    usageSnapshot: { quota: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, percentage: 3 }] } }, // 无 remaining → 用 percentage（口径 0-100，3 = 剩余 3%）
+  });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, 'percentage 0.02 < 5% 应触发');
 });
