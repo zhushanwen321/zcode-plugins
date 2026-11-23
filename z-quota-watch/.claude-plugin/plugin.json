@@ -1,0 +1,11 @@
+{
+  "name": "z-quota-watch",
+  "version": "0.1.0",
+  "description": "Quota watch guard for zcode: a PreToolUse hook gates by per-session tool-call count (every 20th call) and, when the session model is a GLM plan model (account:* provider) with no live quota-wait background watch, injects the exact Bash command for the agent to start one that waits until the current 5-hour window end plus 1 minute, so the completion notification wakes the session for checkpoint handling.",
+  "description_i18n": {
+    "en": "Quota watch guard for zcode: a PreToolUse hook gates by per-session tool-call count (every 20th call) and, when the session model is a GLM plan model (account:* provider) with no live quota-wait background watch, injects the exact Bash command for the agent to start one that waits until the current 5-hour window end plus 1 minute, so the completion notification wakes the session for checkpoint handling.",
+    "zh-CN": "zcode 的额度守望兜底：PreToolUse hook 按会话内工具调用计数门控（每第 20 次触发检测），检测到会话模型为 GLM 套餐模型（account:* 前缀 provider）且没有存活的 quota-wait 守望后台任务时，注入一条现成命令让 agent 用 Bash run_in_background 起一个守望——守到当前 5 小时窗口结束 +1 分钟退出，完成通知回会话后按检查点语义续接。"
+  },
+  "author": { "name": "zhushanwen", "url": "https://github.com/zhushanwen321" },
+  "keywords": ["zcode", "hooks", "pre-tool-use", "quota", "quota-wait", "watch"]
+}

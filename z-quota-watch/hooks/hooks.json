@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "d=\"$HOME/.zcode/z-quota-watch/state/count\"; mkdir -p \"$d\" 2>/dev/null || exit 0; s=\"$CLAUDE_SESSION_ID\"; [ -n \"$s\" ] || s=default; k=$(printf %s \"$s\" | tr -cd 'A-Za-z0-9._-'); [ -n \"$k\" ] || k=default; f=\"$d/$k.count\"; n=$(($(cat \"$f\" 2>/dev/null || echo 0)+1)); echo \"$n\" >\"$f\" 2>/dev/null || exit 0; [ $((n%20)) -eq 0 ] && exec node \"${ZCODE_PLUGIN_ROOT}/bin/zqw.js\" hook pre-tool-use; exit 0",
+            "timeoutMs": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
