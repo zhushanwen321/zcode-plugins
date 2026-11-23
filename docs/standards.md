@@ -19,7 +19,7 @@
 
 - **动机**：插件三形态（inline 直载 / marketplace 副本 / npm 包内容）都没有 node_modules
   解析面，npm 包 `@zhushanwen/subagent-core` 只能以**构建期 vendored 副本**形态进插件目录
-  （`z-subagent-workflow/lib/vendor/subagent-core/`，与 `shared/` 构建期 vendor 同一模式）；
+  （`z-subagent-workflow/lib/vendor/subagent-core/`）；
   运行时 node_modules 解析面仍然禁止，插件 package.json 不得声明 dependencies（红线不变）。
 - **流程**：workspace 根执行 `node scripts/vendor-subagent-core.js --npm <version>`（registry
   tarball 源，npm pack 带超时）或 `--local <core-checkout-path>`（本地构建源）。脚本幂等
@@ -83,8 +83,8 @@
    推理声称（CLI help 会漂移，0.16.3 `--settings`/`--max-turns` 拒收即案例）。
 4. 模块边界：编排逻辑放 manager 层，平台交互（spawn/协议解析）收敛在 runner/adapter 单点
    （「防洪堤」模式，平台版本漂移只改一处）——参照 zsub 的 ports/adapters 结构。
-5. **运行时禁引插件根之外的路径**（marketplace 副本会脱离本仓）；共享代码走 `shared/` 构建期
-   vendor。文件路径动态推导（`os.homedir()` 等），禁止写死绝对路径。
+5. **运行时禁引插件根之外的路径**（marketplace 副本会脱离本仓）；跨插件共享代码构建期 vendor
+   （复制）进各插件目录。文件路径动态推导（`os.homedir()` 等），禁止写死绝对路径。
 6. spawn 无头子进程必须带嵌套标记 env 并在嵌套环境下停注册 MCP 工具（防递归编排）。
 
 ## 日志规范

@@ -7,7 +7,6 @@
   "bin": { "zqw": "bin/zqw.js" },
   "files": [
     ".zcode-plugin/plugin.json",
-    ".claude-plugin/plugin.json",
     "hooks/",
     "bin/",
     "lib/",

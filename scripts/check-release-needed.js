@@ -17,7 +17,7 @@
  *     files/bin 等消费契约变化视为发版流程一部分，由 release.js 时的 check-pack 把关
  *   - workspace 级文件（scripts/、.github/、marketplace.json、docs/…）不属于任何插件 → 不触发
  *
- * 输出三段（RELEASING 正常 / UNRELEASED 待决策 / SHARED_CHANGED 警告），
+ * 输出两段（RELEASING 正常 / UNRELEASED 待决策），
  * 退出码恒 0——发不发版是用户决策，本脚本只保证决策面完整可见。
  *
  * 用法：node scripts/check-release-needed.js [--base <ref>]（默认 base = main）
@@ -103,7 +103,6 @@ try {
 
 const releasing = [];   // 版本已 bump 的插件（正常，列出供核对）
 const unreleased = [];  // 改了白名单内文件但版本未变（决策面）
-let sharedChanged = false;
 
 for (const name of pluginDirs) {
   const pkg = readPkg(name);
@@ -123,16 +122,10 @@ for (const name of pluginDirs) {
   }
 }
 
-sharedChanged = changedFiles.some((f) => f.startsWith('shared/'));
-
 const lines = [];
 lines.push('RELEASING（版本已 bump，正常）:');
 lines.push(releasing.length ? releasing.map((s) => `  ${s}`).join('\n') : '  (none)');
 lines.push('');
 lines.push('UNRELEASED（改了消费者可见文件但版本未变，发版待决策）:');
 lines.push(unreleased.length ? unreleased.map((s) => `  ${s}（当前 ${readPkg(s).version}；要发版用 node scripts/release.js ${s} <patch|minor|major>）`).join('\n') : '  (none)');
-if (sharedChanged) {
-  lines.push('');
-  lines.push('SHARED_CHANGED: shared/ 有变更——确认是否需要重发 vendored 它的插件（shared 构建期复制进插件 dist，消费者不会自动获得修复）');
-}
 console.log(lines.join('\n'));

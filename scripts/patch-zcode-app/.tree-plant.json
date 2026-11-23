@@ -1,4 +1,0 @@
-{
-  "testCommand": "node --test test/*.test.js zsem/test/*.test.js",
-  "ignoreChangedPaths": []
-}

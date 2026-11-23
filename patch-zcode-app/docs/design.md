@@ -13,7 +13,7 @@ provider 维度的全局信号量:超过上限的请求排队等待,zcode 视角
 | G1 | provider 维度并发上限 + 排队 | 「限制 provider 维度的 subagent 和 workflow agent 的数量,比如我设置只能同时发起10个,超过的就进入排队」;口径修正原句「单个provider的LLM调用总量限制是固定的,比如glm总体并发就是10,subagent和workflow是共用这个限制」 | 机制:请求级准入(provider 限制的本来就是并发请求),上限来自配置文件 | T2, T9 |
 | G2 | workflow 与 subagent 共用同一限制 | 「workflow必须加进来并且和subagent一起监控和控制,否则就没有意义了」 | 机制:注入点是全部 LLM 请求的唯一收口,subagent/workflow actor/主会话天然同池 | T2, T9 |
 | G3 | patch 只做入口,核心逻辑在受控代码 | 「patch不能做太重的逻辑,否则后续zcode一升级,patch就没用了,patch只能做一个入口,通过入口在其他地方,我们可控制代码稳定的地方,做核心逻辑」 | 机制:patch 注入行仅 trampoline 一行(转发+异常吞掉),信号量/配置/日志全在本仓 zsem/ 模块 | T1, T3 |
-| G4 | 本项目开发 + symlink 安装 | 「都开发在本项目中,然后symlink安装到 zcode patch」 | 机制:源码在 main/scripts/patch-zcode-app/zsem/,install 动作建 ~/.zcode/cli/zsem symlink(幂等) | T5 |
+| G4 | 本项目开发 + symlink 安装 | 「都开发在本项目中,然后symlink安装到 zcode patch」 | 机制:源码在 main/patch-zcode-app/zsem/,install 动作建 ~/.zcode/cli/zsem symlink(幂等) | T5 |
 | G5 | 统一 patch 框架 + 自动升级覆盖 | 「后续 patch 都走统一自动升级覆盖的逻辑,然后再写patch逻辑」 | 机制:收编进 patch-zcode-app(patches/ 清单+幂等 apply+升级自动重采纳),框架扩展 asar 外裸文件目标类型 | T1, T6, T8 |
 | G6 | 排队不干扰 zcode 正常运转 | 「这个排队不影响zcode,zcode会认为 tool 调用已经成功或者已经 block 了,后面会自动排队完进入」 | 机制:排队发生在进程内 await,请求挂起等价于模型响应慢;fail-open 保证 zsem 异常时会话不受影响 | T3 |
 
@@ -27,23 +27,23 @@ acceptance.md 的实机 case 全绿。
 ## 树形拆分
 
 主干文件清单(仓库根相对路径,gate 按此核对;行内不带注释,gate 逐字匹配):
-- scripts/patch-zcode-app/patch-zcode-app.js
-- scripts/patch-zcode-app/patches/
-- scripts/patch-zcode-app/zsem/
-- scripts/patch-zcode-app/test/
-- scripts/patch-zcode-app/docs/
-- scripts/patch-zcode-app/.tree-plant.json
-- scripts/patch-zcode-app/README.md
+- patch-zcode-app/patch-zcode-app.js
+- patch-zcode-app/patches/
+- patch-zcode-app/zsem/
+- patch-zcode-app/test/
+- patch-zcode-app/docs/
+- patch-zcode-app/.tree-plant.json
+- patch-zcode-app/README.md
 - AGENTS.md
 - .gitignore
 
-主干对 patch-zcode-app.js 的改动内容:loose-file 目标类型支持 + provider-sem 收编 + install 动作;.gitignore 仅追加 scripts/patch-zcode-app/.run/ 条目。
+主干对 patch-zcode-app.js 的改动内容:loose-file 目标类型支持 + provider-sem 收编 + install 动作;.gitignore 仅追加 patch-zcode-app/.run/ 条目。
 
 | 枝名 | 目标 | 依赖 | 风险级 | 文件 | case |
 |---|---|---|---|---|---|
-| zsem-observe | 观测面:JSONL 事件日志 + status CLI | 主干 | 中 | scripts/patch-zcode-app/zsem/lib/log.js, scripts/patch-zcode-app/zsem/bin/zsem.js | T4 |
-| upgrade-sim | 升级-重打闭环:restore→apply 幂等重打 + 基线重采纳 | 主干 | 高 | scripts/patch-zcode-app/patch-zcode-app.js, scripts/patch-zcode-app/test/ | T6, T8 |
-| abort-cancel | 排队中 abort 信号取消 + 名额不泄漏 | 主干 | 高 | scripts/patch-zcode-app/zsem/, scripts/patch-zcode-app/test/ | T2c |
+| zsem-observe | 观测面:JSONL 事件日志 + status CLI | 主干 | 中 | patch-zcode-app/zsem/lib/log.js, patch-zcode-app/zsem/bin/zsem.js | T4 |
+| upgrade-sim | 升级-重打闭环:restore→apply 幂等重打 + 基线重采纳 | 主干 | 高 | patch-zcode-app/patch-zcode-app.js, patch-zcode-app/test/ | T6, T8 |
+| abort-cancel | 排队中 abort 信号取消 + 名额不泄漏 | 主干 | 高 | patch-zcode-app/zsem/, patch-zcode-app/test/ | T2c |
 
 ## 非功能设计
 

@@ -5,7 +5,7 @@
 patch-zcode-app.js(新增动作与既有动作语义):
 
 - `node patch-zcode-app.js install` — 建立 `~/.zcode/cli/zsem` → 本仓
-  `scripts/patch-zcode-app/zsem` 的 symlink(幂等:已存在且指向一致则跳过)。
+  `patch-zcode-app/zsem` 的 symlink(幂等:已存在且指向一致则跳过)。
   只装链接不打 patch,apply 仍由显式命令触发。
 - `apply / restore / status` — 语义不变;restore 扩展为同时回滚 asar 内补丁与
   asar 外裸文件补丁(zcode.cjs)。

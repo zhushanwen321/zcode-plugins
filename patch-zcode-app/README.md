@@ -4,13 +4,13 @@ ZCode 桌面版（Electron DMG）`app.asar` 的统一补丁工具：所有本地
 `patches/` 目录管理，一条命令查状态 / 应用 / 回滚。
 
 ```bash
-node scripts/patch-zcode-app/patch-zcode-app.js status          # 查看基线与各补丁状态
-node scripts/patch-zcode-app/patch-zcode-app.js apply           # 应用全部补丁（幂等，可重跑）
-node scripts/patch-zcode-app/patch-zcode-app.js apply --patch yolo,quota-auto-reset
-node scripts/patch-zcode-app/patch-zcode-app.js restore         # 回滚为 pristine 基线
-node scripts/patch-zcode-app/patch-zcode-app.js install         # 安装 zsem 外部模块 symlink（幂等）
-node scripts/patch-zcode-app/patch-zcode-app.js autopatch-install   # 升级自动重打（LaunchAgent + TCC 载体）
-node scripts/patch-zcode-app/patch-zcode-app.js autopatch-uninstall # 卸载自动重打
+node patch-zcode-app/patch-zcode-app.js status          # 查看基线与各补丁状态
+node patch-zcode-app/patch-zcode-app.js apply           # 应用全部补丁（幂等，可重跑）
+node patch-zcode-app/patch-zcode-app.js apply --patch yolo,quota-auto-reset
+node patch-zcode-app/patch-zcode-app.js restore         # 回滚为 pristine 基线
+node patch-zcode-app/patch-zcode-app.js install         # 安装 zsem 外部模块 symlink（幂等）
+node patch-zcode-app/patch-zcode-app.js autopatch-install   # 升级自动重打（LaunchAgent + TCC 载体）
+node patch-zcode-app/patch-zcode-app.js autopatch-uninstall # 卸载自动重打
 ```
 
 ## autopatch：升级自动重打
@@ -110,7 +110,7 @@ zsem 故障语义 = fail-open：模块缺失/配置损坏/内部异常时注入�
 ## 测试
 
 ```bash
-node --test 'scripts/patch-zcode-app/test/*.test.js'
+node --test 'patch-zcode-app/test/*.test.js'
 ```
 
 测试全部跑在合成夹具上（`test/helpers.js` 按真实磁盘布局构造微型归档与 mini app，

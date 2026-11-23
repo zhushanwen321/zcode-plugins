@@ -1,7 +1,7 @@
 {
   "name": "zcode-plugin-workspace",
   "version": 1,
-  "description": "Personal zcode desktop plugin marketplace: one plugin per top-level directory, shared libs in shared/, unified docs in docs/. Authoritative on the main branch; on feature branches a referenced plugin directory may not exist yet.",
+  "description": "Personal zcode desktop plugin marketplace: one plugin per top-level directory, unified docs in docs/. Authoritative on the main branch; on feature branches a referenced plugin directory may not exist yet.",
   "owner": {
     "name": "zhushanwen",
     "url": "https://github.com/zhushanwen321"

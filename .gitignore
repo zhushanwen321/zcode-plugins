@@ -34,4 +34,5 @@
 .DS_Store
 
 # tree-plant gate 产物
-scripts/patch-zcode-app/.run/
+patch-zcode-app/.run/
+patch-zcode-app/.tree-plant.json

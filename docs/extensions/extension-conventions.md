@@ -14,9 +14,8 @@
 
 ## manifest 纪律
 
-5. 双 manifest 策略：`.zcode-plugin/plugin.json` 必需；`.claude-plugin/plugin.json` 为同内容
-   副本（Claude Code 兼容探测位）。两者**逐字节一致**，改必同步（长期方案：构建脚本校验一致性，
-   在此之前 review 时人工核对）。
+5. 单 manifest：`.zcode-plugin/plugin.json` 唯一必需（引擎也探测 `.claude-plugin/` /
+   `.codex-plugin/` 目录名，但本仓不维护兼容副本——一份事实一个登记处，不做同内容拷贝）。
 6. `version` 显式声明（缺省 0.0.0 会导致更新检测失效）；语义化版本，破坏行为变更 bump minor。
 7. 禁止依赖「记录但不执行」字段（`agents` / `channels` / `lspServers` / `outputStyles` /
    `settings`）。
@@ -25,8 +24,8 @@
 ## 隔离与自包含
 
 9. **运行时禁引插件根之外的路径**：marketplace 安装是完整副本（脱离本仓），`require`/读取相对
-   上级目录（`../../shared/...`）在安装态必坏。共享代码构建期 vendor 进各插件（见
-   `shared/README.md`）。
+   上级目录在安装态必坏。跨插件共享代码构建期 vendor（复制）进各插件目录（参照
+   `z-subagent-workflow/lib/vendor/subagent-core/` + `scripts/vendor-subagent-core.js` 模式）。
 10. 插件 spawn 的无头 zcode 子进程：HOME 隔离 + 嵌套标记 env + 嵌套环境 MCP 不注册工具，三件套
     缺一不可（防污染用户配置、防递归编排）。
 11. 无外部绝对路径硬编码；路径动态推导（`os.homedir()` / env）。
@@ -49,5 +48,5 @@
 16. 改 manifest / `.mcp.json` / 注册配置后必须重启 ZCode 验证，禁凭「应该生效」宣布完成。
 17. 涉及 zcode CLI / 引擎行为断言，先跑探针（命令见 local-dev-guide §4）再改码；探针结论回写
     到本文档或插件 README（注明日期与版本线索）。
-18. 插件间共享逻辑第二次出现时才提升 `shared/`（规则三：不加推测性功能；一次出现就地放插件
+18. 插件间共享逻辑第二次出现时才做 vendor 副本（规则三：不加推测性功能；一次出现就地放插件
     `lib/`）。

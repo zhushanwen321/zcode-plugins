@@ -11,8 +11,8 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 | `marketplace.json` | marketplace 清单，合入 main 时登记插件条目 |
 | `<plugin>/` | 每插件一个顶层目录（`z-` 前缀 kebab-case），含 `.zcode-plugin/plugin.json` + 根 `.mcp.json` + `package.json`（npm 发布清单）+ `skills/` + `bin/` + `lib/` + `dist/` + `test/` |
 | `gen-metrics/` | 本地扩展插件（**不在 marketplace/npm 发布链**）：经 `~/.zcode/cli/config.json` 的 `plugins.dirs` 指向本目录加载，走 zcode 扩展宿主（plugin.json `extension` 键 + `slots` 键），在输入框状态插槽显示生成指标。目录无 package.json（`.mjs` 入口天然 ESM），check-sync 自动跳过 |
-| `shared/` | 跨插件共享能力库源码（**构建期 vendor 进各插件 dist**，禁止运行时跨插件根引用，原因见架构边界） |
-| `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口）、`patch-zcode-app/`（ZCode.app 本地补丁统一工具，见「zcode 桌面端 patch 体系」节）、`zcode-auto-allow.mjs`（用户级自动放行 hook，symlink 安装到 `~/.agents/scripts/`，供 `~/.zcode/cli/config.json` hooks 引用；`AskUserQuestion` 在排除清单不走自动放行） |
+| `patch-zcode-app/` | ZCode.app 本地补丁统一工具（顶层子项目：补丁定义 `patches/` + zsem 模块 + 测试），见「zcode 桌面端 patch 体系」节 |
+| `scripts/` | 发布链工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`check-release-needed.js`（改动-发版关联）、`release.js`（发版入口）、`vendor-subagent-core.js` + `check-vendor-manifest.js`（vendored 核心包刷新与校验）、`zcode-auto-allow.mjs`（用户级自动放行 hook，symlink 安装到 `~/.agents/scripts/`，供 `~/.zcode/cli/config.json` hooks 引用；`AskUserQuestion` 在排除清单不走自动放行） |
 | `.githooks/` | git hooks 源（`pre-commit` + `install-hooks.sh`）；`.bare/hooks/post-checkout` 在 worktree add / checkout 时自动安装到 worktree gitdir，切分支即随分支刷新 |
 | `.github/workflows/` | CI（`ci.yml`：单测+一致性+包内容）与 npm 发布（`release-npm.yml`：tag 触发） |
 | `docs/standards.md` | 项目开发规范（技术栈/代码/测试/git） |
@@ -89,15 +89,15 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 ## zcode 桌面端 patch 体系（patch-zcode-app）
 
 对 ZCode.app（Electron 桌面版）的一切本地补丁，统一收编在
-`scripts/patch-zcode-app/`（`patches/` 目录即补丁清单），**禁止在工具之外手工改
+`patch-zcode-app/`（`patches/` 目录即补丁清单），**禁止在工具之外手工改
 app 内文件**——散落修改无基线、无升级覆盖、不可回滚。
 
 ```bash
-node scripts/patch-zcode-app/patch-zcode-app.js status    # 基线与各补丁状态（只读）
-node scripts/patch-zcode-app/patch-zcode-app.js apply     # 应用全部补丁（幂等，可重跑）
-node scripts/patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine 基线
-node scripts/patch-zcode-app/patch-zcode-app.js install   # 安装 zsem symlink（幂等）
-node scripts/patch-zcode-app/patch-zcode-app.js autopatch-install   # 装升级自动重打（LaunchAgent + TCC 载体）
+node patch-zcode-app/patch-zcode-app.js status    # 基线与各补丁状态（只读）
+node patch-zcode-app/patch-zcode-app.js apply     # 应用全部补丁（幂等，可重跑）
+node patch-zcode-app/patch-zcode-app.js restore   # 回滚为 pristine 基线
+node patch-zcode-app/patch-zcode-app.js install   # 安装 zsem symlink（幂等）
+node patch-zcode-app/patch-zcode-app.js autopatch-install   # 装升级自动重打（LaunchAgent + TCC 载体）
 ```
 
 ### autopatch：升级自动重打（三条铁律，新增补丁必须全部满足）
@@ -150,7 +150,7 @@ node 后 exec autopatch）——首次安装后必须在 系统设置→隐私�
   回读校验后原子 rename）;loose 文件走 stage 全量写 + fsync + 回读比对 + 原子
   rename + rename 前 mtime/size 复查（防并发覆盖）;对运行中的 ZCode 执行安全
   （rename 不动旧 inode），生效需重启。
-- 测试：`node --test 'scripts/patch-zcode-app/test/*.test.js'`（合成夹具，
+- 测试：`node --test 'patch-zcode-app/test/*.test.js'`（合成夹具，
   不触碰真实 app）;实机 e2e 探针在 `test/e2e/`（含一次真实 LLM 调用）。
 
 ## npm 发布规范
@@ -188,8 +188,6 @@ workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json �
 
 - **多插件操作模式**：每插件独立 package.json + 独立版本 + 独立 tag（`release.js <plugin>` 逐个
   跑），发版节奏互不绑定；批量发版 = 循环多次 release.js（各自 tag 各自 workflow run，天然隔离）。
-  `shared/` 变更不自动传播——check-release-needed 输出 SHARED_CHANGED 警告，由人确认哪些
-  vendored 它的插件需要重发。
 - **前置条件**：GitHub 仓配 `NPM_TOKEN` secret；首次发布前 scope `@zhushanwen` 的包须
   npm 账号下创建（scoped 公开包每次都要 `--access public`，workflow 已带）。
 - 插件首次接 npm：目录加 package.json（字段照 z-subagent-workflow 抄）→ marketplace.json 登记

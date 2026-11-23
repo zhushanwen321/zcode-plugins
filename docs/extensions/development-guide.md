@@ -16,7 +16,6 @@ hooks / MCP servers / plugins manifest）+ AGENTS.md，**没有进程内 extensi
 ```
 <plugin>/
 ├── .zcode-plugin/plugin.json    # zcode manifest（必需；探测顺序 .zcode-plugin > .claude-plugin > .codex-plugin）
-├── .claude-plugin/plugin.json   # Claude Code 兼容副本（可选，内容与上完全相同）
 ├── .mcp.json                    # MCP server 注册（官方推荐位置，替代 manifest 内嵌 mcpServers）
 ├── skills/<skill>/SKILL.md      # 技能（frontmatter: name + description 必需）
 ├── bin/<cli>.js                 # CLI 直跑入口（与 MCP tool 等价能力的调试通道）

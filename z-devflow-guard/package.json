@@ -7,7 +7,6 @@
   "bin": { "zdg": "bin/zdg.js" },
   "files": [
     ".zcode-plugin/plugin.json",
-    ".claude-plugin/plugin.json",
     "hooks/",
     "bin/",
     "lib/",

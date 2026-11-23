@@ -799,7 +799,7 @@ function cmdInstall() {
   const link = path.join(linkDir, 'zsem');
   const target = path.join(__dirname, 'zsem');
   if (!fsExtra.existsSync(path.join(target, 'entry.js'))) {
-    throw new Error(`zsem 模块不完整（缺 entry.js）：${target}。恢复动作：检查本仓 scripts/patch-zcode-app/zsem/ 目录。`);
+    throw new Error(`zsem 模块不完整（缺 entry.js）：${target}。恢复动作：检查本仓 patch-zcode-app/zsem/ 目录。`);
   }
   fsExtra.mkdirSync(linkDir, { recursive: true });
   let existing = null;

@@ -26,8 +26,6 @@
 - **安装副本**：marketplace 插件完整复制到 `~/.zcode/cli/plugins/cache/<marketplace>/<plugin>/<version>/`
   （多版本并存；带 `.zcode-plugin-seed.json` 完整性标记）。**插件根路径逃逸会被拒**——共享代码
   必须 vendor。
-- **双 manifest**：`.zcode-plugin/plugin.json` + 同内容 `.claude-plugin/plugin.json`（Claude Code
-  兼容探测位）。
 
 ## 运行形态
 
