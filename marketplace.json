@@ -101,7 +101,7 @@
     {
       "name": "z-quota-watch",
       "source": "./z-quota-watch",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "description": "Quota watch guard for zcode: a PreToolUse hook gates by per-session tool-call count (fires once the count exceeds 20, then resets) and, when the session model is a GLM plan model (account:* provider) with no live quota-wait background watch, injects the exact Bash command for the agent to start one that waits until the current 5-hour window end plus 1 minute, so the completion notification wakes the session for checkpoint handling.",
       "description_i18n": {
         "en": "Quota watch guard for zcode: a PreToolUse hook gates by per-session tool-call count (fires once the count exceeds 20, then resets) and, when the session model is a GLM plan model (account:* provider) with no live quota-wait background watch, injects the exact Bash command for the agent to start one that waits until the current 5-hour window end plus 1 minute, so the completion notification wakes the session for checkpoint handling.",
