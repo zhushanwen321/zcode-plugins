@@ -10,6 +10,7 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 |------|------|
 | `marketplace.json` | marketplace 清单，合入 main 时登记插件条目 |
 | `<plugin>/` | 每插件一个顶层目录（`z-` 前缀 kebab-case），含 `.zcode-plugin/plugin.json` + 根 `.mcp.json` + `package.json`（npm 发布清单）+ `skills/` + `bin/` + `lib/` + `dist/` + `test/` |
+| `gen-metrics/` | 本地扩展插件（**不在 marketplace/npm 发布链**）：经 `~/.zcode/cli/config.json` 的 `plugins.dirs` 指向本目录加载，走 zcode 扩展宿主（plugin.json `extension` 键 + `slots` 键），在输入框状态插槽显示生成指标。目录无 package.json（`.mjs` 入口天然 ESM），check-sync 自动跳过 |
 | `shared/` | 跨插件共享能力库源码（**构建期 vendor 进各插件 dist**，禁止运行时跨插件根引用，原因见架构边界） |
 | `scripts/` | workspace 级工具：`check-sync.js`（版本/包名一致性）、`check-pack.js`（npm 包内容）、`release.js`（发版入口）、`patch-zcode-app/`（ZCode.app 本地补丁统一工具，见「zcode 桌面端 patch 体系」节）、`zcode-auto-allow.mjs`（用户级自动放行 hook，symlink 安装到 `~/.agents/scripts/`，供 `~/.zcode/cli/config.json` hooks 引用；`AskUserQuestion` 在排除清单不走自动放行） |
 | `.githooks/` | git hooks 源（`pre-commit` + `install-hooks.sh`）；`.bare/hooks/post-checkout` 在 worktree add / checkout 时自动安装到 worktree gitdir，切分支即随分支刷新 |
@@ -20,9 +21,12 @@ marketplace 分发**（根目录 `marketplace.json` 是权威清单）；每个�
 
 ## 架构边界（改插件代码前必读）
 
-1. **zcode 无进程内 extension API**（官方文档只定义 skills/commands/hooks/MCP/plugins 五类声明式
-   资源 + AGENTS.md，无 JS 代码入口）。程序化能力只能走两条路：**MCP server 外挂进程**（stdio，
-   根 `.mcp.json` 注册，`${ZCODE_PLUGIN_ROOT}` 定位自身）或 **hooks**（shell 命令，仅 7 个事件）。
+1. **zcode 程序化能力三条路**（4.0.0 核实，扩展宿主为新增第三条）：**MCP server 外挂进程**（stdio，
+   根 `.mcp.json` 注册，`${ZCODE_PLUGIN_ROOT}` 定位自身）、**hooks**（shell 命令，仅 7 个事件）、
+   **扩展宿主 extension API**（plugin.json `extension` 键声明 JS 入口，`activate(ctx)` 跑在宿主
+   utilityProcess；能力含 `composer.status` 等五插槽、`models.onDidGenerate` 生成指标事件、
+   `context`/`env`/`workbench`/`settings` 订阅；版本兼容由 `engines.zcode` 对照宿主
+   EXTENSION_API_VERSION 管理，4.0.0 为 1.4.0）。参照实装：`gen-metrics/`。
 2. **marketplace 安装 = 完整副本**进 `~/.zcode/cli/plugins/cache/`，inline 开发 = 直接从工作区路径
    加载。因此插件**运行时禁止引用插件根之外的任何路径**（manifest 组件路径逃逸插件根直接判 invalid；
    共享代码在构建期复制/内联进各插件）。CLI 直跑入口（`bin/`）与 skill 内脚本同理须自包含。

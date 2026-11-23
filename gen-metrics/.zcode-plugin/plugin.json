@@ -1,0 +1,23 @@
+{
+  "name": "gen-metrics",
+  "version": "0.1.0",
+  "description": "Show per-session generation speed (tok/s) and time-to-first-token in the composer status slot. Values come from the host's models.onDidGenerate capability: final phase only, provider-reported accurate numbers.",
+  "extension": {
+    "engines": { "zcode": "^1.4.0" },
+    "main": "./extension.mjs",
+    "activationEvents": ["onAvailable"],
+    "contributes": {
+      "commands": [
+        {
+          "id": "show-details",
+          "title": { "zh-CN": "查看生成指标", "en-US": "Show generation metrics" }
+        }
+      ]
+    }
+  },
+  "slots": {
+    "composer.status": [
+      { "id": "gen-metrics", "icon": "gauge", "target": { "command": "show-details" } }
+    ]
+  }
+}
