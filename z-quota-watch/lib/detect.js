@@ -99,14 +99,31 @@ function listProcessCommands() {
 // 匹配真实 node 进程形态（node /path/zqw-watch.js --session ...），排除命令行文本里
 // 恰好含该文件名的 shell / 编辑器进程（它们不以 node 直接起 wrapper 为本体）
 const WATCH_PROC_RE = /^node\s+\S*zqw-watch\.js\s/;
+const SESSION_ARG_RE = /--session\s+(\S+)/;
 
-/** 本会话是否有存活的守望 wrapper 进程（ps 全表匹配 node 本体 + --session 标记）。 */
+// 引擎对同一会话存在两种 id 形态（实测 sess_789381d-… 与 sess_7893816d-… 并存：
+// bash 执行上下文/起守望时的短形 vs hook env 的长形，中段差一位、尾部一致）。尾 16
+// 字符落在 id 高熵段，按尾段比对可跨形态认领同一会话；碰撞为 2^-64 量级，且误伤
+// 方向只是少注入一次（下个门控周期重检测），后果轻微。
+const SESSION_TAIL_LEN = 16;
+
+function sameSessionTail(a, b) {
+  return (
+    a.length >= SESSION_TAIL_LEN &&
+    b.length >= SESSION_TAIL_LEN &&
+    a.slice(-SESSION_TAIL_LEN) === b.slice(-SESSION_TAIL_LEN)
+  );
+}
+
+/** 本会话是否有存活的守望 wrapper 进程（ps 全表匹配 node 本体 + --session 会话归属）。 */
 function hasActiveWatch(processLines, sessionId) {
   const key = sanitizeSessionId(sessionId);
-  const marker = '--session ' + key;
-  return processLines.some(
-    (line) => WATCH_PROC_RE.test(line.trim()) && line.includes(marker),
-  );
+  return processLines.some((line) => {
+    const t = line.trim();
+    if (!WATCH_PROC_RE.test(t)) return false;
+    const m = t.match(SESSION_ARG_RE);
+    return Boolean(m) && (m[1] === key || sameSessionTail(m[1], key));
+  });
 }
 
 function readStateJson(file) {
@@ -125,7 +142,18 @@ function isSuppressed(stateDir, key, nowMs) {
 
 /** 上次守望以失败退出且仍在冷却期 → 跳过注入，防 CLI 故障时反复催起。被信号杀（killed，如 TaskStop 主动终止）不算失败。 */
 function inFailureCooldown(stateDir, key, nowMs) {
-  const r = readStateJson(path.join(stateDir, key, 'result.json'));
+  let r = readStateJson(path.join(stateDir, key, 'result.json'));
+  if (!r) {
+    // 双 id 形态兜底：wrapper 按起动时 argv id 写 result.json，与 hook 检测时的 env
+    // id 可能中段差一位；精确目录 miss 时按尾段找同会话目录，保住失败冷却判定
+    try {
+      for (const name of fs.readdirSync(stateDir)) {
+        if (name === key || !sameSessionTail(name, key)) continue;
+        r = readStateJson(path.join(stateDir, name, 'result.json'));
+        if (r) break;
+      }
+    } catch { /* 目录不存在忽略 */ }
+  }
   if (!r || r.exitCode === 0 || r.killed) return false;
   return Number.isFinite(r.finishedAtMs) && nowMs - r.finishedAtMs < FAILURE_COOLDOWN_MS;
 }
@@ -161,6 +189,7 @@ function filterWatchLines(processLines) {
 
 module.exports = {
   sanitizeSessionId,
+  sameSessionTail,
   querySessionModel,
   fallbackModelFromConfig,
   isGlmPlan,

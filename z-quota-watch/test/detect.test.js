@@ -78,6 +78,20 @@ test('hasActiveWatch：按 node 本体 + --session 标记精确归属，排除�
   assert.strictEqual(detect.hasActiveWatch([], 'sess_a'), false);
 });
 
+test('hasActiveWatch：引擎双 id 形态（中段差一位、尾部一致）跨形态认领', () => {
+  // 2026-11-23 实测事故形态：起守望时 argv 落短形 id，hook 检测时 env 是长形 id
+  const shortId = 'sess_789381d-8c7f-4327-840d-3975a83681af';
+  const longId = 'sess_7893816d-8c7f-4327-840d-3975a83681af';
+  const line = `node /cache/z-quota-watch/0.1.0/bin/zqw-watch.js --session ${shortId} --agent zcode --provider account:p`;
+  assert.strictEqual(detect.hasActiveWatch([line], longId), true);
+  assert.strictEqual(detect.hasActiveWatch([line], shortId), true);
+  // 尾段不同（高熵段差异）的其他会话不误认领
+  const stranger = 'sess_00000000-1111-2222-3333-3975a83681af';
+  assert.strictEqual(detect.hasActiveWatch([line], stranger), false);
+  // id 过短（不足尾段长度）只走精确相等，不做尾段比对
+  assert.strictEqual(detect.sameSessionTail('short-a', 'short-a'), false);
+});
+
 test('isSuppressed / inFailureCooldown：抑制与冷却判定', () => {
   const stateDir = path.join(process.env.ZQW_DATA_DIR, 'state');
   const key = 'sess_c';
@@ -98,4 +112,20 @@ test('isSuppressed / inFailureCooldown：抑制与冷却判定', () => {
   assert.strictEqual(detect.inFailureCooldown(stateDir, key, now), false);
   fs.writeFileSync(path.join(dir, 'result.json'), JSON.stringify({ exitCode: 3, finishedAtMs: now - 11 * 60_000 }));
   assert.strictEqual(detect.inFailureCooldown(stateDir, key, now), false);
+});
+
+test('inFailureCooldown：result 落在双 id 形态的另一目录时按尾段兜底', () => {
+  const stateDir = path.join(process.env.ZQW_DATA_DIR, 'state-dual');
+  // wrapper 按 argv 短形 id 落 result.json，hook 按 env 长形 id 查
+  const argvDir = path.join(stateDir, 'sess_789381d-8c7f-4327-840d-3975a83681af');
+  fs.mkdirSync(argvDir, { recursive: true });
+  const now = Date.now();
+  fs.writeFileSync(path.join(argvDir, 'result.json'), JSON.stringify({ exitCode: 3, finishedAtMs: now - 60_000 }));
+  const envKey = 'sess_7893816d-8c7f-4327-840d-3975a83681af';
+  assert.strictEqual(detect.inFailureCooldown(stateDir, envKey, now), true);
+  // 正常退出的 result 同样能被兜底读到 → 不拦截
+  fs.writeFileSync(path.join(argvDir, 'result.json'), JSON.stringify({ exitCode: 0, finishedAtMs: now - 60_000 }));
+  assert.strictEqual(detect.inFailureCooldown(stateDir, envKey, now), false);
+  // 无任何同会话目录 → 不拦截
+  assert.strictEqual(detect.inFailureCooldown(stateDir, 'sess_ffffffff-0000-0000-0000-000000000000', now), false);
 });
