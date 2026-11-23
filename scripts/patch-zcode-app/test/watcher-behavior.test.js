@@ -64,7 +64,7 @@ function boot(h) {
   assert.equal(h.ticks[0].ms, 60 * 1000, '轮询间隔应为 60s（v8：降频缓解服务端限流风险）');
 }
 
-test('观察器安装：注册 30s tick，带版本号', () => {
+test('观察器安装：注册 60s tick，带版本号', () => {
   const h = makeSandbox();
   boot(h);
   assert.equal(h.sandbox.__zswQuotaAutoReset.version, quota.version);
@@ -177,15 +177,38 @@ test('多机会每轮至多触发一次（防同轮连发浪费），下一轮�
   assert.equal(svc.calls.use[1].idempotencyKey, deriveUuid(later, '8'));
 });
 
-test('周额度机会永不自动触发（方案 1 裁决）', async () => {
+test('周卡第一层拦截：临期周卡不触发；无合格 5h 卡时额度再低也不触发、不拉 usage', async () => {
   const h = makeSandbox();
   const svc = freshService();
-  svc.getCodingPlanResetStatus = async () => ({ availableFiveHourResets: [], availableWeekResets: [{ expireAt: NOW0 + 30 * 1000 }] });
+  svc.getCodingPlanResetStatus = async () => {
+    svc.calls.status += 1;
+    return { availableFiveHourResets: [], availableWeekResets: [{ expireAt: NOW0 + 30 * 1000 }] };
+  };
+  svc.getCodingPlanUsageSnapshot = async () => { svc.calls.usage += 1; return FIVE_H_LIMIT(0.01); };
   h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
   boot(h);
   h.ticks[0].fn();
   await wait();
-  assert.equal(svc.calls.use.length, 0);
+  assert.equal(svc.calls.use.length, 0, '周卡即使 30 秒后过期也不得使用');
+  assert.equal(svc.calls.usage, 0, '周卡对规则 2 同样不可见');
+});
+
+test('周卡与合格 5h 卡并存：只动 5h 卡，且只动一次', async () => {
+  const h = makeSandbox();
+  const five = NOW0 + 30 * MIN;
+  const svc = freshService([{ expireAt: five }]);
+  svc.getCodingPlanResetStatus = async () => {
+    svc.calls.status += 1;
+    return { availableFiveHourResets: [{ expireAt: five }], availableWeekResets: [{ expireAt: NOW0 + 20 * 1000 }] };
+  };
+  svc.getCodingPlanUsageSnapshot = async () => { svc.calls.usage += 1; return FIVE_H_LIMIT(0.01); };
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(five, '8'));
+  assert.equal(svc.calls.use[0].resetType, 'FIVE_HOUR');
 });
 
 test('捕获钩子（transform 产物原文）：存的是 RPC 代理字段 e.service，不是参数包装对象', async () => {
@@ -214,14 +237,14 @@ test('捕获钩子（transform 产物原文）：存的是 RPC 代理字段 e.se
 });
 
 
-// ===== 规则 2：剩余 <5% 且到期 <1 小时 =====
+// ===== 规则 2：剩余 <5% =====
 
 // 真实契约形态（UI 筛选条件 unit===3 && number===5；remaining 与 number 同单位，比例 = remaining/number）
 const FIVE_H_LIMIT = (ratio) => ({
   quota: { limits: [{ type: 'TOKENS_LIMIT', unit: 3, number: 5, remaining: ratio * 5, percentage: ratio * 100 }] },
 });
 
-test('规则 2：额度 3% → 触发，不限卡到期时间（4 小时后过期的卡也用）', async () => {
+test('规则 2：额度 3% → 触发（4 小时后过期的卡，在 24 小时合格范围内）', async () => {
   const h = makeSandbox();
   const expireAt = NOW0 + 4 * 60 * MIN;
   const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) }); // 剩余 3%
@@ -414,4 +437,73 @@ test('v8 诊断：usage 无 5h 卡（筛选不命中）时静默降级不崩溃'
   await wait();
   assert.equal(svc.calls.use.length, 0, '读不到 5h 卡时规则 2 空闲');
   assert.equal(svc.calls.usage, 1);
+});
+
+
+// ===== 第一层拦截：只放行「5 小时卡且距过期 ≤1 天」=====
+
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+
+test('第一层拦截：卡距过期超过 1 天 → 额度再低也不触发，且不拉 usage', async () => {
+  const h = makeSandbox();
+  const svc = freshService([{ expireAt: NOW0 + 25 * HOUR }], { usageSnapshot: FIVE_H_LIMIT(0.01) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, '远期卡不得被自动使用');
+  assert.equal(svc.calls.usage, 0, '无合格卡时不进入规则 2（不拉 usage）');
+});
+
+test('第一层拦截边界：距过期恰好 24 小时可用，多 1 毫秒不可用', async () => {
+  const h = makeSandbox();
+  const exact = NOW0 + DAY;
+  const svc = freshService([{ expireAt: exact + 1 }], { usageSnapshot: FIVE_H_LIMIT(0.03) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, '24 小时零 1 毫秒 = 超过 1 天，拦截');
+  svc.getCodingPlanResetStatus = async () => {
+    svc.calls.status += 1;
+    return { availableFiveHourResets: [{ expireAt: exact }], availableWeekResets: [] };
+  };
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '恰好 24 小时 = 不超过 1 天，放行');
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(exact, '8'));
+});
+
+test('第一层拦截：远期卡与近期卡并存时只用近期卡，近期卡用完后远期卡仍不动', async () => {
+  const h = makeSandbox();
+  const far = NOW0 + 3 * DAY;
+  const near = NOW0 + 20 * HOUR;
+  const svc = freshService([{ expireAt: far }, { expireAt: near }], { usageSnapshot: FIVE_H_LIMIT(0.02) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1);
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(near, '8'), '远期卡排在列表前面也不能被选中');
+  h.setNow(NOW0 + 6 * MIN); // 快照仍 2%：节流过后规则 2 再次评估
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '近期卡已用过，远期卡不得补位');
+});
+
+test('远期卡进入 24 小时范围后，低额度下一轮即触发', async () => {
+  const h = makeSandbox();
+  const expireAt = NOW0 + DAY + 2 * MIN;
+  const svc = freshService([{ expireAt }], { usageSnapshot: FIVE_H_LIMIT(0.03) });
+  h.sandbox.__zswQuotaCtx = { service: svc, scope: {} };
+  boot(h);
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 0, '距过期 24 小时 2 分：拦截');
+  h.setNow(NOW0 + 3 * MIN); // 距过期 23 小时 59 分
+  h.ticks[0].fn();
+  await wait();
+  assert.equal(svc.calls.use.length, 1, '进入 24 小时范围后放行');
+  assert.equal(svc.calls.use[0].idempotencyKey, deriveUuid(expireAt, '8'));
 });

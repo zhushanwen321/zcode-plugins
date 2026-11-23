@@ -41,14 +41,21 @@ apply / restore 后**重启 ZCode 生效**；对运行中的 ZCode 执行是安�
 | 补丁 | 行为 | 目标 |
 |------|------|------|
 | `yolo` | 新建会话默认权限模式 `build` → `yolo`（等宽替换） | 宿主 `/out/host/index.js` |
-| `quota-auto-reset` | 5 小时额度重置机会距过期 <5 分钟时自动消耗该机会执行重置（方案 1：无用量阈值；周额度机会不自动用） | 渲染层 `/out/renderer/assets/styles-*.js` |
+| `quota-auto-reset` | 自动消耗距过期 24 小时内的 5 小时额度重置卡：卡距过期 <5 分钟，或 5 小时窗口剩余 <5% 时触发。周额度卡与距过期超过 24 小时的卡在第一层拦截，不自动使用 | 渲染层 `/out/renderer/assets/styles-*.js` |
 | `provider-sem` | LLM 请求准入唯一收口（admitAttempt）注入一行 trampoline，转发到外部 zsem 模块做 provider 维度并发上限与排队（上限/策略由 `~/.zcode/cli/zsem-config.json` 配置） | asar 外裸文件 `Resources/glm/zcode.cjs` |
 
-`quota-auto-reset` 的运行形态：注入后渲染层每 30 秒自查一次重置状态（后台标签页
-被节流到约 1 分钟粒度，仍远快于 5 分钟窗口），命中即将过期机会就调宿主 RPC
-`useCodingPlanReset`。幂等键由机会的 `expireAt` 推导（`zsw-auto-five_hour-<时间戳>`），
-同一机会重试复用同键，服务端幂等去重，不会重复消耗。触发与结果都打
-`[zsw-quota-auto-reset]` 前缀日志（DevTools console 可见）。
+`quota-auto-reset` 的运行形态：注入后渲染层每 60 秒自查一次重置状态（后台标签页
+被节流到约 1 分钟粒度，仍远快于 5 分钟窗口）。每轮先做第一层拦截——只保留「5 小时
+卡且距过期不超过 24 小时」，周额度卡与更远期的卡对后续规则不可见；再依次判定
+「卡距过期 <5 分钟」与「5 小时窗口剩余 <5%」（后者每 5 分钟拉一次用量快照）。幂等键
+由机会的 `expireAt` 派生为 UUID 形态，同一机会重试复用同键，服务端幂等去重，不会
+重复消耗。触发与结果都打 `[zsw-quota-auto-reset]` 前缀日志（DevTools console 可见）。
+
+宿主侧 `~/.zcode/v2/logs/<日期>.log` 逐条记录 `usage-stats.*` RPC，可用于事后核对
+是否发生过自动触发。自动触发来自观察器的 60 秒节拍：状态查询后紧跟用量查询
+（规则「剩余 <5%」）或直接 use（规则「卡距过期 <5 分钟」），前后没有界面专属调用；
+手动点击则伴有 `getEntitlementSnapshot`、`markCodingPlanResetHistoryRead` 等界面
+专属调用，且不在观察器节拍上。
 
 ## provider-sem 与 zsem 外部模块
 

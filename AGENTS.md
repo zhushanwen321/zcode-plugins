@@ -130,7 +130,7 @@ node 后 exec autopatch）——首次安装后必须在 系统设置→隐私�
 | 补丁 | 行为 | 目标 |
 |------|------|------|
 | `yolo` | 新建会话默认权限模式 `build` → `yolo` | app.asar 内 `/out/host/index.js` |
-| `quota-auto-reset` | 5 小时额度重置机会距过期 <5 分钟时自动消耗执行重置 | app.asar 内 `/out/renderer/assets/styles-*.js` |
+| `quota-auto-reset` | 自动消耗距过期 24 小时内的 5 小时额度重置卡：卡距过期 <5 分钟，或 5 小时窗口剩余 <5% 时触发；周额度卡与距过期超过 24 小时的卡第一层拦截，不自动使用 | app.asar 内 `/out/renderer/assets/styles-*.js` |
 | `provider-sem` | LLM 请求准入唯一收口注入 trampoline，转发 zsem 外部模块做 provider 维度并发上限与排队 | asar 外裸文件 `Resources/glm/zcode.cjs` |
 
 - **补丁定义协议**：`{ name, description, target, isApplied(content),
