@@ -1,7 +1,7 @@
 {
   "name": "@zhushanwen/z-quota-watch",
   "version": "0.1.0",
-  "description": "Quota watch guard for zcode: PreToolUse hook samples every 20th tool call per session and injects the command to start a quota-wait background watch (until current 5h window end +1min) for GLM plan sessions.",
+  "description": "Quota watch guard for zcode: PreToolUse hook fires past 20 tool calls per session (then resets) and injects the command to start a quota-wait background watch (until current 5h window end +1min) for GLM plan sessions.",
   "type": "commonjs",
   "license": "MIT",
   "bin": { "zqw": "bin/zqw.js" },
@@ -13,7 +13,14 @@
     "lib/",
     "README.md"
   ],
-  "keywords": ["zcode", "hooks", "pre-tool-use", "quota", "quota-wait", "watch"],
+  "keywords": [
+    "zcode",
+    "hooks",
+    "pre-tool-use",
+    "quota",
+    "quota-wait",
+    "watch"
+  ],
   "engines": { "node": ">=22.5" },
   "repository": { "type": "git", "url": "git+https://github.com/zhushanwen321/zcode-plugins.git", "directory": "z-quota-watch" },
   "author": "zhushanwen (https://github.com/zhushanwen321)"

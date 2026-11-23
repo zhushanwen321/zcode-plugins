@@ -23,7 +23,7 @@ const QUOTA_WAIT_CLI = process.env.ZQW_QUOTA_WAIT_CLI ||
 // ps 扫描标记：守望 wrapper 的文件名 + --session 参数共同定位会话归属
 const WATCH_BINARY = 'zqw-watch.js';
 
-const EVERY_N_TOOL_CALLS = 20; // 门控周期：每第 20 次工具调用做一次完整检测
+const GATE_THRESHOLD = 20; // 门控阈值：工具调用计数超过 20 触发一次完整检测并清零计数
 const FAILURE_COOLDOWN_MS = 10 * 60 * 1000; // 守望启动失败后的注入冷却
 const COUNT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 计数文件保留期
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 会话状态目录保留期
@@ -38,7 +38,7 @@ module.exports = {
   USER_CONFIG_PATH,
   QUOTA_WAIT_CLI,
   WATCH_BINARY,
-  EVERY_N_TOOL_CALLS,
+  GATE_THRESHOLD,
   FAILURE_COOLDOWN_MS,
   COUNT_TTL_MS,
   SESSION_TTL_MS,

@@ -1,16 +1,16 @@
 # z-quota-watch
 
-zcode 的额度守望兜底插件。PreToolUse hook 按会话内工具调用计数门控（每第 20 次
-触发一次检测），检测到「会话模型为 GLM 套餐模型 且 没有存活的 quota-wait 守望
-后台任务」时，注入一条现成命令让 agent 用 Bash `run_in_background` 起一个守望
-任务——守到当前 5 小时窗口结束 +1 分钟退出，完成通知回会话后按 quota-wait 技能
-模式 B 的检查点语义续接。
+zcode 的额度守望兜底插件。PreToolUse hook 按会话内工具调用计数门控（计数超过
+20 触发一次检测并清零，即每 21 次工具调用检测一次），检测到「会话模型为 GLM
+套餐模型 且 没有存活的 quota-wait 守望后台任务」时，注入一条现成命令让 agent
+用 Bash `run_in_background` 起一个守望任务——守到当前 5 小时窗口结束 +1 分钟
+退出，完成通知回会话后按 quota-wait 技能模式 B 的检查点语义续接。
 
 ## 检测链（hook 子命令）
 
 ```
 PreToolUse（每次工具调用）
-  └─ sh 门控：会话计数 +1，仅第 20 次才起 node（其余 19 次 ~5ms 直通）
+  └─ sh 门控：会话计数 +1，超过 20 才起 node（写回 0；其余调用 ~5ms 直通）
       └─ zqw.js hook pre-tool-use
           1. 嵌套无头子会话（ZSW_NESTED 等）→ 跳过
           2. 叫停抑制（suppress）或失败冷却（10min）未过期 → 跳过

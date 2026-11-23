@@ -14,7 +14,7 @@ const {
   DB_PATH,
   USER_CONFIG_PATH,
   DEFAULT_SUPPRESS_MS,
-  EVERY_N_TOOL_CALLS,
+  GATE_THRESHOLD,
 } = require('../lib/config');
 const {
   sanitizeSessionId,
@@ -33,7 +33,7 @@ const { EMPTY_OUTPUT, watchCommand, renderInjection } = require('../lib/inject')
 const USAGE = [
   '用法：zqw <command>',
   '',
-  '  hook pre-tool-use                               PreToolUse 检测入口（门控第 ' + EVERY_N_TOOL_CALLS + ' 次触发）',
+  '  hook pre-tool-use                               PreToolUse 检测入口（门控：计数超过 ' + GATE_THRESHOLD + ' 触发并清零）',
   '  status                                          打印各会话计数、守望进程与最近结果',
   '  suppress --session <id> [--for <+30m|+2h>]      叫停守望注入（默认 24h 静默）',
   '  reset                                           清空全部状态',
