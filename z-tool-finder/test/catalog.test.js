@@ -129,6 +129,6 @@ test('并发写者不互抹：两个后台 prescan 子进程并发合并，既�
     assert.ok(cat.servers['writer-a'], 'writer-a 记录丢失');
     assert.ok(cat.servers['writer-b'], 'writer-b 记录丢失');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

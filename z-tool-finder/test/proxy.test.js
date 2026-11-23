@@ -66,7 +66,7 @@ function withDataDir(t, { registry, catalog } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-proxy-test-'));
   if (registry) fs.writeFileSync(path.join(dir, 'registry.json'), JSON.stringify(registry));
   if (catalog) fs.writeFileSync(path.join(dir, 'catalog.json'), JSON.stringify(catalog));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return dir;
 }
 

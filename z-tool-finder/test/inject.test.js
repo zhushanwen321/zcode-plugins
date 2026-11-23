@@ -103,8 +103,8 @@ function runHook(env, cb) {
 
 test('hook 冒烟：stdout 是单个 JSON 对象且嵌套结构正确', (t) => {
   t.after(() => {
-    fs.rmSync(t.home, { recursive: true, force: true });
-    fs.rmSync(t.dataDir, { recursive: true, force: true });
+    fs.rmSync(t.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(t.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const home = tmpDir('ztf-hook-home-');
   const dataDir = tmpDir('ztf-hook-data-');
@@ -133,8 +133,8 @@ test('hook 冒烟：TF_NESTED=1 只输出空对象', (t) => {
   const home = tmpDir('ztf-nested-home-');
   const dataDir = tmpDir('ztf-nested-data-');
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   runHook({ HOME: home, ZTF_DATA_DIR: dataDir, TF_NESTED: '1' }, (err, stdout) => {
     assert.ifError(err);

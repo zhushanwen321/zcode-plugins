@@ -62,7 +62,7 @@ async function launcherToolsList(launcherFile, serverKey, env) {
 
 test('syncLauncher：复制两文件 + 写 launcher.json', (t) => {
   const dataDir = tmpDir('ztf-launcher-test-');
-  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const result = syncLauncher(dataDir, PLUGIN_ROOT);
   assert.equal(path.basename(result.launcherDir), 'launcher');
   for (const name of ['proxy-launcher.js', 'restore.js', 'launcher.json']) {
@@ -77,13 +77,13 @@ test('launcher 优先级：同目录 launcher.json 胜过 ZTF_PLUGIN_ROOT', asyn
   const dataDir = tmpDir('ztf-launcher-test-');
   const fakeHome = tmpDir('ztf-fake-home-');
   t.after(() => {
-    fs.rmSync(dataDir, { recursive: true, force: true });
-    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   syncLauncher(dataDir, PLUGIN_ROOT);
   // env 指向一个不含 proxy.js 的假根：若 env 优先则启动失败，launcher.json 优先则正常返回 meta 工具
   const bogusRoot = tmpDir('ztf-bogus-root-');
-  t.after(() => fs.rmSync(bogusRoot, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(bogusRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const { listRes } = await launcherToolsList(
     path.join(dataDir, 'launcher', 'proxy-launcher.js'),
     'echo-test',
@@ -97,8 +97,8 @@ test('launcher 回退：无 launcher.json 时用 ZTF_PLUGIN_ROOT', async (t) => 
   const dataDir = tmpDir('ztf-launcher-test-');
   const fakeHome = tmpDir('ztf-fake-home-');
   t.after(() => {
-    fs.rmSync(dataDir, { recursive: true, force: true });
-    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   // 只复制 launcher 本体，不写 launcher.json
   fs.mkdirSync(path.join(dataDir, 'launcher'), { recursive: true });
@@ -115,8 +115,8 @@ test('launcher：本体不存在时透传原始定义（卸载后不改配置继
   const dataDir = tmpDir('ztf-launcher-test-');
   const fakeHome = tmpDir('ztf-fake-home-');
   t.after(() => {
-    fs.rmSync(dataDir, { recursive: true, force: true });
-    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   fs.mkdirSync(path.join(dataDir, 'launcher'), { recursive: true });
   fs.copyFileSync(path.join(LAUNCHER_SRC, 'proxy-launcher.js'), path.join(dataDir, 'launcher', 'proxy-launcher.js'));
@@ -138,8 +138,8 @@ test('launcher：本体不存在且 argv 无 "--" → exit 1 + restore 指引', 
   const dataDir = tmpDir('ztf-launcher-test-');
   const fakeHome = tmpDir('ztf-fake-home-');
   t.after(() => {
-    fs.rmSync(dataDir, { recursive: true, force: true });
-    fs.rmSync(fakeHome, { recursive: true, force: true });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(fakeHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   fs.mkdirSync(path.join(dataDir, 'launcher'), { recursive: true });
   fs.copyFileSync(path.join(LAUNCHER_SRC, 'proxy-launcher.js'), path.join(dataDir, 'launcher', 'proxy-launcher.js'));
@@ -211,8 +211,8 @@ function runRestore(home, dataDir, args) {
 test('restore --all：user 条目恢复原文、plugin 条目删除、registry 清空', (t) => {
   const { home, dataDir, configPath } = makeRestoreFixture();
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const res = runRestore(home, dataDir, ['--all']);
   assert.equal(res.status, 0, res.stderr);
@@ -230,8 +230,8 @@ test('restore --all：user 条目恢复原文、plugin 条目删除、registry �
 test('restore <serverKey>：只还原指定条目，其余保留', (t) => {
   const { home, dataDir, configPath } = makeRestoreFixture();
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const res = runRestore(home, dataDir, ['plugin:demo:helper']);
   assert.equal(res.status, 0, res.stderr);
@@ -249,8 +249,8 @@ test('restore <serverKey>：只还原指定条目，其余保留', (t) => {
 test('restore：无参数打印用法；未知 key 报错列出现有记录', (t) => {
   const { home, dataDir } = makeRestoreFixture();
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const noArg = runRestore(home, dataDir, []);
   assert.equal(noArg.status, 2);
@@ -264,8 +264,8 @@ test('restore：无参数打印用法；未知 key 报错列出现有记录', (t
 test('restore：锁被活跃进程持有时放弃且不动任何文件', (t) => {
   const { home, dataDir, configPath } = makeRestoreFixture();
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const regBefore = fs.readFileSync(path.join(dataDir, 'registry.json'), 'utf8');
   const cfgBefore = fs.readFileSync(configPath, 'utf8');
@@ -283,8 +283,8 @@ test('restore：锁被活跃进程持有时放弃且不动任何文件', (t) => 
 test('restore：锁标记死亡 PID 时按 stale 接管并完成还原', (t) => {
   const { home, dataDir } = makeRestoreFixture();
   t.after(() => {
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   fs.writeFileSync(path.join(dataDir, 'registry.lock'), '999999999'); // 不存在的 PID
   const res = runRestore(home, dataDir, ['--all']);
@@ -331,7 +331,7 @@ test('候选 3：无 launcher.json/env 时扫 inline plugins.dirs 以 plugin.jso
   const fakeHome = tmpDir('ztf-fake-home-');
   const fakeRoot = tmpDir('ztf-inline-root-'); // 目录名故意不带 z-tool-finder，验证按 name 匹配
   t.after(() => {
-    for (const d of [dataDir, fakeHome, fakeRoot]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [dataDir, fakeHome, fakeRoot]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   copyBareLauncher(dataDir);
   writeJson(path.join(fakeRoot, '.zcode-plugin', 'plugin.json'), { name: 'z-tool-finder' });
@@ -351,7 +351,7 @@ test('候选 4：inline 候选缺 proxy.js 时降级到 cache 最高版本（1.1
   const fakeHome = tmpDir('ztf-fake-home-');
   const brokenInline = tmpDir('ztf-broken-inline-');
   t.after(() => {
-    for (const d of [dataDir, fakeHome, brokenInline]) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of [dataDir, fakeHome, brokenInline]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   copyBareLauncher(dataDir);
   // inline dirs 有 name 匹配的插件但缺 dist/mcp/proxy.js → 候选 3 存在却无效，须继续降级

@@ -77,7 +77,7 @@ const FIXTURE = {
 
 test('initialize + tools/list：仅暴露 search_tools', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const cli = startServer({ ZTF_DATA_DIR: dir });
   t.after(() => cli.close());
 
@@ -97,7 +97,7 @@ test('initialize + tools/list：仅暴露 search_tools', async (t) => {
 
 test('未知 method 且带 id → -32601', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const cli = startServer({ ZTF_DATA_DIR: dir });
   t.after(() => cli.close());
   const res = await cli.call('foo/bar', {});
@@ -106,7 +106,7 @@ test('未知 method 且带 id → -32601', async (t) => {
 
 test('tools/call(search_tools)：命中工具并给 get_tool_details 指引', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   writeCatalog(dir, FIXTURE);
   const cli = startServer({ ZTF_DATA_DIR: dir });
   t.after(() => cli.close());
@@ -134,7 +134,7 @@ test('tools/call(search_tools)：命中工具并给 get_tool_details 指引', as
 
 test('catalog 为空：返回友好提示而非报错', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   // 不写 catalog.json → loadCatalog 返回空
   const cli = startServer({ ZTF_DATA_DIR: dir });
   t.after(() => cli.close());
@@ -148,7 +148,7 @@ test('catalog 为空：返回友好提示而非报错', async (t) => {
 
 test('catalog 有 server 但零工具：报告索引状态而非误报未就绪', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ztf-server-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   // zsw 1.1.0 形态：server 在 catalog、tools 为空（工具面 offline）
   writeCatalog(dir, {
     'plugin:z-subagent-workflow:z-subagent-workflow': {

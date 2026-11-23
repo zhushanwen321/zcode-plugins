@@ -76,9 +76,9 @@ test('computeActions：user/plugin stdio 自动接管，sse 被扫描层排除',
   assert.ok(!keys.includes('remote'), 'sse 不在扫描结果（config-io 过滤）');
   assert.ok(!keys.includes('z-tool-finder'), '自身 server 跳过');
   assert.deepStrictEqual(actions.taken, []);
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('computeActions：workspace 不自动，显式 names 时接管', () => {
@@ -89,9 +89,9 @@ test('computeActions：workspace 不自动，显式 names 时接管', () => {
 
   const explicit = computeActions({ home: f.home, workspaceRoot: f.workspaceRoot, reg, names: ['ws1'] });
   assert.ok(explicit.toTakeover.some((t) => t.key === 'ws1' && t.scope === 'workspace'));
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('computeActions：引擎注入型插件（zcode-cua）归入 excluded，不接管', () => {
@@ -110,9 +110,9 @@ test('computeActions：引擎注入型插件（zcode-cua）归入 excluded，不
   assert.ok(!actions.toTakeover.some((t) => t.key === 'plugin:zcode-cua:computer-use'));
   assert.ok(actions.excluded.includes('plugin:zcode-cua:computer-use'));
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('computeActions：excluded 跳过；已接管 key 幂等归入 taken', () => {
@@ -126,9 +126,9 @@ test('computeActions：excluded 跳过；已接管 key 幂等归入 taken', () =
   assert.deepStrictEqual(actions.taken, ['alpha']);
   assert.deepStrictEqual(actions.excluded, ['blocked']);
   assert.ok(!actions.toTakeover.some((t) => t.key === 'blocked'));
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('buildWrapperEntry：形态与原 args/env 传递正确', () => {
@@ -232,9 +232,9 @@ test('applyTakeover roundtrip：接管 → config/registry 正确 → 幂等 →
   assert.deepStrictEqual(restored, originalConfig);
   assert.deepStrictEqual(loadRegistry(f.dataDir).servers, {});
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('applyTakeover 漂移刷新：插件定义变化后已接管条目的 wrapper 被重写', async () => {
@@ -267,9 +267,9 @@ test('applyTakeover 漂移刷新：插件定义变化后已接管条目的 wrapp
     ['${ZCODE_PLUGIN_ROOT}/demo2.js']
   );
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('applyTakeover + restoreOne：workspace 显式接管、单 key 还原', async () => {
@@ -290,9 +290,9 @@ test('applyTakeover + restoreOne：workspace 显式接管、单 key 还原', asy
   assert.ok(!restored.mcp.servers.ws1, '还原 = 删除覆盖条目（原定义仍在 workspace config）');
   assert.deepStrictEqual(loadRegistry(f.dataDir).servers, {});
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('applyTakeover：LockHeldError 时 degradeOnLock=true 降级不抛，false 时抛出', async () => {
@@ -313,9 +313,9 @@ test('applyTakeover：LockHeldError 时 degradeOnLock=true 降级不抛，false 
     () => applyTakeover({ home: f.home, dataDir: f.dataDir }),
     (err) => err instanceof LockHeldError
   );
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('applyTakeover 写序回归：user config 写失败时 registry 已落记录，下轮 hook 漂移检测自愈', async () => {
@@ -343,18 +343,18 @@ test('applyTakeover 写序回归：user config 写失败时 registry 已落记�
   const after = JSON.parse(fs.readFileSync(f.userConfigPath, 'utf8'));
   assert.strictEqual(after.mcp.servers.alpha.args[1], 'alpha', 'wrapper 条目已被补写');
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 test('restoreAll：registry 无记录时返回 missing 而非崩溃', () => {
   const f = makeFixture();
   const rr = restoreAll({ home: f.home, dataDir: f.dataDir });
   assert.deepStrictEqual(rr.restored, []);
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 // R1：restore 必须同步失效 catalog 条目，否则还原后的 server 仍被
@@ -385,7 +385,7 @@ test('restore 失效 catalog：restoreAll/restoreOne 删除对应 catalog 条目
   assert.ok(!('plugin:p-demo:demo' in cat.servers), '接管条目应被删除');
   assert.ok('unrelated' in cat.servers, '无关条目不受影响');
 
-  fs.rmSync(f.home, { recursive: true, force: true });
-  fs.rmSync(f.dataDir, { recursive: true, force: true });
-  fs.rmSync(f.workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(f.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  fs.rmSync(f.workspaceRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
