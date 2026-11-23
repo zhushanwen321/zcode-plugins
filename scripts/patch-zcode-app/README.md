@@ -18,7 +18,7 @@ node scripts/patch-zcode-app/patch-zcode-app.js autopatch-uninstall # 卸载自�
 ZCode 自动升级覆盖 app 后，LaunchAgent `dev.zsw.zcode-autopatch` 自动触发
 `autopatch` 子命令：稳定探测（版本 + 目标文件 size 签名连续两次一致，升级器
 写包中不盲打）→ `apply` 全量（补丁间隔离）→ 部分失败退避重试（10s/60s 三轮），
-系统性冲突不重试记日志等人工。触发面：WatchPaths（`app.asar` / `glm/zcode.cjs` /
+系统性冲突不重试记日志等人工。触发来源：WatchPaths（`app.asar` / `glm/zcode.cjs` /
 `Info.plist` 任一变更）+ 每 6 小时兜底 + 登录自检；日志
 `~/.zcode/cli/patch-autopatch.log`。
 
@@ -42,7 +42,7 @@ apply / restore 后**重启 ZCode 生效**；对运行中的 ZCode 执行是安�
 |------|------|------|
 | `yolo` | 新建会话默认权限模式 `build` → `yolo`（等宽替换） | 宿主 `/out/host/index.js` |
 | `quota-auto-reset` | 自动消耗距过期 24 小时内的 5 小时额度重置卡：卡距过期 <5 分钟，或 5 小时窗口剩余 <5% 时触发。周额度卡与距过期超过 24 小时的卡在第一层拦截，不自动使用 | 渲染层 `/out/renderer/assets/styles-*.js` |
-| `provider-sem` | LLM 请求准入唯一收口（admitAttempt）注入一行 trampoline，转发到外部 zsem 模块做 provider 维度并发上限与排队（上限/策略由 `~/.zcode/cli/zsem-config.json` 配置） | asar 外裸文件 `Resources/glm/zcode.cjs` |
+| `provider-sem` | 在 LLM 请求准入唯一入口（admitAttempt）注入一行 trampoline，转发到外部 zsem 模块做 provider 维度并发上限与排队（上限/策略由 `~/.zcode/cli/zsem-config.json` 配置） | asar 外裸文件 `Resources/glm/zcode.cjs` |
 
 `quota-auto-reset` 的运行形态：注入后渲染层每 60 秒自查一次重置状态（后台标签页
 被节流到约 1 分钟粒度，仍远快于 5 分钟窗口）。每轮先做第一层拦截——只保留「5 小时

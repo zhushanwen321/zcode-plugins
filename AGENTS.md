@@ -65,7 +65,7 @@ zcode plugins list                               # 应见 <name>@inline [enabled
   例外（构建期 vendored 核心包副本）：允许以 `z-subagent-workflow/lib/vendor/subagent-core/`
   目录形态消费 `@zhushanwen/subagent-core`——由 `scripts/vendor-subagent-core.js` 构建期刷新
   （产物入 git，VENDOR-MANIFEST.json 溯源 + 逐文件 sha256 自检），运行时统一经插件内
-  `lib/core-ref.js` 单一解析点访问。运行时 node_modules 解析面仍然禁止；package.json
+  `lib/core-ref.js` 单一解析点访问。运行时仍然禁止解析 node_modules；package.json
   不得声明 dependencies 的红线不变。流程与升级路径见 docs/standards.md「vendored 核心包消费」节。
   **zcode 引擎语义（core 0.5.0 起，2026-09 拍板）**：只走 app-server RPC（无 CLI spawn
   降级链，协议漂移直接报错）；共享宿主 HOME（不覆写 HOME，会话写真实
@@ -80,7 +80,7 @@ zcode plugins list                               # 应见 <name>@inline [enabled
 - 嵌套调用防护：被插件 spawn 的无头 zcode 子进程必须带嵌套标记 env（如 `ZSW_NESTED=1`，
   `DWF_NESTED=1`），嵌套环境下 MCP server 不注册工具，防递归编排。
 - 同名遮蔽：插件 skills/commands 在发现顺序中优先级最低（用户级/工作区级同名资源会遮蔽插件资源），
-  命名带插件前缀降低冲突面。
+  命名带插件前缀，降低命名冲突。
 
 ## zcode 桌面端 patch 体系（patch-zcode-app）
 
@@ -131,7 +131,7 @@ node 后 exec autopatch）——首次安装后必须在 系统设置→隐私�
 |------|------|------|
 | `yolo` | 新建会话默认权限模式 `build` → `yolo` | app.asar 内 `/out/host/index.js` |
 | `quota-auto-reset` | 自动消耗距过期 24 小时内的 5 小时额度重置卡：卡距过期 <5 分钟，或 5 小时窗口剩余 <5% 时触发；周额度卡与距过期超过 24 小时的卡第一层拦截，不自动使用 | app.asar 内 `/out/renderer/assets/styles-*.js` |
-| `provider-sem` | LLM 请求准入唯一收口注入 trampoline，转发 zsem 外部模块做 provider 维度并发上限与排队 | asar 外裸文件 `Resources/glm/zcode.cjs` |
+| `provider-sem` | 在 LLM 请求准入唯一入口注入 trampoline，转发 zsem 外部模块做 provider 维度并发上限与排队 | asar 外裸文件 `Resources/glm/zcode.cjs` |
 
 - **补丁定义协议**：`{ name, description, target, isApplied(content),
   transform(content, filePath) }`——只做内容变换;`target` 两类：asar 内文件
@@ -163,7 +163,7 @@ workspace 协议、单仓低频发布，tag 直发比 changesets 的 pre.json �
   engines/repository/author），**无 dependencies**；`files` 白名单须含插件运行必需件
   （`.zcode-plugin/plugin.json`、`.mcp.json`、`bin/`、`lib/`、`dist/`、`skills/`），check-pack 拦截漏文件。
   license 全仓 MIT（LICENSE 在仓库根，随建仓 Initial commit 引入），插件只声明字段不复制文件。
-- **版本三处同步**（同一插件的三个发布面）：`<plugin>/package.json` ↔
+- **版本三处同步**（同一插件的三个发布位置）：`<plugin>/package.json` ↔
   `<plugin>/.zcode-plugin/plugin.json` ↔ 根 `marketplace.json` 条目。**bump 只用
   `node scripts/release.js <plugin> <patch|minor|major>`**（一次改三处 + commit + tag），
   禁手工单改任一处（pre-commit 拦截漂移提交）。
