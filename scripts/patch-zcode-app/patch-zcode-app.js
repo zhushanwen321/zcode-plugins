@@ -127,16 +127,23 @@ function probePatches(file, patches) {
 
 /**
  * 在线 asar 是否「无补丁痕迹」（只查各补丁 marker，快速判定）。
- * 目标定位失败（升级换名等）按异常上抛：无法核验就不许当 pristine 用。
+ * 连坐防护：定位失败的补丁不参与痕迹判定，只记日志——升级后个别补丁锚点漂移
+ * 只应影响该补丁自身（buildPlan 逐补丁收集 failed），不得阻塞基线重采纳拖垮
+ * 其余补丁的升级重打。升级整体覆盖在线文件，锚点消失时该补丁的注入痕迹必也
+ * 消失，跳过不会误放行。全部补丁均无法定位时仍上抛：零数据点无法下结论。
  */
-function liveIsPristine(resourcesDir, patches) {
+function liveIsPristine(resourcesDir, patches, log = () => {}) {
   const asarPath = path.join(resourcesDir, 'app.asar');
   const probes = probePatches(asarPath, patches);
-  const failed = probes.find((p) => p.error);
-  if (failed) {
-    throw new Error(`在线 asar 补丁痕迹核验失败（${failed.patch.name}）：${failed.error}`);
+  const failed = probes.filter((p) => p.error);
+  for (const f of failed) log(`补丁 ${f.patch.name} 定位失败，不参与痕迹核验（${f.error}）`);
+  if (failed.length === probes.length) {
+    throw new Error(
+      `在线 asar 补丁痕迹核验失败（全部 ${probes.length} 个 asar 补丁均无法定位目标，无法判定是否干净）：${failed[0].error}。` +
+        '恢复动作：升级后全部锚点漂移时先重新逆向定位各补丁锚点，再重跑 apply。'
+    );
   }
-  return probes.every((p) => !p.applied);
+  return probes.filter((p) => !p.error).every((p) => !p.applied);
 }
 
 function legacyBackupNames(resourcesDir) {
@@ -201,7 +208,7 @@ async function ensureBase(resourcesDir, appPath, appVersion, patches, log) {
     }
     if (sidecar.appVersion === appVersion) return { basePath, sidecar };
     // 版本不一致 = ZCode 已升级覆盖 asar（补丁消失），升级后的 asar 即新 pristine
-    if (!liveIsPristine(resourcesDir, patches)) {
+    if (!liveIsPristine(resourcesDir, patches, log)) {
       throw new Error(
         `基线版本（${sidecar.appVersion}）与在线版本（${appVersion}）不一致，且在线 asar 检出补丁痕迹，拒绝自动重置基线。` +
           `恢复动作：人工核认在线 asar 可作基线后，删除 ${basePath} 与 sidecar 再重跑 apply。`
@@ -239,7 +246,7 @@ async function ensureBase(resourcesDir, appPath, appVersion, patches, log) {
     log(`跳过 ${name}：${reason}`);
   }
 
-  if (!liveIsPristine(resourcesDir, patches)) {
+  if (!liveIsPristine(resourcesDir, patches, log)) {
     throw new Error(
       '找不到未打补丁的基线，且在线 asar 已含补丁痕迹，无法确定 pristine 起点。' +
         '恢复动作：①有旧格式备份（app.asar.bak-*）时确认其内容后重跑；②重装/更新 ZCode 得到全新 app.asar 后重跑 apply。'
