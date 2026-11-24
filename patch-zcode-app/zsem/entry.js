@@ -23,8 +23,14 @@
 const { createProviderSemaphores } = require('./lib/semaphore');
 const { readLimits, resetCache, defaultConfigPath } = require('./lib/config');
 const { logEvent, defaultLogPath } = require('./lib/log');
+const { publishStatus } = require('./lib/statusfile');
 
 const sems = createProviderSemaphores();
+
+/** 并发快照发布:每个状态变化点(grant/queue/cancel/release)刷新 ~/.zcode/cli/zsem-status.json */
+function publish() {
+  publishStatus(sems.snapshot(), overrides.statusPath);
+}
 
 /** failopen 日志节流:config 缺失/损坏是持续态,逐请求落一条会线性膨胀(修剪 ATK-B5) */
 const FAILOPEN_LOG_INTERVAL_MS = 60000;
@@ -47,8 +53,8 @@ class ZsemCancelled extends Error {
   }
 }
 
-/** 测试/复用注入点:默认路径外的 config/log */
-const overrides = { configPath: undefined, logPath: undefined };
+/** 测试/复用注入点:默认路径外的 config/log/status */
+const overrides = { configPath: undefined, logPath: undefined, statusPath: undefined };
 
 async function admit(payload) {
   const providerId = payload && payload.model && typeof payload.model.providerId === 'string' ? payload.model.providerId : null;
@@ -94,18 +100,24 @@ async function admit(payload) {
       signal,
       onQueued: () => {
         logEvent('queue', { providerId, modelId }, overrides.logPath);
+        publish();
         callSafe(payload.onQueued);
       },
       onAdmitted: (queuedMs) => {
         grantedViaQueue = true;
         logEvent('grant', { providerId, modelId, queuedMs }, overrides.logPath);
+        publish();
         callSafe(payload.onAdmitted, queuedMs);
       },
     });
-    if (!grantedViaQueue) logEvent('grant', { providerId, modelId, queuedMs: 0 }, overrides.logPath);
+    if (!grantedViaQueue) {
+      logEvent('grant', { providerId, modelId, queuedMs: 0 }, overrides.logPath);
+      publish();
+    }
   } catch (err) {
     if (signal && signal.aborted) {
       logEvent('cancel', { providerId, modelId }, overrides.logPath);
+      publish();
       throw new ZsemCancelled(signal.reason ?? err);
     }
     logFailopenThrottled('admit-error', { providerId, modelId });
@@ -119,6 +131,7 @@ async function admit(payload) {
       released = true;
       logEvent('release', { providerId, modelId }, overrides.logPath);
       release();
+      publish();
     },
   };
 }
@@ -127,3 +140,4 @@ module.exports = {
   admit,
   __forTest: { sems, ZsemCancelled, overrides, resetCache, defaultConfigPath, defaultLogPath },
 };
+

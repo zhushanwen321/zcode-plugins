@@ -17,7 +17,8 @@
   },
   "slots": {
     "composer.status": [
-      { "id": "gen-metrics", "icon": "gauge", "target": { "command": "show-details" } }
+      { "id": "gen-metrics", "icon": "gauge", "target": { "command": "show-details" } },
+      { "id": "gen-concurrency", "icon": "gauge", "target": { "command": "show-details" } }
     ]
   }
 }
