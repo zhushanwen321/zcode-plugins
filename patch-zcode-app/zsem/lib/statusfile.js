@@ -13,14 +13,44 @@
  * 写入 = 读旧文件(损坏按空)→ 换本 pid 分片 → temp+rename 原子替换。并发写
  * 竞态(两进程同时读改写)窗口毫秒级、下次写入自愈,显示面可接受。任何失败
  * 静默(状态发布不得影响准入主流程)。
+ *
+ * 节流:MIN_PUBLISH_INTERVAL_MS 时间窗内多次状态变化合并为一次写入(窗口外首
+ * 事件立即写保证可见性,窗口内后续只刷新待写值,由定时器在窗口尾补写)。badge
+ * 是人眼消费的,300ms 滞后无感知;高并发流式场景(每秒多次 grant/release)写盘
+ * 频率从事件数降为 ≤1/窗口。
  */
 
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const MIN_PUBLISH_INTERVAL_MS = 300;
+
 function defaultStatusPath() {
   return path.join(os.homedir(), '.zcode', 'cli', 'zsem-status.json');
+}
+
+/** 节流状态(单 zsem 实例单路径) */
+let lastWriteAt = 0;
+let pendingTimer = null;
+
+/** 实际写盘(读取-合并-原子替换) */
+function writeNow(providers, statusPath) {
+  const file = statusPath || defaultStatusPath();
+  let pids = {};
+  try {
+    const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (prev && typeof prev === 'object' && prev.pids && typeof prev.pids === 'object') {
+      pids = prev.pids;
+    }
+  } catch {
+    /* 缺失/损坏按空起 */
+  }
+  pids[String(process.pid)] = { providers, updatedAt: new Date().toISOString() };
+  const next = JSON.stringify({ pids, updatedAt: new Date().toISOString() });
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, next, 'utf8');
+  fs.renameSync(tmp, file);
 }
 
 /**
@@ -29,27 +59,46 @@ function defaultStatusPath() {
  */
 function publishStatus(providers, statusPath) {
   try {
-    const file = statusPath || defaultStatusPath();
-    let pids = {};
-    try {
-      const prev = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (prev && typeof prev === 'object' && prev.pids && typeof prev.pids === 'object') {
-        pids = prev.pids;
-      }
-    } catch {
-      /* 缺失/损坏按空起 */
+    if (pendingTimer) {
+      // 窗口内已有排程:只刷新待写值,到点写最新快照
+      pendingTimer.providers = providers;
+      return;
     }
-    pids[String(process.pid)] = { providers, updatedAt: new Date().toISOString() };
-    const next = JSON.stringify({ pids, updatedAt: new Date().toISOString() });
-    const tmp = `${file}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, next, 'utf8');
-    fs.renameSync(tmp, file);
+    const now = Date.now();
+    const elapsed = now - lastWriteAt;
+    if (elapsed >= MIN_PUBLISH_INTERVAL_MS) {
+      lastWriteAt = now;
+      writeNow(providers, statusPath);
+      return;
+    }
+    pendingTimer = { providers, statusPath };
+    setTimeout(() => {
+      const pending = pendingTimer;
+      pendingTimer = null;
+      if (!pending) return;
+      lastWriteAt = Date.now();
+      try {
+        writeNow(pending.providers, pending.statusPath);
+      } catch {
+        /* 静默 */
+      }
+    }, MIN_PUBLISH_INTERVAL_MS - elapsed).unref();
   } catch {
+    pendingTimer = null;
     /* 状态发布失败静默 */
   }
 }
 
-/** 测试辅助 */
+/** 测试辅助:清节流状态(定时器已 unref,不阻止进程退出) */
+function resetThrottle() {
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    pendingTimer = null;
+  }
+  lastWriteAt = 0;
+}
+
+/** 测试辅助:清指定 pid 分片 */
 function clearPid(statusPath, pid) {
   try {
     const file = statusPath || defaultStatusPath();
@@ -84,4 +133,4 @@ function aggregate(statusPath) {
   }
 }
 
-module.exports = { publishStatus, aggregate, defaultStatusPath, clearPid };
+module.exports = { publishStatus, aggregate, defaultStatusPath, clearPid, resetThrottle, MIN_PUBLISH_INTERVAL_MS };

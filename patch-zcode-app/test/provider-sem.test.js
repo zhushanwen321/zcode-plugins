@@ -50,9 +50,21 @@ test('锚点异常:admitAttempt 标注缺失/多处 → 可操作错误', () => 
   assert.throws(() => patch.transform(two, 'zcode.cjs'), /命中 2 处/);
 });
 
-test('结构校验:函数名命中但函数体首句形态变化 → 可操作错误', () => {
-  const broken = synth().replace('if(e.admission===void 0)return nba;', 'let q=1;');
-  assert.throws(() => patch.transform(broken, 'zcode.cjs'), /未能按结构定位/);
+test('回退锚点:函数体首句改写后仍可注入(宽松定义+admission 特征确认)', () => {
+  // L1 失败形态:首句不是 if(e.admission===void 0)return(升级改写),
+  // 但函数体仍含 .admission 特征 → L2 接住
+  const src = synth().replace('if(e.admission===void 0)return nba;', 'const q=e.admission;if(!q)return nba;');
+  const { content, note } = patch.transform(src, 'zcode.cjs');
+  assert.equal(note, 'patched-fallback', '回退命中应标记 fallback');
+  assert.ok(content.includes('await __z.admit(e);'), '注入在函数体开头');
+  assert.ok(content.includes('const q=e.admission'), '原函数体保留');
+  new Function('return (async()=>{' + content + '})');
+});
+
+test('两级全失败:可操作错误', () => {
+  // 函数名标注在,但函数体已无 admission 特征(彻底重构为无关函数)
+  const src = synth().replace(/e\.admission\./g, 'null.').replace('if(e.admission===void 0)return nba;', 'return null;');
+  assert.throws(() => patch.transform(src, 'zcode.cjs'), /精确与回退锚点均未命中/);
 });
 
 test('isApplied 强标记:裸串出现不误判,完整注入前缀才识别(变异验证)', () => {

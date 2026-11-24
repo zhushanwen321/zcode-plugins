@@ -277,8 +277,8 @@ function buildPlan(livePath, patches) {
           skipped.push({ patch, entry });
           continue;
         }
-        const { content: next } = patch.transform(text, entry.path);
-        edits.push({ patch, entry, newBuffer: Buffer.from(next, 'utf8') });
+        const { content: next, note } = patch.transform(text, entry.path);
+        edits.push({ patch, entry, newBuffer: Buffer.from(next, 'utf8'), note });
       } catch (err) {
         failed.push({ patch, error: err.message });
       }
@@ -489,14 +489,24 @@ async function cmdApply(args) {
       touched = true;
     }
     failed.push(...plan.failed);
-    for (const e of plan.edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
+    for (const e of plan.edits) {
+      console.log(`apply ${e.patch.name}: 已写入 → ${e.entry.path}（${e.entry.size}B → ${e.newBuffer.length}B）`);
+      if (e.note === 'patched-fallback') {
+        console.log(`  提示 ${e.patch.name}: 以回退锚点注入（精确结构锚未命中）——准入函数形态已漂移，请对照新版 zcode.cjs 复核并把新形态固化为精确锚点。`);
+      }
+    }
     for (const s of plan.skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.entry.path}）`);
   }
   if (loosePatches.length > 0) {
     const results = await applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches, log);
     if (results.edits.length > 0) touched = true;
     failed.push(...results.failed);
-    for (const e of results.edits) console.log(`apply ${e.patch.name}: 已写入 → ${e.file}（${e.sizeBefore}B → ${e.sizeAfter}B）`);
+    for (const e of results.edits) {
+      console.log(`apply ${e.patch.name}: 已写入 → ${e.file}（${e.sizeBefore}B → ${e.sizeAfter}B）`);
+      if (e.note === 'patched-fallback') {
+        console.log(`  提示 ${e.patch.name}: 以回退锚点注入（精确结构锚未命中）——准入函数形态已漂移，请对照新版 zcode.cjs 复核并把新形态固化为精确锚点。`);
+      }
+    }
     for (const s of results.skipped) console.log(`skip ${s.patch.name}: 已应用，跳过（${s.file}）`);
   }
   for (const f of failed) console.log(`fail ${f.patch.name}: ${f.error}`);
@@ -778,9 +788,9 @@ async function applyLoosePatches(resourcesDir, appPath, appVersion, loosePatches
         skipped.push({ patch, file });
         continue;
       }
-      const { content: next } = patch.transform(content, file);
+      const { content: next, note } = patch.transform(content, file);
       writeLooseFile(file, next, readStat);
-      edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length });
+      edits.push({ patch, file, sizeBefore: content.length, sizeAfter: next.length, note });
     } catch (err) {
       failed.push({ patch, error: err.message });
     }

@@ -26,7 +26,7 @@ const MAX_SESSIONS = 100;
 // 并发快照(zsem 引擎侧发布,见 patch-zcode-app/zsem/lib/statusfile.js):
 // ~/.zcode/cli/zsem-status.json 按 pid 分片,读侧聚合全部 pid 求和。
 const STATUS_FILE_DEFAULT = `${os.homedir()}/.zcode/cli/zsem-status.json`;
-const CONCURRENCY_POLL_MS = 1000;
+const CONCURRENCY_POLL_MS = 2000;
 
 const fmtTps = (v) => (v >= 10 ? String(Math.round(v)) : v.toFixed(1));
 const fmtMs = (ms) => (ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`);
@@ -77,10 +77,11 @@ export async function activate(ctx, opts = {}) {
         };
 
   // ===== 并发条目:轮询 zsem 状态快照(全局态,非会话作用域) =====
-  // 引擎侧每个 grant/queue/cancel/release 刷新 ~/.zcode/cli/zsem-status.json;
-  // 1s 轮询 + 内容签名去重(没变化不重渲染)。读不到文件 = zsem 未接管(未打
-  // patch 或 provider 未配置),隐藏条目——与限流 fail-open 的可见语义一致。
-  let lastSignature = undefined; // 哨兵:首 poll 必发(无数据时也要把条目置隐藏)
+  // 引擎侧按 300ms 节流窗合并刷新 ~/.zcode/cli/zsem-status.json;本侧 2s 轮询
+  // + stat 预检(mtime+size 没变不读不 parse,常态开销 = 每 2s 一次 stat)。
+  // 读不到文件 = zsem 未接管(未打 patch 或 provider 未配置),隐藏条目——与
+  // 限流 fail-open 的可见语义一致。
+  let lastStatSignature = undefined; // 哨兵:首 poll 必发(无数据时也要把条目置隐藏)
   const renderConcurrency = (agg) => {
     const L = labels();
     const text = agg.queued > 0 ? `${L.conc(agg.active, agg.limit)} · ${L.queue(agg.queued)}` : L.conc(agg.active, agg.limit);
@@ -96,10 +97,17 @@ export async function activate(ctx, opts = {}) {
   };
   const pollConcurrency = () => {
     try {
+      const file = statusFile ?? `${os.homedir()}/.zcode/cli/zsem-status.json`;
+      let statSignature = null;
+      try {
+        const st = fs.statSync(file);
+        statSignature = `${st.mtimeMs}:${st.size}`;
+      } catch {
+        statSignature = null; // 文件不存在
+      }
+      if (statSignature === lastStatSignature) return; // 没变化:不读不渲染
+      lastStatSignature = statSignature;
       const agg = readConcurrency(statusFile);
-      const signature = agg ? JSON.stringify(agg) : null;
-      if (signature === lastSignature) return;
-      lastSignature = signature;
       if (!agg || (agg.active === 0 && agg.queued === 0 && agg.limit === 0)) {
         ctx.slots.update(SLOT_CONCURRENCY_ID, { text: null });
         return;

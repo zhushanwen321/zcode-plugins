@@ -41,6 +41,20 @@ function isApplied(content) {
   return content.includes('var __z=globalThis.__ZSEM__??(globalThis.__ZSEM__=require(');
 }
 
+/** 从 openBraceIndex(指向 `{`)取大括号平衡的函数体切片(不计字符串内括号,minified 容忍) */
+function sliceBalancedBody(content, openBraceIndex) {
+  let depth = 0;
+  for (let i = openBraceIndex; i < content.length && i - openBraceIndex < 20000; i++) {
+    const c = content[i];
+    if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) return content.slice(openBraceIndex + 1, i);
+    }
+  }
+  return content.slice(openBraceIndex + 1, openBraceIndex + 400);
+}
+
 function transform(content, filePath) {
   if (isApplied(content)) return { content, note: 'already-applied' };
 
@@ -52,16 +66,37 @@ function transform(content, filePath) {
     );
   }
   const fnName = names[0].match(/^r\((\w+),/)[1];
+
+  // 两级锚点(升级容错):L1 = 精确结构(函数体首句形态);L2 = 宽松定义定位 +
+  // 函数体前窗内 .admission 特征确认(容忍首句改写、形参变化)。L2 命中以
+  // note='patched-fallback' 提示人工复核(锚点已漂移,下次升级前应把新形态
+  // 固化为 L1)。
+  let injectAt = null;
+  let param1 = null;
+  let viaFallback = false;
   const defMatch = content.match(definitionRegex(fnName));
-  if (!defMatch) {
+  if (defMatch) {
+    param1 = defMatch[1];
+    injectAt = defMatch.index + defMatch[0].length - defMatch[2].length; // `{` 之后、首句之前
+  } else {
+    const looseRe = new RegExp('function ' + fnName + '\\((\\w+)(?:,\\w+)*\\)\\{');
+    const loose = content.match(looseRe);
+    // 特征确认限「本函数平衡体内」——固定窗口会跨过函数边界把同文件其他函数
+    // 的 .admission 误算进来(实测:合成 Kyt 体内无特征但尾部 other(x) 函数有)
+    const body = loose ? sliceBalancedBody(content, loose.index + loose[0].length - 1) : '';
+    if (loose && /\.admission\b/.test(body)) {
+      param1 = loose[1];
+      injectAt = loose.index + loose[0].length;
+      viaFallback = true;
+    }
+  }
+  if (injectAt === null) {
     throw new Error(
-      `provider-sem 未能按结构定位 ${fnName} 的函数定义(${filePath})。` +
-        '常见原因:ZCode 升级后准入函数的形参或函数体首句变了。恢复动作:对照新版本 zcode.cjs 更新 definitionRegex 的结构校验。',
+      `provider-sem 未能定位 ${fnName} 的函数定义(精确与回退锚点均未命中,${filePath})。` +
+        '常见原因:ZCode 升级后准入函数重构(改名/内联/形参结构变化)。恢复动作:对照新版本 zcode.cjs 逆向定位 admitAttempt 并更新本补丁锚点。',
     );
   }
-  const param1 = defMatch[1];
   const inject = INJECT_TEMPLATE.replaceAll('<P1>', param1);
-  const injectAt = defMatch.index + defMatch[0].length - defMatch[2].length; // 插在 `{ 之后、首句(if 段)之前
   const next = content.slice(0, injectAt) + inject + content.slice(injectAt);
 
   // 语法自检:注入后全文做编译级校验(new Function 只编译不执行)。
@@ -76,7 +111,7 @@ function transform(content, filePath) {
       `provider-sem 注入后语法自检失败:${err.message}。恢复动作:带 PATCH_DEBUG=1 重跑并报告注入点上下文。`,
     );
   }
-  return { content: next, note: 'patched' };
+  return { content: next, note: viaFallback ? 'patched-fallback' : 'patched' };
 }
 
 module.exports = {
