@@ -8,29 +8,6 @@
   },
   "plugins": [
     {
-      "name": "z-devflow-guard",
-      "source": "./z-devflow-guard",
-      "version": "0.1.0",
-      "description": "Deterministic workflow guard for zcode dev-flow sessions: once a session enters dev-flow execution state (user prompt mentions dev-flow, the dev-flow-wf skill runs, or skill-data/dev-flow/ files are touched), any direct Agent/Task dispatch in the main session is denied via a PreToolUse hook (exit 2) until every *.status.json of the touched task directories carries a run-terminal event; the deny message carries recovery actions and a per-session waive file provides the misjudge escape hatch.",
-      "description_i18n": {
-        "en": "Deterministic workflow guard for zcode dev-flow sessions: once a session enters dev-flow execution state (user prompt mentions dev-flow, the dev-flow-wf skill runs, or skill-data/dev-flow/ files are touched), any direct Agent/Task dispatch in the main session is denied via a PreToolUse hook (exit 2) until every *.status.json of the touched task directories carries a run-terminal event; the deny message carries recovery actions and a per-session waive file provides the misjudge escape hatch.",
-        "zh-CN": "zcode dev-flow 会话的确定性 workflow 守卫：会话一旦进入 dev-flow 执行态（用户输入提到 dev-flow、调用 dev-flow-wf 技能、或触碰 skill-data/dev-flow/ 产物文件），主会话用 Agent/Task 工具手工派发 subagent 即被 PreToolUse hook 以 exit 2 拒绝，强制全部派发走 CreateWorkflow；关联任务目录的全部 *.status.json 均带 run-terminal 终局事件后自动放行，拒绝消息自带恢复动作，误判经每会话一份的豁免文件解除。"
-      },
-      "author": {
-        "name": "zhushanwen",
-        "url": "https://github.com/zhushanwen321"
-      },
-      "category": "tooling",
-      "keywords": [
-        "zcode",
-        "hooks",
-        "dev-flow",
-        "guard",
-        "workflow",
-        "pretooluse"
-      ]
-    },
-    {
       "name": "z-subagent-workflow",
       "source": "./z-subagent-workflow",
       "version": "2.2.0",
